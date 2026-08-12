@@ -1,0 +1,161 @@
+# Advisory review lane: publishes no commit status and gates nothing; inline findings
+# open threads resolved via GitHub's native thread resolution. Story: prismalens/prismalens#415.
+name: Claude Code Review
+
+on:
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+# Cancel in-progress runs on new pushes since reviews of superseded SHAs are invalid.
+concurrency:
+  group: claude-code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Skip on fork PRs where secrets are unavailable; pull_request_target is
+    # deliberately NOT used to avoid exposing secrets to fork code.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    # READ-ONLY, and it stays read-only: token cannot hold write permissions over
+    # attacker-influencable diff text. Story: prismalens/prismalens#415.
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+    outputs:
+      started_at: ${{ steps.clock.outputs.started_at }}
+
+    steps:
+      - name: Record review start time
+        id: clock
+        run: echo "started_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          # persist-credentials: false prevents leaving git credentials in workspace.
+          persist-credentials: false
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        # Synchronous subagents required in print mode or the reviewer exits before its
+        # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
+        env:
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          # Full output required to diagnose silent permission-denial runs from logs.
+          # Story: prismalens/prismalens#403.
+          show_full_output: true
+          # `--comment` is load-bearing; do not remove it. Without it the plugin's posting
+          # path no-ops and a full review publishes NOTHING, silently. Story: prismalens/prismalens#410.
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
+          # Tool list is load-bearing; agent mode resolves tools ONLY from --allowed-tools
+          # and MCP servers require them. Task is required for subagents; Bash(gh pr review:*)
+          # is deliberately ABSENT. Story: prismalens/prismalens#403.
+          claude_args: >-
+            --allowed-tools
+            "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
+
+      # Action self-skips on workflow-validation mismatch leaving conclusion empty;
+      # this step logs liveness warnings. Stories: anthropics/claude-code-action#443 and prismalens/prismalens#419.
+      - name: Report reviewer liveness
+        if: always() && steps.claude-review.outputs.conclusion != 'success'
+        env:
+          CONCLUSION: ${{ steps.claude-review.outputs.conclusion }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CONCLUSION" ]; then
+            echo "::warning::claude-code-action reported no conclusion at ${HEAD_SHA:0:8}, so the reviewer never ran." \
+                 "The usual cause is that this PR edits .github/workflows/claude-code-review.yml, which the action" \
+                 "always self-skips on; otherwise read this job's log for permission denials." \
+                 "This PR has NOT been machine-reviewed — apply review-ready if it needs an independent read."
+          else
+            echo "::warning::The reviewer ran at ${HEAD_SHA:0:8} and concluded '$CONCLUSION', not success." \
+                 "A stale --allowed-tools list is the usual cause — see the comment on that input."
+          fi
+
+  # Advisory liveness comment on PR timeline prevents silent review failures.
+  # Separate job keeps review token read-only; GITHUB_TOKEN authorship prevents
+  # anti-recursion mention loops. Stories: prismalens/prismalens#419 and #415.
+  announce:
+    name: Announce reviewer liveness
+    needs: review
+    if: always() && needs.review.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Upsert liveness comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          STARTED_AT: ${{ needs.review.outputs.started_at }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          short=${HEAD_SHA:0:8}
+          # If review died before its clock step, STARTED_AT is empty and the
+          # `>=` filter below would count every claude[bot] comment ever made.
+          # An impossible timestamp keeps the count honest (zero).
+          [ -n "$STARTED_AT" ] || STARTED_AT="9999-01-01T00:00:00Z"
+
+          # Inline review comments claude[bot] left against the reviewed head —
+          # strictly this head. No `original_commit_id` fallback: a comment that
+          # only matches after GitHub rewrote it for a newer push is a previous
+          # head's comment, and counting it would report stale work as this
+          # run's.
+          inline=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate --jq \
+            "[.[] | select(.user.login==\"claude[bot]\")
+                  | select(.commit_id==\"$HEAD_SHA\")] | length")
+
+          # Summary comments (the plugin's no-issues path posts one). Three
+          # filters, each necessary: author, because only claude[bot] posts
+          # them; created >= run start, because issue comments carry no SHA;
+          # and the plugin's fixed '## Code review' heading, because the
+          # @claude MENTION lane shares the claude[bot] identity and a mention
+          # reply landing mid-review must not be counted as review output.
+          # This stays an advisory display, not evidence (#415): it reports
+          # what was posted, it does not certify who read what.
+          summary=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            "[.[] | select(.user.login==\"claude[bot]\")
+                  | select(.created_at >= \"$STARTED_AT\")
+                  | select(.body | startswith(\"## Code review\"))] | length")
+
+          if [ "$((inline + summary))" -gt 0 ]; then
+            verdict="reviewed \`$short\` and posted ${inline} inline / ${summary} summary comment(s)."
+          else
+            verdict="finished on \`$short\` (job result: ${REVIEW_RESULT}) but posted **nothing**. \
+          Silence is not approval: this head has no machine review on record. \
+          Read the [run log]($RUN_URL) (full transcript is enabled) and consider the \`review-ready\` label."
+          fi
+
+          marker='<!-- claude-review-liveness -->'
+          body="$marker
+          **Claude review lane** — [run]($RUN_URL): $verdict"
+
+          # Only this workflow's own comment qualifies for the upsert: without
+          # the author filter, any participant could pre-create a marker
+          # comment and this job would PATCH — and thereby keep republishing
+          # into — a comment it does not own.
+          existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            "[.[] | select(.user.login==\"github-actions[bot]\")
+                  | select(.body | startswith(\"$marker\"))][0].id // empty")
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -f body="$body" >/dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
+          fi
+          echo "liveness: $verdict"
