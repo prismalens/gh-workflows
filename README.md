@@ -33,9 +33,9 @@ This repository (`prismalens/gh-workflows`) is the **single source of truth** fo
 
 ## Reusable lanes (workflow_call)
 
-Reusable workflow callees defined in `.github/workflows/claude-code-review.yml` and `.github/workflows/claude.yml` allow consumer repositories to invoke central Claude CI lane logic via GitHub Actions `workflow_call`. Instead of maintaining duplicated copies of full lane definitions across repos, consumer repositories maintain thin caller stubs that reference these reusable workflows.
+Reusable workflow callees defined in `.github/workflows/claude-code-review.yml`, `.github/workflows/claude.yml`, and `.github/workflows/claude-fix.yml` allow consumer repositories to invoke central Claude CI lane logic via GitHub Actions `workflow_call`. Instead of maintaining duplicated copies of full lane definitions across repos, consumer repositories maintain thin caller stubs that reference these reusable workflows.
 
-### Worked-Example Consumer Stub
+### Worked-Example Consumer Stub (Review Lane)
 
 ```yaml
 name: Claude Code Review
@@ -60,6 +60,37 @@ jobs:
     secrets: inherit
     permissions:
       contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+```
+
+### Worked-Example Consumer Stub (Fixer Lane)
+
+```yaml
+name: Claude Fix
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+# This is a managed caller stub.
+# The lane logic lives in prismalens/gh-workflows/.github/workflows/claude-fix.yml.
+# Do not add logic here.
+
+concurrency:
+  group: claude-fix-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    uses: prismalens/gh-workflows/.github/workflows/claude-fix.yml@main
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    permissions:
+      contents: write
       pull-requests: read
       issues: read
       id-token: write
