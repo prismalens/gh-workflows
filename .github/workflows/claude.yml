@@ -6,11 +6,6 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
 
-# Serialized per thread; cancel-in-progress is false so mention tasks complete safely.
-concurrency:
-  group: claude-mention-${{ github.event.issue.number || github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
   claude:
     # Author association filter restricts execution to OWNER, MEMBER, or COLLABORATOR

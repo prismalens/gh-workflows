@@ -8,11 +8,6 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
 
-# Cancel in-progress runs on new pushes since reviews of superseded SHAs are invalid.
-concurrency:
-  group: claude-code-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   review:
     # Skip on fork PRs where secrets are unavailable; pull_request_target is
