@@ -12,7 +12,11 @@ jobs:
   review:
     # Skip on fork PRs where secrets are unavailable; pull_request_target is
     # deliberately NOT used to avoid exposing secrets to fork code.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Drafts are declared-unfinished code: reviewing every push to one is pure
+    # spend. `ready_for_review` in the caller triggers stay the admission event.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     # READ-ONLY, and it stays read-only: token cannot hold write permissions over
     # attacker-influencable diff text. Story: prismalens/prismalens#415.
@@ -73,7 +77,7 @@ jobs:
             echo "::warning::claude-code-action reported no conclusion at ${HEAD_SHA:0:8}, so the reviewer never ran." \
                  "The usual cause is that this PR edits .github/workflows/claude-code-review.yml, which the action" \
                  "always self-skips on; otherwise read this job's log for permission denials." \
-                 "This PR has NOT been machine-reviewed — apply review-ready if it needs an independent read."
+                 "This PR has NOT been machine-reviewed — apply coderabbit_review if it needs an independent read."
           else
             echo "::warning::The reviewer ran at ${HEAD_SHA:0:8} and concluded '$CONCLUSION', not success." \
                  "A stale --allowed-tools list is the usual cause — see the comment on that input."
@@ -134,7 +138,7 @@ jobs:
           else
             verdict="finished on \`$short\` (job result: ${REVIEW_RESULT}) but posted **nothing**. \
           Silence is not approval: this head has no machine review on record. \
-          Read the [run log]($RUN_URL) (full transcript is enabled) and consider the \`review-ready\` label."
+          Read the [run log]($RUN_URL) (full transcript is enabled) and consider the \`coderabbit_review\` label."
           fi
 
           marker='<!-- claude-review-liveness -->'
