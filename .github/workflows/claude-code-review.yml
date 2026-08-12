@@ -33,6 +33,34 @@ jobs:
         id: clock
         run: echo "started_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
 
+      # Mode switch (#403 incremental re-review): unresolved claude[bot] threads
+      # mean this push is a fix round — verify those threads and review only the
+      # delta, instead of letting the stock plugin's dedup no-op the re-review.
+      - name: Detect verification mode
+        id: mode
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          threads=$(gh api graphql \
+            -f query='query($owner:String!,$name:String!,$pr:Int!){
+              repository(owner:$owner,name:$name){ pullRequest(number:$pr){
+                reviewThreads(first:100){ nodes{ isResolved path
+                  comments(first:1){ nodes{ author{login} databaseId body url } } } } } } }' \
+            -f owner="${REPO%/*}" -f name="${REPO#*/}" -F pr="$PR" --jq '
+            [.data.repository.pullRequest.reviewThreads.nodes[]
+             | select(.isResolved==false)
+             | select((.comments.nodes[0].author.login // "") | test("^claude(\\[bot\\])?$"))
+             | {path, root_id: .comments.nodes[0].databaseId,
+                url: .comments.nodes[0].url, body: .comments.nodes[0].body}]')
+          count=$(echo "$threads" | jq length)
+          echo "$threads" > /tmp/unresolved-claude-threads.json
+          if [ "$count" -gt 0 ]; then echo "mode=verify" >> "$GITHUB_OUTPUT"
+          else echo "mode=review" >> "$GITHUB_OUTPUT"; fi
+          echo "unresolved claude[bot] threads: $count"
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -42,6 +70,7 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
+        if: steps.mode.outputs.mode == 'review'
         uses: anthropics/claude-code-action@v1
         # Synchronous subagents required in print mode or the reviewer exits before its
         # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
@@ -64,12 +93,57 @@ jobs:
             --allowed-tools
             "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
 
+      - name: Run Claude Code Verification Round
+        id: claude-verify
+        if: steps.mode.outputs.mode == 'verify'
+        uses: anthropics/claude-code-action@v1
+        # Synchronous subagents required in print mode or the reviewer exits before its
+        # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
+        env:
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          # Full output required to diagnose silent permission-denial runs from logs.
+          # Story: prismalens/prismalens#403.
+          show_full_output: true
+          prompt: |
+            You are re-reviewing ${{ github.repository }}/pull/${{ github.event.pull_request.number }} after new commits were pushed. A previous claude[bot] review left unresolved inline threads; they are listed in /tmp/unresolved-claude-threads.json (fields: path, root_id, url, body).
+
+            Step 1 — verdicts. For EACH thread: read the current code at its path and the PR diff (gh pr diff), and judge whether the concern in the thread body is addressed by the code as it now stands. Verdict is exactly one of: "verified fixed in <8-char head sha>" or "not addressed: <one-line reason>".
+
+            Step 2 — delta review. Review the PR's changes for NEW findings the existing threads do not already cover, and post any as inline comments (mcp__github_inline_comment__create_inline_comment), exactly as a normal review would. Do NOT re-post a finding that an existing thread already covers.
+
+            Step 3 — the summary (mandatory, even if everything is fixed and nothing is new). Post ONE top-level PR comment via gh pr comment whose FIRST line is exactly:
+            ## Code review — verification round
+            followed by a markdown table: one row per thread, columns Thread (the url) and Verdict. If you posted new inline findings, add one line noting how many.
+
+            You cannot and must not resolve threads — verdicts are judgment only; resolution stays with the operator. Never write the word "resolve" as an instruction in any comment.
+          # Tool list is load-bearing; agent mode resolves tools ONLY from --allowed-tools
+          # and MCP servers require them. Task is required for subagents; Bash(gh pr review:*)
+          # is deliberately ABSENT. Story: prismalens/prismalens#403.
+          claude_args: >-
+            --allowed-tools
+            "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
+
+      - name: Consolidate lane conclusion
+        id: outcome
+        if: always()
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          C_REVIEW: ${{ steps.claude-review.outputs.conclusion }}
+          C_VERIFY: ${{ steps.claude-verify.outputs.conclusion }}
+        run: |
+          if [ "$MODE" = "verify" ]; then echo "conclusion=$C_VERIFY" >> "$GITHUB_OUTPUT"
+          else echo "conclusion=$C_REVIEW" >> "$GITHUB_OUTPUT"; fi
+
       # Action self-skips on workflow-validation mismatch leaving conclusion empty;
       # this step logs liveness warnings. Stories: anthropics/claude-code-action#443 and prismalens/prismalens#419.
       - name: Report reviewer liveness
-        if: always() && steps.claude-review.outputs.conclusion != 'success'
+        if: always() && steps.outcome.outputs.conclusion != 'success'
         env:
-          CONCLUSION: ${{ steps.claude-review.outputs.conclusion }}
+          CONCLUSION: ${{ steps.outcome.outputs.conclusion }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail

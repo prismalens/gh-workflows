@@ -86,6 +86,10 @@ jobs:
 2. **Concurrency in Caller Only**: Concurrency must be declared at caller level only. A callee sharing the caller's concurrency group deadlocks the run ("deadlock detected for concurrency group").
 3. **Secrets Mapped Explicitly**: `secrets: inherit` does not cross repository owners (e.g. across orgs/users like `prismalens` vs `Sumit1993`). Secrets must be mapped explicitly across owner boundaries.
 
+### Verification rounds (incremental re-review)
+
+Pushes to a PR with unresolved `claude[bot]` threads get a verify round (per-thread verdicts + delta-only review + a `## Code review — verification round` summary) instead of a stock re-review; verdicts are judgment only, resolution stays with the operator; design: prismalens/prismalens#403.
+
 ---
 
 ## Composite Actions
