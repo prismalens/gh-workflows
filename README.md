@@ -1,39 +1,23 @@
 # gh-workflows
 
-Canonical GitHub Action CI and review-lane workflows for `prismalens` ecosystem repositories.
+Canonical GitHub Actions workflows and composite actions for `prismalens` ecosystem repositories.
 
-## Overview & Contract
+## Membership Rule
 
-This repository (`prismalens/gh-workflows`) is the **single source of truth** for review-lane GitHub Actions workflows across all consumer repositories:
-
-- `prismalens/prismalens`
-- `prismalens/sreforge`
-- `Sumit1993/mage-memory`
-
-### Key Architectural Rules
-
-1. **Canonical Copy Sync & Reusable Callees**: Reusable workflow callees live in `.github/workflows/` and can be invoked by consumer repos via `workflow_call` (see [prismalens#403](https://github.com/prismalens/prismalens/issues/403)). Master copies remain in `canonical/` during transition.
-2. **Do Not Edit Consumers Directly**: **NEVER** edit review workflows (`claude-code-review.yml`, `claude.yml`) directly in a consumer repository. Any manual modifications in consumer repos introduce drift and will be flagged by `scripts/check-drift.sh`.
-3. **Secrets are Per-Consumer-Repo**: Repository secrets (such as `CLAUDE_CODE_OAUTH_TOKEN`) are configured individually on each consumer repository and **never** live in this repository.
+If a defect fixed in one repo's copy would need the same fix in another's, the file belongs here.
 
 ---
 
-## Canonical Workflows & Rulesets
+## Reusable Lanes (`workflow_call`)
 
-| Path | Purpose |
-| --- | --- |
-| [`canonical/claude-code-review.yml`](canonical/claude-code-review.yml) | Canonical advisory Claude Code Review workflow (runs on same-repo PRs, opens inline finding threads). |
-| [`canonical/claude.yml`](canonical/claude.yml) | Canonical `@claude` mention response workflow. |
-| [`canonical/README-pr-title-pattern.md`](canonical/README-pr-title-pattern.md) | Guide for Conventional Commit PR title validation (`pr-title.yml`) and merge queue patterns. |
-| [`rulesets/merge-queue-rule.json`](rulesets/merge-queue-rule.json) | Canonical GitHub Merge Queue ruleset configuration. |
-| [`rulesets/README.md`](rulesets/README.md) | Documentation for applying repository rulesets via GitHub API. |
-| [`consumers.json`](consumers.json) | Registry mapping consumer repositories to their assigned canonical workflows. |
+Reusable workflow callees live in `.github/workflows/` and are invoked by consumer repositories via `workflow_call`.
 
----
+### Callees
 
-## Reusable lanes (workflow_call)
-
-Reusable workflow callees defined in `.github/workflows/claude-code-review.yml`, `.github/workflows/claude.yml`, and `.github/workflows/claude-fix.yml` allow consumer repositories to invoke central Claude CI lane logic via GitHub Actions `workflow_call`. Instead of maintaining duplicated copies of full lane definitions across repos, consumer repositories maintain thin caller stubs that reference these reusable workflows.
+- `.github/workflows/claude-code-review.yml`
+- `.github/workflows/claude-fix.yml`
+- `.github/workflows/claude.yml`
+- `.github/workflows/dependabot-auto-merge.yml`
 
 ### Worked-Example Consumer Stub (Review Lane)
 
@@ -96,46 +80,75 @@ jobs:
       id-token: write
 ```
 
-> **Note**: Canonical copies in `canonical/` remain in place for `prismalens/prismalens` and `prismalens/sreforge` until those repositories convert to `workflow_call` caller stubs.
+### Stub Rules
 
-### `@main` Pinning Rationale
-
-Caller stubs pin callees to `@main` (`uses: prismalens/gh-workflows/.github/workflows/<filename>@main`) to enable **live inheritance**. Any fix or optimization committed to canonical workflows in `gh-workflows` main branch automatically applies to all consumer repos on their next workflow run without requiring multi-repo copy-sync PRs.
-
----
-
-## Scripts & Operations
-
-### 1. Check Workflow Drift Across Consumers
-
-Runs a check comparing `canonical/` workflows against live consumer repository copies fetched via the GitHub API:
-
-```bash
-bash scripts/check-drift.sh
-```
-
-- Prints `IN-SYNC` when the consumer workflow matches `canonical/`.
-- Prints `DRIFT` alongside a unified diff when differences exist.
-- Prints `MISSING` if a consumer lacks a configured workflow.
-- Exits with `0` if all consumer workflows are in sync, or `1` if any drift or missing files are detected.
-
-### 2. Sync Canonical Workflows to a Consumer Repo
-
-Creates a pull request on the specified consumer repository updating its `.github/workflows/` to match canonical:
-
-```bash
-bash scripts/sync-consumer.sh <owner/repo>
-```
-
-Example:
-```bash
-bash scripts/sync-consumer.sh prismalens/sreforge
-```
-
-> **Note**: `sync-consumer.sh` requires a clean working directory in `gh-workflows` before executing. It creates a sync branch named `sync-review-workflows-<short-sha>` in a temporary clone, commits with `ci: sync review workflows from prismalens/gh-workflows@<short-sha>`, pushes, and opens a PR via `gh pr create`.
+1. **Permissions Union (incl. Announce Write Ceiling)**: Caller stubs declare permissions as the union of permissions needed by the lane logic, capped by the write access ceiling required for posting status comments or reviews.
+2. **Concurrency in Caller Only**: Concurrency must be declared at caller level only. A callee sharing the caller's concurrency group deadlocks the run ("deadlock detected for concurrency group").
+3. **Secrets Mapped Explicitly**: `secrets: inherit` does not cross repository owners (e.g. across orgs/users like `prismalens` vs `Sumit1993`). Secrets must be mapped explicitly across owner boundaries.
 
 ---
 
-## Open Follow-ups
+## Composite Actions
 
-- **`workflow_call` conversion**: Tracked in [prismalens#403](https://github.com/prismalens/prismalens/issues/403).
+### `actions/pr-title`
+
+#### Why `pr-title` is NOT a reusable workflow
+
+The PR title required status check name is pinned in repository rulesets (branch protection rules). Reusable workflows (`workflow_call`) automatically rename check runs to `"caller-job-name / callee-job-name"` (e.g. `validate / Validate PR title`), breaking pinned required status check names in rulesets. Composite actions execute within the caller's job context, keeping the check run name exact.
+
+#### Usage Snippet
+
+```yaml
+name: Lint PR title
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - edited
+      - synchronize
+  merge_group:
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    name: Validate PR title (conventional commits)
+    runs-on: ubuntu-latest
+    steps:
+      - if: github.event_name != 'merge_group'
+        uses: prismalens/gh-workflows/actions/pr-title@main
+        with:
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+      - if: github.event_name == 'merge_group'
+        run: echo "Title validated on the pull request before it entered the merge queue."
+```
+
+---
+
+## Consumer Repositories
+
+The following consumer repositories use shared CI from this repository (replacing `consumers.json`):
+
+- `prismalens/prismalens`
+- `prismalens/sreforge`
+- `Sumit1993/mage-memory`
+
+---
+
+## Copy-Sync Retirement
+
+The copy-sync mechanism (`canonical/`, `scripts/sync-consumer.sh`, `scripts/check-drift.sh`, `consumers.json`) is retired. Reusable workflows (`workflow_call`) and composite actions make workflow drift structurally impossible for shared CI lanes across consumer repositories.
