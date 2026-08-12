@@ -10,6 +10,8 @@ on:
 
 jobs:
   review:
+    # Skip on fork PRs where secrets are unavailable; pull_request_target is
+    # deliberately NOT used to avoid exposing secrets to fork code.
     # Drafts are declared-unfinished code: reviewing every push to one is pure
     # spend. `ready_for_review` in the caller triggers stay the admission event.
     if: >-
