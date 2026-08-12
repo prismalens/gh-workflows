@@ -48,6 +48,8 @@ on:
 # The lane logic lives in prismalens/gh-workflows/.github/workflows/claude-code-review.yml.
 # Do not add logic here.
 
+# Concurrency lives in the caller ONLY: a callee sharing the caller's group
+# deadlocks the run ("deadlock detected for concurrency group").
 concurrency:
   group: claude-code-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
