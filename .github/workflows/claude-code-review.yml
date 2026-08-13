@@ -4,19 +4,127 @@ name: Claude Code Review
 
 on:
   workflow_call:
+    inputs:
+      skip_authors:
+        description: >-
+          Comma-separated PR author logins whose automatic pull_request rounds are skipped
+          entirely. No spaces after the commas — matching is exact-login on the raw list.
+          `@claude review` summons bypass this.
+        type: string
+        default: 'dependabot[bot]'
+      auto_pause_rounds:
+        description: >-
+          Automatic review rounds allowed on one PR before the lane pauses itself.
+          A `@claude review` summon is the resume. Monotonic; never reset.
+        type: number
+        default: 3
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
-        required: true
+        # required:false so fork pull_request runs — where the secrets context is always
+        # empty — still create a run and reach `fork-notice`; `review` guards on the
+        # token's presence instead of relying on caller-side validation. Story: prismalens/prismalens#415.
+        required: false
 
 jobs:
-  review:
-    # Skip on fork PRs where secrets are unavailable; pull_request_target is
-    # deliberately NOT used to avoid exposing secrets to fork code.
-    # Drafts are declared-unfinished code: reviewing every push to one is pure
-    # spend. `ready_for_review` in the caller triggers stay the admission event.
+  # ONE set of PR facts for automatic rounds and `@claude review` summons alike, so
+  # downstream jobs never branch on event shape. Fork guard mirrors claude-fix.yml's
+  # resolve-pr. Stories: prismalens/prismalens#403 and #422.
+  resolve:
+    name: Resolve PR facts
+    # Admission. Automatic rounds drop skipped authors; the delimiter wrap keeps the
+    # match exact-login, so a login like `bot` cannot collide with `dependabot[bot]`.
+    # Summons need an org-member author plus an explicit verb. Story: prismalens/prismalens#422.
     if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.draft == false
+      (
+        github.event_name == 'pull_request' &&
+        !contains(format(',{0},', inputs.skip_authors), format(',{0},', github.event.pull_request.user.login))
+      ) || (
+        (
+          github.event.comment.author_association == 'OWNER' ||
+          github.event.comment.author_association == 'MEMBER' ||
+          github.event.comment.author_association == 'COLLABORATOR'
+        ) && (
+          (
+            github.event_name == 'issue_comment' && github.event.issue.pull_request && (
+              contains(github.event.comment.body, '@claude review') ||
+              contains(github.event.comment.body, '@claude full review')
+            )
+          ) || (
+            github.event_name == 'pull_request_review_comment' && (
+              contains(github.event.comment.body, '@claude review') ||
+              contains(github.event.comment.body, '@claude full review')
+            )
+          )
+        )
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      number: ${{ steps.pr.outputs.number }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      draft: ${{ steps.pr.outputs.draft }}
+      author: ${{ steps.pr.outputs.author }}
+      same_repo: ${{ steps.pr.outputs.same_repo }}
+      checkout_ref: ${{ steps.pr.outputs.checkout_ref }}
+      summon: ${{ steps.summon.outputs.summon }}
+
+    steps:
+      # SECURITY INVARIANT: the comment body is read by `contains()` here and in the job
+      # `if:` above, and nowhere else. It must never reach a prompt or a shell string.
+      # Story: prismalens/prismalens#422.
+      - name: Classify summon verb
+        id: summon
+        env:
+          SUMMON: >-
+            ${{ github.event_name == 'pull_request' && 'none'
+              || (contains(github.event.comment.body, '@claude full review') && 'full' || 'incremental') }}
+        run: echo "summon=$SUMMON" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch PR metadata and validate origin
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          head_sha="$(jq -r '.head.sha' <<< "$pr")"
+          head_repo="$(jq -r '.head.repo.full_name' <<< "$pr")"
+
+          {
+            echo "number=${PR_NUMBER}"
+            echo "head_sha=${head_sha}"
+            echo "head_ref=$(jq -r '.head.ref' <<< "$pr")"
+            echo "draft=$(jq -r '.draft' <<< "$pr")"
+            echo "author=$(jq -r '.user.login' <<< "$pr")"
+          } >> "$GITHUB_OUTPUT"
+
+          # Comment events check out the default branch by default, which is not the code
+          # under review; pull_request keeps its merge ref. Story: prismalens/prismalens#422.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "checkout_ref=" >> "$GITHUB_OUTPUT"
+          else
+            echo "checkout_ref=${head_sha}" >> "$GITHUB_OUTPUT"
+          fi
+
+          # FORK GUARD — fork heads are refused even when summoned (v1); `fork-notice`
+          # is what speaks to them instead.
+          if [ "$head_repo" = "${GITHUB_REPOSITORY}" ]; then
+            echo "same_repo=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "same_repo=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  review:
+    needs: resolve
+    # Drafts are declared-unfinished code: reviewing every push to one is pure spend.
+    # Only an explicit summon overrides that; fork heads never pass. Story: prismalens/prismalens#415.
+    if: >-
+      needs.resolve.outputs.same_repo == 'true' &&
+      (needs.resolve.outputs.summon != 'none' || needs.resolve.outputs.draft != 'true')
     runs-on: ubuntu-latest
     # READ-ONLY, and it stays read-only: token cannot hold write permissions over
     # attacker-influencable diff text. Story: prismalens/prismalens#415.
@@ -27,6 +135,8 @@ jobs:
       id-token: write
     outputs:
       started_at: ${{ steps.clock.outputs.started_at }}
+      mode: ${{ steps.mode.outputs.mode }}
+      skip_reason: ${{ steps.mode.outputs.skip_reason }}
 
     steps:
       - name: Record review start time
@@ -36,14 +146,50 @@ jobs:
       # Mode switch (#403 incremental re-review): unresolved claude[bot] threads
       # mean this push is a fix round — verify those threads and review only the
       # delta, instead of letting the stock plugin's dedup no-op the re-review.
+      # Also carries the spend gates: absent token, and the auto-pause counter.
       - name: Detect verification mode
         id: mode
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ needs.resolve.outputs.number }}
+          EVENT_NAME: ${{ github.event_name }}
+          SUMMON: ${{ needs.resolve.outputs.summon }}
+          MAX_ROUNDS: ${{ inputs.auto_pause_rounds }}
+          # Presence only — the token value never enters the shell.
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
           set -euo pipefail
+          emit() { echo "mode=$1" >> "$GITHUB_OUTPUT"; echo "skip_reason=${2:-}" >> "$GITHUB_OUTPUT"; }
+
+          # A missing secret must be loud, not a silent no-op: that trap class is #410.
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::warning::No CLAUDE_CODE_OAUTH_TOKEN reached this lane, so nothing was reviewed." \
+                 "Map the secret explicitly in the caller stub — 'inherit' does not cross owners."
+            emit skip no-token
+            exit 0
+          fi
+
+          # Auto-pause reads the round counter off our own liveness comment. Summons are
+          # the resume, so they neither read nor trip it. Story: prismalens/prismalens#403.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            rounds=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+              "[.[] | select(.user.login==\"github-actions[bot]\")
+                    | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // \"\"" \
+              | head -1 | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
+            rounds=${rounds:-0}
+            echo "automatic rounds on record: $rounds (auto_pause_rounds: $MAX_ROUNDS)"
+            if [ "$rounds" -ge "$MAX_ROUNDS" ]; then
+              emit skip paused
+              exit 0
+            fi
+          fi
+
+          if [ "$SUMMON" = "full" ]; then
+            emit review-full
+            exit 0
+          fi
+
           threads=$(gh api graphql \
             -f query='query($owner:String!,$name:String!,$pr:Int!){
               repository(owner:$owner,name:$name){ pullRequest(number:$pr){
@@ -57,13 +203,16 @@ jobs:
                 url: .comments.nodes[0].url, body: .comments.nodes[0].body}]')
           count=$(echo "$threads" | jq length)
           echo "$threads" > /tmp/unresolved-claude-threads.json
-          if [ "$count" -gt 0 ]; then echo "mode=verify" >> "$GITHUB_OUTPUT"
-          else echo "mode=review" >> "$GITHUB_OUTPUT"; fi
+          if [ "$count" -gt 0 ]; then emit verify
+          else emit review; fi
           echo "unresolved claude[bot] threads: $count"
 
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          # Empty on pull_request (keeps the merge ref); the PR head SHA on comment
+          # summons, whose default checkout is the default branch. Story: prismalens/prismalens#422.
+          ref: ${{ needs.resolve.outputs.checkout_ref }}
           fetch-depth: 1
           # persist-credentials: false prevents leaving git credentials in workspace.
           persist-credentials: false
@@ -85,7 +234,46 @@ jobs:
           show_full_output: true
           # `--comment` is load-bearing; do not remove it. Without it the plugin's posting
           # path no-ops and a full review publishes NOTHING, silently. Story: prismalens/prismalens#410.
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ needs.resolve.outputs.number }} --comment'
+          # Tool list is load-bearing; agent mode resolves tools ONLY from --allowed-tools
+          # and MCP servers require them. Task is required for subagents; Bash(gh pr review:*)
+          # is deliberately ABSENT. Story: prismalens/prismalens#403.
+          claude_args: >-
+            --allowed-tools
+            "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
+
+      - name: Run Claude Code Full Review
+        id: claude-full-review
+        if: steps.mode.outputs.mode == 'review-full'
+        uses: anthropics/claude-code-action@v1
+        # Synchronous subagents required in print mode or the reviewer exits before its
+        # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
+        env:
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          # Full output required to diagnose silent permission-denial runs from logs.
+          # Story: prismalens/prismalens#403.
+          show_full_output: true
+          # Prose prompt, NOT the plugin's slash command: that command dedups against
+          # existing comments, which makes a from-scratch re-review publish nothing.
+          # Story: prismalens/prismalens#410.
+          prompt: |
+            You are performing a FULL code review of ${{ github.repository }}/pull/${{ needs.resolve.outputs.number }}, from scratch, because an org member explicitly asked for one.
+
+            Review the complete PR diff (gh pr diff) and the code it touches as if this PR had never been reviewed.
+
+            DEDUP IS DISABLED FOR THIS RUN. Existing review comments and threads on this PR are NOT dedup targets. If a finding is real, post it — even when an earlier round already raised the same point, and even when an existing thread covers it. Suppressing findings as "already covered" is exactly the failure this run exists to avoid: it makes the run publish nothing while appearing to succeed.
+
+            Post each finding as an inline comment with mcp__github_inline_comment__create_inline_comment.
+
+            Then post ONE top-level PR comment via gh pr comment whose FIRST line is exactly:
+            ## Code review — full review
+            followed by your summary. Post that summary even if you found nothing, and say so plainly if so.
+
+            You cannot and must not resolve review threads, submit a formal review, or merge. Never write the word "resolve" as an instruction in any comment.
           # Tool list is load-bearing; agent mode resolves tools ONLY from --allowed-tools
           # and MCP servers require them. Task is required for subagents; Bash(gh pr review:*)
           # is deliberately ABSENT. Story: prismalens/prismalens#403.
@@ -109,7 +297,7 @@ jobs:
           # Story: prismalens/prismalens#403.
           show_full_output: true
           prompt: |
-            You are re-reviewing ${{ github.repository }}/pull/${{ github.event.pull_request.number }} after new commits were pushed. A previous claude[bot] review left unresolved inline threads; they are listed in /tmp/unresolved-claude-threads.json (fields: path, root_id, url, body).
+            You are re-reviewing ${{ github.repository }}/pull/${{ needs.resolve.outputs.number }} after new commits were pushed. A previous claude[bot] review left unresolved inline threads; they are listed in /tmp/unresolved-claude-threads.json (fields: path, root_id, url, body).
 
             Step 1 — verdicts. For EACH thread: read the current code at its path and the PR diff (gh pr diff), and judge whether the concern in the thread body is addressed by the code as it now stands. Verdict is exactly one of: "verified fixed in <8-char head sha>" or "not addressed: <one-line reason>".
 
@@ -133,18 +321,23 @@ jobs:
         env:
           MODE: ${{ steps.mode.outputs.mode }}
           C_REVIEW: ${{ steps.claude-review.outputs.conclusion }}
+          C_FULL: ${{ steps.claude-full-review.outputs.conclusion }}
           C_VERIFY: ${{ steps.claude-verify.outputs.conclusion }}
         run: |
-          if [ "$MODE" = "verify" ]; then echo "conclusion=$C_VERIFY" >> "$GITHUB_OUTPUT"
-          else echo "conclusion=$C_REVIEW" >> "$GITHUB_OUTPUT"; fi
+          case "$MODE" in
+            verify) echo "conclusion=$C_VERIFY" >> "$GITHUB_OUTPUT" ;;
+            review-full) echo "conclusion=$C_FULL" >> "$GITHUB_OUTPUT" ;;
+            skip) echo "conclusion=skipped" >> "$GITHUB_OUTPUT" ;;
+            *) echo "conclusion=$C_REVIEW" >> "$GITHUB_OUTPUT" ;;
+          esac
 
       # Action self-skips on workflow-validation mismatch leaving conclusion empty;
       # this step logs liveness warnings. Stories: anthropics/claude-code-action#443 and prismalens/prismalens#419.
       - name: Report reviewer liveness
-        if: always() && steps.outcome.outputs.conclusion != 'success'
+        if: always() && steps.mode.outputs.mode != 'skip' && steps.outcome.outputs.conclusion != 'success'
         env:
           CONCLUSION: ${{ steps.outcome.outputs.conclusion }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
         run: |
           set -euo pipefail
           if [ -z "$CONCLUSION" ]; then
@@ -162,7 +355,7 @@ jobs:
   # anti-recursion mention loops. Stories: prismalens/prismalens#419 and #415.
   announce:
     name: Announce reviewer liveness
-    needs: review
+    needs: [resolve, review]
     if: always() && needs.review.result != 'skipped'
     runs-on: ubuntu-latest
     permissions:
@@ -172,8 +365,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ needs.resolve.outputs.number }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          SKIP_REASON: ${{ needs.review.outputs.skip_reason }}
           REVIEW_RESULT: ${{ needs.review.result }}
           STARTED_AT: ${{ needs.review.outputs.started_at }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -185,50 +380,123 @@ jobs:
           # An impossible timestamp keeps the count honest (zero).
           [ -n "$STARTED_AT" ] || STARTED_AT="9999-01-01T00:00:00Z"
 
-          # Inline review comments claude[bot] left against the reviewed head —
-          # strictly this head. No `original_commit_id` fallback: a comment that
-          # only matches after GitHub rewrote it for a newer push is a previous
-          # head's comment, and counting it would report stale work as this
-          # run's.
-          inline=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate --jq \
-            "[.[] | select(.user.login==\"claude[bot]\")
-                  | select(.commit_id==\"$HEAD_SHA\")] | length")
-
-          # Summary comments (the plugin's no-issues path posts one). Three
-          # filters, each necessary: author, because only claude[bot] posts
-          # them; created >= run start, because issue comments carry no SHA;
-          # and the plugin's fixed '## Code review' heading, because the
-          # @claude MENTION lane shares the claude[bot] identity and a mention
-          # reply landing mid-review must not be counted as review output.
-          # This stays an advisory display, not evidence (#415): it reports
-          # what was posted, it does not certify who read what.
-          summary=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
-            "[.[] | select(.user.login==\"claude[bot]\")
-                  | select(.created_at >= \"$STARTED_AT\")
-                  | select(.body | startswith(\"## Code review\"))] | length")
-
-          if [ "$((inline + summary))" -gt 0 ]; then
-            verdict="reviewed \`$short\` and posted ${inline} inline / ${summary} summary comment(s)."
-          else
-            verdict="finished on \`$short\` (job result: ${REVIEW_RESULT}) but posted **nothing**. \
-          Silence is not approval: this head has no machine review on record. \
-          Read the [run log]($RUN_URL) (full transcript is enabled) and consider the \`coderabbit_review\` label."
-          fi
-
-          marker='<!-- claude-review-liveness -->'
-          body="$marker
-          **Claude review lane** — [run]($RUN_URL): $verdict"
+          # Prefix, not the whole marker: the marker now carries the round counter, and
+          # pr-watch plus the operator match on this prefix. Story: prismalens/prismalens#403.
+          prefix='<!-- claude-review-liveness'
 
           # Only this workflow's own comment qualifies for the upsert: without
           # the author filter, any participant could pre-create a marker
           # comment and this job would PATCH — and thereby keep republishing
           # into — a comment it does not own.
-          existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+          found=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
             "[.[] | select(.user.login==\"github-actions[bot]\")
-                  | select(.body | startswith(\"$marker\"))][0].id // empty")
+                  | select(.body | startswith(\"$prefix\"))][0] // empty")
+          existing=$(jq -r '.id // empty' <<< "${found:-null}")
+          prev=$(jq -r '.body // ""' <<< "${found:-null}" \
+            | head -1 | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
+          prev=${prev:-0}
+
+          # N counts automatic rounds actually performed: summons are not rounds, and a
+          # paused run performed none. Monotonic, no reset in v1. Story: prismalens/prismalens#403.
+          rounds=$prev
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$SKIP_REASON" != "paused" ]; then
+            rounds=$((prev + 1))
+          fi
+
+          if [ "$SKIP_REASON" = "paused" ]; then
+            verdict="auto-paused after ${rounds} automatic rounds at \`$short\` — re-request with \`@claude review\`."
+          elif [ "$SKIP_REASON" = "no-token" ]; then
+            verdict="did not run at \`$short\`: no CLAUDE_CODE_OAUTH_TOKEN reached this lane. \
+          This head has no machine review on record — map the secret explicitly in the caller stub."
+          else
+            # Inline review comments claude[bot] left against the reviewed head —
+            # strictly this head. No `original_commit_id` fallback: a comment that
+            # only matches after GitHub rewrote it for a newer push is a previous
+            # head's comment, and counting it would report stale work as this
+            # run's.
+            inline=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate --jq \
+              "[.[] | select(.user.login==\"claude[bot]\")
+                    | select(.commit_id==\"$HEAD_SHA\")] | length")
+
+            # Summary comments (the plugin's no-issues path posts one). Three
+            # filters, each necessary: author, because only claude[bot] posts
+            # them; created >= run start, because issue comments carry no SHA;
+            # and the plugin's fixed '## Code review' heading, because the
+            # @claude MENTION lane shares the claude[bot] identity and a mention
+            # reply landing mid-review must not be counted as review output.
+            # This stays an advisory display, not evidence (#415): it reports
+            # what was posted, it does not certify who read what.
+            summary=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+              "[.[] | select(.user.login==\"claude[bot]\")
+                    | select(.created_at >= \"$STARTED_AT\")
+                    | select(.body | startswith(\"## Code review\"))] | length")
+
+            if [ "$((inline + summary))" -gt 0 ]; then
+              verdict="reviewed \`$short\` and posted ${inline} inline / ${summary} summary comment(s)."
+            else
+              verdict="finished on \`$short\` (job result: ${REVIEW_RESULT}) but posted **nothing**. \
+          Silence is not approval: this head has no machine review on record. \
+          Read the [run log]($RUN_URL) (full transcript is enabled) and consider the \`coderabbit_review\` label."
+            fi
+          fi
+
+          marker="<!-- claude-review-liveness rounds=${rounds} -->"
+          body="$marker
+          **Claude review lane** — [run]($RUN_URL): $verdict"
+
           if [ -n "$existing" ]; then
             gh api -X PATCH "repos/$REPO/issues/comments/$existing" -f body="$body" >/dev/null
           else
             gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
           fi
           echo "liveness: $verdict"
+
+  # Fork heads get no secrets and therefore no review; without this the PR just goes
+  # quiet, and silence reads as approval. github.token only, so it does not depend on
+  # the OAuth secret being present. Story: prismalens/prismalens#415.
+  fork-notice:
+    name: Announce fork PR skip
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Upsert fork skip notice
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          marker='<!-- claude-review-fork-notice -->'
+          note="The Claude review lane cannot run on pull requests from forks — GitHub withholds \
+          this repository's secrets from fork code. This head has **no machine review on record**; \
+          silence is not approval. A maintainer can apply the \`coderabbit_review\` label to get an \
+          independent review on it."
+          body="$marker
+          **Claude review lane** — $note"
+
+          # Same anti-squat rule as the liveness comment: only this workflow's own
+          # comment is eligible for the PATCH.
+          existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            "[.[] | select(.user.login==\"github-actions[bot]\")
+                  | select(.body | startswith(\"$marker\"))][0].id // empty" || true)
+
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -f body="$body" >/dev/null \
+              && posted=ok || posted=fail
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null \
+              && posted=ok || posted=fail
+          fi
+
+          # Fork pull_request runs get a read-only GITHUB_TOKEN unless the repo enables
+          # "Send write tokens to workflows from fork pull requests" (off by default), so
+          # the comment can 403. The annotation is the fallback record.
+          if [ "$posted" != "ok" ]; then
+            echo "::warning::Fork PR: the Claude review lane cannot run (secrets are withheld from fork code)." \
+                 "This head has NO machine review on record. A maintainer can apply the coderabbit_review label." \
+                 "Posting this as a PR comment was denied: fork runs hold a read-only token."
+          fi
