@@ -180,7 +180,7 @@ jobs:
             rounds=${rounds:-0}
             # A non-integer limit would make `-ge` abort the gate and review anyway.
             limit=$MAX_ROUNDS
-            case "$limit" in ''|*[!0-9]*) limit=3 ;; esac
+            case "$limit" in ''|*[!0-9]*) limit=3 ;; esac # keep in sync with the input default (3)
             echo "automatic rounds on record: $rounds (auto_pause_rounds: $limit)"
             if [ "$rounds" -ge "$limit" ]; then
               emit skip paused

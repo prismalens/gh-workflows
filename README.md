@@ -43,8 +43,8 @@ on:
 # deadlocks the run ("deadlock detected for concurrency group").
 concurrency:
   group: claude-code-review-${{ github.event.pull_request.number || github.event.issue.number }}
-  # Automatic rounds still supersede each other; a human-issued summon is never
-  # killed by the next push.
+  # A summon never cancels an in-flight automatic round; it queues behind it.
+  # A push still supersedes anything in the group, including a summon.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -102,17 +102,14 @@ jobs:
   claude:
     # Verb exclusion: the review and fixer lanes own these three phrasings.
     # `@claude full review` does not contain `@claude review` as a substring,
-    # so all three checks are needed. Both body fields are checked: comments
-    # carry `comment.body`, a submitted formal review carries `review.body`.
-    # `contains()` on a null body is false, so other events pass untouched.
+    # so all three checks are needed. `contains()` on a null body is false, so
+    # `issues` and `pull_request_review` events pass through untouched.
+    # Review bodies stay with the mention lane: no other lane subscribes to pull_request_review.
     if: >-
       !(
         contains(github.event.comment.body, '@claude fix') ||
         contains(github.event.comment.body, '@claude review') ||
-        contains(github.event.comment.body, '@claude full review') ||
-        contains(github.event.review.body, '@claude fix') ||
-        contains(github.event.review.body, '@claude review') ||
-        contains(github.event.review.body, '@claude full review')
+        contains(github.event.comment.body, '@claude full review')
       )
     uses: prismalens/gh-workflows/.github/workflows/claude.yml@main
     # explicit mapping is the canon pattern — `inherit` does not cross ownership
@@ -166,7 +163,7 @@ jobs:
 4. **Mention Lane Excludes Owned Verbs**: The `claude.yml` caller stub must carry a caller-level `if:` excluding comment bodies that contain `@claude fix`, `@claude review`, or `@claude full review`. Those verbs belong to the fixer and review lanes; without the exclusion each such comment fires two lanes on the same PR. Exact expression: the Mention Lane worked example above.
 5. **Pin `branches` on `pull_request`**: Every stub that triggers on `pull_request` pins `branches: [main]`, so covering a future `release/*` branch is a decision someone makes, not an accident.
 6. **Comment Triggers Need a Concurrency Fallback**: The moment a stub gains `issue_comment` / `pull_request_review_comment` triggers, its concurrency group key must fall back to `github.event.issue.number` — `${{ github.event.pull_request.number || github.event.issue.number }}`. `github.event.pull_request.number` is empty on `issue_comment`, so without the fallback the group collapses to the constant `claude-code-review-`: one global group in which any PR's summon cancels every other PR's in-flight run.
-7. **Cancel Automatic Rounds Only**: On a lane that takes both `pull_request` and comment triggers, use `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`. Automatic rounds should still supersede each other, but a plain `true` lets the next push kill a summon a human just issued.
+7. **Cancel Automatic Rounds Only**: On a lane that takes both `pull_request` and comment triggers, use `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`: a summon never cancels an in-flight automatic round; it queues behind it. A push still supersedes anything in the group, including a summon.
 
 ### Review lane inputs
 
