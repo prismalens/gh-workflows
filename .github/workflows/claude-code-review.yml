@@ -33,7 +33,7 @@ jobs:
     name: Resolve PR facts
     # Admission. Automatic rounds drop skipped authors; the delimiter wrap keeps the
     # match exact-login, so a login like `bot` cannot collide with `dependabot[bot]`.
-    # Summons need an org-member author plus an explicit verb. Story: prismalens/prismalens#422.
+    # Summons need an org-member author, an explicit verb, and an OPEN PR. Story: prismalens/prismalens#422.
     if: >-
       (
         github.event_name == 'pull_request' &&
@@ -45,12 +45,14 @@ jobs:
           github.event.comment.author_association == 'COLLABORATOR'
         ) && (
           (
-            github.event_name == 'issue_comment' && github.event.issue.pull_request && (
+            github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+            github.event.issue.state == 'open' && (
               contains(github.event.comment.body, '@claude review') ||
               contains(github.event.comment.body, '@claude full review')
             )
           ) || (
-            github.event_name == 'pull_request_review_comment' && (
+            github.event_name == 'pull_request_review_comment' &&
+            github.event.pull_request.state == 'open' && (
               contains(github.event.comment.body, '@claude review') ||
               contains(github.event.comment.body, '@claude full review')
             )
@@ -63,9 +65,7 @@ jobs:
     outputs:
       number: ${{ steps.pr.outputs.number }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
-      head_ref: ${{ steps.pr.outputs.head_ref }}
       draft: ${{ steps.pr.outputs.draft }}
-      author: ${{ steps.pr.outputs.author }}
       same_repo: ${{ steps.pr.outputs.same_repo }}
       checkout_ref: ${{ steps.pr.outputs.checkout_ref }}
       summon: ${{ steps.summon.outputs.summon }}
@@ -97,9 +97,7 @@ jobs:
           {
             echo "number=${PR_NUMBER}"
             echo "head_sha=${head_sha}"
-            echo "head_ref=$(jq -r '.head.ref' <<< "$pr")"
             echo "draft=$(jq -r '.draft' <<< "$pr")"
-            echo "author=$(jq -r '.user.login' <<< "$pr")"
           } >> "$GITHUB_OUTPUT"
 
           # Comment events check out the default branch by default, which is not the code
@@ -173,13 +171,18 @@ jobs:
           # Auto-pause reads the round counter off our own liveness comment. Summons are
           # the resume, so they neither read nor trip it. Story: prismalens/prismalens#403.
           if [ "$EVENT_NAME" = "pull_request" ]; then
+            # `// empty`, never `// ""`: --paginate runs the filter per page, and a blank
+            # line from a non-matching page is what `head -1` would otherwise read as N.
             rounds=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
               "[.[] | select(.user.login==\"github-actions[bot]\")
-                    | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // \"\"" \
+                    | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty" \
               | head -1 | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
             rounds=${rounds:-0}
-            echo "automatic rounds on record: $rounds (auto_pause_rounds: $MAX_ROUNDS)"
-            if [ "$rounds" -ge "$MAX_ROUNDS" ]; then
+            # A non-integer limit would make `-ge` abort the gate and review anyway.
+            limit=$MAX_ROUNDS
+            case "$limit" in ''|*[!0-9]*) limit=3 ;; esac
+            echo "automatic rounds on record: $rounds (auto_pause_rounds: $limit)"
+            if [ "$rounds" -ge "$limit" ]; then
               emit skip paused
               exit 0
             fi
@@ -396,14 +399,17 @@ jobs:
             | head -1 | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
           prev=${prev:-0}
 
-          # N counts automatic rounds actually performed: summons are not rounds, and a
-          # paused run performed none. Monotonic, no reset in v1. Story: prismalens/prismalens#403.
+          # N counts automatic rounds that actually reviewed: summons are not rounds, and a
+          # cancelled, failed, paused, or token-less run reviewed nothing — cancel-in-progress
+          # makes those common. Monotonic, no reset in v1. Story: prismalens/prismalens#403.
           rounds=$prev
-          if [ "$EVENT_NAME" = "pull_request" ] && [ "$SKIP_REASON" != "paused" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -z "$SKIP_REASON" ] && [ "$REVIEW_RESULT" = "success" ]; then
             rounds=$((prev + 1))
           fi
 
           if [ "$SKIP_REASON" = "paused" ]; then
+            # The `@claude review` text below cannot self-summon: GITHUB_TOKEN-authored events
+            # never trigger workflows, and this upsert PATCHes rather than creating a comment.
             verdict="auto-paused after ${rounds} automatic rounds at \`$short\` — re-request with \`@claude review\`."
           elif [ "$SKIP_REASON" = "no-token" ]; then
             verdict="did not run at \`$short\`: no CLAUDE_CODE_OAUTH_TOKEN reached this lane. \
@@ -456,9 +462,17 @@ jobs:
   # the OAuth secret being present. Story: prismalens/prismalens#415.
   fork-notice:
     name: Announce fork PR skip
+    needs: resolve
+    # Second clause covers a summon that resolves to a fork, which would otherwise get no
+    # answer at all. When `resolve` is skipped its outputs are empty strings, so that clause
+    # stays false on ordinary automatic runs. Story: prismalens/prismalens#415.
     if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name != github.repository
+      always() && (
+        (
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name != github.repository
+        ) || needs.resolve.outputs.same_repo == 'false'
+      )
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -467,14 +481,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ github.event.pull_request.number || needs.resolve.outputs.number }}
         run: |
           set -euo pipefail
           marker='<!-- claude-review-fork-notice -->'
           note="The Claude review lane cannot run on pull requests from forks — GitHub withholds \
-          this repository's secrets from fork code. This head has **no machine review on record**; \
-          silence is not approval. A maintainer can apply the \`coderabbit_review\` label to get an \
-          independent review on it."
+          this repository's secrets from fork code, and a summon does not override that. This head \
+          has **no machine review on record**; silence is not approval. A maintainer can apply the \
+          \`coderabbit_review\` label to get an independent review on it."
           body="$marker
           **Claude review lane** — $note"
 
