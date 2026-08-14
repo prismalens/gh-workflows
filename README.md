@@ -167,12 +167,13 @@ jobs:
 
 ### Review lane inputs
 
-Both are optional `workflow_call` inputs on `claude-code-review.yml`; the defaults are the intended posture and a stub only sets them to deviate.
+All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults are the intended posture and a stub only sets them to deviate.
 
 | Input | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `skip_authors` | string | `dependabot[bot]` | Comma-separated PR author logins whose **automatic** `pull_request` rounds are skipped entirely — no review, no verify, no liveness comment. Matching is exact-login (the list is delimiter-wrapped), so `bot` never collides with `dependabot[bot]`. Use no spaces after the commas. A `@claude review` summon bypasses the list: manual intent wins. |
 | `auto_pause_rounds` | number | `3` | Automatic rounds allowed on one PR before the lane pauses itself. The count lives in the liveness comment's marker (`<!-- claude-review-liveness rounds=N -->`); only automatic rounds that actually ran increment it. On pause the lane posts `auto-paused after N automatic rounds` instead of reviewing. Monotonic — v1 never resets it, so a summon resumes for exactly that one run. |
+| `default_model` | string | `claude-sonnet-5` | Model ID handed to `claude-code-action` as `--model`, for all three review shapes (review, full review, verify). Sonnet is the default deliberately: the review lane is the highest-volume Claude spend across the consumer repos. A single run can deviate with `@claude review --model opus` / `--model sonnet` — an allowlist of two fixed phrases mapped to two pinned IDs, never a value read out of the comment. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
 
 Override example:
 
@@ -183,6 +184,7 @@ jobs:
     with:
       skip_authors: 'dependabot[bot],renovate[bot]'
       auto_pause_rounds: 5
+      default_model: 'claude-opus-5'
 ```
 
 ### Summon grammar
@@ -193,6 +195,7 @@ Bare PR comments, org members only (`OWNER`, `MEMBER`, or `COLLABORATOR`). The c
 | --- | --- | --- |
 | `@claude review` | review | Incremental. The lane's own mode detection decides: a verify round if unresolved `claude[bot]` threads exist, otherwise a normal review. |
 | `@claude full review` | review | From scratch. Forces a review and instructs it to ignore existing comments and threads as dedup targets — without that the plugin's dedup silently publishes nothing (prismalens/prismalens#410). |
+| `@claude review --model opus` | review | Incremental, on `claude-opus-5` for that run only. `--model sonnet` picks `claude-sonnet-5`. Anything else after `--model` — including `haiku`, which is not offered — is ignored and the run uses `default_model`. The suffix is matched as a whole fixed phrase, so `@claude full review --model opus` does **not** switch models. |
 | `@claude fix` | fixer | Applies fixes on the PR branch (`claude-fix.yml`). |
 | bare `@claude …` | mention | Anything not matching the verbs above. |
 
