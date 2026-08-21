@@ -17,7 +17,7 @@ on:
           Automatic review rounds allowed on one PR before the lane pauses itself.
           A `@claude review` summon is the resume. Monotonic; never reset.
         type: number
-        default: 3
+        default: 5
       default_model:
         description: >-
           Model ID for review runs, passed through to claude-code-action as `--model`.
@@ -187,7 +187,7 @@ jobs:
             rounds=${rounds:-0}
             # A non-integer limit would make `-ge` abort the gate and review anyway.
             limit=$MAX_ROUNDS
-            case "$limit" in ''|*[!0-9]*) limit=3 ;; esac # keep in sync with the input default (3)
+            case "$limit" in ''|*[!0-9]*) limit=5 ;; esac # keep in sync with the input default (5)
             echo "automatic rounds on record: $rounds (auto_pause_rounds: $limit)"
             if [ "$rounds" -ge "$limit" ]; then
               emit skip paused
