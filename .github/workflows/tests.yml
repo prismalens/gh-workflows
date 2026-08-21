@@ -23,8 +23,15 @@ jobs:
       - name: Liveness marker behaviour
         run: python3 tests/test-liveness-marker.py
 
+      # Version pinned: an actionlint release must not turn a green branch red on its own.
       - name: actionlint
         run: |
           set -euo pipefail
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          ./actionlint -color
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
+          # Two suppressions, both verified false positives, both re-checkable by deleting the flag:
+          # `conclusion` IS claude-code-action@v1's first declared output — actionlint's bundled
+          # action schema is stale. SC2016 fires on $owner/$name/$pr inside a single-quoted GraphQL
+          # query, where not expanding them is the entire point.
+          ./actionlint -color \
+            -ignore 'property "conclusion" is not defined' \
+            -ignore 'SC2016'
