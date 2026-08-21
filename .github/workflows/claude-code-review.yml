@@ -462,6 +462,12 @@ jobs:
             | head -1 | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
           prev=${prev:-0}
 
+          # Baseline head for the future incremental range. Absent on markers written before
+          # this field existed, and on PRs no review has ever posted on — both mean "no
+          # baseline", which reads as a full review. Story: prismalens/prismalens#403.
+          reviewed_sha=$(jq -r '.body // ""' <<< "${found:-null}" \
+            | head -1 | grep -oE 'sha=[0-9a-f]{40}' | head -1 | cut -d= -f2 || true)
+
           # N counts automatic rounds that actually reviewed: summons are not rounds, and a
           # cancelled, failed, paused, or token-less run reviewed nothing — cancel-in-progress
           # makes those common. Monotonic, no reset in v1. Story: prismalens/prismalens#403.
@@ -502,6 +508,10 @@ jobs:
 
             if [ "$((inline + summary))" -gt 0 ]; then
               verdict="reviewed \`$short\` and posted ${inline} inline / ${summary} summary comment(s)."
+              # THE baseline advances here and nowhere else — gated on posted evidence, never on
+              # job result. A green run that posted nothing must NOT move it: the next range would
+              # start past those commits and swallow them permanently, which is #410 made durable.
+              reviewed_sha="$HEAD_SHA"
             else
               verdict="finished on \`$short\` (job result: ${REVIEW_RESULT}) but posted **nothing**. \
           Silence is not approval: this head has no machine review on record. \
@@ -509,7 +519,9 @@ jobs:
             fi
           fi
 
-          marker="<!-- claude-review-liveness rounds=${rounds} -->"
+          # `sha=` is omitted entirely when there is no baseline, so markers on never-reviewed
+          # PRs stay clean and the field's absence is unambiguous.
+          marker="<!-- claude-review-liveness rounds=${rounds}${reviewed_sha:+ sha=${reviewed_sha}} -->"
           body="$marker
           **Claude review lane** — [run]($RUN_URL): $verdict"
 

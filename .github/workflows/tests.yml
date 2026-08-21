@@ -1,0 +1,30 @@
+# The only self-triggering workflow here: the other four are `workflow_call` callees and
+# never run in this repo, so without this nothing verifies them before they reach consumers.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: pip install --quiet pyyaml
+
+      # Extracts and runs the real shell body out of claude-code-review.yml.
+      - name: Liveness marker behaviour
+        run: python3 tests/test-liveness-marker.py
+
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
