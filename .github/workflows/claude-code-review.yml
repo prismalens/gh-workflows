@@ -417,11 +417,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$CONCLUSION" ]; then
-            echo "::warning::claude-code-action reported no conclusion at ${HEAD_SHA:0:8}, so the reviewer never ran." \
+            echo "::warning::claude-code-action reported no conclusion at ${HEAD_SHA:0:8}." \
                  "Two causes look the same here: the action self-skips when the PR edits" \
-                 ".github/workflows/claude-code-review.yml, and tool denials abort a run identically." \
-                 "Check whether this PR touches that file, then read this job's log for denials." \
-                 "This PR has NOT been machine-reviewed — apply coderabbit_review if it needs an independent read."
+                 ".github/workflows/claude-code-review.yml, and a tool denial aborts a run midway." \
+                 "A self-skip posts nothing; a denial may have posted some findings before dying." \
+                 "Read the liveness comment for what was actually posted, then this job's log for denials." \
+                 "Treat this head as unreviewed unless that comment says otherwise; coderabbit_review is the fallback."
           else
             echo "::warning::The reviewer ran at ${HEAD_SHA:0:8} and concluded '$CONCLUSION', not success." \
                  "Read this job's log for the actual cause. Common ones: a tool denial from a stale" \
