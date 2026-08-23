@@ -424,7 +424,9 @@ jobs:
                  "This PR has NOT been machine-reviewed — apply coderabbit_review if it needs an independent read."
           else
             echo "::warning::The reviewer ran at ${HEAD_SHA:0:8} and concluded '$CONCLUSION', not success." \
-                 "A stale --allowed-tools list is the usual cause — see the comment on that input."
+                 "Read this job's log for the actual cause. Common ones: a tool denial from a stale" \
+                 "--allowed-tools list, a prompt naming a path outside the agent's allowed directories," \
+                 "or a chained Bash command, which is matched per subcommand and denied outright."
           fi
 
   # Advisory liveness comment on PR timeline prevents silent review failures.
