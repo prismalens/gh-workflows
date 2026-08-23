@@ -239,6 +239,13 @@ jobs:
           # persist-credentials: false prevents leaving git credentials in workspace.
           persist-credentials: false
 
+      # Written to /tmp by `Detect verification mode`, which must run BEFORE checkout;
+      # actions/checkout wipes untracked workspace files, so the move can only happen here,
+      # after checkout and before the agent, which may read only inside the workspace.
+      - name: Stage unresolved threads for the verify agent
+        if: steps.mode.outputs.mode == 'verify'
+        run: mv /tmp/unresolved-claude-threads.json "$GITHUB_WORKSPACE/unresolved-claude-threads.json"
+
       # Vendored from anthropics/claude-code plugins/code-review/commands/code-review.md (blob 0b27765f).
       # Upstream's step 1 — a Haiku admission gate — is deleted: it read the word "Draft" out of PR
       # body prose and silently no-oped the lane. Admission is the caller's job, from the REST API.
@@ -328,6 +335,7 @@ jobs:
             Notes:
 
             - Use gh CLI to interact with GitHub (e.g., fetch pull requests, create comments). Do not use web fetch.
+            - Every Bash call must be a single command: no pipes, no `&&`, no `||`, no `;`, and no redirection into another command. Bash permissions are matched per subcommand, so a chained command is denied outright.
             - Create a todo list before starting.
             - You must cite and link each issue in inline comments (e.g., if referring to a CLAUDE.md, include a link to it).
             - When linking to code in inline comments, follow the following format precisely, otherwise the Markdown preview won't render correctly: https://github.com/anthropics/claude-code/blob/c21d3c10bc8e898b7ac1a2d745bdc9bc4e423afe/package.json#L10-L15
@@ -363,7 +371,7 @@ jobs:
           # Story: prismalens/prismalens#403.
           show_full_output: true
           prompt: |
-            You are re-reviewing ${{ github.repository }}/pull/${{ needs.resolve.outputs.number }} after new commits were pushed. A previous claude[bot] review left unresolved inline threads; they are listed in /tmp/unresolved-claude-threads.json (fields: path, root_id, url, body).
+            You are re-reviewing ${{ github.repository }}/pull/${{ needs.resolve.outputs.number }} after new commits were pushed. A previous claude[bot] review left unresolved inline threads; they are listed in `unresolved-claude-threads.json` in the root of your working directory (fields: path, root_id, url, body). Read it with the Read tool.
 
             Step 1 — verdicts. For EACH thread: read the current code at its path and the PR diff (gh pr diff), and judge whether the concern in the thread body is addressed by the code as it now stands. Verdict is exactly one of: "verified fixed in <8-char head sha>" or "not addressed: <one-line reason>".
 
@@ -372,6 +380,8 @@ jobs:
             Step 3 — the summary (mandatory, even if everything is fixed and nothing is new). Post ONE top-level PR comment via gh pr comment whose FIRST line is exactly:
             ## Code review — verification round
             followed by a markdown table: one row per thread, columns Thread (the url) and Verdict. If you posted new inline findings, add one line noting how many.
+
+            Every Bash call must be a single command: no pipes, no `&&`, no `||`, no `;`, and no redirection into another command. Bash permissions are matched per subcommand, so a chained command is denied outright.
 
             You cannot and must not resolve threads — verdicts are judgment only; resolution stays with the operator. Never write the word "resolve" as an instruction in any comment.
           # Tool list is load-bearing; agent mode resolves tools ONLY from --allowed-tools
@@ -408,8 +418,9 @@ jobs:
           set -euo pipefail
           if [ -z "$CONCLUSION" ]; then
             echo "::warning::claude-code-action reported no conclusion at ${HEAD_SHA:0:8}, so the reviewer never ran." \
-                 "The usual cause is that this PR edits .github/workflows/claude-code-review.yml, which the action" \
-                 "always self-skips on; otherwise read this job's log for permission denials." \
+                 "Two causes look the same here: the action self-skips when the PR edits" \
+                 ".github/workflows/claude-code-review.yml, and tool denials abort a run identically." \
+                 "Check whether this PR touches that file, then read this job's log for denials." \
                  "This PR has NOT been machine-reviewed — apply coderabbit_review if it needs an independent read."
           else
             echo "::warning::The reviewer ran at ${HEAD_SHA:0:8} and concluded '$CONCLUSION', not success." \
