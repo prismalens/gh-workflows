@@ -1,0 +1,48 @@
+# gh-workflows is the one repo the Claude review lane cannot review: it hosts the
+# callee, and claude-code-action self-skips on any PR editing claude-code-review.yml.
+# So auto_review stays ON here, unlike the consumer repos where the Claude lane
+# covers every PR and CodeRabbit is the escalation. Story: gh-workflows#14.
+language: en-US
+reviews:
+  profile: chill
+  auto_review:
+    enabled: true
+    auto_pause_after_reviewed_commits: 1
+    ignore_title_keywords:
+      - "WIP"
+  path_instructions:
+    - path: ".github/workflows/**"
+      instructions: >-
+        These are reusable workflow callees consumed by prismalens/prismalens,
+        prismalens/sreforge and Sumit1993/mage-memory, pinned at @main, so a merge reaches
+        all three immediately. Enforce the stub rules in README.md: concurrency is declared
+        in the caller only, since a callee sharing the caller's group deadlocks the run;
+        `secrets: inherit` does not cross repository owners and must be mapped explicitly;
+        every `pull_request` trigger pins `branches`; a stub taking comment triggers falls
+        back to `github.event.issue.number` in its concurrency key, or the group collapses
+        to a constant and one PR's summon cancels another's run.
+        The `review` job is read-only by invariant and its token must never gain write
+        permissions, because it reads attacker-influenceable diff text. Flag any change
+        that adds a write scope to it.
+        A prompt that names a filesystem path the agent cannot read, or that invites a
+        chained Bash command, is a silent failure: Bash permissions are matched per
+        subcommand and agent mode resolves tools only from `--allowed-tools`. Flag both.
+    - path: ".github/workflows/claude-code-review.yml"
+      instructions: >-
+        This lane's failure mode of record is producing no review while reporting success.
+        Flag any change that lets a step conclude successfully without evidence that
+        something was posted, and any warning or comment text that asserts an outcome the
+        code cannot know at that point.
+    - path: "actions/**"
+      instructions: >-
+        Composite actions run in the caller's job context, which keeps check run names
+        exact. That is why pr-title is an action and not a reusable workflow: `workflow_call`
+        renames check runs to "caller-job / callee-job" and breaks required status check
+        names pinned in rulesets. Flag any change that would alter a check run name.
+    - path: "README.md"
+      instructions: >-
+        This README documents workflow behaviour that consumers rely on. If the PR changes
+        a workflow input, default, trigger, marker format, label name or job topology, the
+        README must be updated in the same PR. Name the specific stale passage.
+chat:
+  allow_non_org_members: false
