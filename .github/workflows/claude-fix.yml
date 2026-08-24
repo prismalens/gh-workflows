@@ -100,8 +100,10 @@ jobs:
             this pull request. Your job:
 
             1. Read the PR diff and ALL unresolved review threads on this PR.
-            2. For each unresolved thread that describes a fixable issue, apply
-               the fix to the codebase on the PR's existing branch.
+            2. For each unresolved thread, look for the `<details><summary>🤖 Prompt for AI Agents</summary>`
+               block to extract the anchored fix instructions. If no prompt block is present, fall back to
+               interpreting the thread's prose description. For each fixable issue, apply the fix to the
+               codebase on the PR's existing branch.
             3. Commit your changes with clear, conventional-commit messages.
                Never force-push — always a normal `git push`.
             4. After pushing, update your summary comment (using the

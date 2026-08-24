@@ -23,6 +23,13 @@ jobs:
       - name: Liveness marker behaviour
         run: python3 tests/test-liveness-marker.py
 
+      - name: Review config validator
+        run: python3 tests/test-validate-review-config.py
+
+      - name: Fix prompt extraction fixture
+        run: python3 tests/test-fix-prompt-extraction.py
+
+
       # Version pinned: an actionlint release must not turn a green branch red on its own.
       - name: actionlint
         run: |
