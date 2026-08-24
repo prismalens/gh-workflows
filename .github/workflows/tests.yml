@@ -1,4 +1,4 @@
-# The only self-triggering workflow here: the other four are `workflow_call` callees and
+# The only self-triggering workflow here: the other three are `workflow_call` callees and
 # never run in this repo, so without this nothing verifies them before they reach consumers.
 name: Tests
 
@@ -25,9 +25,6 @@ jobs:
 
       - name: Review config validator
         run: python3 tests/test-validate-review-config.py
-
-      - name: Fix prompt extraction fixture
-        run: python3 tests/test-fix-prompt-extraction.py
 
 
       # Version pinned: an actionlint release must not turn a green branch red on its own.

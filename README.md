@@ -15,7 +15,6 @@ Reusable workflow callees live in `.github/workflows/` and are invoked by consum
 ### Callees
 
 - `.github/workflows/claude-code-review.yml`
-- `.github/workflows/claude-fix.yml`
 - `.github/workflows/claude.yml`
 - `.github/workflows/dependabot-auto-merge.yml`
 
@@ -74,8 +73,8 @@ The concurrency group key resolves to the PR number on all three events:
 ### Worked-Example Consumer Stub (Mention Lane)
 
 The mention lane answers bare `@claude` comments. It must stand down on the
-verbs the review and fixer lanes own, or every `@claude review` and `@claude fix`
-comment fires two lanes on the same PR.
+verbs the review lane owns, or every `@claude review` comment fires two lanes on
+the same PR.
 
 ```yaml
 name: Claude Code
@@ -100,14 +99,13 @@ concurrency:
 
 jobs:
   claude:
-    # Verb exclusion: the review and fixer lanes own these three phrasings.
+    # Verb exclusion: the review lane owns these two phrasings.
     # `@claude full review` does not contain `@claude review` as a substring,
-    # so all three checks are needed. `contains()` on a null body is false, so
+    # so both checks are needed. `contains()` on a null body is false, so
     # `issues` and `pull_request_review` events pass through untouched.
     # Review bodies stay with the mention lane: no other lane subscribes to pull_request_review.
     if: >-
       !(
-        contains(github.event.comment.body, '@claude fix') ||
         contains(github.event.comment.body, '@claude review') ||
         contains(github.event.comment.body, '@claude full review')
       )
@@ -124,43 +122,12 @@ jobs:
       actions: read
 ```
 
-### Worked-Example Consumer Stub (Fixer Lane)
-
-```yaml
-name: Claude Fix
-
-on:
-  issue_comment:
-    types: [created]
-  pull_request_review_comment:
-    types: [created]
-
-# This is a managed caller stub.
-# The lane logic lives in prismalens/gh-workflows/.github/workflows/claude-fix.yml.
-# Do not add logic here.
-
-concurrency:
-  group: claude-fix-${{ github.event.issue.number || github.event.pull_request.number }}
-  cancel-in-progress: false
-
-jobs:
-  fix:
-    uses: prismalens/gh-workflows/.github/workflows/claude-fix.yml@main
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-    permissions:
-      contents: write
-      pull-requests: read
-      issues: read
-      id-token: write
-```
-
 ### Stub Rules
 
 1. **Permissions Union (incl. Announce Write Ceiling)**: Caller stubs declare permissions as the union of permissions needed by the lane logic, capped by the write access ceiling required for posting status comments or reviews.
 2. **Concurrency in Caller Only**: Concurrency must be declared at caller level only. A callee sharing the caller's concurrency group deadlocks the run ("deadlock detected for concurrency group").
 3. **Secrets Mapped Explicitly**: `secrets: inherit` does not cross repository owners (e.g. across orgs/users like `prismalens` vs `Sumit1993`). Secrets must be mapped explicitly across owner boundaries.
-4. **Mention Lane Excludes Owned Verbs**: The `claude.yml` caller stub must carry a caller-level `if:` excluding comment bodies that contain `@claude fix`, `@claude review`, or `@claude full review`. Those verbs belong to the fixer and review lanes; without the exclusion each such comment fires two lanes on the same PR. Exact expression: the Mention Lane worked example above.
+4. **Mention Lane Excludes Owned Verbs**: The `claude.yml` caller stub must carry a caller-level `if:` excluding comment bodies that contain `@claude review` or `@claude full review`. Those verbs belong to the review lane; without the exclusion each such comment fires two lanes on the same PR. Exact expression: the Mention Lane worked example above.
 5. **Pin `branches` on `pull_request`**: Every stub that triggers on `pull_request` pins `branches: [main]`, so covering a future `release/*` branch is a decision someone makes, not an accident.
 6. **Comment Triggers Need a Concurrency Fallback**: The moment a stub gains `issue_comment` / `pull_request_review_comment` triggers, its concurrency group key must fall back to `github.event.issue.number` — `${{ github.event.pull_request.number || github.event.issue.number }}`. `github.event.pull_request.number` is empty on `issue_comment`, so without the fallback the group collapses to the constant `claude-code-review-`: one global group in which any PR's summon cancels every other PR's in-flight run.
 7. **Cancel Automatic Rounds Only**: On a lane that takes both `pull_request` and comment triggers, use `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`: a summon never cancels an in-flight automatic round; it queues behind it. A push still supersedes anything in the group, including a summon.
@@ -196,7 +163,6 @@ Bare PR comments, org members only (`OWNER`, `MEMBER`, or `COLLABORATOR`). The c
 | `@claude review` | review | Incremental. The lane's own mode detection decides: a verify round if unresolved `claude[bot]` threads exist, otherwise a normal review. |
 | `@claude full review` | review | From scratch. Forces a review and instructs it to ignore existing comments and threads as dedup targets — without that the plugin's dedup silently publishes nothing (prismalens/prismalens#410). |
 | `@claude review --model opus` | review | Incremental, on `claude-opus-5` for that run only. `--model sonnet` picks `claude-sonnet-5`. Anything else after `--model` — including `haiku`, which is not offered — is ignored and the run uses `default_model`. The suffix is matched as a whole fixed phrase, so `@claude full review --model opus` does **not** switch models. |
-| `@claude fix` | fixer | Applies fixes on the PR branch (`claude-fix.yml`). |
 | bare `@claude …` | mention | Anything not matching the verbs above. |
 
 Summons run on draft PRs (explicit intent overrides the draft skip) and always run past the auto-pause counter. Fork-head PRs stay refused even when summoned (v1) — they get the `<!-- claude-review-fork-notice -->` comment instead.
@@ -209,7 +175,7 @@ Both fields change from round to round, so **anything matching this comment matc
 
 ### Verification rounds (incremental re-review)
 
-Pushes to a PR with unresolved `claude[bot]` threads get a verify round (per-thread verdicts + delta-only review + a `## Code review — verification round` summary) instead of a stock re-review; verdicts are judgment only, resolution stays with the operator; design: prismalens/prismalens#403.
+Human replies to unresolved `claude[bot]` threads trigger a verify round (per-thread verdicts, automated thread resolution via `resolveReviewThread`, delta-only review, and a `## Code review — verification round` summary).
 
 ### Fork PRs
 

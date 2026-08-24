@@ -33,19 +33,22 @@ on:
         required: false
 
 jobs:
-  # ONE set of PR facts for automatic rounds and `@claude review` summons alike, so
-  # downstream jobs never branch on event shape. Fork guard mirrors claude-fix.yml's
-  # resolve-pr. Stories: prismalens/prismalens#403 and #422.
+  # ONE set of PR facts for automatic rounds, summons, and in-thread replies alike,
+  # so downstream jobs never branch on event shape. Stories: prismalens/prismalens#403 and #422.
   resolve:
     name: Resolve PR facts
     # Admission. Automatic rounds drop skipped authors; the delimiter wrap keeps the
     # match exact-login, so a login like `bot` cannot collide with `dependabot[bot]`.
-    # Summons need an org-member author, an explicit verb, and an OPEN PR. Story: prismalens/prismalens#422.
+    # Summons and in-thread replies require an authorized org-member human author (non-bot)
+    # on an open PR. Gated against bot authors to prevent infinite self-trigger loops.
+    # Stories: prismalens/prismalens#403 and #422.
     if: >-
       (
         github.event_name == 'pull_request' &&
         !contains(format(',{0},', inputs.skip_authors), format(',{0},', github.event.pull_request.user.login))
       ) || (
+        github.event.comment.user.type != 'Bot' &&
+        !endsWith(github.event.comment.user.login, '[bot]') &&
         (
           github.event.comment.author_association == 'OWNER' ||
           github.event.comment.author_association == 'MEMBER' ||
@@ -59,10 +62,7 @@ jobs:
             )
           ) || (
             github.event_name == 'pull_request_review_comment' &&
-            github.event.pull_request.state == 'open' && (
-              contains(github.event.comment.body, '@claude review') ||
-              contains(github.event.comment.body, '@claude full review')
-            )
+            github.event.pull_request.state == 'open'
           )
         )
       )
@@ -131,11 +131,11 @@ jobs:
       needs.resolve.outputs.same_repo == 'true' &&
       (needs.resolve.outputs.summon != 'none' || needs.resolve.outputs.draft != 'true')
     runs-on: ubuntu-latest
-    # READ-ONLY, and it stays read-only: token cannot hold write permissions over
-    # attacker-influencable diff text. Story: prismalens/prismalens#415.
+    # READ-ONLY contents; write is granted on pull-requests for resolveReviewThread
+    # and in-thread replies. Stories: prismalens/prismalens#403 and #415.
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       issues: read
       id-token: write
     outputs:
@@ -148,9 +148,9 @@ jobs:
         id: clock
         run: echo "started_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
 
-      # Mode switch (#403 incremental re-review): unresolved claude[bot] threads
-      # mean this push is a fix round — verify those threads and review only the
-      # delta, instead of letting the stock plugin's dedup no-op the re-review.
+      # Mode switch (#403 incremental re-review): on human replies or summons,
+      # unresolved claude[bot] threads trigger a verify round to re-evaluate and resolve.
+      # Push events do a standard review and do not resolve threads without human reply.
       # Also carries the spend gates: absent token, and the auto-pause counter.
       - name: Detect verification mode
         id: mode
@@ -193,6 +193,8 @@ jobs:
               emit skip paused
               exit 0
             fi
+            emit review
+            exit 0
           fi
 
           if [ "$SUMMON" = "full" ]; then
@@ -203,13 +205,13 @@ jobs:
           threads=$(gh api graphql \
             -f query='query($owner:String!,$name:String!,$pr:Int!){
               repository(owner:$owner,name:$name){ pullRequest(number:$pr){
-                reviewThreads(first:100){ nodes{ isResolved path
+                reviewThreads(first:100){ nodes{ id isResolved path
                   comments(first:1){ nodes{ author{login} databaseId body url } } } } } } }' \
             -f owner="${REPO%/*}" -f name="${REPO#*/}" -F pr="$PR" --jq '
             [.data.repository.pullRequest.reviewThreads.nodes[]
              | select(.isResolved==false)
              | select((.comments.nodes[0].author.login // "") | test("^claude(\\[bot\\])?$"))
-             | {path, root_id: .comments.nodes[0].databaseId,
+             | {thread_id: .id, path, root_id: .comments.nodes[0].databaseId,
                 url: .comments.nodes[0].url, body: .comments.nodes[0].body}]')
           count=$(echo "$threads" | jq length)
           echo "$threads" > /tmp/unresolved-claude-threads.json
@@ -413,15 +415,23 @@ jobs:
           # Story: prismalens/prismalens#403.
           show_full_output: true
           prompt: |
-            You are re-reviewing ${{ github.repository }}/pull/${{ needs.resolve.outputs.number }} after new commits were pushed. A previous claude[bot] review left unresolved inline threads; they are listed in `unresolved-claude-threads.json` in the root of your working directory (fields: path, root_id, url, body). Read it with the Read tool.
+            You are re-reviewing ${{ github.repository }}/pull/${{ needs.resolve.outputs.number }} against the current PR head after changes or human replies. Unresolved claude[bot] review threads are listed in `unresolved-claude-threads.json` in the root of your working directory (fields: thread_id, root_id, path, url, body). Read it with the Read tool.
 
-            Step 1 — verdicts. For EACH thread: read the current code at its path and the PR diff (gh pr diff), and judge whether the concern in the thread body is addressed by the code as it now stands. Verdict is exactly one of: "verified fixed in <8-char head sha>" or "not addressed: <one-line reason>".
+            Step 1 — verdicts and resolution. For EACH unresolved thread:
+            Read the current code at its path and the PR diff (gh pr diff), and re-evaluate whether the concern in the thread body is addressed by the code as it now stands against the current PR head.
 
-            For EACH thread verified fixed: post a threaded reply using gh api. The endpoint path MUST be the first argument immediately following gh api; flags like -f must follow the path, never precede it, and do not chain with && or ;:
-            gh api repos/${{ github.repository }}/pulls/${{ needs.resolve.outputs.number }}/comments/<root_id>/replies -f body="Verified fixed in commit \`<8-char head sha>\`. <one-line reason>
+            For EACH thread judged FIXED:
+            1. Post a threaded reply using gh api citing the 8-character commit SHA and what was verified. The endpoint path MUST be the first argument immediately following gh api; flags like -f must follow the path, never precede it, and do not chain with && or ;:
+            gh api repos/${{ github.repository }}/pulls/${{ needs.resolve.outputs.number }}/comments/<root_id>/replies -f body="Verified fixed in commit \`<8-char head sha>\`. <what was verified>"
 
-            <!-- claude-finding-addressed sha=<8-char head sha> run=${{ github.run_id }} -->"
-            Never emit this reply or marker for "not addressed" threads.
+            2. Resolve the thread using the GraphQL resolveReviewThread mutation (each command standalone, no chaining):
+            gh api graphql -f query='mutation($threadId: ID!) { resolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } } }' -f threadId="<thread_id>"
+
+            For EACH thread judged NOT FIXED:
+            Post a threaded reply explaining why the finding still stands against the current PR head, and LEAVE THE THREAD OPEN (do NOT call resolveReviewThread):
+            gh api repos/${{ github.repository }}/pulls/${{ needs.resolve.outputs.number }}/comments/<root_id>/replies -f body="Still applies to \`<8-char head sha>\`: <one-line explanation why the finding still stands>"
+
+            Never resolve a thread you have not verified against current head. Verdict is exactly one of: "verified fixed in <8-char head sha>" or "not addressed: <one-line reason>".
 
             Step 2 — delta review. Review the PR's changes for NEW findings the existing threads do not already cover, and post any as inline comments (mcp__github_inline_comment__create_inline_comment), exactly as a normal review would (following the four-part finding envelope: Header line, Verification note, Description, and Prompt for AI Agents). Do NOT re-post a finding that an existing thread already covers.
 
@@ -431,13 +441,13 @@ jobs:
 
             Every Bash call must be a single command: no pipes, no `&&`, no `||`, no `;`, and no redirection into another command. Bash permissions are matched per subcommand, so a chained command is denied outright.
 
-            You cannot and must not resolve threads — verdicts are judgment only; resolution stays with the operator. Never write the word "resolve" as an instruction in any comment.
+            Never submit a formal review or merge.
           # Tool list is load-bearing; agent mode resolves tools ONLY from --allowed-tools
           # and MCP servers require them. Task is required for subagents; Bash(gh pr review:*)
           # is deliberately ABSENT. Story: prismalens/prismalens#403.
           claude_args: >-
             --allowed-tools
-            "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh api repos/*/*/pulls/*/comments/*/replies:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
+            "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh api repos/*/*/pulls/*/comments/*/replies:*),Bash(gh api graphql:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
             --model ${{ steps.model.outputs.model }}
 
       - name: Consolidate lane conclusion
