@@ -26,6 +26,9 @@ jobs:
       - name: Review config validator
         run: python3 tests/test-validate-review-config.py
 
+      - name: Thread mutation and summary verification
+        run: python3 tests/test-mutation-verdicts.py
+
 
       # Version pinned: an actionlint release must not turn a green branch red on its own.
       - name: actionlint

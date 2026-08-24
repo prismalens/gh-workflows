@@ -58,7 +58,7 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
     permissions:
       contents: read
-      # write is the ceiling for the callee's `announce` and `fork-notice` jobs;
+      # write is the ceiling for the callee's `announce`, `fork-notice`, and `mutate` jobs;
       # the callee's `review` job self-restricts to read.
       pull-requests: write
       issues: read
