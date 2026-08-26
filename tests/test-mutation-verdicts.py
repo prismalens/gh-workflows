@@ -90,6 +90,19 @@ exit 0
 """
 
 
+def run_cred_detect_case(app_id, app_key):
+    """The `Detect resolver credential` step, run as real shell with a fake GITHUB_OUTPUT."""
+    script = extract_step_script("Detect resolver credential")
+    with tempfile.TemporaryDirectory() as td:
+        out = pathlib.Path(td) / "gh_output"
+        out.touch()
+        env = dict(os.environ)
+        env.update(APP_ID=app_id, APP_KEY=app_key, GITHUB_OUTPUT=str(out))
+        p = subprocess.run(["bash", "-c", script], env=env, cwd=td,
+                           capture_output=True, text=True)
+        return p.returncode, out.read_text().strip(), p.stdout
+
+
 def run_mutation_case(script, verdicts_data, *,
                       live_threads_json=None,
                       compare_json=None,
@@ -335,6 +348,23 @@ def main():
         print(f"  FAIL  empty verdicts: rc={rc}, calls={calls}")
     else:
         print("  ok    empty verdicts file (exits 0 gracefully)")
+
+    # Credential detection: both halves required. A half-configured repo must degrade to
+    # "no resolution", never to a failed mint that eats the verdicts. Story: gh-workflows#18.
+    print("\n=== Testing Resolver Credential Detection ===")
+    for label, app_id, app_key, want in [
+        ("both set", "12345", "-----BEGIN RSA PRIVATE KEY-----", "present=true"),
+        ("neither set", "", "", "present=false"),
+        ("id only", "12345", "", "present=false"),
+        ("key only", "", "-----BEGIN RSA PRIVATE KEY-----", "present=false"),
+    ]:
+        rc, got, out = run_cred_detect_case(app_id, app_key)
+        if rc != 0 or got != want:
+            fails.append(f"cred detect {label} (rc={rc}, got={got!r}, want={want!r})")
+            print(f"  FAIL  cred detect {label}: rc={rc}, got={got!r}")
+        else:
+            print(f"  ok    cred detect {label} -> {want}")
+
 
     print("\n=== Testing Summary Check Step ===")
 

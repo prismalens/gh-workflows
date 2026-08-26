@@ -543,14 +543,21 @@ jobs:
           path: .
 
       # `secrets` is not readable from a step `if:`, so presence is carried as an output.
+      # BOTH halves are required: create-github-app-token rejects an empty `private-key`
+      # outright, which would fail the job before any reply is posted. A half-configured
+      # repo must degrade to "no resolution" and not to "no verdicts at all".
       - name: Detect resolver credential
         id: cred
         env:
           APP_ID: ${{ secrets.AUTOMATION_APP_ID }}
+          APP_KEY: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
         run: |
-          if [ -n "${APP_ID}" ]; then
+          if [ -n "${APP_ID}" ] && [ -n "${APP_KEY}" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
+            if [ -n "${APP_ID}" ] || [ -n "${APP_KEY}" ]; then
+              echo "::warning::Only one of AUTOMATION_APP_ID / AUTOMATION_APP_PRIVATE_KEY is set; thread resolution is disabled."
+            fi
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
 
