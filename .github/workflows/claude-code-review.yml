@@ -31,6 +31,13 @@ on:
         # empty — still create a run and reach `fork-notice`; `review` guards on the
         # token's presence instead of relying on caller-side validation. Story: prismalens/prismalens#415.
         required: false
+      REVIEW_APP_ID:
+        # GITHUB_TOKEN cannot call `resolveReviewThread` even with `pull-requests: write`
+        # (measured: prismalens/sreforge#157). Without this App credential the lane still
+        # replies with its verdict and leaves every thread open. Story: gh-workflows#18.
+        required: false
+      REVIEW_APP_PRIVATE_KEY:
+        required: false
 
 jobs:
   # ONE set of PR facts for automatic rounds, summons, and in-thread replies alike,
@@ -533,9 +540,32 @@ jobs:
           name: review-verdicts
           path: .
 
+      # `secrets` is not readable from a step `if:`, so presence is carried as an output.
+      - name: Detect resolver credential
+        id: cred
+        env:
+          APP_ID: ${{ secrets.REVIEW_APP_ID }}
+        run: |
+          if [ -n "${APP_ID}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint resolver token
+        id: apptoken
+        if: steps.cred.outputs.present == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.REVIEW_APP_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+
       - name: Apply thread verdicts
         env:
-          GH_TOKEN: ${{ github.token }}
+          # The App token when configured, so replies and resolutions share one identity.
+          # Both are `<app>[bot]`, which the admission gate excludes, so the loop guard holds.
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          RESOLVE_ENABLED: ${{ steps.cred.outputs.present }}
           REPO: ${{ github.repository }}
           PR: ${{ needs.resolve.outputs.number }}
           HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
@@ -551,7 +581,10 @@ jobs:
           repo = os.environ["REPO"]
           pr = int(os.environ["PR"])
           head_sha = os.environ["HEAD_SHA"]
+          resolve_enabled = os.environ.get("RESOLVE_ENABLED", "false")
           owner, name = repo.split("/", 1)
+
+          failures = []
 
           verdicts_path = "verdicts.json"
           if not os.path.exists(verdicts_path):
@@ -729,10 +762,17 @@ jobs:
                   print(f"Posted reply to thread '{thread_id}' (root comment {root_id}).")
               except subprocess.CalledProcessError as e:
                   print(f"::error::Failed to post reply to thread '{thread_id}': {e.stderr.strip()[:200]}")
+                  failures.append(f"reply to {thread_id}")
                   continue
 
               # Resolve the thread only if verified
               if verdict == "verified":
+                  if resolve_enabled != "true":
+                      print(
+                          f"::warning::Thread '{thread_id}' verified but left open: no resolver "
+                          "credential configured. Set REVIEW_APP_ID and REVIEW_APP_PRIVATE_KEY."
+                      )
+                      continue
                   resolve_mutation = """mutation($threadId: ID!) {
                     resolveReviewThread(input: {threadId: $threadId}) {
                       thread { isResolved }
@@ -747,10 +787,16 @@ jobs:
                       print(f"Resolved thread '{thread_id}'.")
                   except subprocess.CalledProcessError as e:
                       print(f"::error::Failed to resolve thread '{thread_id}': {e.stderr.strip()[:200]}")
+                      failures.append(f"resolve {thread_id}")
               else:
                   print(f"Thread '{thread_id}' left open (not_verified).")
 
           print("Finished applying thread verdicts.")
+          # A thread replied "Verified fixed" but left unresolved is the failure this guards:
+          # it reads as done and blocks the merge gate. Never conclude success on it.
+          if failures:
+              print(f"::error::Thread mutation failed for: {', '.join(failures)}")
+              sys.exit(1)
           PY
 
   # Advisory liveness comment on PR timeline prevents silent review failures.
