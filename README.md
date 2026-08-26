@@ -175,7 +175,7 @@ Both fields change from round to round, so **anything matching this comment matc
 
 ### Verification rounds (incremental re-review)
 
-Human replies to unresolved `claude[bot]` threads trigger a verify round (per-thread verdicts, automated thread resolution via `resolveReviewThread`, delta-only review, and a `## Code review — verification round` summary).
+Replies from a non-bot account to unresolved `claude[bot]` threads trigger a verify round (per-thread verdicts, automated thread resolution via `resolveReviewThread`, delta-only review, and a `## Code review — verification round` summary).
 
 ### Fork PRs
 

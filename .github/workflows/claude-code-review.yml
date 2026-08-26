@@ -39,8 +39,9 @@ jobs:
     name: Resolve PR facts
     # Admission. Automatic rounds drop skipped authors; the delimiter wrap keeps the
     # match exact-login, so a login like `bot` cannot collide with `dependabot[bot]`.
-    # Summons and in-thread replies require an authorized org-member human author (non-bot)
-    # on an open PR. Gated against bot authors to prevent infinite self-trigger loops.
+    # Summons and in-thread replies require a non-bot author carrying org-member association
+    # on an open PR. The bot exclusion is a loop guard, not a judgment about who replied:
+    # an agent posting through a member's credential is admitted and is meant to be.
     # Stories: prismalens/prismalens#403 and #422.
     if: >-
       (
@@ -147,9 +148,9 @@ jobs:
         id: clock
         run: echo "started_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
 
-      # Mode switch (#403 incremental re-review): on human replies or summons,
+      # Mode switch (#403 incremental re-review): on non-bot replies or summons,
       # unresolved claude[bot] threads trigger a verify round to re-evaluate and resolve.
-      # Push events do a standard review and do not resolve threads without human reply.
+      # Push events do a standard review and do not resolve threads without a reply.
       # Also carries the spend gates: absent token, and the auto-pause counter.
       - name: Detect verification mode
         id: mode
@@ -416,7 +417,7 @@ jobs:
           # Story: prismalens/prismalens#403.
           show_full_output: true
           prompt: |
-            You are re-reviewing ${{ github.repository }}/pull/${{ needs.resolve.outputs.number }} against the current PR head after changes or human replies. Unresolved claude[bot] review threads are listed in `unresolved-claude-threads.json` in the root of your working directory (fields: thread_id, root_id, path, url, body). Read it with the Read tool.
+            You are re-reviewing ${{ github.repository }}/pull/${{ needs.resolve.outputs.number }} against the current PR head after changes or replies. Unresolved claude[bot] review threads are listed in `unresolved-claude-threads.json` in the root of your working directory (fields: thread_id, root_id, path, url, body). Read it with the Read tool.
 
             Step 1 — verdicts. For EACH unresolved thread:
             Read the current code at its path and the PR diff (gh pr diff), and judge whether the concern in the thread body is addressed by the code as it now stands against the current PR head.
