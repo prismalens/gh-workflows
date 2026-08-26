@@ -56,6 +56,10 @@ jobs:
     # boundaries and silently fails cross-owner consumers.
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # Optional. Without them the lane still posts its verdict and leaves every
+      # thread open, because GITHUB_TOKEN cannot resolve threads. See "Thread resolution".
+      AUTOMATION_APP_ID: ${{ secrets.AUTOMATION_APP_ID }}
+      AUTOMATION_APP_PRIVATE_KEY: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
     permissions:
       contents: read
       # write is the ceiling for the callee's `announce`, `fork-notice`, and `mutate` jobs;
@@ -141,6 +145,58 @@ All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults ar
 | `skip_authors` | string | `dependabot[bot]` | Comma-separated PR author logins whose **automatic** `pull_request` rounds are skipped entirely — no review, no verify, no liveness comment. Matching is exact-login (the list is delimiter-wrapped), so `bot` never collides with `dependabot[bot]`. Use no spaces after the commas. A `@claude review` summon bypasses the list: manual intent wins. |
 | `auto_pause_rounds` | number | `5` | Automatic rounds allowed on one PR before the lane pauses itself. The count lives in the liveness comment's marker (`<!-- claude-review-liveness rounds=N sha=<head> -->`); only automatic rounds that actually ran increment it. On pause the lane posts `auto-paused after N automatic rounds` instead of reviewing. Monotonic — v1 never resets it, so a summon resumes for exactly that one run. |
 | `default_model` | string | `claude-sonnet-5` | Model ID handed to `claude-code-action` as `--model`, for all three review shapes (review, full review, verify). Sonnet is the default deliberately: the review lane is the highest-volume Claude spend across the consumer repos. A single run can deviate with `@claude review --model opus` / `--model sonnet` — an allowlist of two fixed phrases mapped to two pinned IDs, never a value read out of the comment. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
+
+## Thread resolution needs a GitHub App
+
+`GITHUB_TOKEN` cannot call `resolveReviewThread`. This is not a permissions misconfiguration: the
+`mutate` job's token carries `PullRequests: write` and the mutation is still refused with
+`gh: Resource not accessible by integration`. Measured on `prismalens/sreforge#157`; story: #18.
+
+An App token can, but only with **both** `pull-requests: write` and `contents: write`. This is the
+counter-intuitive part and it was measured, not assumed:
+
+| Minted permissions | `resolveReviewThread` |
+| --- | --- |
+| `pull_requests: write` | denied |
+| `pull_requests: write` + `metadata: read` | denied |
+| `pull_requests: write` + `contents: read` | denied |
+| `pull_requests: write` + `issues: write` | denied |
+| `pull_requests: write` + `contents: write` | **resolves** |
+
+Each row was run against the same live thread and reproduced twice. So resolving a review thread
+costs a token that can also push code. That is the reason the `mutate` job is deterministic shell
+with no agent in it: the grant is real, so nothing model-influenced may ever hold this token.
+
+So the `mutate` job takes an optional App credential, `AUTOMATION_APP_ID` and `AUTOMATION_APP_PRIVATE_KEY`,
+and mints a short-lived installation token per run.
+
+| State | Reply | Thread | Job |
+| --- | --- | --- | --- |
+| Credential set, mutation succeeds | posted | resolved | success |
+| Credential absent | posted | left open, warning names the missing secrets | success |
+| Credential set, mutation denied | posted | left open | **fails** |
+
+The third row is deliberate. Before it existed, a denied mutation printed an error and continued, so
+a thread ended up carrying a reply reading `Verified fixed in commit <sha>` while still unresolved,
+on a job reporting success. On a repo with `required_review_thread_resolution: true` that reads as
+done and blocks the merge, which is the worst of both.
+
+**Setting the App up.** `prismalens-automation` is a shared credential, not a review-lane one. It
+holds a superset (Contents RW, Pull requests RW, Issues RW, Actions Read) and **every job narrows it
+at mint time** with `create-github-app-token`'s `permission-*` inputs. The `mutate` job mints
+`permission-pull-requests: write` and nothing else.
+
+**Never mint it into a job that runs an agent.** `review` is read-only by invariant because it feeds
+attacker-influenceable diff text to a model, and the mention lane blocks review submission and
+thread resolution for the same reason. The App token belongs only in deterministic, no-agent jobs.
+
+Because the consumer repos do not share an owner (`prismalens` is an org, `Sumit1993/mage-memory` is
+a user account), the App is installed once per account and the secrets are set per repo. The App
+resolves under its own name, which keeps automated resolution distinguishable from a person's.
+
+The App's replies come from `<app-slug>[bot]`, which the admission gate excludes on both
+`user.type != 'Bot'` and the `[bot]` suffix, so the loop guard still holds.
+
 
 Override example:
 

@@ -43,6 +43,11 @@ if [[ "$args" == *"reviewThreads"* ]]; then
 elif [[ "$args" == *"resolveReviewThread"* ]]; then
   # Flatten arguments to a single line for call capture
   echo "RESOLVE: $(echo "$args" | tr '\n' ' ')" >> "$CAPTURE_CALLS"
+  if [[ -n "${FAKE_RESOLVE_FAILS:-}" ]]; then
+    # What GITHUB_TOKEN actually returns for this mutation.
+    echo "gh: Resource not accessible by integration" >&2
+    exit 1
+  fi
   printf '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
   exit 0
 elif [[ "$args" == *"compare/"* ]]; then
@@ -85,9 +90,24 @@ exit 0
 """
 
 
+def run_cred_detect_case(app_id, app_key):
+    """The `Detect resolver credential` step, run as real shell with a fake GITHUB_OUTPUT."""
+    script = extract_step_script("Detect resolver credential")
+    with tempfile.TemporaryDirectory() as td:
+        out = pathlib.Path(td) / "gh_output"
+        out.touch()
+        env = dict(os.environ)
+        env.update(APP_ID=app_id, APP_KEY=app_key, GITHUB_OUTPUT=str(out))
+        p = subprocess.run(["bash", "-c", script], env=env, cwd=td,
+                           capture_output=True, text=True)
+        return p.returncode, out.read_text().strip(), p.stdout
+
+
 def run_mutation_case(script, verdicts_data, *,
                       live_threads_json=None,
                       compare_json=None,
+                      resolve_enabled="true",
+                      fail_resolve=False,
                       head_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
@@ -141,6 +161,8 @@ def run_mutation_case(script, verdicts_data, *,
             FAKE_GRAPHQL_THREADS=live_threads_json,
             FAKE_COMPARE_RESPONSE=compare_json or "",
             GH_TOKEN="x",
+            RESOLVE_ENABLED=resolve_enabled,
+            FAKE_RESOLVE_FAILS="1" if fail_resolve else "",
             REPO="o/r",
             PR="1",
             HEAD_SHA=head_sha,
@@ -197,6 +219,35 @@ def main():
         print(f"  FAIL  verified happy path: rc={rc}, calls={calls}")
     else:
         print("  ok    verified happy path (reply posted and thread resolved)")
+
+    # Case 1b: verified, but no resolver credential configured. The reply still posts and
+    # the thread stays open, and this must NOT fail the job. Story: gh-workflows#18.
+    verdicts = [{
+        "thread_id": "PRRT_kwDO12345",
+        "verdict": "verified",
+        "sha": "aaaaaaaa",
+        "evidence": "null check added on line 42"
+    }]
+    rc, calls, out, err = run_mutation_case(mutation_script, verdicts, resolve_enabled="false")
+    has_reply = any("comments/101/replies" in c for c in calls)
+    has_resolve = any("resolveReviewThread" in c for c in calls)
+    if rc != 0 or not has_reply or has_resolve:
+        fails.append(f"no-credential path failed (rc={rc}, has_reply={has_reply}, has_resolve={has_resolve})")
+        print(f"  FAIL  no-credential path: rc={rc}, calls={calls}")
+    else:
+        print("  ok    no-credential path (reply posted, resolution skipped, job still green)")
+
+    # Case 1c: the resolve mutation is denied. This is the shape that shipped broken —
+    # a thread replied "Verified fixed" while unresolved, on a job concluding success.
+    # The job MUST fail. Story: gh-workflows#18.
+    rc, calls, out, err = run_mutation_case(
+        mutation_script, verdicts, fail_resolve=True)
+    has_reply = any("comments/101/replies" in c for c in calls)
+    if rc == 0 or not has_reply:
+        fails.append(f"denied-resolve path failed (rc={rc}, expected non-zero, has_reply={has_reply})")
+        print(f"  FAIL  denied-resolve path: rc={rc}, calls={calls}")
+    else:
+        print("  ok    denied-resolve path (reply posted, mutation denied, job fails loudly)")
 
     # Case 2: Happy path not_verified
     verdicts = [{
@@ -297,6 +348,23 @@ def main():
         print(f"  FAIL  empty verdicts: rc={rc}, calls={calls}")
     else:
         print("  ok    empty verdicts file (exits 0 gracefully)")
+
+    # Credential detection: both halves required. A half-configured repo must degrade to
+    # "no resolution", never to a failed mint that eats the verdicts. Story: gh-workflows#18.
+    print("\n=== Testing Resolver Credential Detection ===")
+    for label, app_id, app_key, want in [
+        ("both set", "12345", "-----BEGIN RSA PRIVATE KEY-----", "present=true"),
+        ("neither set", "", "", "present=false"),
+        ("id only", "12345", "", "present=false"),
+        ("key only", "", "-----BEGIN RSA PRIVATE KEY-----", "present=false"),
+    ]:
+        rc, got, out = run_cred_detect_case(app_id, app_key)
+        if rc != 0 or got != want:
+            fails.append(f"cred detect {label} (rc={rc}, got={got!r}, want={want!r})")
+            print(f"  FAIL  cred detect {label}: rc={rc}, got={got!r}")
+        else:
+            print(f"  ok    cred detect {label} -> {want}")
+
 
     print("\n=== Testing Summary Check Step ===")
 
