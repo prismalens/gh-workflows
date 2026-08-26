@@ -150,8 +150,22 @@ All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults ar
 
 `GITHUB_TOKEN` cannot call `resolveReviewThread`. This is not a permissions misconfiguration: the
 `mutate` job's token carries `PullRequests: write` and the mutation is still refused with
-`gh: Resource not accessible by integration`. A user or App token performs the same mutation on the
-same thread without complaint. Measured on `prismalens/sreforge#157`; story: #18.
+`gh: Resource not accessible by integration`. Measured on `prismalens/sreforge#157`; story: #18.
+
+An App token can, but only with **both** `pull-requests: write` and `contents: write`. This is the
+counter-intuitive part and it was measured, not assumed:
+
+| Minted permissions | `resolveReviewThread` |
+| --- | --- |
+| `pull_requests: write` | denied |
+| `pull_requests: write` + `metadata: read` | denied |
+| `pull_requests: write` + `contents: read` | denied |
+| `pull_requests: write` + `issues: write` | denied |
+| `pull_requests: write` + `contents: write` | **resolves** |
+
+Each row was run against the same live thread and reproduced twice. So resolving a review thread
+costs a token that can also push code. That is the reason the `mutate` job is deterministic shell
+with no agent in it: the grant is real, so nothing model-influenced may ever hold this token.
 
 So the `mutate` job takes an optional App credential, `AUTOMATION_APP_ID` and `AUTOMATION_APP_PRIVATE_KEY`,
 and mints a short-lived installation token per run.

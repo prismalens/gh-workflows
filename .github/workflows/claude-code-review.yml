@@ -561,9 +561,14 @@ jobs:
         with:
           app-id: ${{ secrets.AUTOMATION_APP_ID }}
           private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
-          # The App is shared across workflows and holds more than this job needs.
-          # Downscope at mint time so the token cannot write code or touch issues.
+          # Downscope at mint time: the App is shared and holds more than this job needs.
+          # `contents: write` is NOT optional here. Measured twice on prismalens/sreforge#157:
+          # pull-requests:write alone, and with contents:read, are both refused
+          # `Resource not accessible by integration`; only contents:write resolves. The token
+          # can therefore push code, which is why this job runs deterministic shell with no
+          # agent and never sees model output. Story: gh-workflows#18.
           permission-pull-requests: write
+          permission-contents: write
 
       - name: Apply thread verdicts
         env:
