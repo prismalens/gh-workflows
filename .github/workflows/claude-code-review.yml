@@ -31,12 +31,14 @@ on:
         # empty — still create a run and reach `fork-notice`; `review` guards on the
         # token's presence instead of relying on caller-side validation. Story: prismalens/prismalens#415.
         required: false
-      REVIEW_APP_ID:
+      AUTOMATION_APP_ID:
         # GITHUB_TOKEN cannot call `resolveReviewThread` even with `pull-requests: write`
         # (measured: prismalens/sreforge#157). Without this App credential the lane still
         # replies with its verdict and leaves every thread open. Story: gh-workflows#18.
+        # Shared automation App; every job downscopes it at mint time. Never mint it into
+        # a job that runs an agent — `review` is read-only by invariant.
         required: false
-      REVIEW_APP_PRIVATE_KEY:
+      AUTOMATION_APP_PRIVATE_KEY:
         required: false
 
 jobs:
@@ -544,7 +546,7 @@ jobs:
       - name: Detect resolver credential
         id: cred
         env:
-          APP_ID: ${{ secrets.REVIEW_APP_ID }}
+          APP_ID: ${{ secrets.AUTOMATION_APP_ID }}
         run: |
           if [ -n "${APP_ID}" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
@@ -557,8 +559,11 @@ jobs:
         if: steps.cred.outputs.present == 'true'
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.REVIEW_APP_ID }}
-          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          # The App is shared across workflows and holds more than this job needs.
+          # Downscope at mint time so the token cannot write code or touch issues.
+          permission-pull-requests: write
 
       - name: Apply thread verdicts
         env:
@@ -770,7 +775,7 @@ jobs:
                   if resolve_enabled != "true":
                       print(
                           f"::warning::Thread '{thread_id}' verified but left open: no resolver "
-                          "credential configured. Set REVIEW_APP_ID and REVIEW_APP_PRIVATE_KEY."
+                          "credential configured. Set AUTOMATION_APP_ID and AUTOMATION_APP_PRIVATE_KEY."
                       )
                       continue
                   resolve_mutation = """mutation($threadId: ID!) {

@@ -58,8 +58,8 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       # Optional. Without them the lane still posts its verdict and leaves every
       # thread open, because GITHUB_TOKEN cannot resolve threads. See "Thread resolution".
-      REVIEW_APP_ID: ${{ secrets.REVIEW_APP_ID }}
-      REVIEW_APP_PRIVATE_KEY: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+      AUTOMATION_APP_ID: ${{ secrets.AUTOMATION_APP_ID }}
+      AUTOMATION_APP_PRIVATE_KEY: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
     permissions:
       contents: read
       # write is the ceiling for the callee's `announce`, `fork-notice`, and `mutate` jobs;
@@ -153,7 +153,7 @@ All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults ar
 `gh: Resource not accessible by integration`. A user or App token performs the same mutation on the
 same thread without complaint. Measured on `prismalens/sreforge#157`; story: #18.
 
-So the `mutate` job takes an optional App credential, `REVIEW_APP_ID` and `REVIEW_APP_PRIVATE_KEY`,
+So the `mutate` job takes an optional App credential, `AUTOMATION_APP_ID` and `AUTOMATION_APP_PRIVATE_KEY`,
 and mints a short-lived installation token per run.
 
 | State | Reply | Thread | Job |
@@ -167,11 +167,18 @@ a thread ended up carrying a reply reading `Verified fixed in commit <sha>` whil
 on a job reporting success. On a repo with `required_review_thread_resolution: true` that reads as
 done and blocks the merge, which is the worst of both.
 
-**Setting the App up.** One App, `Pull requests: write` and nothing else. Because the consumer repos
-do not share an owner (`prismalens` is an org, `Sumit1993/mage-memory` is a user account), it needs
-one installation per account, and `mage-memory` needs its own copies of the two secrets: org secrets
-do not reach a personal repo. The App resolves under its own name, which keeps automated resolution
-distinguishable from a person's.
+**Setting the App up.** `prismalens-automation` is a shared credential, not a review-lane one. It
+holds a superset (Contents RW, Pull requests RW, Issues RW, Actions Read) and **every job narrows it
+at mint time** with `create-github-app-token`'s `permission-*` inputs. The `mutate` job mints
+`permission-pull-requests: write` and nothing else.
+
+**Never mint it into a job that runs an agent.** `review` is read-only by invariant because it feeds
+attacker-influenceable diff text to a model, and the mention lane blocks review submission and
+thread resolution for the same reason. The App token belongs only in deterministic, no-agent jobs.
+
+Because the consumer repos do not share an owner (`prismalens` is an org, `Sumit1993/mage-memory` is
+a user account), the App is installed once per account and the secrets are set per repo. The App
+resolves under its own name, which keeps automated resolution distinguishable from a person's.
 
 The App's replies come from `<app-slug>[bot]`, which the admission gate excludes on both
 `user.type != 'Bot'` and the `[bot]` suffix, so the loop guard still holds.
