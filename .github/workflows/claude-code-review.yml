@@ -32,11 +32,10 @@ on:
         # token's presence instead of relying on caller-side validation. Story: prismalens/prismalens#415.
         required: false
       AUTOMATION_APP_ID:
-        # GITHUB_TOKEN cannot call `resolveReviewThread` even with `pull-requests: write`
-        # (measured: prismalens/sreforge#157). Without this App credential the lane still
-        # replies with its verdict and leaves every thread open. Story: gh-workflows#18.
-        # Shared automation App; every job downscopes it at mint time. Never mint it into
-        # a job that runs an agent — `review` is read-only by invariant.
+        # UNUSED as of gh-workflows#20: `mutate` resolves threads with GITHUB_TOKEN at
+        # `contents: write`. Kept declared only because the consumer stubs still map them,
+        # and a caller passing an undeclared secret fails the workflow. Removed once those
+        # mappings are dropped. Do not wire these into any job.
         required: false
       AUTOMATION_APP_PRIVATE_KEY:
         required: false
@@ -533,7 +532,11 @@ jobs:
     if: needs.review.outputs.mode == 'verify' && needs.review.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # `contents: write` is what `resolveReviewThread` actually costs; it is refused at
+      # `contents: read` (measured: prismalens/sreforge#157, and run 33006099680 for the
+      # working case). The token can therefore push code, which is why this job runs
+      # deterministic shell with no agent and never sees model output. Story: gh-workflows#20.
+      contents: write
       pull-requests: write
     steps:
       - name: Download verdicts artifact
@@ -542,47 +545,12 @@ jobs:
           name: review-verdicts
           path: .
 
-      # `secrets` is not readable from a step `if:`, so presence is carried as an output.
-      # BOTH halves are required: create-github-app-token rejects an empty `private-key`
-      # outright, which would fail the job before any reply is posted. A half-configured
-      # repo must degrade to "no resolution" and not to "no verdicts at all".
-      - name: Detect resolver credential
-        id: cred
-        env:
-          APP_ID: ${{ secrets.AUTOMATION_APP_ID }}
-          APP_KEY: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
-        run: |
-          if [ -n "${APP_ID}" ] && [ -n "${APP_KEY}" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            if [ -n "${APP_ID}" ] || [ -n "${APP_KEY}" ]; then
-              echo "::warning::Only one of AUTOMATION_APP_ID / AUTOMATION_APP_PRIVATE_KEY is set; thread resolution is disabled."
-            fi
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Mint resolver token
-        id: apptoken
-        if: steps.cred.outputs.present == 'true'
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.AUTOMATION_APP_ID }}
-          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
-          # Downscope at mint time: the App is shared and holds more than this job needs.
-          # `contents: write` is NOT optional here. Measured twice on prismalens/sreforge#157:
-          # pull-requests:write alone, and with contents:read, are both refused
-          # `Resource not accessible by integration`; only contents:write resolves. The token
-          # can therefore push code, which is why this job runs deterministic shell with no
-          # agent and never sees model output. Story: gh-workflows#18.
-          permission-pull-requests: write
-          permission-contents: write
-
       - name: Apply thread verdicts
         env:
-          # The App token when configured, so replies and resolutions share one identity.
-          # Both are `<app>[bot]`, which the admission gate excludes, so the loop guard holds.
-          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
-          RESOLVE_ENABLED: ${{ steps.cred.outputs.present }}
+          # Replies and resolutions share one identity, `github-actions[bot]`, which the
+          # admission gate excludes on both `user.type != 'Bot'` and the `[bot]` suffix,
+          # so the loop guard holds.
+          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ needs.resolve.outputs.number }}
           HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
@@ -598,7 +566,6 @@ jobs:
           repo = os.environ["REPO"]
           pr = int(os.environ["PR"])
           head_sha = os.environ["HEAD_SHA"]
-          resolve_enabled = os.environ.get("RESOLVE_ENABLED", "false")
           owner, name = repo.split("/", 1)
 
           failures = []
@@ -784,12 +751,6 @@ jobs:
 
               # Resolve the thread only if verified
               if verdict == "verified":
-                  if resolve_enabled != "true":
-                      print(
-                          f"::warning::Thread '{thread_id}' verified but left open: no resolver "
-                          "credential configured. Set AUTOMATION_APP_ID and AUTOMATION_APP_PRIVATE_KEY."
-                      )
-                      continue
                   resolve_mutation = """mutation($threadId: ID!) {
                     resolveReviewThread(input: {threadId: $threadId}) {
                       thread { isResolved }
