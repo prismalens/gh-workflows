@@ -213,7 +213,7 @@ jobs:
 
 ### Summon grammar
 
-Bare PR comments, org members only (`OWNER`, `MEMBER`, or `COLLABORATOR`). The comment body is read only by workflow `contains()` expressions — it never reaches a prompt.
+Bare PR comments, admitted accounts only: the summoning account must hold `admin` or `write` on the repository, checked live by the `admit` action. The comment body is read only by workflow `contains()` expressions — it never reaches a prompt.
 
 | Comment | Lane | Behaviour |
 | --- | --- | --- |
