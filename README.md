@@ -232,7 +232,24 @@ Both fields change from round to round, so **anything matching this comment matc
 
 ### Verification rounds (incremental re-review)
 
-Replies from a non-bot account to unresolved `claude[bot]` threads trigger a verify round (per-thread verdicts, automated thread resolution via `resolveReviewThread`, delta-only review, and a `## Code review — verification round` summary).
+Replies from a non-bot account to unresolved `claude[bot]` threads trigger a verify round: one verdict per open thread, then automated resolution via `resolveReviewThread`, templated replies on the threads that stay open, and a `## Code review — verification round` summary. The round reviews no new code. A delta review inside it would bypass the auto-pause counter, which comment events never read, so pushes are what get reviewed and `@claude review` is the remedy for a paused, cancelled, or draft head.
+
+Verdicts carry three states. `fixed` resolves the thread; `still_applies` and `cannot_verify` post a reply citing the sha and the evidence and leave it open.
+
+#### The verify job's two walls
+
+The verify agent's verdicts drive `mutate`, which holds `contents: write`. So the round that produces them runs in its own job, `verify`, and two lines in that job are what keep a model away from write power. Both are invariants. Changing either is an invariant change, not a tuning edit:
+
+1. **The job declares no `id-token: write`.** That permission is the sole input to the `claude[bot]` App-token mint: the action calls `core.getIDToken()` and exchanges the result at `api.anthropic.com/api/github/github-app-token-exchange` for a token carrying `contents: write, pull_requests: write, issues: write` across the org. Without the permission the runner never injects the OIDC request environment and `getOidcToken` throws, so the mint path fails closed.
+2. **`github_token: ${{ github.token }}` is passed to the action.** A provided token reaches `OVERRIDE_GITHUB_TOKEN` and `setupGitHubToken` returns it before any OIDC request is attempted.
+
+The job's own `GITHUB_TOKEN` is capped at `contents: read`, `pull-requests: read`, `issues: read`, so the credential the agent does hold cannot post, resolve, push, or mint. Its `--allowed-tools` list (`Read,Grep,Glob,LS,Bash(gh pr diff:*)`) is a third line, not the wall: a carelessly widened allowlist would reach more reading, and nothing else.
+
+A permanent tripwire step runs first in the job and fails it if `ACTIONS_ID_TOKEN_REQUEST_URL` is non-empty, so `id-token: write` leaking back in — through a workflow edit or a drifted `@v1` tag — dies loudly instead of silently reopening the mint path.
+
+Verdicts reach `mutate` as the action's `structured_output`, validated against a JSON schema and then re-gated: the job fails unless the output parses, every entry matches the three-state enum and the sha and evidence shapes, and every staged thread has a verdict. A thread the agent silently dropped is a red job, not a thread that quietly stays open.
+
+Story: `prismalens/gh-workflows#20`. Canary results are recorded on the pull request that shipped this.
 
 ### Fork PRs
 

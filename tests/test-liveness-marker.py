@@ -50,6 +50,8 @@ case "$args" in
     exit 0 ;;
   *claude-review-liveness*)   printf '%s' "$FAKE_MARKER" ; exit 0 ;;
   *"pulls/"*)                 printf '%s' "$FAKE_INLINE" ; exit 0 ;;
+  # Must precede the '## Code review' case: the verify branch's filter contains both.
+  *"verification round"*)     printf '%s' "$FAKE_VERIFY_SUMMARY"; exit 0 ;;
   *"## Code review"*)         printf '%s' "$FAKE_SUMMARY"; exit 0 ;;
 esac
 echo "gh stub: unrouted call: $args" >&2
@@ -58,7 +60,9 @@ exit 1
 
 
 def run_case(script, *, marker_body=None, inline=0, summary=0,
-             event="pull_request", skip_reason="", result="success"):
+             event="pull_request", skip_reason="", result="success",
+             mode="review", mutate_result="skipped", resolved="", open_="",
+             verify_summary=""):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
@@ -78,9 +82,11 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
             FAKE_MARKER=marker_json,
             FAKE_INLINE=str(inline),
             FAKE_SUMMARY=str(summary),
+            FAKE_VERIFY_SUMMARY=verify_summary,
             GH_TOKEN="x", REPO="o/r", PR="1",
-            HEAD_SHA=NEW, EVENT_NAME=event,
+            HEAD_SHA=NEW, EVENT_NAME=event, MODE=mode,
             SKIP_REASON=skip_reason, REVIEW_RESULT=result,
+            MUTATE_RESULT=mutate_result, RESOLVED=resolved, OPEN=open_,
             STARTED_AT="2026-01-01T00:00:00Z", RUN_URL="http://run",
         )
         p = subprocess.run(["bash", "-c", script], env=env,
@@ -128,6 +134,15 @@ CASES = [
                                               inline=1),                                  "5",  NEW),
     ("legacy marker (no sha), nothing",  dict(marker_body="<!-- claude-review-liveness rounds=4 -->",
                                               inline=0, summary=0),                       "5",  None),
+    # A verify round reviews no code, so the baseline must not move even though the round
+    # posted output. Story: gh-workflows#20.
+    ("verify round, summary posted",     dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",
+                                              event="issue_comment", mode="verify",
+                                              mutate_result="success", resolved="1", open_="1",
+                                              verify_summary='{"id":9}'),                 "2",  OLD),
+    ("verify round, posted NOTHING",     dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",
+                                              event="issue_comment", mode="verify",
+                                              mutate_result="failure"),                   "2",  OLD),
 ]
 
 
