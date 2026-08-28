@@ -47,8 +47,11 @@ jobs:
     name: Resolve PR facts
     # Admission. Automatic rounds drop skipped authors; the delimiter wrap keeps the
     # match exact-login, so a login like `bot` cannot collide with `dependabot[bot]`.
-    # Summons and in-thread replies require a non-bot author carrying org-member association
-    # on an open PR. The bot exclusion is a loop guard, not a judgment about who replied:
+    # Summons and in-thread replies require write access to this repository, checked live
+    # in the `admit` step below. `author_association` is banned from admission here: it is
+    # repo-scoped and payload-dependent, and it misreported the maintainer as CONTRIBUTOR
+    # on prismalens/prismalens. Story: prismalens/gh-workflows#20.
+    # The bot exclusion is a loop guard, not a judgment about who replied:
     # an agent posting through a member's credential is admitted and is meant to be.
     # Stories: prismalens/prismalens#403 and #422.
     if: >-
@@ -57,12 +60,7 @@ jobs:
         !contains(format(',{0},', inputs.skip_authors), format(',{0},', github.event.pull_request.user.login))
       ) || (
         github.event.comment.user.type != 'Bot' &&
-        !endsWith(github.event.comment.user.login, '[bot]') &&
-        (
-          github.event.comment.author_association == 'OWNER' ||
-          github.event.comment.author_association == 'MEMBER' ||
-          github.event.comment.author_association == 'COLLABORATOR'
-        ) && (
+        !endsWith(github.event.comment.user.login, '[bot]') && (
           (
             github.event_name == 'issue_comment' && github.event.issue.pull_request &&
             github.event.issue.state == 'open' && (
@@ -79,6 +77,7 @@ jobs:
     permissions:
       pull-requests: read
     outputs:
+      admitted: ${{ github.event_name == 'pull_request' && 'true' || steps.admit.outputs.admitted }}
       number: ${{ steps.pr.outputs.number }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
       draft: ${{ steps.pr.outputs.draft }}
@@ -87,11 +86,20 @@ jobs:
       summon: ${{ steps.summon.outputs.summon }}
 
     steps:
+      - name: Admit commenter
+        id: admit
+        if: github.event_name != 'pull_request'
+        uses: prismalens/gh-workflows/.github/actions/admit@main
+        with:
+          login: ${{ github.event.comment.user.login }}
+          token: ${{ github.token }}
+
       # SECURITY INVARIANT: the comment body is read by `contains()` here and in the job
       # `if:` above, and nowhere else. It must never reach a prompt or a shell string.
       # Story: prismalens/prismalens#422.
       - name: Classify summon verb
         id: summon
+        if: steps.admit.outputs.admitted == 'true' || github.event_name == 'pull_request'
         env:
           SUMMON: >-
             ${{ github.event_name == 'pull_request' && 'none'
@@ -100,6 +108,7 @@ jobs:
 
       - name: Fetch PR metadata and validate origin
         id: pr
+        if: steps.admit.outputs.admitted == 'true' || github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
@@ -137,6 +146,7 @@ jobs:
     # Drafts are declared-unfinished code: reviewing every push to one is pure spend.
     # Only an explicit summon overrides that; fork heads never pass. Story: prismalens/prismalens#415.
     if: >-
+      needs.resolve.outputs.admitted == 'true' &&
       needs.resolve.outputs.same_repo == 'true' &&
       (needs.resolve.outputs.summon != 'none' || needs.resolve.outputs.draft != 'true')
     runs-on: ubuntu-latest
@@ -907,7 +917,7 @@ jobs:
         (
           github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name != github.repository
-        ) || needs.resolve.outputs.same_repo == 'false'
+        ) || (needs.resolve.outputs.admitted == 'true' && needs.resolve.outputs.same_repo == 'false')
       )
     runs-on: ubuntu-latest
     permissions:

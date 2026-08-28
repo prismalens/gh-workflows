@@ -135,6 +135,7 @@ jobs:
 5. **Pin `branches` on `pull_request`**: Every stub that triggers on `pull_request` pins `branches: [main]`, so covering a future `release/*` branch is a decision someone makes, not an accident.
 6. **Comment Triggers Need a Concurrency Fallback**: The moment a stub gains `issue_comment` / `pull_request_review_comment` triggers, its concurrency group key must fall back to `github.event.issue.number` — `${{ github.event.pull_request.number || github.event.issue.number }}`. `github.event.pull_request.number` is empty on `issue_comment`, so without the fallback the group collapses to the constant `claude-code-review-`: one global group in which any PR's summon cancels every other PR's in-flight run.
 7. **Cancel Automatic Rounds Only**: On a lane that takes both `pull_request` and comment triggers, use `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`: a summon never cancels an in-flight automatic round; it queues behind it. A push still supersedes anything in the group, including a summon.
+8. **Admission is effective repository permission, not `author_association`**: Comment events in both lanes are admitted only when the acting account holds `admin` or `write` on the repository, checked live in the `admit` composite action. `author_association` is banned from admission: it is repo-scoped and payload-dependent, and it reported `CONTRIBUTOR` in the webhook for a maintainer whose REST record said `MEMBER`, so replies on `prismalens/prismalens` were never admitted. A failed check is red, never silently open and never silently closed. Story: `prismalens/gh-workflows#20`.
 
 ### Review lane inputs
 
@@ -240,6 +241,36 @@ Fork heads never reach the reviewer: GitHub withholds the repository's secrets f
 ---
 
 ## Composite Actions
+
+### `actions/admit`
+
+Decides whether an account may start an agent run in this repository. Admits on effective repository permission of `admin` or `write`, checked live against the GitHub collaborators API. Never reads `author_association`.
+
+#### What it takes
+
+- `login` (required): The account that performed the triggering action.
+- `token` (required): Token used for the permission lookup.
+
+#### What it returns
+
+- `admitted`: `"true"` when the login holds `admin` or `write` on this repository; `"false"` on quiet refusal.
+
+#### Three outcomes
+
+- **Admit (`admitted=true`, exit 0)**: The account holds `admin` or `write` permission on the repository.
+- **Quiet refusal (`admitted=false`, exit 0)**: The account has permission `read` or `none`, returns HTTP 404 (outsider), or is empty / a bot account (`*[bot]`). Emits a notice and stays green so stray comments do not turn PR checks red.
+- **Red (`exit 1`)**: Any API failure or unexpected error. Fails loudly with `::error::` so checks never fail open and never fail silently closed.
+
+#### Usage Snippet
+
+```yaml
+      - name: Admit commenter
+        id: admit
+        uses: prismalens/gh-workflows/.github/actions/admit@main
+        with:
+          login: ${{ github.event.comment.user.login }}
+          token: ${{ github.token }}
+```
 
 ### `actions/pr-title`
 

@@ -8,20 +8,12 @@ on:
 
 jobs:
   claude:
-    # Author association filter restricts execution to OWNER, MEMBER, or COLLABORATOR
-    # to prevent unauthorized usage and prompt injection. Stories: prismalens/prismalens#415 and #422.
+    # Admission is effective repository permission checked live in the `admit` step below.
+    # `sender` is the account that performed the triggering action on all four event shapes.
+    # `author_association` is banned from admission. Stories: prismalens/prismalens#415 and #422.
     if: |
-      (
-        github.event.comment.author_association == 'OWNER' ||
-        github.event.comment.author_association == 'MEMBER' ||
-        github.event.comment.author_association == 'COLLABORATOR' ||
-        github.event.review.author_association == 'OWNER' ||
-        github.event.review.author_association == 'MEMBER' ||
-        github.event.review.author_association == 'COLLABORATOR' ||
-        github.event.issue.author_association == 'OWNER' ||
-        github.event.issue.author_association == 'MEMBER' ||
-        github.event.issue.author_association == 'COLLABORATOR'
-      ) && (
+      github.event.sender.type != 'Bot' &&
+      !endsWith(github.event.sender.login, '[bot]') && (
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
@@ -35,7 +27,15 @@ jobs:
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
     steps:
+      - name: Admit sender
+        id: admit
+        uses: prismalens/gh-workflows/.github/actions/admit@main
+        with:
+          login: ${{ github.event.sender.login }}
+          token: ${{ github.token }}
+
       - name: Checkout repository
+        if: steps.admit.outputs.admitted == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -44,6 +44,7 @@ jobs:
 
       - name: Run Claude Code
         id: claude
+        if: steps.admit.outputs.admitted == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

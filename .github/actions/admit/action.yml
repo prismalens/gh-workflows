@@ -1,0 +1,57 @@
+name: Admit
+description: >-
+  Decide whether an account may start an agent run in this repository. Admits on effective
+  repository permission of `admin` or `write`, checked live against the collaborators API.
+  Never reads `author_association`: that field is repo-scoped and payload-dependent, and it
+  misreported a maintainer as CONTRIBUTOR on prismalens/prismalens while the REST API
+  reported MEMBER for the same comment. Story: prismalens/gh-workflows#20.
+
+inputs:
+  login:
+    description: The account that performed the triggering action.
+    required: true
+  token:
+    description: Token used for the permission lookup.
+    required: true
+
+outputs:
+  admitted:
+    description: '"true" when the login holds admin or write on this repository.'
+    value: ${{ steps.check.outputs.admitted }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check effective repository permission
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        LOGIN: ${{ inputs.login }}
+      run: |
+        set -euo pipefail
+
+        # Centralised loop guard: no bot may start an agent run through either lane.
+        if [ -z "$LOGIN" ] || case "$LOGIN" in *'[bot]') true ;; *) false ;; esac; then
+          echo "::notice::refused: '${LOGIN:-<empty>}' is a bot or empty login"
+          echo "admitted=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        err=0
+        perm="$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${LOGIN}/permission" \
+          --jq .permission 2>"$RUNNER_TEMP/admit-err")" || err=$?
+
+        if [ "$err" -eq 0 ] && { [ "$perm" = "admin" ] || [ "$perm" = "write" ]; }; then
+          echo "admitted=true" >> "$GITHUB_OUTPUT"
+        elif [ "$err" -eq 0 ] || grep -q '(HTTP 404)' "$RUNNER_TEMP/admit-err"; then
+          # Expected common case for outsiders. Must stay green, or every stray comment
+          # paints the PR's checks red.
+          echo "::notice::refused: ${LOGIN} has permission '${perm:-none}' on ${GITHUB_REPOSITORY}"
+          echo "admitted=false" >> "$GITHUB_OUTPUT"
+        else
+          # Never fail open (an API blip must not admit an attacker) and never fail closed
+          # silently (that recreates the defect this replaces, in a form that hides itself).
+          echo "::error::admission check failed for ${LOGIN}: $(cat "$RUNNER_TEMP/admit-err")"
+          exit 1
+        fi
