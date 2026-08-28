@@ -642,6 +642,12 @@ jobs:
               if not isinstance(thread_id, str) or not thread_id:
                   errors.append(f"entry [{i}] has no thread_id")
                   continue
+              # One verdict per thread. Two entries for one thread make `mutate` post two
+              # replies, and a `fixed` paired with a `still_applies` resolves a thread the
+              # other entry says is open — the reads-as-done failure this gate exists to stop.
+              if thread_id in seen:
+                  errors.append(f"{thread_id}: duplicate verdict entry")
+                  continue
               seen.add(thread_id)
               if entry.get("verdict") not in states:
                   errors.append(f"{thread_id}: verdict {entry.get('verdict')!r} is not one of {states}")
