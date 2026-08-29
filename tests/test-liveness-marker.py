@@ -127,9 +127,20 @@ CASES = [
                                               skip_reason="no-token"),                    "5",  OLD),
     ("review job failed",                dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",
                                               inline=0, summary=0, result="failure"),     "2",  OLD),
-    ("summon posts: sha moves, rounds don't",
+    # A successful review summon IS the resume, so it clears the auto-pause counter.
+    # Story: gh-workflows#28.
+    ("summon posts: sha moves, rounds reset",
                                          dict(marker_body=f"<!-- claude-review-liveness rounds=5 sha={OLD} -->",
-                                              event="issue_comment", inline=2),           "5",  NEW),
+                                              event="issue_comment", inline=2),           "0",  NEW),
+    ("summon full review: rounds reset",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=5 sha={OLD} -->",
+                                              event="issue_comment", mode="review-full",
+                                              inline=2),                                  "0",  NEW),
+    # A summon that reviewed nothing is not a resume: no output, no reset.
+    ("summon posts NOTHING: no reset",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=5 sha={OLD} -->",
+                                              event="issue_comment", inline=0, summary=0,
+                                              result="failure"),                          "5",  OLD),
     ("legacy marker (no sha), posted",   dict(marker_body="<!-- claude-review-liveness rounds=4 -->",
                                               inline=1),                                  "5",  NEW),
     ("legacy marker (no sha), nothing",  dict(marker_body="<!-- claude-review-liveness rounds=4 -->",
