@@ -1,0 +1,7 @@
+{
+  "upstream_repo": "anthropics/claude-code",
+  "upstream_path": "plugins/code-review/commands/code-review.md",
+  "upstream_blob_sha": "0b27765f17635137853df05bb7c122d39f1af3d7",
+  "vendored_into": ".github/workflows/claude-code-review.yml",
+  "intentional_deviation": "Upstream step 1 is removed. Re-applying an upstream change is a human decision; see #30."
+}

@@ -1,0 +1,227 @@
+# Monthly check for upstream prompt changes. Blob comparison only; file content diffs
+# would fail on the deliberate step 1 removal. Story: #30.
+name: Vendored Prompt Drift Check
+
+on:
+  schedule:
+    - cron: '17 6 1 * *'   # 06:17 UTC on the 1st. Off the hour on purpose:
+                           # GitHub delays cron at popular times. Story: #30.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-drift:
+    name: Check vendored prompt drift
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check vendored prompt drift
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 -u - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          # Step 1: Read tracking file
+          tracking_file = ".github/vendored-prompt.json"
+          if not os.path.exists(tracking_file):
+              print(f"::error::Tracking file {tracking_file} not found.", file=sys.stderr)
+              sys.exit(1)
+
+          try:
+              with open(tracking_file, "r", encoding="utf-8") as f:
+                  tracking = json.load(f)
+          except Exception as e:
+              print(f"::error::Failed to parse {tracking_file}: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          upstream_repo = tracking.get("upstream_repo")
+          upstream_path = tracking.get("upstream_path")
+          recorded_sha = tracking.get("upstream_blob_sha")
+
+          if not upstream_repo or not upstream_path or not recorded_sha:
+              print(
+                  f"::error::Tracking file {tracking_file} is missing required fields "
+                  f"(upstream_repo, upstream_path, upstream_blob_sha).",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          # Step 2: Fetch current upstream blob SHA via gh api
+          print(f"Fetching upstream blob SHA for {upstream_repo}:{upstream_path}...")
+          try:
+              res = subprocess.run(
+                  ["gh", "api", f"repos/{upstream_repo}/contents/{upstream_path}"],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              data = json.loads(res.stdout)
+              fetched_sha = data.get("sha")
+              if not fetched_sha or not isinstance(fetched_sha, str):
+                  print(f"::error::Upstream API response missing 'sha' field.", file=sys.stderr)
+                  sys.exit(1)
+          except subprocess.CalledProcessError as e:
+              print(f"::error::Failed to fetch {upstream_repo}:{upstream_path} via gh api: {e.stderr.strip()}", file=sys.stderr)
+              sys.exit(1)
+          except Exception as e:
+              print(f"::error::Unexpected error fetching upstream blob SHA: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Recorded SHA: {recorded_sha}")
+          print(f"Fetched SHA:  {fetched_sha}")
+
+          # Step 3: Compare blob SHAs
+          is_drift = not (
+              recorded_sha.lower() == fetched_sha.lower()
+              or (len(recorded_sha) >= 7 and fetched_sha.lower().startswith(recorded_sha.lower()))
+          )
+
+          repo = os.environ.get("REPO", "")
+          if not repo:
+              try:
+                  repo_res = subprocess.run(
+                      ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+                      capture_output=True,
+                      text=True,
+                      check=True,
+                  )
+                  repo = repo_res.stdout.strip()
+              except Exception:
+                  repo = "prismalens/gh-workflows"
+
+          # Step 4: Query open prompt-drift issues
+          try:
+              issues_res = subprocess.run(
+                  ["gh", "issue", "list", "--repo", repo, "--state", "open", "--label", "prompt-drift", "--json", "number,title,body"],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              open_issues = json.loads(issues_res.stdout)
+          except Exception as e:
+              print(f"::error::Failed to query open prompt-drift issues: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          marker_re = re.compile(r'<!--\s*prompt-drift\s+sha=([0-9a-fA-F]+)\s*-->')
+
+          def get_issue_latest_sha(issue_num: int, body: str) -> str | None:
+              last_sha = None
+              m = marker_re.search(body or "")
+              if m:
+                  last_sha = m.group(1)
+              try:
+                  comments_res = subprocess.run(
+                      ["gh", "api", f"repos/{repo}/issues/{issue_num}/comments", "--paginate", "--jq", ".[].body"],
+                      capture_output=True,
+                      text=True,
+                      check=True,
+                  )
+                  all_markers = marker_re.findall(comments_res.stdout or "")
+                  if all_markers:
+                      last_sha = all_markers[-1]
+              except Exception as e:
+                  print(f"::error::Failed to fetch comments for issue #{issue_num}: {e}", file=sys.stderr)
+                  sys.exit(1)
+              return last_sha
+
+          if is_drift:
+              diff_url = f"https://github.com/{upstream_repo}/compare/{recorded_sha}...{fetched_sha}"
+              blob_url = f"https://github.com/{upstream_repo}/blob/{fetched_sha}/{upstream_path}"
+
+              if not open_issues:
+                  print(f"Drift detected and no open issue exists. Creating new prompt-drift issue...")
+                  title = f"Vendored prompt drift: upstream changed to {fetched_sha[:8]}"
+                  body = (
+                      f"## Upstream Prompt Drift Detected\n\n"
+                      f"The vendored prompt in `{tracking.get('vendored_into', '.github/workflows/claude-code-review.yml')}` "
+                      f"has drifted from upstream `{upstream_repo}`.\n\n"
+                      f"- **Upstream repo:** `{upstream_repo}`\n"
+                      f"- **Upstream path:** `{upstream_path}`\n"
+                      f"- **Recorded SHA:** `{recorded_sha}`\n"
+                      f"- **Current upstream SHA:** `{fetched_sha}`\n"
+                      f"- **Upstream diff:** [Compare changes]({diff_url})\n"
+                      f"- **Upstream file:** [View file]({blob_url})\n\n"
+                      f"### Intentional Deviation Note\n"
+                      f"{tracking.get('intentional_deviation', 'Upstream step 1 is removed. Re-applying an upstream change is a human decision; see #30.')}\n\n"
+                      f"> [!IMPORTANT]\n"
+                      f"> Do not auto-apply. Re-applying an upstream change requires deciding how intentional deviations interact with upstream updates (#30).\n\n"
+                      f"<!-- prompt-drift sha={fetched_sha} -->\n"
+                  )
+                  try:
+                      subprocess.run(
+                          ["gh", "issue", "create", "--repo", repo, "--label", "prompt-drift", "--title", title, "--body", body],
+                          check=True,
+                      )
+                      print(f"Created prompt-drift issue for SHA {fetched_sha}.")
+                  except Exception as e:
+                      print(f"::error::Failed to create issue: {e}", file=sys.stderr)
+                      sys.exit(1)
+              else:
+                  issue = open_issues[0]
+                  issue_num = issue["number"]
+                  last_sha = get_issue_latest_sha(issue_num, issue.get("body", ""))
+                  print(f"Open prompt-drift issue #{issue_num} found. Last recorded SHA on issue: {last_sha}")
+
+                  if last_sha and (last_sha.lower() == fetched_sha.lower() or (len(last_sha) >= 7 and fetched_sha.lower().startswith(last_sha.lower()))):
+                      print(f"Current upstream SHA ({fetched_sha}) matches last recorded SHA on issue #{issue_num}. No comment needed.")
+                  else:
+                      print(f"Upstream SHA changed to {fetched_sha} (differs from {last_sha}). Posting comment to issue #{issue_num}...")
+                      comment_body = (
+                          f"### Upstream Prompt Drift Update\n\n"
+                          f"Upstream `{upstream_repo}` has updated again.\n\n"
+                          f"- **Previous tracked SHA:** `{last_sha or recorded_sha}`\n"
+                          f"- **New upstream SHA:** `{fetched_sha}`\n"
+                          f"- **Upstream path:** `{upstream_path}`\n"
+                          f"- **Upstream diff:** [Compare changes]({diff_url})\n"
+                          f"- **Upstream file:** [View file]({blob_url})\n\n"
+                          f"<!-- prompt-drift sha={fetched_sha} -->\n"
+                      )
+                      try:
+                          subprocess.run(
+                              ["gh", "issue", "comment", str(issue_num), "--repo", repo, "--body", comment_body],
+                              check=True,
+                          )
+                          print(f"Posted update comment on issue #{issue_num}.")
+                      except Exception as e:
+                          print(f"::error::Failed to post comment on issue #{issue_num}: {e}", file=sys.stderr)
+                          sys.exit(1)
+          else:
+              print(f"No drift detected (recorded SHA {recorded_sha} matches upstream {fetched_sha}).")
+              if open_issues:
+                  for issue in open_issues:
+                      issue_num = issue["number"]
+                      print(f"Closing resolved prompt-drift issue #{issue_num}...")
+                      close_comment = (
+                          f"Vendored prompt in `{tracking.get('vendored_into', '.github/workflows/claude-code-review.yml')}` "
+                          f"is now in sync with upstream `{upstream_repo}` at `{fetched_sha}`. Resolving drift issue."
+                      )
+                      try:
+                          subprocess.run(
+                              ["gh", "issue", "comment", str(issue_num), "--repo", repo, "--body", close_comment],
+                              check=True,
+                          )
+                          subprocess.run(
+                              ["gh", "issue", "close", str(issue_num), "--repo", repo],
+                              check=True,
+                          )
+                          print(f"Closed issue #{issue_num}.")
+                      except Exception as e:
+                          print(f"::error::Failed to close issue #{issue_num}: {e}", file=sys.stderr)
+                          sys.exit(1)
+              else:
+                  print("No open prompt-drift issues to close. Clean exit.")
+
+          sys.exit(0)
+          PY
