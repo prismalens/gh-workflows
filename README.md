@@ -153,12 +153,24 @@ Bare PR comments, admitted accounts only: the summoning account must hold `admin
 
 | Comment | Lane | Behaviour |
 | --- | --- | --- |
-| `@claude review` | review | Incremental. The lane's own mode detection decides: a verify round if unresolved `claude[bot]` threads exist, otherwise a normal review. |
+| `@claude review` | review | Incremental. A verify round still wins when unresolved `claude[bot]` threads exist. Otherwise the round is scoped to the commits since the last round that posted review output, read from the `sha=` field of the liveness marker. On a head that has already been reviewed with no open threads, the summon gives a full review rather than doing nothing. |
 | `@claude full review` | review | From scratch. Forces a review and instructs it to ignore existing comments and threads as dedup targets — without that the plugin's dedup silently publishes nothing (prismalens/prismalens#410). |
 | `@claude review --model <alias>` / `@claude full review --model <alias>` | review | Runs that review shape on the model ID mapped to `<alias>` in `model_aliases` (default `opus=claude-opus-5,sonnet=claude-sonnet-5`). An unrecognized alias falls back to `default_model` and emits a warning annotation. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription. |
 | bare `@claude …` | mention | Anything not matching the verbs above. |
 
 Summons run on draft PRs (explicit intent overrides the draft skip) and reset the auto-pause counter to 0, but only when the round actually posted review output — the same evidence that advances `sha=`. Fork-head PRs stay refused even when summoned (v1) — they get the `<!-- claude-review-fork-notice -->` comment instead.
+
+### Incremental review
+
+The baseline is the `sha=` in `<!-- claude-review-liveness rounds=N sha=<head> -->`, and it advances only on a round that posted review output. A verify round never advances it.
+
+The range is computed with `gh api repos/OWNER/REPO/compare/BASE...HEAD`, not git: the checkout is `fetch-depth: 1` and on `pull_request` it is the merge ref, so a local diff would be both impossible and wrong. The compare payload is staged in `.claude-incremental-range.json` for the review agent.
+
+Six conditions fall back to a full review, each logged by name: `no-baseline`, `identical-summon`, `baseline-gone` (the compare 404 after a force-push), `diverged` (which also covers `behind`), `range-too-large` (>= 300 files), and `unexpected-status-<status>`.
+
+An automatic round on a head with no new commits skips, and the liveness comment says so rather than reporting a review.
+
+An incremental round's summary comment is headed `## Code review — incremental (<base>..<head>)` with 7-character short SHAs, and it still begins with the literal `## Code review` because the liveness evidence filter matches on that prefix.
 
 ## Thread resolution
 
