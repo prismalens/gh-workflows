@@ -137,8 +137,8 @@ jobs:
               return last_sha
 
           if is_drift:
-              diff_url = f"https://github.com/{upstream_repo}/compare/{recorded_sha}...{fetched_sha}"
-              blob_url = f"https://github.com/{upstream_repo}/blob/{fetched_sha}/{upstream_path}"
+              history_url = f"https://github.com/{upstream_repo}/commits/HEAD/{upstream_path}"
+              blob_url = f"https://github.com/{upstream_repo}/blob/HEAD/{upstream_path}"
 
               if not open_issues:
                   print(f"Drift detected and no open issue exists. Creating new prompt-drift issue...")
@@ -151,7 +151,7 @@ jobs:
                       f"- **Upstream path:** `{upstream_path}`\n"
                       f"- **Recorded SHA:** `{recorded_sha}`\n"
                       f"- **Current upstream SHA:** `{fetched_sha}`\n"
-                      f"- **Upstream diff:** [Compare changes]({diff_url})\n"
+                      f"- **Upstream history:** [Recent commits to this file]({history_url})\n"
                       f"- **Upstream file:** [View file]({blob_url})\n\n"
                       f"### Intentional Deviation Note\n"
                       f"{tracking.get('intentional_deviation', 'Upstream step 1 is removed. Re-applying an upstream change is a human decision; see #30.')}\n\n"
@@ -184,7 +184,7 @@ jobs:
                           f"- **Previous tracked SHA:** `{last_sha or recorded_sha}`\n"
                           f"- **New upstream SHA:** `{fetched_sha}`\n"
                           f"- **Upstream path:** `{upstream_path}`\n"
-                          f"- **Upstream diff:** [Compare changes]({diff_url})\n"
+                          f"- **Upstream history:** [Recent commits to this file]({history_url})\n"
                           f"- **Upstream file:** [View file]({blob_url})\n\n"
                           f"<!-- prompt-drift sha={fetched_sha} -->\n"
                       )
