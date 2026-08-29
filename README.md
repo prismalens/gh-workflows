@@ -56,16 +56,15 @@ jobs:
     # boundaries and silently fails cross-owner consumers.
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Optional. Without them the lane still posts its verdict and leaves every
-      # thread open, because GITHUB_TOKEN cannot resolve threads. See "Thread resolution".
-      AUTOMATION_APP_ID: ${{ secrets.AUTOMATION_APP_ID }}
-      AUTOMATION_APP_PRIVATE_KEY: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
     permissions:
-      contents: read
-      # write is the ceiling for the callee's `announce`, `fork-notice`, and `mutate` jobs;
-      # the callee's `review` job self-restricts to read.
+      # Ceilings only. Every callee job declares its own narrower subset.
+      # `mutate` needs `contents: write` to resolve threads with GITHUB_TOKEN.
+      contents: write
+      # `announce`, `fork-notice` and `mutate` post; the rest read.
       pull-requests: write
       issues: read
+      # Consumed by `review` alone, to mint its `claude[bot]` token. `verify`
+      # declares no `id-token` and tripwires on it. See "Thread resolution".
       id-token: write
 ```
 
@@ -147,88 +146,49 @@ All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults ar
 | `auto_pause_rounds` | number | `5` | Automatic rounds allowed on one PR before the lane pauses itself. The count lives in the liveness comment's marker (`<!-- claude-review-liveness rounds=N sha=<head> -->`); only automatic rounds that actually ran increment it. On pause the lane posts `auto-paused after N automatic rounds` instead of reviewing. Monotonic — v1 never resets it, so a summon resumes for exactly that one run. |
 | `default_model` | string | `claude-sonnet-5` | Model ID handed to `claude-code-action` as `--model`, for all three review shapes (review, full review, verify). Sonnet is the default deliberately: the review lane is the highest-volume Claude spend across the consumer repos. A single run can deviate with `@claude review --model opus` / `--model sonnet` — an allowlist of two fixed phrases mapped to two pinned IDs, never a value read out of the comment. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
 
-## Thread resolution needs a GitHub App
+## Thread resolution
 
-`GITHUB_TOKEN` cannot call `resolveReviewThread`. This is not a permissions misconfiguration: the
-`mutate` job's token carries `PullRequests: write` and the mutation is still refused with
-`gh: Resource not accessible by integration`. Measured on `prismalens/sreforge#157`; story: #18.
+`resolveReviewThread` costs `contents: write`. It is refused at `contents: read`, which is the
+counter-intuitive part and was measured, not assumed: `prismalens/sreforge#157` for the denial,
+run `33006099680` for the working case. So a token that can resolve a review thread can also push
+code.
 
-An App token can, but only with **both** `pull-requests: write` and `contents: write`. This is the
-counter-intuitive part and it was measured, not assumed:
+`GITHUB_TOKEN` carries it, given the grant. The `mutate` job declares `contents: write` and
+`pull-requests: write` and resolves threads directly; no GitHub App is involved, and the lane needs
+no App secrets. Canary: run `33200877365` resolved a thread on a repo that never held App
+credentials. Story: #18, #20.
 
-| Minted permissions | `resolveReviewThread` |
-| --- | --- |
-| `pull_requests: write` | denied |
-| `pull_requests: write` + `metadata: read` | denied |
-| `pull_requests: write` + `contents: read` | denied |
-| `pull_requests: write` + `issues: write` | denied |
-| `pull_requests: write` + `contents: write` | **resolves** |
-
-Each row was run against the same live thread and reproduced twice. So resolving a review thread
-costs a token that can also push code. That is the reason the `mutate` job is deterministic shell
-with no agent in it: the grant is real, so nothing model-influenced may ever hold this token.
-
-So the `mutate` job takes an optional App credential, `AUTOMATION_APP_ID` and `AUTOMATION_APP_PRIVATE_KEY`,
-and mints a short-lived installation token per run.
+Because that token can push, **`mutate` runs no agent.** It is deterministic shell rendering
+bounded, re-derived fields from the verify round's structured verdicts. Nothing model-influenced
+ever holds it.
 
 | State | Reply | Thread | Job |
 | --- | --- | --- | --- |
-| Credential set, mutation succeeds | posted | resolved | success |
-| Credential absent | posted | left open, warning names the missing secrets | success |
-| Credential set, mutation denied | posted | left open | **fails** |
+| Verdict `fixed`, mutation succeeds | posted | resolved | success |
+| Verdict `still_applies` | posted | left open | success |
+| Mutation denied | posted | left open | **fails** |
 
-The third row is deliberate. Before it existed, a denied mutation printed an error and continued, so
+The last row is deliberate. Before it existed, a denied mutation printed an error and continued, so
 a thread ended up carrying a reply reading `Verified fixed in commit <sha>` while still unresolved,
 on a job reporting success. On a repo with `required_review_thread_resolution: true` that reads as
 done and blocks the merge, which is the worst of both.
 
-**Setting the App up.** `prismalens-automation` is a shared credential, not a review-lane one. It
-holds a superset (Contents RW, Pull requests RW, Issues RW, Actions Read) and **every job narrows it
-at mint time** with `create-github-app-token`'s `permission-*` inputs. The `mutate` job mints
-`permission-pull-requests: write` and nothing else.
+### What the `review` job's token can do
 
-**Never mint it into a job that runs an agent.** `review` is read-only by invariant because it feeds
-attacker-influenceable diff text to a model, and the mention lane blocks review submission and
-thread resolution for the same reason. The App token belongs only in deterministic, no-agent jobs.
+The `review` job is **not** read-only, and describing it that way hides where the wall actually is.
+It declares `id-token: write`, the sole input to the `claude[bot]` App-token mint: the action calls
+`core.getIDToken()` and exchanges the result for a token carrying `contents: write`,
+`pull_requests: write` and `issues: write` across the org. The job is write-capable by construction,
+because publishing a review needs it.
 
-Because the consumer repos do not share an owner (`prismalens` is an org, `Sumit1993/mage-memory` is
-a user account), the App is installed once per account and the secrets are set per repo. The App
-resolves under its own name, which keeps automated resolution distinguishable from a person's.
+**The wall is the tool allowlist.** What keeps that capability away from thread resolution and code
+push is which tools the agent may call, not which permissions the job holds. Widening the allowlist
+is a security change, not a tuning edit.
 
-The App's replies come from `<app-slug>[bot]`, which the admission gate excludes on both
-`user.type != 'Bot'` and the `[bot]` suffix, so the loop guard still holds.
-
-
-Override example:
-
-```yaml
-jobs:
-  review:
-    uses: prismalens/gh-workflows/.github/workflows/claude-code-review.yml@main
-    with:
-      skip_authors: 'dependabot[bot],renovate[bot]'
-      auto_pause_rounds: 3
-      default_model: 'claude-opus-5'
-```
-
-### Summon grammar
-
-Bare PR comments, admitted accounts only: the summoning account must hold `admin` or `write` on the repository, checked live by the `admit` action. The comment body is read only by workflow `contains()` expressions — it never reaches a prompt.
-
-| Comment | Lane | Behaviour |
-| --- | --- | --- |
-| `@claude review` | review | Incremental. The lane's own mode detection decides: a verify round if unresolved `claude[bot]` threads exist, otherwise a normal review. |
-| `@claude full review` | review | From scratch. Forces a review and instructs it to ignore existing comments and threads as dedup targets — without that the plugin's dedup silently publishes nothing (prismalens/prismalens#410). |
-| `@claude review --model opus` | review | Incremental, on `claude-opus-5` for that run only. `--model sonnet` picks `claude-sonnet-5`. Anything else after `--model` — including `haiku`, which is not offered — is ignored and the run uses `default_model`. The suffix is matched as a whole fixed phrase, so `@claude full review --model opus` does **not** switch models. |
-| bare `@claude …` | mention | Anything not matching the verbs above. |
-
-Summons run on draft PRs (explicit intent overrides the draft skip) and always run past the auto-pause counter. Fork-head PRs stay refused even when summoned (v1) — they get the `<!-- claude-review-fork-notice -->` comment instead.
-
-### The liveness marker's `sha=` field
-
-The marker is `<!-- claude-review-liveness rounds=N sha=<40-hex> -->`. `sha=` records the last head on which the lane actually **published** review output, and it advances on posted evidence only — never on a green job result, because a run that finished having posted nothing must not move the baseline past commits no reviewer read (prismalens/prismalens#410). The field is omitted entirely when there is no baseline, so its absence is unambiguous: either no review has ever posted on this PR, or the marker predates the field. It is groundwork for a future incremental review range and nothing consumes it yet.
-
-Both fields change from round to round, so **anything matching this comment matches the prefix `<!-- claude-review-liveness`, never the whole string.**
+The `verify` job is the opposite and deliberately so: no `id-token`, a read-only `GITHUB_TOKEN`, and
+a tripwire. That is why the allowlist is described below as `verify`'s *third* line rather than its
+wall. Two stronger lines sit in front of it there. In `review` no such lines exist, so the allowlist
+carries the weight alone. Same mechanism, different job, different load.
 
 ### Verification rounds (incremental re-review)
 

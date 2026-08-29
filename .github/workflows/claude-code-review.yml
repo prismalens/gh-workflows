@@ -31,14 +31,6 @@ on:
         # empty — still create a run and reach `fork-notice`; `review` guards on the
         # token's presence instead of relying on caller-side validation. Story: prismalens/prismalens#415.
         required: false
-      AUTOMATION_APP_ID:
-        # UNUSED as of gh-workflows#20: `mutate` resolves threads with GITHUB_TOKEN at
-        # `contents: write`. Kept declared only because the consumer stubs still map them,
-        # and a caller passing an undeclared secret fails the workflow. Removed once those
-        # mappings are dropped. Do not wire these into any job.
-        required: false
-      AUTOMATION_APP_PRIVATE_KEY:
-        required: false
 
 jobs:
   # ONE set of PR facts for automatic rounds, summons, and in-thread replies alike,
