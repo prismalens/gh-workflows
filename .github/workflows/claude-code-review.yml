@@ -159,6 +159,11 @@ jobs:
       started_at: ${{ steps.clock.outputs.started_at }}
       mode: ${{ steps.mode.outputs.mode }}
       skip_reason: ${{ steps.mode.outputs.skip_reason }}
+      fallback_reason: ${{ steps.mode.outputs.fallback_reason }}
+      range_base: ${{ steps.mode.outputs.range_base }}
+      range_head: ${{ steps.mode.outputs.range_head }}
+      range_base_short: ${{ steps.mode.outputs.range_base_short }}
+      range_head_short: ${{ steps.mode.outputs.range_head_short }}
       # The verify job runs the same allowlisted model resolution; resolving it twice
       # would be two places to keep in sync.
       model: ${{ steps.model.outputs.model }}
@@ -178,6 +183,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ needs.resolve.outputs.number }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
           EVENT_NAME: ${{ github.event_name }}
           SUMMON: ${{ needs.resolve.outputs.summon }}
           MAX_ROUNDS: ${{ inputs.auto_pause_rounds }}
@@ -185,7 +191,78 @@ jobs:
           HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
           set -euo pipefail
-          emit() { echo "mode=$1" >> "$GITHUB_OUTPUT"; echo "skip_reason=${2:-}" >> "$GITHUB_OUTPUT"; }
+          emit() {
+            echo "mode=$1" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=${2:-}" >> "$GITHUB_OUTPUT"
+            echo "fallback_reason=${3:-}" >> "$GITHUB_OUTPUT"
+            base="${4:-}"
+            head="${5:-}"
+            echo "range_base=$base" >> "$GITHUB_OUTPUT"
+            echo "range_head=$head" >> "$GITHUB_OUTPUT"
+            echo "range_base_short=${base:0:7}" >> "$GITHUB_OUTPUT"
+            echo "range_head_short=${head:0:7}" >> "$GITHUB_OUTPUT"
+          }
+
+          resolve_range() {
+            baseline=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+              "[.[] | select(.user.login==\"github-actions[bot]\")
+                    | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty" \
+              | head -1 | grep -oE 'sha=[0-9a-f]{40}' | head -1 | cut -d= -f2 || true)
+
+            if [ -z "$baseline" ]; then
+              echo "fallback to full review: no baseline sha found in liveness marker"
+              emit review "" no-baseline
+              exit 0
+            fi
+
+            if [ "$baseline" = "$HEAD_SHA" ]; then
+              if [ "$EVENT_NAME" = "pull_request" ]; then
+                echo "skipping review: baseline $baseline matches current head $HEAD_SHA with no new commits"
+                emit skip no-new-commits no-new-commits
+                exit 0
+              else
+                echo "fallback to full review: summon on head $HEAD_SHA identical to baseline"
+                emit review "" identical-summon
+                exit 0
+              fi
+            fi
+
+            http=$(gh api "repos/$REPO/compare/$baseline...$HEAD_SHA" \
+                     --cache 0 -i 2>/dev/null | head -1 | grep -oE '[0-9]{3}' | head -1 || true)
+            if [ "$http" = "404" ]; then
+              echo "fallback to full review: baseline commit $baseline not found (HTTP 404)"
+              emit review "" baseline-gone
+              exit 0
+            fi
+
+            compare_json=$(gh api "repos/$REPO/compare/$baseline...$HEAD_SHA" --cache 0 2>/dev/null || true)
+            status=$(jq -r '.status // "unknown"' <<< "$compare_json")
+            files_count=$(jq -r '(.files | length) // 0' <<< "$compare_json")
+            case "$files_count" in ''|*[!0-9]*) files_count=0 ;; esac
+
+            if [ "$status" = "diverged" ] || [ "$status" = "behind" ]; then
+              echo "fallback to full review: compare status between $baseline and $HEAD_SHA is '$status'"
+              emit review "" diverged
+              exit 0
+            fi
+
+            if [ "$files_count" -ge 300 ]; then
+              echo "fallback to full review: compare range between $baseline and $HEAD_SHA has $files_count files (limit: 300)"
+              emit review "" range-too-large
+              exit 0
+            fi
+
+            if [ "$status" = "ahead" ]; then
+              echo "$compare_json" > /tmp/incremental-range.json
+              echo "incremental review: range $baseline..$HEAD_SHA ($files_count file(s))"
+              emit incremental "" "" "$baseline" "$HEAD_SHA"
+              exit 0
+            fi
+
+            echo "fallback to full review: unexpected compare status '$status'"
+            emit review "" "unexpected-status-$status"
+            exit 0
+          }
 
           # A missing secret must be loud, not a silent no-op: that trap class is #410.
           if [ "$HAS_TOKEN" != "true" ]; then
@@ -213,8 +290,7 @@ jobs:
               emit skip paused
               exit 0
             fi
-            emit review
-            exit 0
+            resolve_range
           fi
 
           if [ "$SUMMON" = "full" ]; then
@@ -235,9 +311,13 @@ jobs:
                 url: .comments.nodes[0].url, body: .comments.nodes[0].body}]')
           count=$(echo "$threads" | jq length)
           echo "$threads" > /tmp/unresolved-claude-threads.json
-          if [ "$count" -gt 0 ]; then emit verify
-          else emit review; fi
+          if [ "$count" -gt 0 ]; then
+            emit verify
+            exit 0
+          fi
           echo "unresolved claude[bot] threads: $count"
+
+          resolve_range
 
       # Match --model against allowlisted aliases; ID emitted from list, never read from body.
       # Misses fall back to default_model and emit a warning. Story: #27.
@@ -328,13 +408,17 @@ jobs:
           # A verify round with nothing staged is the silent no-op class of #410.
           if-no-files-found: error
 
+      - name: Stage the incremental range for the review agent
+        if: steps.mode.outputs.mode == 'incremental'
+        run: cp /tmp/incremental-range.json "$GITHUB_WORKSPACE/.claude-incremental-range.json"
+
       # Vendored from anthropics/claude-code plugins/code-review/commands/code-review.md (blob 0b27765f).
       # Upstream's step 1 — a Haiku admission gate — is deleted: it read the word "Draft" out of PR
       # body prose and silently no-oped the lane. Admission is the caller's job, from the REST API.
       # Stories: prismalens/prismalens#403 and #410.
       - name: Run Claude Code Review
         id: claude-review
-        if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full'
+        if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental'
         uses: anthropics/claude-code-action@v1
         # Synchronous subagents required in print mode or the reviewer exits before its
         # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
@@ -444,7 +528,7 @@ jobs:
                **IMPORTANT: Only post ONE comment per unique issue. Do not post duplicate comments.**
 
             9. MANDATORY, even when you found nothing: post ONE top-level PR comment via `gh pr comment` whose FIRST line is exactly:
-               ${{ steps.mode.outputs.mode == 'review-full' && '## Code review — full review' || '## Code review' }}
+               ${{ steps.mode.outputs.mode == 'review-full' && '## Code review — full review' || (steps.mode.outputs.mode == 'incremental' && format('## Code review — incremental ({0}..{1})', steps.mode.outputs.range_base_short, steps.mode.outputs.range_head_short) || '## Code review') }}
                followed by your summary. If you found no issues, say so plainly: "No issues found. Checked for bugs and CLAUDE.md/AGENTS.md compliance."
 
             Use this list when evaluating issues in Steps 4 and 5 (these are false positives, do NOT flag):
@@ -471,6 +555,7 @@ jobs:
               - Provide at least 1 line of context before and after, centered on the line you are commenting about (eg. if you are commenting about lines 5-6, you should link to `L4-7`)
 
             ${{ steps.mode.outputs.mode == 'review-full' && 'DEDUP IS DISABLED FOR THIS RUN, because an org member explicitly asked for a review from scratch. Existing review comments and threads on this PR are NOT dedup targets. If a finding is real, post it — even when an earlier round already raised the same point. Suppressing findings as "already covered" is exactly the failure this run exists to avoid: it makes the run publish nothing while appearing to succeed.' || '' }}
+            ${{ steps.mode.outputs.mode == 'incremental' && format('THIS IS AN INCREMENTAL ROUND covering commits {0}..{1} only. The changed files and patches for that range are in `.claude-incremental-range.json` in the repository root. Read it first. Review the range. The rest of the PR diff is legitimate context for understanding it, but findings must be about code inside the range. Only unresolved review threads are dedup targets. A resolved thread must never suppress a finding: a push that reintroduces a bug a human already fixed and resolved would otherwise be waved through as "already covered".', steps.mode.outputs.range_base, steps.mode.outputs.range_head) || '' }}
 
             You cannot and must not resolve review threads, submit a formal review, or merge. Never write the word "resolve" as an instruction in any comment.
           # Tool list is load-bearing; agent mode resolves tools ONLY from --allowed-tools
@@ -501,7 +586,7 @@ jobs:
       - name: Report reviewer liveness
         if: >-
           always() &&
-          (steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full') &&
+          (steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental') &&
           steps.outcome.outputs.conclusion != 'success'
         env:
           CONCLUSION: ${{ steps.outcome.outputs.conclusion }}
@@ -1030,6 +1115,8 @@ jobs:
           RESOLVED: ${{ needs.mutate.outputs.resolved }}
           OPEN: ${{ needs.mutate.outputs.open }}
           STARTED_AT: ${{ needs.review.outputs.started_at }}
+          RANGE_BASE: ${{ needs.review.outputs.range_base }}
+          RANGE_HEAD: ${{ needs.review.outputs.range_head }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -1116,7 +1203,13 @@ jobs:
                     | select(.body | startswith(\"## Code review\"))] | length")
 
             if [ "$((inline + summary))" -gt 0 ]; then
-              verdict="reviewed \`$short\` and posted ${inline} inline / ${summary} summary comment(s)."
+              if [ "$MODE" = "incremental" ] && [ -n "${RANGE_BASE:-}" ]; then
+                short_base=${RANGE_BASE:0:8}
+                verdict="reviewed \`$short\` (incremental from \`$short_base\`) and posted ${inline} inline / ${summary} summary comment(s)."
+              else
+                verdict="reviewed \`$short\` and posted ${inline} inline / ${summary} summary comment(s)."
+              fi
+
               # The summon resume clears the auto-pause counter, gated on the SAME posted
               # evidence as the baseline below. A green summon that posted nothing is not a
               # resume: resetting on job result would hand back a full quota for no review.

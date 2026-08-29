@@ -23,6 +23,9 @@ jobs:
       - name: Liveness marker behaviour
         run: python3 tests/test-liveness-marker.py
 
+      - name: Incremental review mode behaviour
+        run: python3 tests/test-incremental-mode.py
+
       - name: Review config validator
         run: python3 tests/test-validate-review-config.py
 
