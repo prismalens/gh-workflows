@@ -1163,6 +1163,8 @@ jobs:
           elif [ "$SKIP_REASON" = "no-token" ]; then
             verdict="did not run at \`$short\`: no CLAUDE_CODE_OAUTH_TOKEN reached this lane. \
           This head has no machine review on record — map the secret explicitly in the caller stub."
+          elif [ "$SKIP_REASON" = "no-new-commits" ]; then
+            verdict="no new commits since \`$short\` was last reviewed; nothing to re-review."
           elif [ "$MODE" = "verify" ]; then
             # A hardened verify round posts nothing as claude[bot] — `mutate` posts as
             # `github-actions[bot]` — so the claude[bot] count below would report a

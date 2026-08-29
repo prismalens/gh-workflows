@@ -95,7 +95,8 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
             return None, f"script exited {p.returncode}: {p.stderr.strip()[:300]}"
         if not capture.exists():
             return None, "script wrote no comment body"
-        return capture.read_text().splitlines()[0], None
+        lines = capture.read_text().splitlines()
+        return (lines[0] if lines else "", lines[1] if len(lines) > 1 else ""), None
 
 
 def parse_marker(line):
@@ -125,6 +126,15 @@ CASES = [
                                               skip_reason="paused"),                      "5",  OLD),
     ("skip: no-token",                   dict(marker_body=f"<!-- claude-review-liveness rounds=5 sha={OLD} -->",
                                               skip_reason="no-token"),                    "5",  OLD),
+    ("no-new-commits skip, prior inline at head",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={NEW} -->",
+                                              mode="skip", skip_reason="no-new-commits",
+                                              inline=3),                                  "2",  NEW,
+                                         lambda v: not re.search(r"reviewed.*?\d+\s+inline", v)),
+    ("no-new-commits skip, no prior inline",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={NEW} -->",
+                                              mode="skip", skip_reason="no-new-commits",
+                                              inline=0),                                  "2",  NEW),
     ("review job failed",                dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",
                                               inline=0, summary=0, result="failure"),     "2",  OLD),
     # A successful review summon IS the resume, so it clears the auto-pause counter.
@@ -168,19 +178,25 @@ def main():
     fails = []
 
     print(f"running {len(CASES)} cases against the real step body\n")
-    for name, kw, want_rounds, want_sha in CASES:
-        line, err = run_case(script, **kw)
+    for case in CASES:
+        name, kw, want_rounds, want_sha = case[:4]
+        verdict_check = case[4] if len(case) > 4 else None
+        res, err = run_case(script, **kw)
         if err:
             fails.append(f"{name}: {err}")
             print(f"  ERROR  {name}: {err}")
             continue
+        line, verdict = res
         got_rounds, got_sha = parse_marker(line)
         ok = got_rounds == want_rounds and got_sha == want_sha
         # the existing reader must still see the same rounds value
         if reader_rounds(line) != (want_rounds or ""):
             ok = False
             err = f"reader parsed rounds={reader_rounds(line)!r}"
-        if not ok:
+        if verdict_check and not verdict_check(verdict):
+            ok = False
+            fails.append(f"{name}: verdict assertion failed on {verdict!r}")
+        elif not ok:
             fails.append(f"{name}: want rounds={want_rounds} sha={_s(want_sha)}, "
                          f"got rounds={got_rounds} sha={_s(got_sha)}")
         print(f"  {'ok  ' if ok else 'FAIL'}  {name:<42} rounds={got_rounds} sha={_s(got_sha)}")
