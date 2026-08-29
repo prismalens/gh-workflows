@@ -29,6 +29,10 @@ jobs:
       - name: Thread mutation and summary verification
         run: python3 tests/test-mutation-verdicts.py
 
+      # Extracts and runs the real script out of vendored-prompt-drift.yml. Story: #30.
+      - name: Vendored prompt drift check behaviour
+        run: python3 tests/test-vendored-prompt-drift.py
+
 
       # Version pinned: an actionlint release must not turn a green branch red on its own.
       - name: actionlint
