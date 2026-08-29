@@ -446,7 +446,7 @@ jobs:
                - The root CLAUDE.md and AGENTS.md files, if they exist
                - Any CLAUDE.md or AGENTS.md files in directories containing files modified by the pull request
 
-            3. Launch a sonnet agent to view the pull request and return a summary of the changes
+            3. ${{ steps.mode.outputs.mode == 'incremental' && format('Launch a sonnet agent to return a summary of the changes covering the range {0}..{1}, whose changed files and patches are in `.claude-incremental-range.json` in the repository root, and that it should read that file rather than take the whole PR diff as its subject', steps.mode.outputs.range_base, steps.mode.outputs.range_head) || 'Launch a sonnet agent to view the pull request and return a summary of the changes' }}
 
             4. Launch 4 agents in parallel to independently review the changes. Each agent should return the list of issues, where each issue includes a description, the reason it was flagged (e.g. "CLAUDE.md/AGENTS.md adherence", "bug"), and candidate classification (Category, Severity, Effort). The agents should do the following:
 
@@ -454,7 +454,7 @@ jobs:
                Audit changes for CLAUDE.md and AGENTS.md compliance in parallel. Note: When evaluating compliance for a file, you should only consider CLAUDE.md and AGENTS.md files that share a file path with the file or parents.
 
                Agent 3: Opus bug agent (parallel subagent with agent 4)
-               Scan for obvious bugs. Focus only on the diff itself without reading extra context. Flag only significant bugs; ignore nitpicks and likely false positives. Do not flag issues that you cannot validate without looking at context outside of the git diff.
+               Scan for obvious bugs. ${{ steps.mode.outputs.mode == 'incremental' && 'Focus on the range, with the rest of the PR diff available as context for understanding it but not as a source of findings.' || 'Focus only on the diff itself without reading extra context.' }} Flag only significant bugs; ignore nitpicks and likely false positives. Do not flag issues that you cannot validate without looking at context outside of the git diff.
 
                Agent 4: Opus bug agent (parallel subagent with agent 3)
                Look for problems that exist in the introduced code. This could be security issues, incorrect logic, etc. Only look for issues that fall within the changed code.
@@ -471,7 +471,7 @@ jobs:
 
                If you are not certain an issue is real, do not flag it. False positives erode trust and waste reviewer time.
 
-               In addition to the above, each subagent should be told the PR title and description. This will help provide context regarding the author's intent.
+               In addition to the above, each subagent should be told the PR title and description${{ steps.mode.outputs.mode == 'incremental' && format(', the commit range {0}..{1}, and the path `.claude-incremental-range.json`', steps.mode.outputs.range_base, steps.mode.outputs.range_head) || '' }}. This will help provide context regarding the author's intent.
 
             5. For each issue found in step 4, launch parallel subagents to validate the issue. These subagents should get the PR title and description along with a description of the issue. The agent's job is to review the issue to validate that the stated issue is truly an issue with high confidence, and formulate the verification evidence (1-3 sentences under 60 words stating what was inspected and what was proven). For example, if an issue such as "variable is not defined" was flagged, the subagent's job would be to validate that is actually true in the code. For CLAUDE.md and AGENTS.md issues, the agent should validate that the rule that was violated is scoped for this file and is actually violated. Use Opus subagents for bugs and logic issues, and sonnet agents for CLAUDE.md and AGENTS.md violations.
 
