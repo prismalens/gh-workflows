@@ -192,15 +192,17 @@ jobs:
         run: |
           set -euo pipefail
           emit() {
-            echo "mode=$1" >> "$GITHUB_OUTPUT"
-            echo "skip_reason=${2:-}" >> "$GITHUB_OUTPUT"
-            echo "fallback_reason=${3:-}" >> "$GITHUB_OUTPUT"
             base="${4:-}"
             head="${5:-}"
-            echo "range_base=$base" >> "$GITHUB_OUTPUT"
-            echo "range_head=$head" >> "$GITHUB_OUTPUT"
-            echo "range_base_short=${base:0:7}" >> "$GITHUB_OUTPUT"
-            echo "range_head_short=${head:0:7}" >> "$GITHUB_OUTPUT"
+            {
+              echo "mode=$1"
+              echo "skip_reason=${2:-}"
+              echo "fallback_reason=${3:-}"
+              echo "range_base=$base"
+              echo "range_head=$head"
+              echo "range_base_short=${base:0:7}"
+              echo "range_head_short=${head:0:7}"
+            } >> "$GITHUB_OUTPUT"
           }
 
           resolve_range() {
