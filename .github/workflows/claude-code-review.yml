@@ -192,8 +192,8 @@ jobs:
         run: |
           set -euo pipefail
           emit() {
-            base="${4:-}"
-            head="${5:-}"
+            local base="${4:-}"
+            local head="${5:-}"
             {
               echo "mode=$1"
               echo "skip_reason=${2:-}"
@@ -238,8 +238,8 @@ jobs:
             fi
 
             compare_json=$(gh api "repos/$REPO/compare/$baseline...$HEAD_SHA" --cache 0 2>/dev/null || true)
-            status=$(jq -r '.status // "unknown"' <<< "$compare_json")
-            files_count=$(jq -r '(.files | length) // 0' <<< "$compare_json")
+            status=$(jq -r '.status // "unknown"' <<< "$compare_json" 2>/dev/null || true)
+            files_count=$(jq -r '(.files | length) // 0' <<< "$compare_json" 2>/dev/null || true)
             case "$files_count" in ''|*[!0-9]*) files_count=0 ;; esac
 
             if [ "$status" = "diverged" ] || [ "$status" = "behind" ]; then

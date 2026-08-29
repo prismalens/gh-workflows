@@ -153,6 +153,11 @@ CASES = [
           fake_compare_json=json.dumps({"status": "weird", "files": [{}]})),
      "review", "unexpected-status-weird", "", False),
 
+    ("pull_request, compare malformed response",
+     dict(fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + OLD + " -->",
+          fake_compare_json="<html>502 Bad Gateway</html>"),
+     "review", "unexpected-status-", "", False),
+
     ("summon full",
      dict(event="issue_comment", summon="full"),
      "review-full", "", "", False),
