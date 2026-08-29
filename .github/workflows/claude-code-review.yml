@@ -256,6 +256,16 @@ jobs:
             exit 1
           fi
 
+          # The token after `--model `, up to the next whitespace. Read as DATA only: it is
+          # compared against the allowlist and never emitted. Story: #27.
+          requested_alias=""
+          case "$BODY" in
+            *"--model "*)
+              rest="${BODY#*--model }"
+              requested_alias="${rest%%[[:space:]]*}"
+              ;;
+          esac
+
           IFS=',' read -ra pairs <<< "$ALIASES"
           for pair in "${pairs[@]}"; do
             case "$pair" in
@@ -272,12 +282,12 @@ jobs:
               echo "::error::Malformed model_aliases entry (empty alias or ID): $pair" >&2
               exit 1
             fi
-            case "$BODY" in
-              *"--model $alias"*)
-                selected_model="$model_id"
-                break
-                ;;
-            esac
+            # Whole-token match. A prefix test would let `--model sonnet-preview` select the
+            # `sonnet` alias and skip the unknown-alias fallback. Story: #27.
+            if [ "$requested_alias" = "$alias" ]; then
+              selected_model="$model_id"
+              break
+            fi
           done
 
           if [ -n "$selected_model" ]; then
@@ -1051,12 +1061,11 @@ jobs:
           reviewed_sha=$(jq -r '.body // ""' <<< "${found:-null}" \
             | head -1 | grep -oE 'sha=[0-9a-f]{40}' | head -1 | cut -d= -f2 || true)
 
-          # Auto-rounds increment; successful review summons reset counter to 0.
-          # Verify rounds (pull_request_review_comment) carry prev unchanged. Story: #28.
+          # N counts automatic rounds that actually reviewed: summons are not rounds, and a
+          # cancelled, failed, paused, or token-less run reviewed nothing. Story: prismalens/prismalens#403.
+          # The summon RESET is decided later, gated on posted evidence, not here. Story: #28.
           rounds=$prev
-          if [ "$EVENT_NAME" = "issue_comment" ] && [ -z "$SKIP_REASON" ] && [ "$REVIEW_RESULT" = "success" ] && { [ "$MODE" = "review" ] || [ "$MODE" = "review-full" ]; }; then
-            rounds=0
-          elif [ "$EVENT_NAME" = "pull_request" ] && [ -z "$SKIP_REASON" ] && [ "$REVIEW_RESULT" = "success" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -z "$SKIP_REASON" ] && [ "$REVIEW_RESULT" = "success" ]; then
             rounds=$((prev + 1))
           fi
 
@@ -1108,6 +1117,13 @@ jobs:
 
             if [ "$((inline + summary))" -gt 0 ]; then
               verdict="reviewed \`$short\` and posted ${inline} inline / ${summary} summary comment(s)."
+              # The summon resume clears the auto-pause counter, gated on the SAME posted
+              # evidence as the baseline below. A green summon that posted nothing is not a
+              # resume: resetting on job result would hand back a full quota for no review.
+              # Story: #28.
+              if [ "$EVENT_NAME" = "issue_comment" ] && [ -z "$SKIP_REASON" ]; then
+                rounds=0
+              fi
               # THE baseline advances here and nowhere else — gated on posted evidence, never on
               # job result. A green run that posted nothing must NOT move it: the next range would
               # start past those commits and swallow them permanently, which is #410 made durable.

@@ -136,9 +136,15 @@ CASES = [
                                          dict(marker_body=f"<!-- claude-review-liveness rounds=5 sha={OLD} -->",
                                               event="issue_comment", mode="review-full",
                                               inline=2),                                  "0",  NEW),
-    # A summon that reviewed nothing is not a resume: no output, no reset.
-    ("summon posts NOTHING: no reset",
+    # A summon that reviewed nothing is not a resume. Both shapes must hold, and the
+    # green one is the one that matters: `result=success` proves the JOB succeeded, not
+    # that the reviewer posted. Resetting on job result would hand back a full quota of
+    # automatic rounds for a review nobody got. Story: #28, and invariant 1 in #12.
+    ("summon SUCCEEDS but posts NOTHING: no reset",
                                          dict(marker_body=f"<!-- claude-review-liveness rounds=5 sha={OLD} -->",
+                                              event="issue_comment", inline=0, summary=0,
+                                              result="success"),                          "5",  OLD),
+    ("summon job failed: no reset",      dict(marker_body=f"<!-- claude-review-liveness rounds=5 sha={OLD} -->",
                                               event="issue_comment", inline=0, summary=0,
                                               result="failure"),                          "5",  OLD),
     ("legacy marker (no sha), posted",   dict(marker_body="<!-- claude-review-liveness rounds=4 -->",
