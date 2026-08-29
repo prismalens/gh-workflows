@@ -520,38 +520,17 @@ jobs:
           name: unresolved-threads
           path: .
 
-      # The schema is the whole output contract, so it lives outside the workspace the
-      # agent can write to. Story: gh-workflows#20.
-      - name: Write verdict schema
+      # The schema is the whole output contract. `--json-schema` takes INLINE JSON, not a
+      # path: passing a path fails with `--json-schema is not valid JSON: Unrecognized
+      # token '/'` (measured, canary run 33211451382). Kept on one line because
+      # GITHUB_OUTPUT is line-based, and single-quoted at the call site because the action
+      # parses claude_args with shell-quote. Story: gh-workflows#20.
+      - name: Build verdict schema
         id: schema
-        env:
-          SCHEMA_PATH: ${{ runner.temp }}/verdict-schema.json
         run: |
           set -euo pipefail
-          cat > "$SCHEMA_PATH" <<'JSON'
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["verdicts"],
-            "properties": {
-              "verdicts": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["thread_id", "verdict", "sha", "evidence"],
-                  "properties": {
-                    "thread_id": { "type": "string" },
-                    "verdict": { "type": "string", "enum": ["fixed", "still_applies", "cannot_verify"] },
-                    "sha": { "type": "string" },
-                    "evidence": { "type": "string", "maxLength": 300 }
-                  }
-                }
-              }
-            }
-          }
-          JSON
-          echo "path=$SCHEMA_PATH" >> "$GITHUB_OUTPUT"
+          schema='{"type":"object","additionalProperties":false,"required":["verdicts"],"properties":{"verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["thread_id","verdict","sha","evidence"],"properties":{"thread_id":{"type":"string"},"verdict":{"type":"string","enum":["fixed","still_applies","cannot_verify"]},"sha":{"type":"string"},"evidence":{"type":"string","maxLength":300}}}}}}'
+          echo "json=$schema" >> "$GITHUB_OUTPUT"
 
       - name: Run Claude Code Verification Round
         id: claude-verify
@@ -586,7 +565,7 @@ jobs:
           # Read-only, and nothing that writes: no Task, no Write, no comment MCP servers.
           # This is the third line, not the wall — the two above it are.
           claude_args: >-
-            --json-schema ${{ steps.schema.outputs.path }}
+            --json-schema '${{ steps.schema.outputs.json }}'
             --allowed-tools
             "Read,Grep,Glob,LS,Bash(gh pr diff:*)"
             --model ${{ needs.review.outputs.model }}
