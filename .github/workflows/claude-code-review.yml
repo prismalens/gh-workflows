@@ -15,16 +15,23 @@ on:
       auto_pause_rounds:
         description: >-
           Automatic review rounds allowed on one PR before the lane pauses itself.
-          A `@claude review` summon is the resume. Monotonic; never reset.
+          A `@claude review` summon is the resume and resets the counter to 0. Story: #28.
         type: number
         default: 5
       default_model:
         description: >-
           Model ID for review runs, passed through to claude-code-action as `--model`.
-          Override one run with `@claude review --model opus` or `--model sonnet`.
+          Override one run with `--model <alias>` matching an entry in `model_aliases`.
           Which IDs are usable is set by the CLAUDE_CODE_OAUTH_TOKEN subscription, not here.
         type: string
         default: 'claude-sonnet-5'
+      model_aliases:
+        description: |
+          Comma-separated `alias=model-id` pairs selectable with `--model <alias>` in a summon.
+          The alias is matched against the comment; the ID is emitted from THIS list and is never
+          read out of the comment. An alias absent here is not selectable. Story: #27.
+        type: string
+        default: 'opus=claude-opus-5,sonnet=claude-sonnet-5'
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         # required:false so fork pull_request runs — where the secrets context is always
@@ -232,17 +239,62 @@ jobs:
           else emit review; fi
           echo "unresolved claude[bot] threads: $count"
 
-      # SECURITY INVARIANT: an allowlist, not an extraction — the body is read by
-      # `contains()` and never leaves it; every value below is a pinned literal.
-      # Story: prismalens/prismalens#422.
+      # Match --model against allowlisted aliases; ID emitted from list, never read from body.
+      # Misses fall back to default_model and emit a warning. Story: #27.
       - name: Resolve review model
         id: model
         env:
-          MODEL: >-
-            ${{ contains(github.event.comment.body, '@claude review --model opus') && 'claude-opus-5'
-              || contains(github.event.comment.body, '@claude review --model sonnet') && 'claude-sonnet-5'
-              || inputs.default_model }}
-        run: echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+          BODY: ${{ github.event.comment.body }}
+          ALIASES: ${{ inputs.model_aliases }}
+          DEFAULT_MODEL: ${{ inputs.default_model }}
+        run: |
+          set -euo pipefail
+
+          selected_model=""
+          if [ -z "${ALIASES:-}" ]; then
+            echo "::error::model_aliases input is empty" >&2
+            exit 1
+          fi
+
+          IFS=',' read -ra pairs <<< "$ALIASES"
+          for pair in "${pairs[@]}"; do
+            case "$pair" in
+              *=*)
+                alias="${pair%%=*}"
+                model_id="${pair#*=}"
+                ;;
+              *)
+                echo "::error::Malformed model_aliases entry (missing '='): $pair" >&2
+                exit 1
+                ;;
+            esac
+            if [ -z "$alias" ] || [ -z "$model_id" ]; then
+              echo "::error::Malformed model_aliases entry (empty alias or ID): $pair" >&2
+              exit 1
+            fi
+            case "$BODY" in
+              *"--model $alias"*)
+                selected_model="$model_id"
+                break
+                ;;
+            esac
+          done
+
+          if [ -n "$selected_model" ]; then
+            echo "model=$selected_model" >> "$GITHUB_OUTPUT"
+            echo "model_fallback=" >> "$GITHUB_OUTPUT"
+          else
+            echo "model=$DEFAULT_MODEL" >> "$GITHUB_OUTPUT"
+            case "$BODY" in
+              *"--model "*)
+                echo "model_fallback=true" >> "$GITHUB_OUTPUT"
+                echo "::warning::Unrecognized --model alias in comment; falling back to default model ($DEFAULT_MODEL)"
+                ;;
+              *)
+                echo "model_fallback=" >> "$GITHUB_OUTPUT"
+                ;;
+            esac
+          fi
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -999,11 +1051,12 @@ jobs:
           reviewed_sha=$(jq -r '.body // ""' <<< "${found:-null}" \
             | head -1 | grep -oE 'sha=[0-9a-f]{40}' | head -1 | cut -d= -f2 || true)
 
-          # N counts automatic rounds that actually reviewed: summons are not rounds, and a
-          # cancelled, failed, paused, or token-less run reviewed nothing — cancel-in-progress
-          # makes those common. Monotonic, no reset in v1. Story: prismalens/prismalens#403.
+          # Auto-rounds increment; successful review summons reset counter to 0.
+          # Verify rounds (pull_request_review_comment) carry prev unchanged. Story: #28.
           rounds=$prev
-          if [ "$EVENT_NAME" = "pull_request" ] && [ -z "$SKIP_REASON" ] && [ "$REVIEW_RESULT" = "success" ]; then
+          if [ "$EVENT_NAME" = "issue_comment" ] && [ -z "$SKIP_REASON" ] && [ "$REVIEW_RESULT" = "success" ] && { [ "$MODE" = "review" ] || [ "$MODE" = "review-full" ]; }; then
+            rounds=0
+          elif [ "$EVENT_NAME" = "pull_request" ] && [ -z "$SKIP_REASON" ] && [ "$REVIEW_RESULT" = "success" ]; then
             rounds=$((prev + 1))
           fi
 
