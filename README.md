@@ -143,7 +143,7 @@ All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults ar
 | Input | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `skip_authors` | string | `dependabot[bot]` | Comma-separated PR author logins whose **automatic** `pull_request` rounds are skipped entirely — no review, no verify, no liveness comment. Matching is exact-login (the list is delimiter-wrapped), so `bot` never collides with `dependabot[bot]`. Use no spaces after the commas. A `@claude review` summon bypasses the list: manual intent wins. |
-| `auto_pause_rounds` | number | `5` | Automatic rounds allowed on one PR before the lane pauses itself. The count lives in the liveness comment's marker (`<!-- claude-review-liveness rounds=N sha=<head> -->`); only automatic rounds that actually ran increment it. On pause the lane posts `auto-paused after N automatic rounds` instead of reviewing. A `@claude review` summon resumes the lane and resets the counter to 0. |
+| `auto_pause_rounds` | number | `5` | Automatic rounds allowed on one PR before the lane pauses itself. The count lives in the liveness comment's marker (`<!-- claude-review-liveness rounds=N sha=<head> -->`); only automatic rounds that actually ran increment it. On pause the lane posts `auto-paused after N automatic rounds` instead of reviewing. A `@claude review` summon that **posts review output** resumes the lane and resets the counter to 0; a summon that finished green having posted nothing is not a resume and leaves the count untouched. |
 | `default_model` | string | `claude-sonnet-5` | Model ID handed to `claude-code-action` as `--model`, for all three review shapes (review, full review, verify). Sonnet is the default deliberately: the review lane is the highest-volume Claude spend across the consumer repos. A single run can deviate with `--model <alias>` in a summon, choosing from the `model_aliases` allowlist. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
 | `model_aliases` | string | `opus=claude-opus-5,sonnet=claude-sonnet-5` | Comma-separated `alias=model-id` pairs selectable with `--model <alias>` in a summon. The alias is matched against the comment; the ID is emitted from this list and is never read out of the comment. An alias absent here is not selectable. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
 
@@ -158,7 +158,7 @@ Bare PR comments, admitted accounts only: the summoning account must hold `admin
 | `@claude review --model <alias>` / `@claude full review --model <alias>` | review | Runs that review shape on the model ID mapped to `<alias>` in `model_aliases` (default `opus=claude-opus-5,sonnet=claude-sonnet-5`). An unrecognized alias falls back to `default_model` and emits a warning annotation. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription. |
 | bare `@claude …` | mention | Anything not matching the verbs above. |
 
-Summons run on draft PRs (explicit intent overrides the draft skip) and reset the auto-pause counter to 0. Fork-head PRs stay refused even when summoned (v1) — they get the `<!-- claude-review-fork-notice -->` comment instead.
+Summons run on draft PRs (explicit intent overrides the draft skip) and reset the auto-pause counter to 0, but only when the round actually posted review output — the same evidence that advances `sha=`. Fork-head PRs stay refused even when summoned (v1) — they get the `<!-- claude-review-fork-notice -->` comment instead.
 
 ## Thread resolution
 
