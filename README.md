@@ -154,8 +154,9 @@ run `33006099680` for the working case. So a token that can resolve a review thr
 code.
 
 `GITHUB_TOKEN` carries it, given the grant. The `mutate` job declares `contents: write` and
-`pull-requests: write` and resolves threads directly; no GitHub App is involved, and the lane needs
-no App secrets. Canary: run `33200877365` resolved a thread on a repo that never held App
+`pull-requests: write` and resolves threads directly; no separately configured GitHub App or App
+secrets are required. (`GITHUB_TOKEN` is itself an installation token for the GitHub Actions app,
+so this drops the *configured* App, not the App-backed token model.) Canary: run `33200877365` resolved a thread on a repo that never held App
 credentials. Story: #18, #20.
 
 Because that token can push, **`mutate` runs no agent.** It is deterministic shell rendering
@@ -178,12 +179,19 @@ done and blocks the merge, which is the worst of both.
 The `review` job is **not** read-only, and describing it that way hides where the wall actually is.
 It declares `id-token: write`, the sole input to the `claude[bot]` App-token mint: the action calls
 `core.getIDToken()` and exchanges the result for a token carrying `contents: write`,
-`pull_requests: write` and `issues: write` across the org. The job is write-capable by construction,
-because publishing a review needs it.
+`pull_requests: write` and `issues: write`. The job is write-capable by construction, because
+publishing a review needs it.
 
 **The wall is the tool allowlist.** What keeps that capability away from thread resolution and code
-push is which tools the agent may call, not which permissions the job holds. Widening the allowlist
-is a security change, not a tuning edit.
+push is which tools the agent may call, not which permissions the job holds. `Bash(gh pr review:*)`
+is absent from it deliberately. Widening the allowlist is a security change, not a tuning edit.
+
+It is the primary control, not the only one, and the diff text it reasons over is
+attacker-influenceable, so the others are worth naming: the job's own `GITHUB_TOKEN` is capped at
+`contents: read` and `issues: read`; the prompt forbids resolving threads, submitting a formal
+review, and merging; and `mutate` re-gates every verdict against a schema rather than trusting the
+model's output shape. None of those is a substitute for the allowlist. Together they are why a
+prompt-injection win is bounded rather than fatal.
 
 The `verify` job is the opposite and deliberately so: no `id-token`, a read-only `GITHUB_TOKEN`, and
 a tripwire. That is why the allowlist is described below as `verify`'s *third* line rather than its
@@ -200,7 +208,7 @@ Verdicts carry three states. `fixed` resolves the thread; `still_applies` and `c
 
 The verify agent's verdicts drive `mutate`, which holds `contents: write`. So the round that produces them runs in its own job, `verify`, and two lines in that job are what keep a model away from write power. Both are invariants. Changing either is an invariant change, not a tuning edit:
 
-1. **The job declares no `id-token: write`.** That permission is the sole input to the `claude[bot]` App-token mint: the action calls `core.getIDToken()` and exchanges the result at `api.anthropic.com/api/github/github-app-token-exchange` for a token carrying `contents: write, pull_requests: write, issues: write` across the org. Without the permission the runner never injects the OIDC request environment and `getOidcToken` throws, so the mint path fails closed.
+1. **The job declares no `id-token: write`.** That permission is the sole input to the `claude[bot]` App-token mint: the action calls `core.getIDToken()` and exchanges the result at `api.anthropic.com/api/github/github-app-token-exchange` for a token carrying `contents: write, pull_requests: write, issues: write`. The installation is org-wide with `repos=all`; the minted token's exact repository scope has not been measured here, so this deliberately claims only the permissions, not the breadth. Without the permission the runner never injects the OIDC request environment and `getOidcToken` throws, so the mint path fails closed.
 2. **`github_token: ${{ github.token }}` is passed to the action.** A provided token reaches `OVERRIDE_GITHUB_TOKEN` and `setupGitHubToken` returns it before any OIDC request is attempted.
 
 The job's own `GITHUB_TOKEN` is capped at `contents: read`, `pull-requests: read`, `issues: read`, so the credential the agent does hold cannot post, resolve, push, or mint. Its `--allowed-tools` list (`Read,Grep,Glob,LS,Bash(gh pr diff:*)`) is a third line, not the wall: a carelessly widened allowlist would reach more reading, and nothing else.
