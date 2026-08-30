@@ -49,7 +49,24 @@ case "$args" in
     done
     exit 0 ;;
   *claude-review-liveness*)   printf '%s' "$FAKE_MARKER" ; exit 0 ;;
-  *"pulls/"*)                 printf '%s' "$FAKE_INLINE" ; exit 0 ;;
+  *"pulls/"*)
+    # When FAKE_INLINE_JSON is set, return the JSON and let --jq filter it.
+    if [ -n "${FAKE_INLINE_JSON:-}" ]; then
+      jq_filter=""
+      prev=""
+      for a in "$@"; do
+        case "$prev" in --jq) jq_filter="$a";; esac
+        prev="$a"
+      done
+      if [ -n "$jq_filter" ]; then
+        printf '%s' "$FAKE_INLINE_JSON" | jq -r "$jq_filter"
+      else
+        printf '%s' "$FAKE_INLINE_JSON"
+      fi
+    else
+      printf '%s' "$FAKE_INLINE"
+    fi
+    exit 0 ;;
   # Must precede the '## Code review' case: the verify branch's filter contains both.
   *"verification round"*)     printf '%s' "$FAKE_VERIFY_SUMMARY"; exit 0 ;;
   *"## Code review"*)         printf '%s' "$FAKE_SUMMARY"; exit 0 ;;
@@ -62,7 +79,7 @@ exit 1
 def run_case(script, *, marker_body=None, inline=0, summary=0,
              event="pull_request", skip_reason="", result="success",
              mode="review", mutate_result="skipped", resolved="", open_="",
-             verify_summary=""):
+             verify_summary="", inline_json=""):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
@@ -81,6 +98,7 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
             CAPTURE=str(capture),
             FAKE_MARKER=marker_json,
             FAKE_INLINE=str(inline),
+            FAKE_INLINE_JSON=inline_json,
             FAKE_SUMMARY=str(summary),
             FAKE_VERIFY_SUMMARY=verify_summary,
             GH_TOKEN="x", REPO="o/r", PR="1",
@@ -170,6 +188,16 @@ CASES = [
     ("verify round, posted NOTHING",     dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",
                                               event="issue_comment", mode="verify",
                                               mutate_result="failure"),                   "2",  OLD),
+    # A carried-forward comment has commit_id rewritten to the current head but
+    # original_commit_id still pointing at the SHA it was posted against. The jq
+    # filter must use original_commit_id; matching commit_id overcounts. Story: #29.
+    ("carried-forward comment counts as zero",
+                                         dict(inline_json=json.dumps([
+                                              {"user": {"login": "claude[bot]"},
+                                               "commit_id": NEW,
+                                               "original_commit_id": OLD}]),
+                                              summary=0),                                "1",  None,
+                                         lambda v: "posted **nothing**" in v),
 ]
 
 

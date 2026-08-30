@@ -1,0 +1,40 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    groups:
+      # Without update-types the wildcard also groups MAJOR Action bumps, which
+      # would park a breaking update inside the group PR and — since the group's
+      # reported update-type is the highest change in it — block the whole group
+      # from auto-merging. Majors open individually instead.
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # Composite action in actions/pr-title/ — not scanned by the root entry.
+  - package-ecosystem: github-actions
+    directory: "/actions/pr-title"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    groups:
+      # Without update-types the wildcard also groups MAJOR Action bumps, which
+      # would park a breaking update inside the group PR and — since the group's
+      # reported update-type is the highest change in it — block the whole group
+      # from auto-merging. Majors open individually instead.
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch

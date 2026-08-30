@@ -32,6 +32,14 @@ on:
           read out of the comment. An alias absent here is not selectable. Story: #27.
         type: string
         default: 'opus=claude-opus-5,sonnet=claude-sonnet-5'
+      display_report:
+        description: >-
+          Render the review round's reasoning and token/cost usage into the Actions Step Summary.
+          Opt-in: a stub sets `display_report: true` to turn it on. The summary is world-readable
+          on a public repository; the content is Claude-authored text derived from the pull request
+          diff, which is already public there.
+        type: boolean
+        default: false
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         # required:false so fork pull_request runs — where the secrets context is always
@@ -389,7 +397,7 @@ jobs:
           fi
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           # Empty on pull_request (keeps the merge ref); the PR head SHA on comment
           # summons, whose default checkout is the default branch. Story: prismalens/prismalens#422.
@@ -403,7 +411,7 @@ jobs:
       # `Detect verification mode` wrote it before checkout wiped the workspace.
       - name: Stage unresolved threads for the verify job
         if: steps.mode.outputs.mode == 'verify'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: unresolved-threads
           path: /tmp/unresolved-claude-threads.json
@@ -421,7 +429,7 @@ jobs:
       - name: Run Claude Code Review
         id: claude-review
         if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10  # v1.0.210
         # Synchronous subagents required in print mode or the reviewer exits before its
         # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
         env:
@@ -568,6 +576,117 @@ jobs:
             "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
             --model ${{ steps.model.outputs.model }}
 
+      # Render the round's reasoning and cost into the Actions Step Summary so
+      # diagnosing a bad round does not require excavating the raw job log.
+      # Stories: #32 and part of #41.
+      - name: Display review report in Step Summary
+        if: >-
+          always() &&
+          inputs.display_report &&
+          (steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental')
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.resolve.outputs.number }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          MODE: ${{ steps.mode.outputs.mode }}
+          MODEL: ${{ steps.model.outputs.model }}
+          RUN_ID: ${{ github.run_id }}
+          SESSION_ID: ${{ steps.claude-review.outputs.session_id }}
+        run: |
+          set -euo pipefail
+          MAX_BYTES=1000000  # stay well under the 1 MiB per-step limit
+
+          # --- guard: execution file must exist and parse ---
+          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
+            echo "::warning::display_report: execution file is missing (path: '${EXECUTION_FILE:-}')"
+            exit 0
+          fi
+          if [ ! -s "$EXECUTION_FILE" ]; then
+            echo "::warning::display_report: execution file is empty (path: '$EXECUTION_FILE')"
+            exit 0
+          fi
+          if ! jq empty "$EXECUTION_FILE" 2>/dev/null; then
+            echo "::warning::display_report: execution file does not parse as JSON (path: '$EXECUTION_FILE')"
+            exit 0
+          fi
+
+          # 1. Extract usage metrics (safely, before building the document).
+          input_tokens=$(jq '[.[] | try (.message.usage.input_tokens) catch empty | numbers] | add // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          output_tokens=$(jq '[.[] | try (.message.usage.output_tokens) catch empty | numbers] | add // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          cache_read=$(jq '[.[] | try (.message.usage.cache_read_input_tokens) catch empty | numbers] | add // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          cache_create=$(jq '[.[] | try (.message.usage.cache_creation_input_tokens) catch empty | numbers] | add // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          total_cost=$(jq '[.[] | try (select(.type == "result") | .total_cost_usd) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          duration_ms=$(jq '[.[] | try (select(.type == "result") | .duration_ms) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          num_turns=$(jq '[.[] | try (select(.type == "result") | .num_turns) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          perm_denials=$(jq '[.[] | try (select(.type == "result") | .permission_denials) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+
+          has_usage=$(jq '[.[] | try (.message.usage) catch empty] | length' "$EXECUTION_FILE" 2>/dev/null || echo 0)
+          has_result=$(jq '[.[] | try (select(.type == "result")) catch empty] | length' "$EXECUTION_FILE" 2>/dev/null || echo 0)
+
+          # Belt and braces: if an extraction still fails or no metrics found, warn and continue.
+          if [ -z "$input_tokens" ] || [ -z "$output_tokens" ] || [ -z "$cache_read" ] || [ -z "$cache_create" ] || \
+             [ -z "$total_cost" ] || [ -z "$duration_ms" ] || [ -z "$num_turns" ] || [ -z "$perm_denials" ] || \
+             { [ "$has_usage" -eq 0 ] && [ "$has_result" -eq 0 ]; }; then
+            echo "::warning::display_report: could not extract usage metrics from the execution file"
+            input_tokens="${input_tokens:-0}"
+            output_tokens="${output_tokens:-0}"
+            cache_read="${cache_read:-0}"
+            cache_create="${cache_create:-0}"
+            total_cost="${total_cost:-0}"
+            duration_ms="${duration_ms:-0}"
+            num_turns="${num_turns:-0}"
+            perm_denials="${perm_denials:-0}"
+          fi
+
+          {
+            # 1. Context line
+            echo "### Review Round Report"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Repository | \`$REPO\` |"
+            echo "| Pull request | #$PR |"
+            echo "| Head SHA | \`${HEAD_SHA:0:8}\` |"
+            echo "| Round type | \`$MODE\` |"
+            echo "| Model | \`$MODEL\` |"
+            echo "| Run ID | \`$RUN_ID\` |"
+            echo "| Session ID | \`${SESSION_ID:-unknown}\` |"
+            echo ""
+
+            # 2. Usage table
+            echo "### Usage"
+            echo ""
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+            echo "| Input tokens | $input_tokens |"
+            echo "| Output tokens | $output_tokens |"
+            echo "| Cache read tokens | $cache_read |"
+            echo "| Cache creation tokens | $cache_create |"
+            echo "| Total cost (USD) | \$$total_cost |"
+            echo "| Duration | ${duration_ms}ms |"
+            echo "| Turns | $num_turns |"
+            echo "| Permission denials | $perm_denials |"
+            echo ""
+
+            # 3. Reasoning — assistant text turns rendered as markdown.
+            echo "### Reasoning"
+            echo ""
+            jq -r '.[] | try (select(.message.role == "assistant") | .message.content // [] | .[] | select(.type == "text") | .text // empty) catch empty' "$EXECUTION_FILE"
+          } > /tmp/step-summary-draft.md
+
+          # Cap the output size.
+          actual=$(wc -c < /tmp/step-summary-draft.md)
+          if [ "$actual" -gt "$MAX_BYTES" ]; then
+            notice_reserve=200
+            content_bytes=$((MAX_BYTES - notice_reserve))
+            dropped=$((actual - content_bytes))
+            head -c "$content_bytes" /tmp/step-summary-draft.md > "$GITHUB_STEP_SUMMARY"
+            printf '\n\n---\n*Output truncated: %d bytes dropped to stay under the 1 MiB Step Summary limit.*\n' "$dropped" >> "$GITHUB_STEP_SUMMARY"
+          else
+            cp /tmp/step-summary-draft.md "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Consolidate lane conclusion
         id: outcome
         if: always()
@@ -644,7 +763,7 @@ jobs:
           echo "Tripwire passed: no OIDC request environment in this job."
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           # Empty on pull_request (keeps the merge ref); the PR head SHA on comment
           # summons, whose default checkout is the default branch. Story: prismalens/prismalens#422.
@@ -656,7 +775,7 @@ jobs:
       # After checkout: actions/checkout wipes untracked workspace files, and the agent
       # may read only inside the workspace.
       - name: Download staged threads
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: unresolved-threads
           path: .
@@ -675,7 +794,7 @@ jobs:
 
       - name: Run Claude Code Verification Round
         id: claude-verify
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10  # v1.0.210
         env:
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
         with:
@@ -1185,13 +1304,13 @@ jobs:
             # make a future incremental range start past commits nothing read.
           else
             # Inline review comments claude[bot] left against the reviewed head —
-            # strictly this head. No `original_commit_id` fallback: a comment that
-            # only matches after GitHub rewrote it for a newer push is a previous
-            # head's comment, and counting it would report stale work as this
-            # run's.
+            # strictly this head. Uses `original_commit_id`, which is the SHA
+            # the comment was posted against and never moves. `commit_id` is
+            # rewritten forward by GitHub and would count a prior head's
+            # comments as this round's.
             inline=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate --jq \
               "[.[] | select(.user.login==\"claude[bot]\")
-                    | select(.commit_id==\"$HEAD_SHA\")] | length")
+                    | select(.original_commit_id==\"$HEAD_SHA\")] | length")
 
             # Summary comments (the plugin's no-issues path posts one). Three
             # filters, each necessary: author, because only claude[bot] posts
