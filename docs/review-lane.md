@@ -86,15 +86,16 @@ Configuration merges **per key**, not per file:
 
 Because `Sumit1993/mage-memory` is user-owned while other consumer repositories are organization-owned, organization rulesets and a `prismalens/.github` repository cannot reach all consumers. Hosting shared defaults in `gh-workflows` allows all callers to access ecosystem policy via a standard REST API read with no new credentials.
 
-#### Dynamic ref resolution (No hardcoded `@main`) (#54)
+#### Organization defaults ref (`@main`) (#54)
 
-Organization defaults are fetched from `gh-workflows` at the exact ref the callee reusable workflow is running as, resolved dynamically from `job.workflow_ref` (parsing the ref following the final `@`):
+Organization defaults are fetched from `prismalens/gh-workflows` at `main`:
 
 ```text
-gh api repos/prismalens/gh-workflows/contents/.github/claude-review-defaults.yml?ref=<org_ref>
+gh api repos/prismalens/gh-workflows/contents/.github/claude-review-defaults.yml?ref=main
 ```
 
-- **Why**: Hardcoding `@main` would break consumers that pin a SHA or release tag for supply-chain security by serving newer organization policy than the code they deliberately pinned. Dynamic ref resolution guarantees policy stays in lockstep with the pinned callee version.
+- **Compatibility**: No `github.*` context exposes the callee's own ref from inside a called workflow, so a version-matched read is not available. Compatibility is guarded by the schema's required `version` key (pinned to integer `1`), which rejects unexpected schema versions and degrades loudly to workflow defaults.
+- **Pinned consumer retrofit**: If a consumer ever pins a SHA, add a `workflows_ref` input to that caller stub and thread it to the organization defaults fetch.
 
 ### Repository configuration (`.github/claude-review.yml`)
 
