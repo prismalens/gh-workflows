@@ -62,10 +62,7 @@ jobs:
     # an agent posting through a member's credential is admitted and is meant to be.
     # Stories: prismalens/prismalens#403 and #422.
     if: >-
-      (
-        github.event_name == 'pull_request' &&
-        !contains(format(',{0},', inputs.skip_authors), format(',{0},', github.event.pull_request.user.login))
-      ) || (
+      github.event_name == 'pull_request' || (
         github.event.comment.user.type != 'Bot' &&
         !endsWith(github.event.comment.user.login, '[bot]') && (
           (
@@ -184,6 +181,232 @@ jobs:
         id: clock
         run: echo "started_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
 
+      # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
+      # Reading from head would let a pull request modify its own review policy
+      # (e.g. raise auto_pause_rounds, change model, skip authors) in the commit under review.
+      - name: Read repository review configuration
+        id: config
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
+          INPUT_DEFAULT_MODEL: ${{ inputs.default_model }}
+          INPUT_AUTO_PAUSE_ROUNDS: ${{ inputs.auto_pause_rounds }}
+          INPUT_SKIP_AUTHORS: ${{ inputs.skip_authors }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import subprocess
+          import sys
+          import yaml
+
+          repo = os.environ.get("REPO", "")
+          base_sha = os.environ.get("BASE_SHA", "")
+          default_model = os.environ.get("INPUT_DEFAULT_MODEL", "claude-sonnet-5")
+          auto_pause_rounds = int(os.environ.get("INPUT_AUTO_PAUSE_ROUNDS", 5))
+          skip_authors = os.environ.get("INPUT_SKIP_AUTHORS", "dependabot[bot]")
+          path_filters = []
+
+          ALLOWED_TOP_LEVEL_KEYS = {"version", "review", "findings"}
+          ALLOWED_REVIEW_KEYS = {
+              "default_model",
+              "auto_pause_rounds",
+              "skip_authors",
+              "path_filters",
+              "path_instructions",
+          }
+          ALLOWED_PATH_INSTRUCTION_KEYS = {"path", "instructions"}
+          ALLOWED_FINDINGS_KEYS = {
+              "suppress_below",
+              "enable_ai_fix_prompt",
+              "include_verification_note",
+          }
+          ALLOWED_DEFAULT_MODELS = {"claude-sonnet-5", "claude-opus-5"}
+          ALLOWED_SUPPRESS_BELOW = {"none", "Minor", "Major", "Critical"}
+
+          def validate_config(data, filename=".github/claude-review.yml"):
+              errors = []
+              if data is None:
+                  return errors
+              if not isinstance(data, dict):
+                  return [f"Invalid YAML structure in {filename}: expected a mapping/dictionary, got {type(data).__name__}"]
+
+              for key in data:
+                  if key not in ALLOWED_TOP_LEVEL_KEYS:
+                      errors.append(f"Unknown configuration key '{key}' in {filename}")
+
+              if errors:
+                  return errors
+
+              if "version" not in data:
+                  errors.append(f"Missing required key 'version' in {filename}")
+              else:
+                  version = data["version"]
+                  if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+                      errors.append(f"Invalid value for 'version' in {filename}: expected integer 1, got {version!r}")
+
+              if "review" in data:
+                  review = data["review"]
+                  if not isinstance(review, dict):
+                      errors.append(f"Invalid value for 'review' in {filename}: expected mapping, got {type(review).__name__}")
+                  else:
+                      for key in review:
+                          if key not in ALLOWED_REVIEW_KEYS:
+                              errors.append(f"Unknown configuration key 'review.{key}' in {filename}")
+
+                      if "default_model" in review:
+                          model = review["default_model"]
+                          if not isinstance(model, str) or model not in ALLOWED_DEFAULT_MODELS:
+                              errors.append(
+                                  f"Invalid value for 'review.default_model' in {filename}: {model!r}. "
+                                  f"Allowed values: {sorted(ALLOWED_DEFAULT_MODELS)}"
+                              )
+
+                      if "auto_pause_rounds" in review:
+                          rounds = review["auto_pause_rounds"]
+                          if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1:
+                              errors.append(
+                                  f"Invalid value for 'review.auto_pause_rounds' in {filename}: {rounds!r}. "
+                                  f"Must be an integer >= 1"
+                              )
+
+                      if "skip_authors" in review:
+                          skip = review["skip_authors"]
+                          if not isinstance(skip, list) or not all(isinstance(x, str) for x in skip):
+                              errors.append(f"Invalid value for 'review.skip_authors' in {filename}: expected list of strings")
+
+                      if "path_filters" in review:
+                          filters = review["path_filters"]
+                          if not isinstance(filters, list) or not all(isinstance(x, str) for x in filters):
+                              errors.append(f"Invalid value for 'review.path_filters' in {filename}: expected list of strings")
+
+                      if "path_instructions" in review:
+                          instructions = review["path_instructions"]
+                          if not isinstance(instructions, list):
+                              errors.append(
+                                  f"Invalid value for 'review.path_instructions' in {filename}: expected list of mappings"
+                              )
+                          else:
+                              for i, item in enumerate(instructions):
+                                  if not isinstance(item, dict):
+                                      errors.append(
+                                          f"Invalid value for 'review.path_instructions[{i}]' in {filename}: expected mapping"
+                                      )
+                                      continue
+                                  for k in item:
+                                      if k not in ALLOWED_PATH_INSTRUCTION_KEYS:
+                                          errors.append(
+                                              f"Unknown configuration key 'review.path_instructions[{i}].{k}' in {filename}"
+                                          )
+                                  if "path" not in item or not isinstance(item["path"], str):
+                                      errors.append(
+                                          f"Missing or invalid required key 'path' in 'review.path_instructions[{i}]' in {filename}"
+                                      )
+                                  if "instructions" not in item or not isinstance(item["instructions"], str):
+                                      errors.append(
+                                          f"Missing or invalid required key 'instructions' in 'review.path_instructions[{i}]' in {filename}"
+                                      )
+
+              if "findings" in data:
+                  findings = data["findings"]
+                  if not isinstance(findings, dict):
+                      errors.append(f"Invalid value for 'findings' in {filename}: expected mapping, got {type(findings).__name__}")
+                  else:
+                      for key in findings:
+                          if key not in ALLOWED_FINDINGS_KEYS:
+                              errors.append(f"Unknown configuration key 'findings.{key}' in {filename}")
+
+                      if "suppress_below" in findings:
+                          sb = findings["suppress_below"]
+                          if not isinstance(sb, str) or sb not in ALLOWED_SUPPRESS_BELOW:
+                              errors.append(
+                                  f"Invalid value for 'findings.suppress_below' in {filename}: {sb!r}. "
+                                  f"Allowed values: {sorted(ALLOWED_SUPPRESS_BELOW)}"
+                              )
+
+                      if "enable_ai_fix_prompt" in findings:
+                          eafp = findings["enable_ai_fix_prompt"]
+                          if not isinstance(eafp, bool):
+                              errors.append(f"Invalid value for 'findings.enable_ai_fix_prompt' in {filename}: expected boolean")
+
+                      if "include_verification_note" in findings:
+                          ivn = findings["include_verification_note"]
+                          if not isinstance(ivn, bool):
+                              errors.append(f"Invalid value for 'findings.include_verification_note' in {filename}: expected boolean")
+
+              return errors
+
+          # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
+          # Reading from head would let a pull request modify its own review policy
+          # (e.g. raise auto_pause_rounds, change model, skip authors) in the commit under review.
+          fetch_cmd = ["gh", "api", f"repos/{repo}/contents/.github/claude-review.yml?ref={base_sha}", "--jq", ".content"]
+          res = subprocess.run(fetch_cmd, capture_output=True, text=True)
+
+          config_content = None
+          if res.returncode == 0 and res.stdout.strip():
+              try:
+                  config_content = base64.b64decode(res.stdout.strip()).decode("utf-8")
+              except Exception as e:
+                  print(f"::warning::.github/claude-review.yml at base ref {base_sha[:8] if base_sha else 'unknown'} failed to decode base64: {e}; applying workflow defaults.")
+
+          if config_content is None:
+              print(f"No .github/claude-review.yml found at base ref {base_sha[:8] if base_sha else 'unknown'}; applying workflow defaults.")
+          else:
+              try:
+                  data = yaml.safe_load(config_content)
+              except Exception as exc:
+                  data = "MALFORMED"
+                  errors = [f"Malformed YAML in .github/claude-review.yml: {exc}"]
+
+              if data != "MALFORMED":
+                  errors = validate_config(data)
+
+              if errors:
+                  err_msg = "; ".join(errors)
+                  print(f"::warning::.github/claude-review.yml at base ref {base_sha[:8] if base_sha else 'unknown'} is malformed; applying workflow defaults: {err_msg}")
+              else:
+                  if data is not None and isinstance(data, dict):
+                      consumed = []
+                      unconsumed = []
+
+                      review = data.get("review", {})
+                      if isinstance(review, dict):
+                          if "default_model" in review:
+                              default_model = review["default_model"]
+                              consumed.append(f"review.default_model={default_model}")
+                          if "auto_pause_rounds" in review:
+                              auto_pause_rounds = review["auto_pause_rounds"]
+                              consumed.append(f"review.auto_pause_rounds={auto_pause_rounds}")
+                          if "skip_authors" in review:
+                              skip_authors = ",".join(review["skip_authors"])
+                              consumed.append(f"review.skip_authors={skip_authors}")
+                          if "path_filters" in review:
+                              path_filters = review["path_filters"]
+                              consumed.append(f"review.path_filters={path_filters}")
+                          if "path_instructions" in review:
+                              unconsumed.append("review.path_instructions")
+
+                      findings = data.get("findings", {})
+                      if isinstance(findings, dict):
+                          for k in findings:
+                              unconsumed.append(f"findings.{k}")
+
+                      print(f"Consumed configuration from .github/claude-review.yml (base ref {base_sha[:8] if base_sha else 'unknown'}): {', '.join(consumed) if consumed else 'none (defaults applied)'}")
+                      if unconsumed:
+                          print(f"::warning::Configuration key(s) accepted by schema but not yet wired in this workflow: {', '.join(sorted(unconsumed))}")
+
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as f:
+                  f.write(f"default_model={default_model}\n")
+                  f.write(f"auto_pause_rounds={auto_pause_rounds}\n")
+                  f.write(f"skip_authors={skip_authors}\n")
+                  f.write(f"path_filters={json.dumps(path_filters)}\n")
+          PY
+
       # Mode switch (#403 incremental re-review): on non-bot replies or summons,
       # unresolved claude[bot] threads trigger a verify round to re-evaluate and resolve.
       # Push events do a standard review and do not resolve threads without a reply.
@@ -197,7 +420,9 @@ jobs:
           HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
           EVENT_NAME: ${{ github.event_name }}
           SUMMON: ${{ needs.resolve.outputs.summon }}
-          MAX_ROUNDS: ${{ inputs.auto_pause_rounds }}
+          MAX_ROUNDS: ${{ steps.config.outputs.auto_pause_rounds }}
+          SKIP_AUTHORS: ${{ steps.config.outputs.skip_authors }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           # Presence only — the token value never enters the shell.
           HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
@@ -285,6 +510,18 @@ jobs:
             exit 0
           fi
 
+          # Skip authors check for automatic pull_request events
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "${PR_AUTHOR:-}" ]; then
+            IFS=',' read -ra skip_list <<< "${SKIP_AUTHORS:-}"
+            for skip_login in "${skip_list[@]}"; do
+              if [ "$PR_AUTHOR" = "$skip_login" ]; then
+                echo "skipping review: author '$PR_AUTHOR' matches skip_authors"
+                emit skip skipped-author
+                exit 0
+              fi
+            done
+          fi
+
           # Auto-pause reads the round counter off our own liveness comment. Summons are
           # the resume, so they neither read nor trip it. Story: prismalens/prismalens#403.
           if [ "$EVENT_NAME" = "pull_request" ]; then
@@ -339,7 +576,7 @@ jobs:
         env:
           BODY: ${{ github.event.comment.body }}
           ALIASES: ${{ inputs.model_aliases }}
-          DEFAULT_MODEL: ${{ inputs.default_model }}
+          DEFAULT_MODEL: ${{ steps.config.outputs.default_model }}
         run: |
           set -euo pipefail
 
@@ -1247,6 +1484,10 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          if [ "${SKIP_REASON:-}" = "skipped-author" ]; then
+            echo "PR author matches skip_authors; skipping liveness comment."
+            exit 0
+          fi
           short=${HEAD_SHA:0:8}
           # If review died before its clock step, STARTED_AT is empty and the
           # `>=` filter below would count every claude[bot] comment ever made.

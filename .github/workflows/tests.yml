@@ -29,6 +29,10 @@ jobs:
       - name: Review config validator
         run: python3 tests/test-validate-review-config.py
 
+      # Extracts and runs the real script out of claude-code-review.yml. Story: #33, #34.
+      - name: Review config and model escalation behaviour
+        run: python3 tests/test-review-config.py
+
       - name: Thread mutation and summary verification
         run: python3 tests/test-mutation-verdicts.py
 
