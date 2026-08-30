@@ -84,6 +84,7 @@ jobs:
         )
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       pull-requests: read
     outputs:
@@ -167,6 +168,9 @@ jobs:
       needs.resolve.outputs.same_repo == 'true' &&
       (needs.resolve.outputs.summon != 'none' || needs.resolve.outputs.draft != 'true')
     runs-on: ubuntu-latest
+    # Measured baseline is 5.03 min mean, 12.72 peak. Past this a run is hung, and with
+    # cancel-in-progress false for comment events it holds the PR's seat. Story: #63.
+    timeout-minutes: 30
     # READ-ONLY, and it stays read-only: token cannot hold write permissions over
     # attacker-influencable diff text. Stories: prismalens/prismalens#403 and #415.
     permissions:
@@ -1301,6 +1305,7 @@ jobs:
     needs: review
     if: ${{ !cancelled() && needs.review.outputs.telemetry_record != '' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions: {}
     steps:
       - name: Post the review round record
@@ -1362,6 +1367,7 @@ jobs:
     needs: [resolve, review]
     if: needs.review.outputs.mode == 'verify' && needs.review.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: read
@@ -1539,6 +1545,7 @@ jobs:
     needs: [resolve, review, verify]
     if: needs.verify.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       resolved: ${{ steps.apply.outputs.resolved }}
       open: ${{ steps.apply.outputs.open }}
@@ -1840,6 +1847,7 @@ jobs:
     needs: [resolve, review, mutate]
     if: always() && needs.review.result != 'skipped'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       pull-requests: write
     steps:
@@ -2013,6 +2021,7 @@ jobs:
         ) || (needs.resolve.outputs.admitted == 'true' && needs.resolve.outputs.same_repo == 'false')
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       pull-requests: write
     steps:

@@ -210,6 +210,29 @@ The `announce` job upserts an advisory comment on the pull request timeline matc
 - **Suppressed for skipped authors**: When a pull request's author matches `skip_authors`, the lane skips the round entirely and posts no liveness comment to the pull request timeline (preventing comment noise on automated PRs).
 - **Summary comments**: Filters `claude[bot]` issue comments created since run start with the `## Code review` heading prefix.
 
+### The eight verdicts
+
+`announce` emits one of eight verdict strings. Only the first two mean the head was read.
+
+| Verdict | Head reviewed? |
+| --- | --- |
+| `reviewed <sha> and posted N inline / M summary comment(s)` | **Yes** |
+| `reviewed <sha> (incremental from <base>) and posted N inline / M summary comment(s)` | **Yes** |
+| `finished on <sha> (job result: X) but posted **nothing**` | No |
+| `re-checked open threads at <sha>: N resolved / M left open` | **No** — threads only, no code was read |
+| `ran a verification round on <sha> (mutate result: X) but posted **nothing**` | No |
+| `auto-paused after N automatic rounds at <sha>` | No |
+| `did not run at <sha>: no CLAUDE_CODE_OAUTH_TOKEN reached this lane` | No |
+| `no new commits since <sha> was last reviewed; nothing to re-review` | No |
+
+The **Head reviewed?** column is the pre-merge test, and it exists because inference fails on
+the verification verdict: `8 resolved / 0 left open` reads like success while saying nothing
+about whether the code was read. Answer the question by looking it up in this table, never by
+reading the prose.
+
+A verification round is not review evidence for the head it ran against. It re-checks open
+threads and reads no new code, which is also why it never advances `sha=`.
+
 ## Thread resolution
 
 `resolveReviewThread` costs `contents: write`. It is refused at `contents: read`, which is the
