@@ -175,6 +175,7 @@ jobs:
       # The verify job runs the same allowlisted model resolution; resolving it twice
       # would be two places to keep in sync.
       model: ${{ steps.model.outputs.model }}
+      model_source: ${{ steps.model.outputs.model_source }}
 
     steps:
       - name: Record review start time
@@ -570,71 +571,127 @@ jobs:
           resolve_range
 
       # Match --model against allowlisted aliases; ID emitted from list, never read from body.
-      # Misses fall back to default_model and emit a warning. Story: #27.
+      # If no summon override is present, escalate to opus if changed files match review.path_filters.
+      # Misses fall back to default_model and emit a warning. Stories: #27, #34.
       - name: Resolve review model
         id: model
         env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.resolve.outputs.number }}
           BODY: ${{ github.event.comment.body }}
           ALIASES: ${{ inputs.model_aliases }}
           DEFAULT_MODEL: ${{ steps.config.outputs.default_model }}
+          PATH_FILTERS: ${{ steps.config.outputs.path_filters }}
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import fnmatch
+          import json
+          import os
+          import subprocess
+          import sys
 
-          selected_model=""
-          if [ -z "${ALIASES:-}" ]; then
-            echo "::error::model_aliases input is empty" >&2
-            exit 1
-          fi
+          repo = os.environ.get("REPO", "")
+          pr = os.environ.get("PR", "")
+          body = os.environ.get("BODY", "")
+          aliases_raw = os.environ.get("ALIASES", "")
+          default_model = os.environ.get("DEFAULT_MODEL", "claude-sonnet-5")
+          path_filters_raw = os.environ.get("PATH_FILTERS", "[]")
 
-          # The token after `--model `, up to the next whitespace. Read as DATA only: it is
-          # compared against the allowlist and never emitted. Story: #27.
-          requested_alias=""
-          case "$BODY" in
-            *"--model "*)
-              rest="${BODY#*--model }"
-              requested_alias="${rest%%[[:space:]]*}"
-              ;;
-          esac
+          if not aliases_raw.strip():
+              print("::error::model_aliases input is empty", file=sys.stderr)
+              sys.exit(1)
 
-          IFS=',' read -ra pairs <<< "$ALIASES"
-          for pair in "${pairs[@]}"; do
-            case "$pair" in
-              *=*)
-                alias="${pair%%=*}"
-                model_id="${pair#*=}"
-                ;;
-              *)
-                echo "::error::Malformed model_aliases entry (missing '='): $pair" >&2
-                exit 1
-                ;;
-            esac
-            if [ -z "$alias" ] || [ -z "$model_id" ]; then
-              echo "::error::Malformed model_aliases entry (empty alias or ID): $pair" >&2
-              exit 1
-            fi
-            # Whole-token match. A prefix test would let `--model sonnet-preview` select the
-            # `sonnet` alias and skip the unknown-alias fallback. Story: #27.
-            if [ "$requested_alias" = "$alias" ]; then
-              selected_model="$model_id"
-              break
-            fi
-          done
+          aliases = {}
+          for pair in aliases_raw.split(","):
+              pair = pair.strip()
+              if not pair:
+                  continue
+              if "=" not in pair:
+                  print(f"::error::Malformed model_aliases entry (missing '='): {pair}", file=sys.stderr)
+                  sys.exit(1)
+              alias, model_id = pair.split("=", 1)
+              alias = alias.strip()
+              model_id = model_id.strip()
+              if not alias or not model_id:
+                  print(f"::error::Malformed model_aliases entry (empty alias or ID): {pair}", file=sys.stderr)
+                  sys.exit(1)
+              aliases[alias] = model_id
 
-          if [ -n "$selected_model" ]; then
-            echo "model=$selected_model" >> "$GITHUB_OUTPUT"
-            echo "model_fallback=" >> "$GITHUB_OUTPUT"
-          else
-            echo "model=$DEFAULT_MODEL" >> "$GITHUB_OUTPUT"
-            case "$BODY" in
-              *"--model "*)
-                echo "model_fallback=true" >> "$GITHUB_OUTPUT"
-                echo "::warning::Unrecognized --model alias in comment; falling back to default model ($DEFAULT_MODEL)"
-                ;;
-              *)
-                echo "model_fallback=" >> "$GITHUB_OUTPUT"
-                ;;
-            esac
-          fi
+          opus_model = aliases.get("opus", "claude-opus-5")
+
+          # 1. Check for explicit --model <alias> in summon
+          requested_alias = None
+          if "--model " in body:
+              rest = body.split("--model ", 1)[1]
+              requested_alias = rest.split()[0] if rest.split() else ""
+
+          selected_model = None
+          model_source = None
+          model_fallback = ""
+
+          if requested_alias:
+              if requested_alias in aliases:
+                  selected_model = aliases[requested_alias]
+                  model_source = "summon override"
+              else:
+                  selected_model = default_model
+                  model_source = "default"
+                  model_fallback = "true"
+                  print(f"::warning::Unrecognized --model alias in comment; falling back to default model ({default_model})")
+          else:
+              # 2. No summon override: check path-based escalation against changed files
+              try:
+                  path_filters = json.loads(path_filters_raw) if path_filters_raw else []
+              except Exception:
+                  path_filters = []
+
+              if path_filters and repo and pr:
+                  cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--jq", ".[].filename"]
+                  res = subprocess.run(cmd, capture_output=True, text=True)
+                  changed_files = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+
+                  def matches_pattern(path: str, pattern: str) -> bool:
+                      if pattern.endswith("/**"):
+                          prefix = pattern[:-3]
+                          if path == prefix or path.startswith(prefix + "/"):
+                              return True
+                          if fnmatch.fnmatch(path, pattern):
+                              return True
+                      elif fnmatch.fnmatch(path, pattern):
+                          return True
+                      return False
+
+                  matched_file = None
+                  matched_pattern = None
+                  for f in changed_files:
+                      for pat in path_filters:
+                          if matches_pattern(f, pat):
+                              matched_file = f
+                              matched_pattern = pat
+                              break
+                      if matched_file:
+                          break
+
+                  if matched_file:
+                      selected_model = opus_model
+                      model_source = "escalated by path match"
+                      print(f"High-risk path matched: '{matched_file}' matched '{matched_pattern}'; escalating model to {selected_model}")
+                  else:
+                      selected_model = default_model
+                      model_source = "default"
+              else:
+                  selected_model = default_model
+                  model_source = "default"
+
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as f:
+                  f.write(f"model={selected_model}\n")
+                  f.write(f"model_source={model_source}\n")
+                  f.write(f"model_fallback={model_fallback}\n")
+          PY
 
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
@@ -1481,6 +1538,8 @@ jobs:
           STARTED_AT: ${{ needs.review.outputs.started_at }}
           RANGE_BASE: ${{ needs.review.outputs.range_base }}
           RANGE_HEAD: ${{ needs.review.outputs.range_head }}
+          MODEL: ${{ needs.review.outputs.model }}
+          MODEL_SOURCE: ${{ needs.review.outputs.model_source }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -1572,12 +1631,17 @@ jobs:
                     | select(.created_at >= \"$STARTED_AT\")
                     | select(.body | startswith(\"## Code review\"))] | length")
 
+            model_info=""
+            if [ -n "${MODEL:-}" ]; then
+              model_info="with \`$MODEL\` (${MODEL_SOURCE:-default}) "
+            fi
+
             if [ "$((inline + summary))" -gt 0 ]; then
               if [ "$MODE" = "incremental" ] && [ -n "${RANGE_BASE:-}" ]; then
                 short_base=${RANGE_BASE:0:8}
-                verdict="reviewed \`$short\` (incremental from \`$short_base\`) and posted ${inline} inline / ${summary} summary comment(s)."
+                verdict="reviewed \`$short\` (incremental from \`$short_base\`) ${model_info}and posted ${inline} inline / ${summary} summary comment(s)."
               else
-                verdict="reviewed \`$short\` and posted ${inline} inline / ${summary} summary comment(s)."
+                verdict="reviewed \`$short\` ${model_info}and posted ${inline} inline / ${summary} summary comment(s)."
               fi
 
               # The summon resume clears the auto-pause counter, gated on the SAME posted

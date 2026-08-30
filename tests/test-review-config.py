@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Behavioural tests for per-repo configuration loading in `Read repository review configuration`.
+"""Behavioural tests for per-repo review config loading and model escalation.
 
-Extracts the REAL shell body out of claude-code-review.yml and runs it against a
+Extracts the REAL shell bodies out of claude-code-review.yml and runs them against a
 stubbed `gh`, verifying:
 1. Absent config applies defaults and does not warn.
 2. Malformed config warns, names the file and the base SHA, and applies defaults.
 3. Valid config overrides default_model, auto_pause_rounds and skip_authors.
 4. A valid config carrying an unconsumed key warns and names that key.
+5. A changed file matching path_filters escalates to opus.
+6. A changed file not matching leaves the default model.
+7. A summon `--model` override beats a path match (precedence rule).
 
 Run: python3 tests/test-review-config.py
 """
@@ -20,22 +23,23 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = ROOT / ".github/workflows/claude-code-review.yml"
-STEP = "Read repository review configuration"
+CONFIG_STEP = "Read repository review configuration"
+MODEL_STEP = "Resolve review model"
 
 BASE_SHA = "1234567890abcdef1234567890abcdef12345678"
 
 
-def extract_step_script() -> str:
+def extract_step_script(step_name: str) -> str:
     import yaml
     wf = yaml.safe_load(WF.read_text())
     for job in wf["jobs"].values():
         for step in job.get("steps", []) or []:
-            if step.get("name") == STEP:
+            if step.get("name") == step_name:
                 return step["run"]
-    sys.exit(f"step {STEP!r} not found in {WF}")
+    sys.exit(f"step {step_name!r} not found in {WF}")
 
 
-GH_CONFIG_STUB = r"""#!/usr/bin/env bash
+GH_STUB = r"""#!/usr/bin/env bash
 args="$*"
 case "$args" in
   *"contents/.github/claude-review.yml"*)
@@ -44,6 +48,17 @@ case "$args" in
       exit 1
     fi
     printf '%s\n' "$FAKE_CONFIG_B64"
+    exit 0 ;;
+  *"pulls/"*"/files"*)
+    if [ -n "${FAKE_FILES_JSON:-}" ]; then
+      if [[ "$args" == *"--jq"* ]]; then
+        echo "$FAKE_FILES_JSON" | jq -r '.[].filename'
+      else
+        echo "$FAKE_FILES_JSON"
+      fi
+    else
+      echo "[]"
+    fi
     exit 0 ;;
 esac
 echo "gh stub: unrouted call: $args" >&2
@@ -60,7 +75,7 @@ def run_config_case(script, *, config_yaml=None, is_404=False,
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
         binp.mkdir()
-        (binp / "gh").write_text(GH_CONFIG_STUB)
+        (binp / "gh").write_text(GH_STUB)
         (binp / "gh").chmod(0o755)
         out_file = tdp / "output.txt"
         out_file.touch()
@@ -81,6 +96,47 @@ def run_config_case(script, *, config_yaml=None, is_404=False,
             INPUT_SKIP_AUTHORS=str(input_skip_authors),
             FAKE_CONFIG_404="1" if is_404 else "0",
             FAKE_CONFIG_B64=fake_b64,
+        )
+
+        p = subprocess.run(["bash", "-c", script], env=env,
+                           capture_output=True, text=True)
+        outputs = {}
+        for line in out_file.read_text().splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                outputs[k] = v
+
+        return p.returncode, outputs, p.stdout, p.stderr
+
+
+def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude-sonnet-5",
+                   default_model="claude-sonnet-5", path_filters=None,
+                   changed_files=None, repo="prismalens/test-repo", pr="42"):
+    with tempfile.TemporaryDirectory() as td:
+        tdp = pathlib.Path(td)
+        binp = tdp / "bin"
+        binp.mkdir()
+        (binp / "gh").write_text(GH_STUB)
+        (binp / "gh").chmod(0o755)
+        out_file = tdp / "output.txt"
+        out_file.touch()
+
+        files_json = ""
+        if changed_files is not None:
+            files_json = json.dumps([{"filename": f} for f in changed_files])
+
+        env = dict(os.environ)
+        env.update(
+            PATH=f"{binp}:{env['PATH']}",
+            GITHUB_OUTPUT=str(out_file),
+            GH_TOKEN="x",
+            REPO=repo,
+            PR=str(pr),
+            BODY=body,
+            ALIASES=aliases,
+            DEFAULT_MODEL=default_model,
+            PATH_FILTERS=json.dumps(path_filters if path_filters is not None else []),
+            FAKE_FILES_JSON=files_json,
         )
 
         p = subprocess.run(["bash", "-c", script], env=env,
@@ -140,7 +196,8 @@ review: [invalid
 
 
 def main():
-    script = extract_step_script()
+    config_script = extract_step_script(CONFIG_STEP)
+    model_script = extract_step_script(MODEL_STEP)
     fails = []
 
     def check(name, ok, detail=""):
@@ -150,14 +207,15 @@ def main():
             fails.append(f"{name}: {detail}")
             print(f"  FAIL  {name}: {detail}")
 
-    print("=== Testing Review Config Loading (Part A) ===")
+    print("=== Testing Review Config Loading (Part A: #33) ===")
 
     # 1. Absent config (404) applies defaults and does not warn
-    rc, out, stdout, stderr = run_config_case(script, is_404=True)
+    rc, out, stdout, stderr = run_config_case(config_script, is_404=True)
     check("absent config exits 0", rc == 0, f"rc={rc}")
     check("absent config applies default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
     check("absent config applies auto_pause_rounds", out.get("auto_pause_rounds") == "5", f"got {out.get('auto_pause_rounds')}")
     check("absent config applies skip_authors", out.get("skip_authors") == "dependabot[bot]", f"got {out.get('skip_authors')}")
+    check("absent config applies empty path_filters", json.loads(out.get("path_filters", "null")) == [], f"got {out.get('path_filters')}")
     check("absent config produces no warning", "::warning::" not in stdout and "::warning::" not in stderr, f"stdout: {stdout}")
     check("absent config logs single info line", "No .github/claude-review.yml found" in stdout, f"stdout: {stdout}")
 
@@ -167,7 +225,7 @@ def main():
         ("invalid model", MALFORMED_INVALID_MODEL, "Invalid value for 'review.default_model'"),
         ("yaml syntax error", MALFORMED_YAML_SYNTAX, "Malformed YAML"),
     ]:
-        rc, out, stdout, stderr = run_config_case(script, config_yaml=malformed_yaml)
+        rc, out, stdout, stderr = run_config_case(config_script, config_yaml=malformed_yaml)
         check(f"malformed config ({label}) exits 0", rc == 0, f"rc={rc}")
         check(f"malformed config ({label}) applies default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
         check(f"malformed config ({label}) applies auto_pause_rounds", out.get("auto_pause_rounds") == "5", f"got {out.get('auto_pause_rounds')}")
@@ -181,16 +239,17 @@ def main():
               f"stdout={stdout!r}")
 
     # 3. Valid config overrides default_model, auto_pause_rounds, and skip_authors
-    rc, out, stdout, stderr = run_config_case(script, config_yaml=VALID_CONFIG_FULL)
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_FULL)
     check("valid config exits 0", rc == 0, f"rc={rc}")
     check("valid config overrides default_model to claude-opus-5", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
     check("valid config overrides auto_pause_rounds to 10", out.get("auto_pause_rounds") == "10", f"got {out.get('auto_pause_rounds')}")
     check("valid config overrides skip_authors", out.get("skip_authors") == "renovate[bot],custom-bot", f"got {out.get('skip_authors')}")
+    check("valid config sets path_filters", json.loads(out.get("path_filters", "[]")) == ["packages/**"], f"got {out.get('path_filters')}")
     check("valid config logs consumed keys", "review.default_model=claude-opus-5" in stdout and "review.auto_pause_rounds=10" in stdout, f"stdout: {stdout}")
     check("valid config produces no warning", "::warning::" not in stdout, f"stdout: {stdout}")
 
     # 4. Valid config carrying unconsumed keys warns and names those keys
-    rc, out, stdout, stderr = run_config_case(script, config_yaml=VALID_CONFIG_WITH_UNWIRED_KEYS)
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_WITH_UNWIRED_KEYS)
     check("valid config with unwired keys exits 0", rc == 0, f"rc={rc}")
     check("valid config with unwired keys still consumes default_model", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
     has_warning = "::warning::" in stdout
@@ -202,13 +261,61 @@ def main():
           has_warning and warns_path_instructions and warns_suppress_below and warns_ai_fix and warns_verification,
           f"stdout={stdout!r}")
 
+    print("\n=== Testing Model Escalation (Part B: #34) ===")
+
+    # 5. A changed file matching path_filters escalates to opus
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        path_filters=["packages/@prismalens/engine/**", "src/auth.ts"],
+        changed_files=["packages/@prismalens/engine/src/core.ts", "docs/readme.md"],
+    )
+    check("path match escalates to opus", rc == 0 and out.get("model") == "claude-opus-5", f"model={out.get('model')}")
+    check("path match reports model_source=escalated by path match", out.get("model_source") == "escalated by path match", f"source={out.get('model_source')}")
+
+    # 5b. Trailing /** matches directory recursively
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        path_filters=["packages/engine/**"],
+        changed_files=["packages/engine/a/b/c.py"],
+    )
+    check("trailing /** matches deep nested path", rc == 0 and out.get("model") == "claude-opus-5", f"model={out.get('model')}")
+
+    # 6. A changed file not matching leaves default model
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        path_filters=["packages/@prismalens/engine/**"],
+        changed_files=["docs/readme.md", "packages/ui/button.tsx"],
+    )
+    check("non-matching files leave default model", rc == 0 and out.get("model") == "claude-sonnet-5", f"model={out.get('model')}")
+    check("non-matching files report model_source=default", out.get("model_source") == "default", f"source={out.get('model_source')}")
+
+    # 7. A summon `--model` override beats a path match (precedence rule)
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        body="@claude review --model sonnet",
+        path_filters=["packages/@prismalens/engine/**"],
+        changed_files=["packages/@prismalens/engine/src/core.ts"],
+    )
+    check("summon --model override beats path match", rc == 0 and out.get("model") == "claude-sonnet-5", f"model={out.get('model')}")
+    check("summon override reports model_source=summon override", out.get("model_source") == "summon override", f"source={out.get('model_source')}")
+
+    # 7b. Summon --model opus on non-matching files selects opus
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        body="@claude full review --model opus",
+        path_filters=["packages/@prismalens/engine/**"],
+        changed_files=["docs/readme.md"],
+    )
+    check("summon --model opus selects opus", rc == 0 and out.get("model") == "claude-opus-5", f"model={out.get('model')}")
+    check("summon --model opus reports model_source=summon override", out.get("model_source") == "summon override", f"source={out.get('model_source')}")
+
     print()
     if fails:
         print(f"{len(fails)} FAILED")
         for f in fails:
             print("  -", f)
         sys.exit(1)
-    print("all config loading tests passed")
+    print("all config loading and model escalation tests passed")
 
 
 if __name__ == "__main__":
