@@ -50,6 +50,10 @@ case "$args" in
     printf '%s\n' "$FAKE_CONFIG_B64"
     exit 0 ;;
   *"pulls/"*"/files"*)
+    if [ "${FAKE_FILES_FAIL:-0}" = "1" ]; then
+      echo "gh stub: 500 Internal Server Error" >&2
+      exit 1
+    fi
     if [ -n "${FAKE_FILES_JSON:-}" ]; then
       if [[ "$args" == *"--jq"* ]]; then
         echo "$FAKE_FILES_JSON" | jq -r '.[].filename'
@@ -70,7 +74,8 @@ def run_config_case(script, *, config_yaml=None, is_404=False,
                     input_default_model="claude-sonnet-5",
                     input_auto_pause_rounds="5",
                     input_skip_authors="dependabot[bot]",
-                    base_sha=BASE_SHA):
+                    base_sha=BASE_SHA,
+                    no_pyyaml=False):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
@@ -85,8 +90,16 @@ def run_config_case(script, *, config_yaml=None, is_404=False,
             fake_b64 = base64.b64encode(config_yaml.encode("utf-8")).decode("ascii")
 
         env = dict(os.environ)
+        pythonpath = env.get("PYTHONPATH", "")
+        if no_pyyaml:
+            fake_pkg = tdp / "fake_pkg"
+            fake_pkg.mkdir()
+            (fake_pkg / "yaml.py").write_text("raise ImportError(\"No module named 'yaml'\")\n")
+            pythonpath = f"{fake_pkg}:{pythonpath}"
+
         env.update(
             PATH=f"{binp}:{env['PATH']}",
+            PYTHONPATH=pythonpath,
             GITHUB_OUTPUT=str(out_file),
             GH_TOKEN="x",
             REPO="prismalens/test-repo",
@@ -111,7 +124,8 @@ def run_config_case(script, *, config_yaml=None, is_404=False,
 
 def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude-sonnet-5",
                    default_model="claude-sonnet-5", path_filters=None,
-                   changed_files=None, repo="prismalens/test-repo", pr="42"):
+                   changed_files=None, repo="prismalens/test-repo", pr="42",
+                   files_fail=False):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
@@ -137,6 +151,7 @@ def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude
             DEFAULT_MODEL=default_model,
             PATH_FILTERS=json.dumps(path_filters if path_filters is not None else []),
             FAKE_FILES_JSON=files_json,
+            FAKE_FILES_FAIL="1" if files_fail else "0",
         )
 
         p = subprocess.run(["bash", "-c", script], env=env,
@@ -261,6 +276,14 @@ def main():
           has_warning and warns_path_instructions and warns_suppress_below and warns_ai_fix and warns_verification,
           f"stdout={stdout!r}")
 
+    # 4b. Missing PyYAML warns and falls back rather than failing the step
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_FULL, no_pyyaml=True)
+    check("missing pyyaml exits 0", rc == 0, f"rc={rc}")
+    check("missing pyyaml applies default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
+    check("missing pyyaml applies auto_pause_rounds", out.get("auto_pause_rounds") == "5", f"got {out.get('auto_pause_rounds')}")
+    check("missing pyyaml applies skip_authors", out.get("skip_authors") == "dependabot[bot]", f"got {out.get('skip_authors')}")
+    check("missing pyyaml emits warning naming PyYAML", "::warning::" in stdout and "PyYAML" in stdout, f"stdout={stdout!r}")
+
     print("\n=== Testing Model Escalation (Part B: #34) ===")
 
     # 5. A changed file matching path_filters escalates to opus
@@ -308,6 +331,17 @@ def main():
     )
     check("summon --model opus selects opus", rc == 0 and out.get("model") == "claude-opus-5", f"model={out.get('model')}")
     check("summon --model opus reports model_source=summon override", out.get("model_source") == "summon override", f"source={out.get('model_source')}")
+
+    # 8. Changed-files fetch failure warns, uses default model, and sets model_source
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        path_filters=["packages/@prismalens/engine/**"],
+        files_fail=True,
+    )
+    check("changed-files fetch failure exits 0", rc == 0, f"rc={rc}")
+    check("changed-files fetch failure uses default model", out.get("model") == "claude-sonnet-5", f"model={out.get('model')}")
+    check("changed-files fetch failure reports model_source=default (changed-files fetch failed)", out.get("model_source") == "default (changed-files fetch failed)", f"source={out.get('model_source')}")
+    check("changed-files fetch failure emits warning naming command and stderr", "::warning::" in stdout and "repos/prismalens/test-repo/pulls/42/files" in stdout and "500 Internal Server Error" in stdout, f"stdout={stdout!r}")
 
     print()
     if fails:

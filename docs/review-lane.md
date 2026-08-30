@@ -90,7 +90,7 @@ The configuration schema is strictly validated against the S0 specification.
 | `version` | integer | **Consumed** | Schema version (must be integer `1`). |
 | `review.default_model` | string | **Consumed** | Default model ID for review runs (`claude-sonnet-5` or `claude-opus-5`). |
 | `review.auto_pause_rounds` | integer | **Consumed** | Automatic review rounds limit before pausing (integer >= 1). |
-| `review.skip_authors` | list of strings | **Consumed** | Author logins whose automatic `pull_request` rounds are skipped entirely. |
+| `review.skip_authors` | list of strings | **Consumed** | Author logins whose automatic `pull_request` rounds are skipped entirely (no review, no verify, and no liveness comment is posted). |
 | `review.path_filters` | list of strings | **Consumed** | Glob patterns for high-risk files that escalate the review model to Opus. |
 | `review.path_instructions` | list of mappings | *Schema-accepted, not yet wired* | Path-specific instructions for review agents. Emits warning if present. |
 | `findings.suppress_below` | string | *Schema-accepted, not yet wired* | Minimum severity threshold (`none`, `Minor`, `Major`, `Critical`). Emits warning if present. |
@@ -171,6 +171,7 @@ The `announce` job upserts an advisory comment on the pull request timeline matc
 - **Round counter (`rounds=N`)**: Increments only on automatic `pull_request` runs that actually executed and succeeded. Paused, cancelled, failed, or token-less runs do not increment it. An explicit `@claude review` summon that posts review output resets `rounds` to 0.
 - **Head baseline (`sha=<head>`)**: Advances to the current PR head only when the review round produces posted review output.
 - **Inline comment counting**: The liveness marker counts inline review comments left by `claude[bot]`. The count strictly matches `original_commit_id == HEAD_SHA` (the commit against which the comment was originally created). It avoids `commit_id`, which GitHub automatically rewrites forward as new commits are pushed to the PR. Carried-forward comments from prior heads are therefore never counted as work performed during the current round, preventing stale comments from advancing the baseline or resetting the auto-pause limit.
+- **Suppressed for skipped authors**: When a pull request's author matches `skip_authors`, the lane skips the round entirely and posts no liveness comment to the pull request timeline (preventing comment noise on automated PRs).
 - **Summary comments**: Filters `claude[bot]` issue comments created since run start with the `## Code review` heading prefix.
 
 ## Thread resolution

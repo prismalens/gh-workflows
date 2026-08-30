@@ -52,8 +52,8 @@ jobs:
   # so downstream jobs never branch on event shape. Stories: prismalens/prismalens#403 and #422.
   resolve:
     name: Resolve PR facts
-    # Admission. Automatic rounds drop skipped authors; the delimiter wrap keeps the
-    # match exact-login, so a login like `bot` cannot collide with `dependabot[bot]`.
+    # Admission. pull_request events are admitted unconditionally here; skip_authors
+    # filtering runs in 'Detect verification mode' so repository config can override it.
     # Summons and in-thread replies require write access to this repository, checked live
     # in the `admit` step below. `author_association` is banned from admission here: it is
     # repo-scoped and payload-dependent, and it misreported the maintainer as CONTRIBUTOR
@@ -182,6 +182,9 @@ jobs:
         id: clock
         run: echo "started_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
 
+      - name: Install review dependencies
+        run: pip install --quiet pyyaml
+
       # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
       # Reading from head would let a pull request modify its own review policy
       # (e.g. raise auto_pause_rounds, change model, skip authors) in the commit under review.
@@ -202,7 +205,12 @@ jobs:
           import os
           import subprocess
           import sys
-          import yaml
+
+          try:
+              import yaml
+          except ImportError:
+              yaml = None
+              print("::warning::PyYAML is not installed; applying workflow defaults.")
 
           repo = os.environ.get("REPO", "")
           base_sha = os.environ.get("BASE_SHA", "")
@@ -358,6 +366,8 @@ jobs:
 
           if config_content is None:
               print(f"No .github/claude-review.yml found at base ref {base_sha[:8] if base_sha else 'unknown'}; applying workflow defaults.")
+          elif yaml is None:
+              pass
           else:
               try:
                   data = yaml.safe_load(config_content)
@@ -653,37 +663,43 @@ jobs:
               if path_filters and repo and pr:
                   cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--jq", ".[].filename"]
                   res = subprocess.run(cmd, capture_output=True, text=True)
-                  changed_files = [line.strip() for line in res.stdout.splitlines() if line.strip()]
-
-                  def matches_pattern(path: str, pattern: str) -> bool:
-                      if pattern.endswith("/**"):
-                          prefix = pattern[:-3]
-                          if path == prefix or path.startswith(prefix + "/"):
-                              return True
-                          if fnmatch.fnmatch(path, pattern):
-                              return True
-                      elif fnmatch.fnmatch(path, pattern):
-                          return True
-                      return False
-
-                  matched_file = None
-                  matched_pattern = None
-                  for f in changed_files:
-                      for pat in path_filters:
-                          if matches_pattern(f, pat):
-                              matched_file = f
-                              matched_pattern = pat
-                              break
-                      if matched_file:
-                          break
-
-                  if matched_file:
-                      selected_model = opus_model
-                      model_source = "escalated by path match"
-                      print(f"High-risk path matched: '{matched_file}' matched '{matched_pattern}'; escalating model to {selected_model}")
-                  else:
+                  if res.returncode != 0:
+                      err = res.stderr.strip() if res.stderr else "unknown error"
+                      print(f"::warning::Command '{' '.join(cmd)}' failed with exit code {res.returncode}: {err}")
                       selected_model = default_model
-                      model_source = "default"
+                      model_source = "default (changed-files fetch failed)"
+                  else:
+                      changed_files = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+
+                      def matches_pattern(path: str, pattern: str) -> bool:
+                          if pattern.endswith("/**"):
+                              prefix = pattern[:-3]
+                              if path == prefix or path.startswith(prefix + "/"):
+                                  return True
+                              if fnmatch.fnmatch(path, pattern):
+                                  return True
+                          elif fnmatch.fnmatch(path, pattern):
+                              return True
+                          return False
+
+                      matched_file = None
+                      matched_pattern = None
+                      for f in changed_files:
+                          for pat in path_filters:
+                              if matches_pattern(f, pat):
+                                  matched_file = f
+                                  matched_pattern = pat
+                                  break
+                          if matched_file:
+                              break
+
+                      if matched_file:
+                          selected_model = opus_model
+                          model_source = "escalated by path match"
+                          print(f"High-risk path matched: '{matched_file}' matched '{matched_pattern}'; escalating model to {selected_model}")
+                      else:
+                          selected_model = default_model
+                          model_source = "default"
               else:
                   selected_model = default_model
                   model_source = "default"
