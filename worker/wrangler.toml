@@ -2,6 +2,12 @@ name = "review-telemetry"
 main = "index.js"
 compatibility_date = "2026-08-30"
 
+# The zone gives us rate limiting rules, which are zone-scoped and therefore
+# unavailable on workers.dev. Story: #60.
+routes = [
+  { pattern = "assayer.sfun.cloud", custom_domain = true }
+]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "review-telemetry"
