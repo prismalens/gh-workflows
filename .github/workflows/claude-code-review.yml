@@ -397,7 +397,7 @@ jobs:
           fi
 
       - name: Checkout repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Empty on pull_request (keeps the merge ref); the PR head SHA on comment
           # summons, whose default checkout is the default branch. Story: prismalens/prismalens#422.
@@ -763,7 +763,7 @@ jobs:
           echo "Tripwire passed: no OIDC request environment in this job."
 
       - name: Checkout repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Empty on pull_request (keeps the merge ref); the PR head SHA on comment
           # summons, whose default checkout is the default branch. Story: prismalens/prismalens#422.
