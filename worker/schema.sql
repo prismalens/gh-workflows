@@ -31,3 +31,6 @@ CREATE INDEX IF NOT EXISTS idx_usage_repo_time
 
 CREATE INDEX IF NOT EXISTS idx_usage_round_type
   ON usage_records (round_type, recorded_at);
+
+CREATE INDEX IF NOT EXISTS idx_usage_recorded_at
+  ON usage_records (recorded_at DESC, session_id DESC);
