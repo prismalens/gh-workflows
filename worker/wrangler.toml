@@ -1,0 +1,8 @@
+name = "review-telemetry"
+main = "index.js"
+compatibility_date = "2026-08-30"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "review-telemetry"
+database_id = "1e2a6dfd-9d77-4fac-aa21-d55652c164e1"
