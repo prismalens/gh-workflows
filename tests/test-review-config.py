@@ -42,6 +42,13 @@ def extract_step_script(step_name: str) -> str:
 GH_STUB = r"""#!/usr/bin/env bash
 args="$*"
 case "$args" in
+  *"contents/.github/claude-review-defaults.yml"*)
+    if [ "${FAKE_ORG_CONFIG_404:-0}" = "1" ]; then
+      echo "gh stub: 404 Not Found" >&2
+      exit 1
+    fi
+    printf '%s\n' "$FAKE_ORG_CONFIG_B64"
+    exit 0 ;;
   *"contents/.github/claude-review.yml"*)
     if [ "${FAKE_CONFIG_404:-0}" = "1" ]; then
       echo "gh stub: 404 Not Found" >&2
@@ -70,11 +77,13 @@ exit 1
 """
 
 
-def run_config_case(script, *, config_yaml=None, is_404=False,
+def run_config_case(script, *, org_config_yaml=None, org_is_404=True,
+                    config_yaml=None, is_404=False,
                     input_default_model="claude-sonnet-5",
                     input_auto_pause_rounds="5",
                     input_skip_authors="dependabot[bot]",
                     base_sha=BASE_SHA,
+                    workflow_ref="prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main",
                     no_pyyaml=False):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
@@ -88,6 +97,11 @@ def run_config_case(script, *, config_yaml=None, is_404=False,
         fake_b64 = ""
         if config_yaml is not None:
             fake_b64 = base64.b64encode(config_yaml.encode("utf-8")).decode("ascii")
+
+        fake_org_b64 = ""
+        if org_config_yaml is not None:
+            fake_org_b64 = base64.b64encode(org_config_yaml.encode("utf-8")).decode("ascii")
+            org_is_404 = False
 
         env = dict(os.environ)
         pythonpath = env.get("PYTHONPATH", "")
@@ -104,9 +118,12 @@ def run_config_case(script, *, config_yaml=None, is_404=False,
             GH_TOKEN="x",
             REPO="prismalens/test-repo",
             BASE_SHA=base_sha,
+            WORKFLOW_REF=workflow_ref,
             INPUT_DEFAULT_MODEL=str(input_default_model),
             INPUT_AUTO_PAUSE_ROUNDS=str(input_auto_pause_rounds),
             INPUT_SKIP_AUTHORS=str(input_skip_authors),
+            FAKE_ORG_CONFIG_404="1" if org_is_404 else "0",
+            FAKE_ORG_CONFIG_B64=fake_org_b64,
             FAKE_CONFIG_404="1" if is_404 else "0",
             FAKE_CONFIG_B64=fake_b64,
         )
@@ -210,6 +227,27 @@ review: [invalid
 """
 
 
+ORG_CONFIG_FULL = """
+version: 1
+
+review:
+  default_model: "claude-opus-5"
+  auto_pause_rounds: 8
+  skip_authors:
+    - "org-bot"
+  path_filters:
+    - "org-core/**"
+"""
+
+REPO_CONFIG_PARTIAL = """
+version: 1
+
+review:
+  default_model: "claude-sonnet-5"
+  auto_pause_rounds: 3
+"""
+
+
 def main():
     config_script = extract_step_script(CONFIG_STEP)
     model_script = extract_step_script(MODEL_STEP)
@@ -222,9 +260,63 @@ def main():
             fails.append(f"{name}: {detail}")
             print(f"  FAIL  {name}: {detail}")
 
-    print("=== Testing Review Config Loading (Part A: #33) ===")
+    print("=== Testing Review Config Loading (Part A: #33, #54) ===")
 
-    # 1. Absent config (404) applies defaults and does not warn
+    # 1. Org defaults absent and repo config absent: workflow defaults apply
+    rc, out, stdout, stderr = run_config_case(config_script, org_is_404=True, is_404=True)
+    check("org absent and repo absent: exits 0", rc == 0, f"rc={rc}")
+    check("org absent and repo absent: applies default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
+    check("org absent and repo absent: applies auto_pause_rounds", out.get("auto_pause_rounds") == "5", f"got {out.get('auto_pause_rounds')}")
+    check("org absent and repo absent: applies skip_authors", out.get("skip_authors") == "dependabot[bot]", f"got {out.get('skip_authors')}")
+    check("org absent and repo absent: applies empty path_filters", json.loads(out.get("path_filters", "null")) == [], f"got {out.get('path_filters')}")
+    check("org absent and repo absent: produces no warning", "::warning::" not in stdout and "::warning::" not in stderr, f"stdout: {stdout}")
+    check("org absent and repo absent: logs workflow default sources", "review.default_model: claude-sonnet-5 (source: workflow default)" in stdout, f"stdout: {stdout}")
+
+    # 2. Org defaults present, repo config absent: org values apply
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, is_404=True)
+    check("org present and repo absent: exits 0", rc == 0, f"rc={rc}")
+    check("org present and repo absent: applies org default_model", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
+    check("org present and repo absent: applies org auto_pause_rounds", out.get("auto_pause_rounds") == "8", f"got {out.get('auto_pause_rounds')}")
+    check("org present and repo absent: applies org skip_authors", out.get("skip_authors") == "org-bot", f"got {out.get('skip_authors')}")
+    check("org present and repo absent: applies org path_filters", json.loads(out.get("path_filters", "[]")) == ["org-core/**"], f"got {out.get('path_filters')}")
+    check("org present and repo absent: logs org defaults source", "review.default_model: claude-opus-5 (source: org defaults)" in stdout, f"stdout: {stdout}")
+    check("org present and repo absent: produces no warning", "::warning::" not in stdout, f"stdout: {stdout}")
+
+    # 3. Both present: repo wins key by key, and a key set only in org defaults still applies
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, config_yaml=REPO_CONFIG_PARTIAL)
+    check("both present: exits 0", rc == 0, f"rc={rc}")
+    check("both present: repo overrides default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
+    check("both present: repo overrides auto_pause_rounds", out.get("auto_pause_rounds") == "3", f"got {out.get('auto_pause_rounds')}")
+    check("both present: org skip_authors inherited", out.get("skip_authors") == "org-bot", f"got {out.get('skip_authors')}")
+    check("both present: org path_filters inherited", json.loads(out.get("path_filters", "[]")) == ["org-core/**"], f"got {out.get('path_filters')}")
+    check("both present: logs per-key sources accurately",
+          "review.default_model: claude-sonnet-5 (source: repo config)" in stdout and
+          "review.auto_pause_rounds: 3 (source: repo config)" in stdout and
+          "review.skip_authors: org-bot (source: org defaults)" in stdout and
+          "review.path_filters: ['org-core/**'] (source: org defaults)" in stdout,
+          f"stdout: {stdout}")
+
+    # 4. Malformed org defaults: warns, ignored, workflow defaults apply, and run continues
+    for label, malformed_yaml, expected_err_sub in [
+        ("unknown key", MALFORMED_UNKNOWN_KEY, "Unknown configuration key 'unknown_key'"),
+        ("invalid model", MALFORMED_INVALID_MODEL, "Invalid value for 'review.default_model'"),
+        ("yaml syntax error", MALFORMED_YAML_SYNTAX, "Malformed YAML"),
+    ]:
+        rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=malformed_yaml, is_404=True,
+                                                  workflow_ref="prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main")
+        check(f"malformed org config ({label}) exits 0", rc == 0, f"rc={rc}")
+        check(f"malformed org config ({label}) applies default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
+        check(f"malformed org config ({label}) applies auto_pause_rounds", out.get("auto_pause_rounds") == "5", f"got {out.get('auto_pause_rounds')}")
+        check(f"malformed org config ({label}) applies skip_authors", out.get("skip_authors") == "dependabot[bot]", f"got {out.get('skip_authors')}")
+        has_warning = "::warning::" in stdout
+        names_file = ".github/claude-review-defaults.yml" in stdout
+        names_ref = "refs/heads/main" in stdout
+        has_err = expected_err_sub in stdout
+        check(f"malformed org config ({label}) emits warning naming file, ref, and validator error",
+              has_warning and names_file and names_ref and has_err,
+              f"stdout={stdout!r}")
+
+    # Repo config tests (absent, malformed, valid, unwired)
     rc, out, stdout, stderr = run_config_case(config_script, is_404=True)
     check("absent config exits 0", rc == 0, f"rc={rc}")
     check("absent config applies default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
@@ -234,7 +326,6 @@ def main():
     check("absent config produces no warning", "::warning::" not in stdout and "::warning::" not in stderr, f"stdout: {stdout}")
     check("absent config logs single info line", "No .github/claude-review.yml found" in stdout, f"stdout: {stdout}")
 
-    # 2. Malformed config warns, names file and base SHA, and applies defaults
     for label, malformed_yaml, expected_err_sub in [
         ("unknown key", MALFORMED_UNKNOWN_KEY, "Unknown configuration key 'unknown_key'"),
         ("invalid model", MALFORMED_INVALID_MODEL, "Invalid value for 'review.default_model'"),
@@ -253,7 +344,6 @@ def main():
               has_warning and names_file and names_sha and has_err,
               f"stdout={stdout!r}")
 
-    # 3. Valid config overrides default_model, auto_pause_rounds, and skip_authors
     rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_FULL)
     check("valid config exits 0", rc == 0, f"rc={rc}")
     check("valid config overrides default_model to claude-opus-5", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
@@ -263,7 +353,6 @@ def main():
     check("valid config logs consumed keys", "review.default_model=claude-opus-5" in stdout and "review.auto_pause_rounds=10" in stdout, f"stdout: {stdout}")
     check("valid config produces no warning", "::warning::" not in stdout, f"stdout: {stdout}")
 
-    # 4. Valid config carrying unconsumed keys warns and names those keys
     rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_WITH_UNWIRED_KEYS)
     check("valid config with unwired keys exits 0", rc == 0, f"rc={rc}")
     check("valid config with unwired keys still consumes default_model", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")

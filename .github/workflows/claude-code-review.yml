@@ -194,6 +194,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
           INPUT_DEFAULT_MODEL: ${{ inputs.default_model }}
           INPUT_AUTO_PAUSE_ROUNDS: ${{ inputs.auto_pause_rounds }}
           INPUT_SKIP_AUTHORS: ${{ inputs.skip_authors }}
@@ -214,10 +215,18 @@ jobs:
 
           repo = os.environ.get("REPO", "")
           base_sha = os.environ.get("BASE_SHA", "")
+          workflow_ref = os.environ.get("WORKFLOW_REF", "")
           default_model = os.environ.get("INPUT_DEFAULT_MODEL", "claude-sonnet-5")
           auto_pause_rounds = int(os.environ.get("INPUT_AUTO_PAUSE_ROUNDS", 5))
           skip_authors = os.environ.get("INPUT_SKIP_AUTHORS", "dependabot[bot]")
           path_filters = []
+
+          sources = {
+              "default_model": "workflow default",
+              "auto_pause_rounds": "workflow default",
+              "skip_authors": "workflow default",
+              "path_filters": "workflow default",
+          }
 
           # Schema lives here and only here (#33).
           # The callee runs inside the consumer's checkout where this repository's
@@ -351,66 +360,147 @@ jobs:
 
               return errors
 
-          # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
-          # Reading from head would let a pull request modify its own review policy
-          # (e.g. raise auto_pause_rounds, change model, skip authors) in the commit under review.
-          fetch_cmd = ["gh", "api", f"repos/{repo}/contents/.github/claude-review.yml?ref={base_sha}", "--jq", ".content"]
-          res = subprocess.run(fetch_cmd, capture_output=True, text=True)
-
-          config_content = None
-          if res.returncode == 0 and res.stdout.strip():
-              try:
-                  config_content = base64.b64decode(res.stdout.strip()).decode("utf-8")
-              except Exception as e:
-                  print(f"::warning::.github/claude-review.yml at base ref {base_sha[:8] if base_sha else 'unknown'} failed to decode base64: {e}; applying workflow defaults.")
-
-          if config_content is None:
-              print(f"No .github/claude-review.yml found at base ref {base_sha[:8] if base_sha else 'unknown'}; applying workflow defaults.")
-          elif yaml is None:
-              pass
+          # Story #54: Fetch org defaults at the ref this reusable workflow was resolved at
+          # (from github.workflow_ref), not a hardcoded @main. If a consumer pins a SHA for
+          # supply-chain security, fetching @main would hand it newer policy than pinned code.
+          org_repo = "prismalens/gh-workflows"
+          if "/.github/" in workflow_ref:
+              org_repo = workflow_ref.split("/.github/", 1)[0]
+          if "@" in workflow_ref:
+              org_ref = workflow_ref.rsplit("@", 1)[1]
           else:
-              try:
-                  data = yaml.safe_load(config_content)
-              except Exception as exc:
-                  data = "MALFORMED"
-                  errors = [f"Malformed YAML in .github/claude-review.yml: {exc}"]
+              org_ref = "main"
 
-              if data != "MALFORMED":
-                  errors = validate_config(data)
+          if yaml is not None:
+              org_fetch_cmd = ["gh", "api", f"repos/{org_repo}/contents/.github/claude-review-defaults.yml?ref={org_ref}", "--jq", ".content"]
+              org_res = subprocess.run(org_fetch_cmd, capture_output=True, text=True)
 
-              if errors:
-                  err_msg = "; ".join(errors)
-                  print(f"::warning::.github/claude-review.yml at base ref {base_sha[:8] if base_sha else 'unknown'} is malformed; applying workflow defaults: {err_msg}")
+              org_config_content = None
+              if org_res.returncode == 0 and org_res.stdout.strip():
+                  try:
+                      org_config_content = base64.b64decode(org_res.stdout.strip()).decode("utf-8")
+                  except Exception as e:
+                      print(f"::warning::.github/claude-review-defaults.yml at ref {org_ref} failed to decode base64: {e}; ignoring org defaults.")
+
+              if org_config_content is None:
+                  print(f"No .github/claude-review-defaults.yml found at ref {org_ref}; applying workflow defaults.")
               else:
-                  if data is not None and isinstance(data, dict):
-                      consumed = []
-                      unconsumed = []
+                  try:
+                      org_data = yaml.safe_load(org_config_content)
+                  except Exception as exc:
+                      org_data = "MALFORMED"
+                      org_errors = [f"Malformed YAML in .github/claude-review-defaults.yml: {exc}"]
 
-                      review = data.get("review", {})
-                      if isinstance(review, dict):
-                          if "default_model" in review:
-                              default_model = review["default_model"]
-                              consumed.append(f"review.default_model={default_model}")
-                          if "auto_pause_rounds" in review:
-                              auto_pause_rounds = review["auto_pause_rounds"]
-                              consumed.append(f"review.auto_pause_rounds={auto_pause_rounds}")
-                          if "skip_authors" in review:
-                              skip_authors = ",".join(review["skip_authors"])
-                              consumed.append(f"review.skip_authors={skip_authors}")
-                          if "path_filters" in review:
-                              path_filters = review["path_filters"]
-                              consumed.append(f"review.path_filters={path_filters}")
-                          if "path_instructions" in review:
-                              unconsumed.append("review.path_instructions")
+                  if org_data != "MALFORMED":
+                      org_errors = validate_config(org_data, filename=".github/claude-review-defaults.yml")
 
-                      findings = data.get("findings", {})
-                      if isinstance(findings, dict):
-                          for k in findings:
-                              unconsumed.append(f"findings.{k}")
+                  if org_errors:
+                      err_msg = "; ".join(org_errors)
+                      print(f"::warning::.github/claude-review-defaults.yml at ref {org_ref} is malformed; ignoring org defaults: {err_msg}")
+                  else:
+                      if org_data is not None and isinstance(org_data, dict):
+                          org_consumed = []
+                          org_unconsumed = []
 
-                      print(f"Consumed configuration from .github/claude-review.yml (base ref {base_sha[:8] if base_sha else 'unknown'}): {', '.join(consumed) if consumed else 'none (defaults applied)'}")
-                      if unconsumed:
-                          print(f"::warning::Configuration key(s) accepted by schema but not yet wired in this workflow: {', '.join(sorted(unconsumed))}")
+                          review = org_data.get("review", {})
+                          if isinstance(review, dict):
+                              if "default_model" in review:
+                                  default_model = review["default_model"]
+                                  sources["default_model"] = "org defaults"
+                                  org_consumed.append(f"review.default_model={default_model}")
+                              if "auto_pause_rounds" in review:
+                                  auto_pause_rounds = review["auto_pause_rounds"]
+                                  sources["auto_pause_rounds"] = "org defaults"
+                                  org_consumed.append(f"review.auto_pause_rounds={auto_pause_rounds}")
+                              if "skip_authors" in review:
+                                  skip_authors = ",".join(review["skip_authors"])
+                                  sources["skip_authors"] = "org defaults"
+                                  org_consumed.append(f"review.skip_authors={skip_authors}")
+                              if "path_filters" in review:
+                                  path_filters = review["path_filters"]
+                                  sources["path_filters"] = "org defaults"
+                                  org_consumed.append(f"review.path_filters={path_filters}")
+                              if "path_instructions" in review:
+                                  org_unconsumed.append("review.path_instructions")
+
+                          findings = org_data.get("findings", {})
+                          if isinstance(findings, dict):
+                              for k in findings:
+                                  org_unconsumed.append(f"findings.{k}")
+
+                          print(f"Consumed configuration from .github/claude-review-defaults.yml (ref {org_ref}): {', '.join(org_consumed) if org_consumed else 'none'}")
+                          if org_unconsumed:
+                              print(f"::warning::Configuration key(s) in .github/claude-review-defaults.yml accepted by schema but not yet wired in this workflow: {', '.join(sorted(org_unconsumed))}")
+
+          if yaml is not None:
+              # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
+              # Reading from head would let a pull request modify its own review policy
+              # (e.g. raise auto_pause_rounds, change model, skip authors) in the commit under review.
+              fetch_cmd = ["gh", "api", f"repos/{repo}/contents/.github/claude-review.yml?ref={base_sha}", "--jq", ".content"]
+              res = subprocess.run(fetch_cmd, capture_output=True, text=True)
+
+              config_content = None
+              if res.returncode == 0 and res.stdout.strip():
+                  try:
+                      config_content = base64.b64decode(res.stdout.strip()).decode("utf-8")
+                  except Exception as e:
+                      print(f"::warning::.github/claude-review.yml at base ref {base_sha[:8] if base_sha else 'unknown'} failed to decode base64: {e}; applying workflow defaults.")
+
+              if config_content is None:
+                  print(f"No .github/claude-review.yml found at base ref {base_sha[:8] if base_sha else 'unknown'}; applying workflow defaults.")
+              else:
+                  try:
+                      data = yaml.safe_load(config_content)
+                  except Exception as exc:
+                      data = "MALFORMED"
+                      errors = [f"Malformed YAML in .github/claude-review.yml: {exc}"]
+
+                  if data != "MALFORMED":
+                      errors = validate_config(data, filename=".github/claude-review.yml")
+
+                  if errors:
+                      err_msg = "; ".join(errors)
+                      print(f"::warning::.github/claude-review.yml at base ref {base_sha[:8] if base_sha else 'unknown'} is malformed; applying workflow defaults: {err_msg}")
+                  else:
+                      if data is not None and isinstance(data, dict):
+                          consumed = []
+                          unconsumed = []
+
+                          review = data.get("review", {})
+                          if isinstance(review, dict):
+                              if "default_model" in review:
+                                  default_model = review["default_model"]
+                                  sources["default_model"] = "repo config"
+                                  consumed.append(f"review.default_model={default_model}")
+                              if "auto_pause_rounds" in review:
+                                  auto_pause_rounds = review["auto_pause_rounds"]
+                                  sources["auto_pause_rounds"] = "repo config"
+                                  consumed.append(f"review.auto_pause_rounds={auto_pause_rounds}")
+                              if "skip_authors" in review:
+                                  skip_authors = ",".join(review["skip_authors"])
+                                  sources["skip_authors"] = "repo config"
+                                  consumed.append(f"review.skip_authors={skip_authors}")
+                              if "path_filters" in review:
+                                  path_filters = review["path_filters"]
+                                  sources["path_filters"] = "repo config"
+                                  consumed.append(f"review.path_filters={path_filters}")
+                              if "path_instructions" in review:
+                                  unconsumed.append("review.path_instructions")
+
+                          findings = data.get("findings", {})
+                          if isinstance(findings, dict):
+                              for k in findings:
+                                  unconsumed.append(f"findings.{k}")
+
+                          print(f"Consumed configuration from .github/claude-review.yml (base ref {base_sha[:8] if base_sha else 'unknown'}): {', '.join(consumed) if consumed else 'none (defaults applied)'}")
+                          if unconsumed:
+                              print(f"::warning::Configuration key(s) accepted by schema but not yet wired in this workflow: {', '.join(sorted(unconsumed))}")
+
+          print("Effective review configuration:")
+          print(f"  review.default_model: {default_model} (source: {sources['default_model']})")
+          print(f"  review.auto_pause_rounds: {auto_pause_rounds} (source: {sources['auto_pause_rounds']})")
+          print(f"  review.skip_authors: {skip_authors} (source: {sources['skip_authors']})")
+          print(f"  review.path_filters: {path_filters} (source: {sources['path_filters']})")
 
           github_output = os.environ.get("GITHUB_OUTPUT", "")
           if github_output:
