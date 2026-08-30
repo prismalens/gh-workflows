@@ -1,11 +1,38 @@
 let cachedCerts = null;
 let certsExpiry = 0;
+let lastRefetchTime = 0;
 
 const READ_HEADERS = {
   "content-type": "application/json",
   "cache-control": "no-store",
   "vary": "Cf-Access-Jwt-Assertion",
 };
+
+const NUMERIC_FIELDS = [
+  "pr_number",
+  "run_id",
+  "run_attempt",
+  "input_tokens",
+  "output_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "total_cost_usd",
+  "duration_ms",
+  "duration_api_ms",
+  "num_turns",
+  "permission_denials",
+  "changed_files",
+  "diff_lines",
+];
+
+const STRING_FIELDS = [
+  "recorded_at",
+  "pr_url",
+  "head_sha",
+  "run_url",
+  "round_type",
+  "model",
+];
 
 function serializeJson(val, fallback) {
   if (val === undefined || val === null) {
@@ -47,9 +74,9 @@ function parseJwtPart(part) {
   return JSON.parse(text);
 }
 
-async function getSigningKeys(teamDomain) {
+async function getSigningKeys(teamDomain, force = false) {
   const now = Date.now();
-  if (cachedCerts && now < certsExpiry) {
+  if (!force && cachedCerts && now < certsExpiry) {
     return cachedCerts;
   }
   const res = await fetch(`https://${teamDomain}/cdn-cgi/access/certs`);
@@ -62,6 +89,7 @@ async function getSigningKeys(teamDomain) {
   }
   cachedCerts = data.keys;
   certsExpiry = now + 3600 * 1000;
+  lastRefetchTime = now;
   return cachedCerts;
 }
 
@@ -120,7 +148,19 @@ async function verifyAccess(request, env) {
     });
   }
 
-  const matchingKey = keys.find((k) => k.kid === header.kid);
+  let matchingKey = keys.find((k) => k.kid === header.kid);
+  if (!matchingKey && Date.now() - lastRefetchTime >= 60 * 1000) {
+    try {
+      keys = await getSigningKeys(teamDomain, true);
+      matchingKey = keys.find((k) => k.kid === header.kid);
+    } catch {
+      return new Response(JSON.stringify({ error: "failed to fetch signing keys" }), {
+        status: 503,
+        headers: READ_HEADERS,
+      });
+    }
+  }
+
   if (!matchingKey) {
     return new Response(JSON.stringify({ error: "forbidden" }), {
       status: 403,
@@ -456,6 +496,26 @@ async function handleIngest(request, env) {
     typeof payload.repository !== "string"
   ) {
     return new Response(null, { status: 400 });
+  }
+
+  for (const field of NUMERIC_FIELDS) {
+    const val = payload[field];
+    if (val !== undefined && val !== null && (typeof val !== "number" || !Number.isFinite(val))) {
+      return new Response(JSON.stringify({ error: "invalid field types" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
+  for (const field of STRING_FIELDS) {
+    const val = payload[field];
+    if (val !== undefined && val !== null && typeof val !== "string") {
+      return new Response(JSON.stringify({ error: "invalid field types" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
   }
 
   // Name columns literally so unmapped payload fields are dropped (#41).
