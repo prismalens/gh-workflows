@@ -1,13 +1,20 @@
-# Majors open individually and wait for a human; minors and patches are grouped.
-# This matches the policy in dependabot-auto-merge.yml.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
     groups:
-      minor-and-patch:
+      # Without update-types the wildcard also groups MAJOR Action bumps, which
+      # would park a breaking update inside the group PR and — since the group's
+      # reported update-type is the highest change in it — block the whole group
+      # from auto-merging. Majors open individually instead.
+      github-actions:
+        patterns:
+          - "*"
         update-types:
           - minor
           - patch
@@ -17,8 +24,17 @@ updates:
     directory: "/actions/pr-title"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
     groups:
-      minor-and-patch:
+      # Without update-types the wildcard also groups MAJOR Action bumps, which
+      # would park a breaking update inside the group PR and — since the group's
+      # reported update-type is the highest change in it — block the whole group
+      # from auto-merging. Majors open individually instead.
+      github-actions:
+        patterns:
+          - "*"
         update-types:
           - minor
           - patch
