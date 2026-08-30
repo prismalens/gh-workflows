@@ -46,5 +46,10 @@ reviews:
         This README documents workflow behaviour that consumers rely on. If the PR changes
         a workflow input, default, trigger, marker format, label name or job topology, the
         README must be updated in the same PR. Name the specific stale passage.
+    - path: "docs/review-lane.md"
+      instructions: >-
+        This document details review lane workflow behaviour that consumers rely on. If the PR
+        changes a workflow input, default, trigger, marker format, label name or job topology,
+        docs/review-lane.md must be updated in the same PR. Name the specific stale passage.
 chat:
   allow_non_org_members: false
