@@ -87,6 +87,7 @@ jobs:
       admitted: ${{ github.event_name == 'pull_request' && 'true' || steps.admit.outputs.admitted }}
       number: ${{ steps.pr.outputs.number }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
+      base_sha: ${{ steps.pr.outputs.base_sha }}
       draft: ${{ steps.pr.outputs.draft }}
       same_repo: ${{ steps.pr.outputs.same_repo }}
       checkout_ref: ${{ steps.pr.outputs.checkout_ref }}
@@ -124,11 +125,13 @@ jobs:
           set -euo pipefail
           pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
           head_sha="$(jq -r '.head.sha' <<< "$pr")"
+          base_sha="$(jq -r '.base.sha' <<< "$pr")"
           head_repo="$(jq -r '.head.repo.full_name' <<< "$pr")"
 
           {
             echo "number=${PR_NUMBER}"
             echo "head_sha=${head_sha}"
+            echo "base_sha=${base_sha}"
             echo "draft=$(jq -r '.draft' <<< "$pr")"
           } >> "$GITHUB_OUTPUT"
 
