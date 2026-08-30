@@ -95,6 +95,8 @@ jobs:
       same_repo: ${{ steps.pr.outputs.same_repo }}
       checkout_ref: ${{ steps.pr.outputs.checkout_ref }}
       summon: ${{ steps.summon.outputs.summon }}
+      changed_files: ${{ steps.pr.outputs.changed_files }}
+      diff_lines: ${{ steps.pr.outputs.diff_lines }}
 
     steps:
       - name: Admit commenter
@@ -136,6 +138,8 @@ jobs:
             echo "head_sha=${head_sha}"
             echo "base_sha=${base_sha}"
             echo "draft=$(jq -r '.draft' <<< "$pr")"
+            echo "changed_files=$(jq -r '.changed_files // ""' <<< "$pr")"
+            echo "diff_lines=$(jq -r 'if .additions == null and .deletions == null then "" else ((.additions // 0) + (.deletions // 0)) end' <<< "$pr")"
           } >> "$GITHUB_OUTPUT"
 
           # Comment events check out the default branch by default, which is not the code
@@ -1018,14 +1022,19 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           ROUND_TYPE: ${{ steps.mode.outputs.mode }}
           MODEL: ${{ steps.model.outputs.model }}
-          RANGE_BASE: ${{ steps.mode.outputs.range_base }}
-          RANGE_HEAD: ${{ steps.mode.outputs.range_head }}
+          RESOLVE_CHANGED_FILES: ${{ needs.resolve.outputs.changed_files }}
+          RESOLVE_DIFF_LINES: ${{ needs.resolve.outputs.diff_lines }}
+          CLAUDE_OUTCOME: ${{ steps.claude-review.outcome }}
           HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
         run: |
           set -uo pipefail
 
           if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
-            echo "::warning::telemetry: execution file is missing (path: '${EXECUTION_FILE:-}'); this round will not be recorded."
+            if [ "${CLAUDE_OUTCOME:-skipped}" = "skipped" ]; then
+              echo "telemetry: no review ran in this round; nothing to record."
+            else
+              echo "::warning::telemetry: execution file is missing (path: '${EXECUTION_FILE:-}'); this round will not be recorded."
+            fi
             exit 0
           fi
           if ! jq empty "$EXECUTION_FILE" 2>/dev/null; then
@@ -1039,11 +1048,17 @@ jobs:
             exit 0
           fi
 
-          changed_files=""
-          diff_lines=""
-          if [ -n "${RANGE_BASE:-}" ] && [ -n "${RANGE_HEAD:-}" ]; then
-            changed_files=$(git diff --name-only "$RANGE_BASE".."$RANGE_HEAD" 2>/dev/null | wc -l | tr -d ' ' || true)
-            diff_lines=$(git diff --numstat "$RANGE_BASE".."$RANGE_HEAD" 2>/dev/null | awk '{a+=$1; d+=$2} END {print a+d+0}' || true)
+          if [ "$(printf '%s' "$result" | jq -r 'has("modelUsage")' 2>/dev/null || echo false)" != "true" ]; then
+            echo "::warning::telemetry: the result object carries no modelUsage; token counts will record as zero. The pinned action may have renamed the field."
+          fi
+
+          changed_files="${RESOLVE_CHANGED_FILES:-}"
+          diff_lines="${RESOLVE_DIFF_LINES:-}"
+          if [ -f /tmp/incremental-range.json ]; then
+            range_files=$(jq -r '.files | length' /tmp/incremental-range.json 2>/dev/null || true)
+            range_lines=$(jq -r '[.files[]? | (.additions // 0) + (.deletions // 0)] | add // 0' /tmp/incremental-range.json 2>/dev/null || true)
+            if [ -n "${range_files:-}" ] && [ "$range_files" != "null" ]; then changed_files="$range_files"; fi
+            if [ -n "${range_lines:-}" ] && [ "$range_lines" != "null" ]; then diff_lines="$range_lines"; fi
           fi
 
           # The store never takes model-authored or attacker-influencable text, so .result
@@ -1063,8 +1078,12 @@ jobs:
             def num(s): if s == "" then null else (s | tonumber? // null) end;
             def denials: (.permission_denials | if type == "array" then length else 0 end);
             def denial_tools:
-              [ .permission_denials[]? | (.tool_name // "unknown") ]
+              [ .permission_denials[]? | (.tool_name? // "unknown") ]
               | group_by(.) | map({tool: .[0], count: length});
+            def safe_strings:
+              {type, subtype, session_id, uuid, stop_reason, terminal_reason,
+               api_error_status, fast_mode_state}
+              | with_entries(select(.value != null));
             {
               session_id: .session_id,
               recorded_at: (now | todateiso8601),
@@ -1090,7 +1109,12 @@ jobs:
               diff_lines: num($diff_lines),
               per_model_usage: ((.modelUsage // {}) | tojson),
               subagent_stats: (if .subagent_stats == null then null else (.subagent_stats | tojson) end),
-              raw_result: ((. | del(.result) | del(.permission_denials) | . + {denial_tools: denial_tools}) | tojson)
+              raw_result: (
+                (. as $o
+                 | ($o | del(.result, .permission_denials)) + {denial_tools: ($o | denial_tools)}
+                ) as $r
+                | ($r | walk(if type == "string" then null else . end)) * ($r | safe_strings)
+                | tojson)
             }' 2>/dev/null || true)
 
           if [ -z "$record" ]; then
@@ -1268,7 +1292,7 @@ jobs:
   # attacker-influencable diff text. A failure here warns and never fails the run (#41).
   telemetry:
     needs: review
-    if: always() && needs.review.outputs.telemetry_record != ''
+    if: ${{ !cancelled() && needs.review.outputs.telemetry_record != '' }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -1285,11 +1309,15 @@ jobs:
             exit 0
           fi
 
+          hdr="$(mktemp)"
+          trap 'rm -f "$hdr"' EXIT
+          umask 077
+          printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+
           code=$(printf '%s' "$RECORD" | curl -sS -m 10 \
             -o /dev/null -w '%{http_code}' \
             -X POST "$INGEST_URL" \
-            -H "authorization: Bearer $INGEST_TOKEN" \
-            -H 'content-type: application/json' \
+            -H "@$hdr" \
             --data-binary @-) || {
               echo "::warning::telemetry: the ingest POST did not complete; this round was not recorded."
               exit 0
