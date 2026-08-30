@@ -94,7 +94,7 @@ Organization defaults are fetched from `prismalens/gh-workflows` at `main`:
 gh api repos/prismalens/gh-workflows/contents/.github/claude-review-defaults.yml?ref=main
 ```
 
-- **Compatibility**: No `github.*` context exposes the callee's own ref from inside a called workflow, so a version-matched read is not available. Compatibility is guarded by the schema's required `version` key (pinned to integer `1`), which rejects unexpected schema versions and degrades loudly to workflow defaults.
+- **Compatibility**: No `github.*` context exposes the callee's own ref from inside a called workflow, so a version-matched read is not available. Compatibility is guarded by the schema's required `version` key (pinned to integer `1`). An unexpected version or malformed YAML rejects the organization layer with a warning and drops it from the merge. The consumer's `.github/claude-review.yml` still loads from its base ref, so the effective configuration is the repository layer over workflow defaults.
 - **Pinned consumer retrofit**: If a consumer ever pins a SHA, add a `workflows_ref` input to that caller stub and thread it to the organization defaults fetch.
 
 ### Repository configuration (`.github/claude-review.yml`)
