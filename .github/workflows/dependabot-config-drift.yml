@@ -1,0 +1,276 @@
+# Weekly check for Dependabot configuration drift across consumer repositories. Story: #44.
+name: Dependabot Config Drift Check
+
+on:
+  schedule:
+    - cron: '23 6 * * 1'   # 06:23 UTC on Mondays. Off the hour on purpose:
+                           # GitHub delays cron at popular times. Story: #44.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-drift:
+    name: Check dependabot config drift
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Install dependencies
+        run: pip install --quiet pyyaml
+
+      - name: Check dependabot config drift
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -u - <<'PY'
+          import base64
+          import json
+          import os
+          import subprocess
+          import sys
+          import yaml
+
+          CANONICAL_REPO = "prismalens/gh-workflows"
+          CANONICAL_FILE = ".github/dependabot.yml"
+          CONSUMER_REPOS = [
+              "prismalens/prismalens",
+              "prismalens/sreforge",
+              "Sumit1993/mage-memory",
+          ]
+
+
+          def find_actions_root_entry(config):
+              if not isinstance(config, dict):
+                  return None
+              updates = config.get("updates")
+              if not isinstance(updates, list):
+                  return None
+              for entry in updates:
+                  if isinstance(entry, dict):
+                      if (
+                          entry.get("package-ecosystem") == "github-actions"
+                          and entry.get("directory") == "/"
+                      ):
+                          return entry
+              return None
+
+
+          def extract_shared_surface(entry):
+              """Extracts the shared surface keys from a github-actions directory '/' entry."""
+              surface = {}
+
+              # 1. schedule.interval
+              schedule = entry.get("schedule")
+              if isinstance(schedule, dict):
+                  surface["schedule.interval"] = schedule.get("interval")
+              else:
+                  surface["schedule.interval"] = None
+
+              # 2. open-pull-requests-limit
+              surface["open-pull-requests-limit"] = entry.get("open-pull-requests-limit")
+
+              # 3. commit-message.prefix
+              commit_msg = entry.get("commit-message")
+              if isinstance(commit_msg, dict):
+                  surface["commit-message.prefix"] = commit_msg.get("prefix")
+              else:
+                  surface["commit-message.prefix"] = None
+
+              # 4. groups (group name, patterns, update-types)
+              groups = entry.get("groups")
+              surface["groups"] = {}
+              if isinstance(groups, dict):
+                  for gname, gval in groups.items():
+                      if isinstance(gval, dict):
+                          surface["groups"][gname] = {
+                              "patterns": gval.get("patterns"),
+                              "update-types": gval.get("update-types"),
+                          }
+                      else:
+                          surface["groups"][gname] = gval
+
+              return surface
+
+
+          def compare_surfaces(repo, canonical, consumer):
+              diffs = []
+
+              for key in ["schedule.interval", "open-pull-requests-limit", "commit-message.prefix"]:
+                  c_val = canonical.get(key)
+                  f_val = consumer.get(key)
+                  if c_val != f_val:
+                      diffs.append(f"{repo}: drift in '{key}' — canonical: {c_val!r}, found: {f_val!r}")
+
+              c_groups = canonical.get("groups", {})
+              f_groups = consumer.get("groups", {})
+
+              if not isinstance(f_groups, dict) or not f_groups:
+                  diffs.append(
+                      f"{repo}: drift in 'groups' — canonical: {list(c_groups.keys())!r}, found: {f_groups!r}"
+                  )
+              else:
+                  if set(c_groups.keys()) != set(f_groups.keys()):
+                      diffs.append(
+                          f"{repo}: drift in 'groups' — canonical group names {list(c_groups.keys())!r}, found {list(f_groups.keys())!r}"
+                      )
+                  for gname, c_gval in c_groups.items():
+                      if gname in f_groups:
+                          f_gval = f_groups[gname]
+                          if not isinstance(f_gval, dict):
+                              diffs.append(f"{repo}: drift in 'groups.{gname}' — canonical: {c_gval!r}, found: {f_gval!r}")
+                              continue
+                          if c_gval.get("patterns") != f_gval.get("patterns"):
+                              diffs.append(
+                                  f"{repo}: drift in 'groups.{gname}.patterns' — canonical: {c_gval.get('patterns')!r}, found: {f_gval.get('patterns')!r}"
+                              )
+                          if c_gval.get("update-types") != f_gval.get("update-types"):
+                              diffs.append(
+                                  f"{repo}: drift in 'groups.{gname}.update-types' — canonical: {c_gval.get('update-types')!r}, found: {f_gval.get('update-types')!r}"
+                              )
+
+              return diffs
+
+
+          def fetch_consumer_dependabot(repo):
+              """
+              Fetches .github/dependabot.yml from the default branch of `repo` via `gh api`.
+              Returns tuple (status, content_or_error):
+                'OK'      -> (status, yaml_content_str)
+                'SKIP'    -> (status, skip_reason_str)
+                'MISSING' -> (status, error_str)
+                'ERROR'   -> (status, error_str)
+              """
+              cmd = ["gh", "api", f"repos/{repo}/contents/.github/dependabot.yml"]
+              res = subprocess.run(cmd, capture_output=True, text=True)
+              if res.returncode == 0:
+                  try:
+                      data = json.loads(res.stdout)
+                      content_b64 = data.get("content", "")
+                      content = base64.b64decode(content_b64).decode("utf-8")
+                      return "OK", content
+                  except Exception as e:
+                      return "ERROR", f"failed to decode API response: {e}"
+
+              # If contents API call failed, check whether repo is accessible or not
+              repo_cmd = ["gh", "api", f"repos/{repo}"]
+              repo_res = subprocess.run(repo_cmd, capture_output=True, text=True)
+              if repo_res.returncode != 0:
+                  reason = repo_res.stderr.strip() or "access denied / not found"
+                  return "SKIP", f"repository cannot be read ({reason})"
+
+              err_msg = res.stderr.strip()
+              if "404" in err_msg or "Not Found" in err_msg:
+                  return "MISSING", ".github/dependabot.yml not found"
+
+              return "ERROR", f"API error fetching .github/dependabot.yml: {err_msg}"
+
+
+          # --- Step 1: Load Canonical Configuration ---
+          if not os.path.exists(CANONICAL_FILE):
+              print(f"::error::Canonical file {CANONICAL_FILE} not found.", file=sys.stderr)
+              sys.exit(1)
+
+          try:
+              with open(CANONICAL_FILE, "r", encoding="utf-8") as f:
+                  canonical_yaml = yaml.safe_load(f)
+          except Exception as e:
+              print(f"::error::Failed to parse canonical {CANONICAL_FILE}: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          canonical_entry = find_actions_root_entry(canonical_yaml)
+          if not canonical_entry:
+              print(
+                  f"::error::Canonical {CANONICAL_FILE} missing github-actions entry for directory \"/\".",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          canonical_surface = extract_shared_surface(canonical_entry)
+          print(f"Loaded canonical config from {CANONICAL_FILE} ({CANONICAL_REPO})")
+
+          # --- Step 2: Compare Consumer Repositories ---
+          errors = []
+          skipped = []
+          synced = []
+
+          for repo in CONSUMER_REPOS:
+              print(f"Checking {repo}...")
+              status, result = fetch_consumer_dependabot(repo)
+
+              if status == "SKIP":
+                  print(f"::warning::Skipped {repo}: {result}")
+                  skipped.append((repo, result))
+                  continue
+
+              if status in ("MISSING", "ERROR"):
+                  msg = f"{repo}: {result}"
+                  print(f"::error::{msg}", file=sys.stderr)
+                  errors.append(msg)
+                  continue
+
+              try:
+                  consumer_yaml = yaml.safe_load(result)
+              except Exception as e:
+                  msg = f"{repo}: failed to parse .github/dependabot.yml: {e}"
+                  print(f"::error::{msg}", file=sys.stderr)
+                  errors.append(msg)
+                  continue
+
+              consumer_entry = find_actions_root_entry(consumer_yaml)
+              if not consumer_entry:
+                  msg = f"{repo}: missing github-actions ecosystem entry for directory \"/\""
+                  print(f"::error::{msg}", file=sys.stderr)
+                  errors.append(msg)
+                  continue
+
+              consumer_surface = extract_shared_surface(consumer_entry)
+              diffs = compare_surfaces(repo, canonical_surface, consumer_surface)
+
+              if diffs:
+                  for d in diffs:
+                      print(f"::error::{d}", file=sys.stderr)
+                      errors.append(d)
+              else:
+                  print(f"ok: {repo} is in sync with canonical config.")
+                  synced.append(repo)
+
+          # --- Step 3: Write GitHub Step Summary ---
+          step_summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary_path:
+              try:
+                  with open(step_summary_path, "a", encoding="utf-8") as sf:
+                      sf.write("## Dependabot Configuration Drift Report\n\n")
+                      sf.write(f"**Canonical repository:** `{CANONICAL_REPO}` (`{CANONICAL_FILE}`)\n\n")
+                      sf.write("| Repository | Status | Details |\n")
+                      sf.write("| --- | --- | --- |\n")
+                      sf.write(f"| `{CANONICAL_REPO}` | 🏛️ Canonical | Baseline config |\n")
+                      for s_repo in synced:
+                          sf.write(f"| `{s_repo}` | ✅ In sync | github-actions root config matches |\n")
+                      for sk_repo, sk_reason in skipped:
+                          sf.write(f"| `{sk_repo}` | ⚠️ Skipped | {sk_reason} |\n")
+                      for err in errors:
+                          err_repo = err.split(":")[0]
+                          err_detail = err[len(err_repo) + 1:].strip()
+                          sf.write(f"| `{err_repo}` | ❌ Drift / Error | {err_detail} |\n")
+                      sf.write("\n")
+                      if errors:
+                          sf.write(f"**Result:** ❌ Drift detected across {len(errors)} check(s).\n")
+                      else:
+                          sf.write("**Result:** ✅ All reachable consumer configurations are in sync.\n")
+              except Exception as e:
+                  print(f"::warning::Failed to write step summary: {e}", file=sys.stderr)
+
+          # --- Step 4: Exit Status ---
+          if errors:
+              print(f"\nDrift check failed with {len(errors)} error(s):", file=sys.stderr)
+              for err in errors:
+                  print(f"  - {err}", file=sys.stderr)
+              sys.exit(1)
+
+          print("\nAll reachable dependabot configs agree with canonical.")
+          sys.exit(0)
+          PY

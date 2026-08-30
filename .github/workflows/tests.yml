@@ -36,6 +36,10 @@ jobs:
       - name: Vendored prompt drift check behaviour
         run: python3 tests/test-vendored-prompt-drift.py
 
+      # Extracts and runs the real script out of dependabot-config-drift.yml. Story: #44.
+      - name: Dependabot config drift check behaviour
+        run: python3 tests/test-dependabot-config-drift.py
+
       - name: Display report Step Summary behaviour
         run: python3 tests/test-display-report.py
 
