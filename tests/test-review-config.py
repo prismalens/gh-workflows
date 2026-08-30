@@ -125,14 +125,10 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
             expected_base_sha = base_sha
 
         if expected_org_repo is None:
-            if job_workflow_ref and "/.github/" in job_workflow_ref:
-                parsed = job_workflow_ref.split("/.github/", 1)[0].strip()
-                expected_org_repo = parsed if parsed else "prismalens/gh-workflows"
-            else:
-                expected_org_repo = "prismalens/gh-workflows"
+            expected_org_repo = "prismalens/gh-workflows"
 
         if expected_org_ref is None:
-            if job_workflow_ref and "@" in job_workflow_ref:
+            if job_workflow_ref and "/.github/" in job_workflow_ref and "@" in job_workflow_ref:
                 parsed = job_workflow_ref.rsplit("@", 1)[1].strip()
                 expected_org_ref = parsed if parsed else "main"
             else:
@@ -443,6 +439,29 @@ def main():
     check("unparseable job_workflow_ref: emits warning naming fallback",
           "::warning::" in stdout and "is unparseable" in stdout and "prismalens/gh-workflows@main" in stdout,
           f"stdout={stdout!r}")
+
+    # 4d-4. Fallback invariant: job_workflow_ref with '@' but missing '/.github/' falls back loudly to main
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, job_workflow_ref="caller/repo@refs/heads/main", is_404=True)
+    check("job_workflow_ref with '@' but no '/.github/': falls back to main and exits 0", rc == 0, f"rc={rc}")
+    check("job_workflow_ref with '@' but no '/.github/': applies org config at fallback", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
+    check("job_workflow_ref with '@' but no '/.github/': emits warning naming fallback",
+          "::warning::" in stdout and "is unparseable" in stdout and "prismalens/gh-workflows@main" in stdout,
+          f"stdout={stdout!r}")
+
+    # 4d-5. Fallback invariant: job_workflow_ref with '/.github/' but missing '@' falls back loudly to main
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, job_workflow_ref="prismalens/gh-workflows/.github/workflows/claude-code-review.yml", is_404=True)
+    check("job_workflow_ref with '/.github/' but no '@': falls back to main and exits 0", rc == 0, f"rc={rc}")
+    check("job_workflow_ref with '/.github/' but no '@': applies org config at fallback", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
+    check("job_workflow_ref with '/.github/' but no '@': emits warning naming fallback",
+          "::warning::" in stdout and "is unparseable" in stdout and "prismalens/gh-workflows@main" in stdout,
+          f"stdout={stdout!r}")
+
+    # 4d-6. Wrong-repository regression: job_workflow_ref naming another repo still targets prismalens/gh-workflows
+    other_repo_wf_ref = "someone-else/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main"
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, job_workflow_ref=other_repo_wf_ref, is_404=True)
+    check("wrong-repository job_workflow_ref: targets prismalens/gh-workflows and exits 0", rc == 0, f"rc={rc}")
+    check("wrong-repository job_workflow_ref: applies org config", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
+    check("wrong-repository job_workflow_ref: produces no warning", "::warning::" not in stdout, f"stdout={stdout}")
 
     # 4e. Org defaults fetch failure (non-404): emits warning, applies defaults, does not report file absent
     rc, out, stdout, stderr = run_config_case(config_script, org_fail=True, is_404=False)
