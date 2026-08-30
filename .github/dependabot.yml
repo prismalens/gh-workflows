@@ -1,0 +1,24 @@
+# Majors open individually and wait for a human; minors and patches are grouped.
+# This matches the policy in dependabot-auto-merge.yml.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Composite action in actions/pr-title/ — not scanned by the root entry.
+  - package-ecosystem: github-actions
+    directory: "/actions/pr-title"
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
