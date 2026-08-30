@@ -1185,13 +1185,13 @@ jobs:
             # make a future incremental range start past commits nothing read.
           else
             # Inline review comments claude[bot] left against the reviewed head —
-            # strictly this head. No `original_commit_id` fallback: a comment that
-            # only matches after GitHub rewrote it for a newer push is a previous
-            # head's comment, and counting it would report stale work as this
-            # run's.
+            # strictly this head. Uses `original_commit_id`, which is the SHA
+            # the comment was posted against and never moves. `commit_id` is
+            # rewritten forward by GitHub and would count a prior head's
+            # comments as this round's.
             inline=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate --jq \
               "[.[] | select(.user.login==\"claude[bot]\")
-                    | select(.commit_id==\"$HEAD_SHA\")] | length")
+                    | select(.original_commit_id==\"$HEAD_SHA\")] | length")
 
             # Summary comments (the plugin's no-issues path posts one). Three
             # filters, each necessary: author, because only claude[bot] posts
