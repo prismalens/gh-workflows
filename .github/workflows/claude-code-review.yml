@@ -389,7 +389,7 @@ jobs:
           fi
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           # Empty on pull_request (keeps the merge ref); the PR head SHA on comment
           # summons, whose default checkout is the default branch. Story: prismalens/prismalens#422.
@@ -403,7 +403,7 @@ jobs:
       # `Detect verification mode` wrote it before checkout wiped the workspace.
       - name: Stage unresolved threads for the verify job
         if: steps.mode.outputs.mode == 'verify'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: unresolved-threads
           path: /tmp/unresolved-claude-threads.json
@@ -421,7 +421,7 @@ jobs:
       - name: Run Claude Code Review
         id: claude-review
         if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10  # v1.0.210
         # Synchronous subagents required in print mode or the reviewer exits before its
         # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
         env:
@@ -644,7 +644,7 @@ jobs:
           echo "Tripwire passed: no OIDC request environment in this job."
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           # Empty on pull_request (keeps the merge ref); the PR head SHA on comment
           # summons, whose default checkout is the default branch. Story: prismalens/prismalens#422.
@@ -656,7 +656,7 @@ jobs:
       # After checkout: actions/checkout wipes untracked workspace files, and the agent
       # may read only inside the workspace.
       - name: Download staged threads
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: unresolved-threads
           path: .
@@ -675,7 +675,7 @@ jobs:
 
       - name: Run Claude Code Verification Round
         id: claude-verify
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10  # v1.0.210
         env:
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
         with:

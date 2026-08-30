@@ -14,7 +14,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
       - name: Install deps
         run: pip install --quiet pyyaml
@@ -36,6 +36,8 @@ jobs:
       - name: Vendored prompt drift check behaviour
         run: python3 tests/test-vendored-prompt-drift.py
 
+      - name: Display report Step Summary behaviour
+        run: python3 tests/test-display-report.py
 
       # Version pinned: an actionlint release must not turn a green branch red on its own.
       - name: actionlint
