@@ -67,7 +67,7 @@ export default {
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
         payload.session_id,
-        payload.recorded_at ?? null,
+        payload.recorded_at ?? new Date().toISOString(),
         payload.repository,
         payload.pr_number ?? null,
         payload.pr_url ?? null,
