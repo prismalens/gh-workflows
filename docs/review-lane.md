@@ -83,7 +83,7 @@ Because the PR head and merge ref are under the author's control, reading config
 
 #### Configuration schema and wired keys
 
-The configuration schema is strictly validated against the S0 specification (`tools/validate-review-config.py`).
+The configuration schema is strictly validated against the S0 specification.
 
 | Key | Type | Status | Meaning |
 | --- | --- | --- | --- |

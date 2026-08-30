@@ -211,6 +211,9 @@ jobs:
           skip_authors = os.environ.get("INPUT_SKIP_AUTHORS", "dependabot[bot]")
           path_filters = []
 
+          # Schema lives here and only here (#33).
+          # The callee runs inside the consumer's checkout where this repository's
+          # tools/ directory does not exist at runtime.
           ALLOWED_TOP_LEVEL_KEYS = {"version", "review", "findings"}
           ALLOWED_REVIEW_KEYS = {
               "default_model",
