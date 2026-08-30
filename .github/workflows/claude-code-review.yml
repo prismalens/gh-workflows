@@ -46,6 +46,12 @@ on:
         # empty — still create a run and reach `fork-notice`; `review` guards on the
         # token's presence instead of relying on caller-side validation. Story: prismalens/prismalens#415.
         required: false
+      REVIEW_TELEMETRY_URL:
+        # required:false so a consumer that has not opted into telemetry still runs; the
+        # telemetry job skips when either value is absent. Story: #41.
+        required: false
+      REVIEW_TELEMETRY_TOKEN:
+        required: false
 
 jobs:
   # ONE set of PR facts for automatic rounds, summons, and in-thread replies alike,
@@ -89,6 +95,8 @@ jobs:
       same_repo: ${{ steps.pr.outputs.same_repo }}
       checkout_ref: ${{ steps.pr.outputs.checkout_ref }}
       summon: ${{ steps.summon.outputs.summon }}
+      changed_files: ${{ steps.pr.outputs.changed_files }}
+      diff_lines: ${{ steps.pr.outputs.diff_lines }}
 
     steps:
       - name: Admit commenter
@@ -130,6 +138,8 @@ jobs:
             echo "head_sha=${head_sha}"
             echo "base_sha=${base_sha}"
             echo "draft=$(jq -r '.draft' <<< "$pr")"
+            echo "changed_files=$(jq -r '.changed_files // ""' <<< "$pr")"
+            echo "diff_lines=$(jq -r 'if .additions == null and .deletions == null then "" else ((.additions // 0) + (.deletions // 0)) end' <<< "$pr")"
           } >> "$GITHUB_OUTPUT"
 
           # Comment events check out the default branch by default, which is not the code
@@ -176,6 +186,7 @@ jobs:
       # would be two places to keep in sync.
       model: ${{ steps.model.outputs.model }}
       model_source: ${{ steps.model.outputs.model_source }}
+      telemetry_record: ${{ steps.telemetry.outputs.record }}
 
     steps:
       - name: Record review start time
@@ -997,6 +1008,141 @@ jobs:
             "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
             --model ${{ steps.model.outputs.model }}
 
+      # Reads result.modelUsage, never result.usage: usage counts only the main thread and
+      # undercounts cache reads 9.55x, because a round runs six or more subagents (#45).
+      - name: Extract review round telemetry
+        id: telemetry
+        if: always()
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          SERVER_URL: ${{ github.server_url }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ROUND_TYPE: ${{ steps.mode.outputs.mode }}
+          MODEL: ${{ steps.model.outputs.model }}
+          RESOLVE_CHANGED_FILES: ${{ needs.resolve.outputs.changed_files }}
+          RESOLVE_DIFF_LINES: ${{ needs.resolve.outputs.diff_lines }}
+          CLAUDE_OUTCOME: ${{ steps.claude-review.outcome }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
+            if [ "${CLAUDE_OUTCOME:-skipped}" = "skipped" ]; then
+              echo "telemetry: no review ran in this round; nothing to record."
+            else
+              echo "::warning::telemetry: execution file is missing (path: '${EXECUTION_FILE:-}'); this round will not be recorded."
+            fi
+            exit 0
+          fi
+          if ! jq empty "$EXECUTION_FILE" 2>/dev/null; then
+            echo "::warning::telemetry: execution file does not parse as JSON; this round will not be recorded."
+            exit 0
+          fi
+
+          result=$(jq -c '[.[] | select(.type == "result")] | last // empty' "$EXECUTION_FILE" 2>/dev/null || true)
+          if [ -z "$result" ]; then
+            echo "::warning::telemetry: no result object in the execution file; this round will not be recorded."
+            exit 0
+          fi
+
+          if [ "$(printf '%s' "$result" | jq -r 'has("modelUsage")' 2>/dev/null || echo false)" != "true" ]; then
+            echo "::warning::telemetry: the result object carries no modelUsage; token counts will record as zero. The pinned action may have renamed the field."
+          fi
+
+          changed_files="${RESOLVE_CHANGED_FILES:-}"
+          diff_lines="${RESOLVE_DIFF_LINES:-}"
+          if [ -f /tmp/incremental-range.json ]; then
+            range_files=$(jq -r '.files | length' /tmp/incremental-range.json 2>/dev/null || true)
+            range_lines=$(jq -r '[.files[]? | (.additions // 0) + (.deletions // 0)] | add // 0' /tmp/incremental-range.json 2>/dev/null || true)
+            if [ -n "${range_files:-}" ] && [ "$range_files" != "null" ]; then changed_files="$range_files"; fi
+            if [ -n "${range_lines:-}" ] && [ "$range_lines" != "null" ]; then diff_lines="$range_lines"; fi
+          fi
+
+          # The store never takes model-authored or attacker-influencable text, so .result
+          # is dropped and denials keep only tool names and counts, never tool_input (#41).
+          record=$(printf '%s' "$result" | jq -c \
+            --arg repo "$REPO" \
+            --arg pr "${PR_NUMBER:-}" \
+            --arg server "$SERVER_URL" \
+            --arg run_id "$RUN_ID" \
+            --arg run_attempt "$RUN_ATTEMPT" \
+            --arg round_type "${ROUND_TYPE:-}" \
+            --arg model "${MODEL:-}" \
+            --arg head_sha "${HEAD_SHA:-}" \
+            --arg changed_files "${changed_files:-}" \
+            --arg diff_lines "${diff_lines:-}" \
+            '
+            def num(s): if s == "" then null else (s | tonumber? // null) end;
+            def denials:
+              (.permission_denials
+               | if type == "array" then length
+                 elif type == "number" then .
+                 else 0 end);
+            def denial_tools:
+              [ .permission_denials[]?
+                | (.tool_name? // "unknown")
+                | if type == "string" and test("^[A-Za-z0-9_]{1,64}$") then . else "other" end ]
+              | group_by(.) | map({tool: .[0], count: length});
+            def safe_strings:
+              {type, subtype, session_id, uuid, stop_reason, terminal_reason,
+               api_error_status, fast_mode_state}
+              | with_entries(select(.value != null));
+            {
+              session_id: .session_id,
+              recorded_at: (now | todateiso8601),
+              repository: $repo,
+              pr_number: num($pr),
+              pr_url: (if $pr == "" then null else "\($server)/\($repo)/pull/\($pr)" end),
+              head_sha: (if $head_sha == "" then null else $head_sha end),
+              run_id: num($run_id),
+              run_attempt: num($run_attempt),
+              run_url: "\($server)/\($repo)/actions/runs/\($run_id)",
+              round_type: (if $round_type == "" then null else $round_type end),
+              model: (if $model == "" then null else $model end),
+              input_tokens: ([.modelUsage[]? | .inputTokens // 0] | add // 0),
+              output_tokens: ([.modelUsage[]? | .outputTokens // 0] | add // 0),
+              cache_read_input_tokens: ([.modelUsage[]? | .cacheReadInputTokens // 0] | add // 0),
+              cache_creation_input_tokens: ([.modelUsage[]? | .cacheCreationInputTokens // 0] | add // 0),
+              total_cost_usd: .total_cost_usd,
+              duration_ms: .duration_ms,
+              duration_api_ms: .duration_api_ms,
+              num_turns: .num_turns,
+              permission_denials: denials,
+              changed_files: num($changed_files),
+              diff_lines: num($diff_lines),
+              per_model_usage: ((.modelUsage // {}) | tojson),
+              subagent_stats: (if .subagent_stats == null then null else (.subagent_stats | tojson) end),
+              raw_result: (
+                . as $o
+                | ($o | del(.result, .permission_denials)) as $base
+                | ($base | walk(if type == "string" then null else . end))
+                  * ($base | safe_strings)
+                  + {denial_tools: ($o | denial_tools)}
+                | tojson)
+            }' 2>/dev/null || true)
+
+          if [ -z "$record" ]; then
+            echo "::warning::telemetry: could not build the record from the result object; this round will not be recorded."
+            exit 0
+          fi
+
+          session_id=$(printf '%s' "$record" | jq -r '.session_id // empty')
+          if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
+            echo "::warning::telemetry: result object carries no session_id; this round will not be recorded."
+            exit 0
+          fi
+
+          {
+            echo "record<<TELEMETRY_EOF"
+            printf '%s\n' "$record"
+            echo "TELEMETRY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Extracted telemetry for session $session_id: $(printf '%s' "$record" | jq -r '"\(.num_turns) turns, \(.permission_denials) denials, \(.duration_ms)ms"')"
+
       # Render the round's reasoning and cost into the Actions Step Summary so
       # diagnosing a bad round does not require excavating the raw job log.
       # Stories: #32 and part of #41.
@@ -1040,7 +1186,7 @@ jobs:
           total_cost=$(jq '[.[] | try (select(.type == "result") | .total_cost_usd) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
           duration_ms=$(jq '[.[] | try (select(.type == "result") | .duration_ms) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
           num_turns=$(jq '[.[] | try (select(.type == "result") | .num_turns) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
-          perm_denials=$(jq '[.[] | try (select(.type == "result") | .permission_denials) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          perm_denials=$(jq '[.[] | try (select(.type == "result") | .permission_denials) catch empty | if type == "array" then length else . end | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
 
           has_usage=$(jq '[.[] | try (.message.usage) catch empty] | length' "$EXECUTION_FILE" 2>/dev/null || echo 0)
           has_result=$(jq '[.[] | try (select(.type == "result")) catch empty] | length' "$EXECUTION_FILE" 2>/dev/null || echo 0)
@@ -1148,6 +1294,60 @@ jobs:
                  "--allowed-tools list, a prompt naming a path outside the agent's allowed directories," \
                  "or a chained Bash command, which is matched per subcommand and denied outright."
           fi
+
+  # Holds the ingest credential, so it lives outside the read-only review job that handles
+  # attacker-influencable diff text. A failure here warns and never fails the run (#41).
+  telemetry:
+    needs: review
+    if: ${{ !cancelled() && needs.review.outputs.telemetry_record != '' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Post the review round record
+        env:
+          RECORD: ${{ needs.review.outputs.telemetry_record }}
+          INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
+          INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${INGEST_URL:-}" ] || [ -z "${INGEST_TOKEN:-}" ]; then
+            echo "Telemetry is not configured for this repository; skipping."
+            exit 0
+          fi
+
+          case "$INGEST_URL" in
+            https://*) ;;
+            *)
+              echo "::warning::telemetry: REVIEW_TELEMETRY_URL is not https, so the token was not sent and this round was not recorded."
+              exit 0
+              ;;
+          esac
+
+          hdr="$(mktemp)"
+          trap 'rm -f "$hdr"' EXIT
+          umask 077
+          printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+
+          code=$(printf '%s' "$RECORD" | curl -sS -m 10 \
+            --proto '=https' \
+            -o /dev/null -w '%{http_code}' \
+            -X POST "$INGEST_URL" \
+            -H "@$hdr" \
+            --data-binary @-) || {
+              echo "::warning::telemetry: the ingest POST did not complete; delivery of this round is unconfirmed."
+              exit 0
+            }
+
+          case "$code" in
+            2??) ;;
+            *)
+              echo "::warning::telemetry: ingest returned HTTP $code; delivery of this round is unconfirmed."
+              exit 0
+              ;;
+          esac
+
+          echo "Recorded review round telemetry (HTTP $code)."
 
   # The verify round runs here and nowhere else, because its verdicts drive the
   # write-capable `mutate` job. Two load-bearing lines, both invariants, not tuning:
