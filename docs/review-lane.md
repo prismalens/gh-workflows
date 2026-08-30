@@ -67,9 +67,92 @@ All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults ar
 | `model_aliases` | string | `opus=claude-opus-5,sonnet=claude-sonnet-5` | Comma-separated `alias=model-id` pairs selectable with `--model <alias>` in a summon. The alias is matched against the comment; the ID is emitted from this list and is never read out of the comment. An alias absent here is not selectable. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
 | `display_report` | boolean | `false` | Render the review round's reasoning and token/cost usage into the Actions Step Summary (opt-in; set `display_report: true` in the stub to turn on). The summary is world-readable on a public repository; the content is Claude-authored text derived from the pull request diff, which is already public there. When the execution file is missing, empty, or unparseable, the step warns and does not fail the job. |
 
-## Setting inputs per repository
+## Review configuration and four-layer precedence (#33, #54)
 
-The only mechanism today is a `with:` block on the `uses:` line in the caller stub. There is no configuration file, no repository-level UI, and no validation of what a stub passes. Every consumer therefore runs the callee's defaults unless its own stub overrides them, and today none of them override anything. A per-repo configuration file is tracked as issue #33, and until it lands, changing a knob for one repository means editing that repository's stub.
+Review lane settings are resolved dynamically through a **four-layer precedence hierarchy** (evaluated from lowest to highest):
+
+1. **Workflow Input Defaults**: Built-in defaults declared in the `claude-code-review.yml` callee workflow (`default_model: claude-sonnet-5`, `auto_pause_rounds: 5`, `skip_authors: dependabot[bot]`, `path_filters: []`).
+2. **Organization-Level Defaults**: Shared ecosystem defaults defined in [`.github/claude-review-defaults.yml`](../.github/claude-review-defaults.yml) hosted in this repository (`prismalens/gh-workflows`).
+3. **Repository Configuration**: Per-repository review configuration defined in `.github/claude-review.yml` in the consumer repository, read from its base ref.
+4. **Summon Override**: An explicit `--model <alias>` parameter in a `@claude review` or `@claude full review` PR comment (highest precedence).
+
+### Key-by-key pure override
+
+Configuration merges **per key**, not per file:
+- **Pure override**: The repository layer wins outright over organization defaults on any key it defines. Repositories may loosen shared constraints, not only tighten them (e.g. if org defaults specify `auto_pause_rounds: 3`, a repository may set `auto_pause_rounds: 10`).
+- **Inheritance**: Any key omitted by a repository falls back to the organization defaults (or workflow defaults). A repository configuring only `default_model` inherits `auto_pause_rounds`, `skip_authors`, and `path_filters` from the org defaults.
+
+### Shared organization defaults (`.github/claude-review-defaults.yml`)
+
+Because `Sumit1993/mage-memory` is user-owned while other consumer repositories are organization-owned, organization rulesets and a `prismalens/.github` repository cannot reach all consumers. Hosting shared defaults in `gh-workflows` allows all callers to access ecosystem policy via a standard REST API read with no new credentials.
+
+#### Dynamic ref resolution (No hardcoded `@main`) (#54)
+
+Organization defaults are fetched from `gh-workflows` at the exact ref the callee reusable workflow is running as, resolved dynamically from `github.workflow_ref` (parsing the ref following the final `@`):
+
+```text
+gh api repos/prismalens/gh-workflows/contents/.github/claude-review-defaults.yml?ref=<org_ref>
+```
+
+- **Why**: Hardcoding `@main` would break consumers that pin a SHA or release tag for supply-chain security by serving newer organization policy than the code they deliberately pinned. Dynamic ref resolution guarantees policy stays in lockstep with the pinned callee version.
+
+### Repository configuration (`.github/claude-review.yml`)
+
+#### Security invariant: read from the base ref, never the head (#33)
+
+The per-repo configuration file is read strictly from the pull request's **base ref** (`.base.sha`) via GitHub's Contents REST API:
+
+```text
+gh api repos/$REPO/contents/.github/claude-review.yml?ref=$BASE_SHA
+```
+
+Because the PR head and merge ref are under the author's control, reading configuration from the head would allow an attacker to modify review policies for their own PR (e.g. increase `auto_pause_rounds`, downgrade `default_model`, alter `path_filters`, or add themselves to `skip_authors`) in the very commit under review.
+
+### Configuration schema and wired keys
+
+Both `.github/claude-review-defaults.yml` and `.github/claude-review.yml` share the exact same schema, strictly validated by the same inline validator:
+
+| Key | Type | Status | Meaning |
+| --- | --- | --- | --- |
+| `version` | integer | **Consumed** | Schema version (must be integer `1`). |
+| `review.default_model` | string | **Consumed** | Default model ID for review runs (`claude-sonnet-5` or `claude-opus-5`). |
+| `review.auto_pause_rounds` | integer | **Consumed** | Automatic review rounds limit before pausing (integer >= 1). |
+| `review.skip_authors` | list of strings | **Consumed** | Author logins whose automatic `pull_request` rounds are skipped entirely (no review, no verify, and no liveness comment is posted). |
+| `review.path_filters` | list of strings | **Consumed** | Glob patterns for high-risk files that escalate the review model to Opus. |
+| `review.path_instructions` | list of mappings | *Schema-accepted, not yet wired* | Path-specific instructions for review agents. Emits warning if present. |
+| `findings.suppress_below` | string | *Schema-accepted, not yet wired* | Minimum severity threshold (`none`, `Minor`, `Major`, `Critical`). Emits warning if present. |
+| `findings.enable_ai_fix_prompt` | boolean | *Schema-accepted, not yet wired* | Whether to include AI fix prompt details. Emits warning if present. |
+| `findings.include_verification_note` | boolean | *Schema-accepted, not yet wired* | Whether to include verification notes. Emits warning if present. |
+
+### Three parse outcomes (Org and Repo layers)
+
+1. **Absent (HTTP 404)**: When a config file does not exist, prior defaults apply cleanly and a single info line is logged (`No .github/claude-review-defaults.yml found at ref <ref>; applying workflow defaults.` or `No .github/claude-review.yml found at base ref <sha>; applying workflow defaults.`). No warning is emitted.
+2. **Malformed**: If a file contains invalid YAML, unknown keys, invalid schema versions, or disallowed values, the lane emits a `::warning::` annotation naming the file, the ref / base SHA, and the validator's error output, and ignores that layer entirely. A broken config file never takes down the review lane.
+3. **Valid**: Supported keys (`default_model`, `auto_pause_rounds`, `skip_authors`, `path_filters`) are consumed, logged, and merged into the effective configuration. Any schema-valid but unwired keys emit a `::warning::` annotation listing those keys.
+
+### Per-key source logging
+
+When configuration loading completes, the run logs the effective configuration and explicitly attributes each key to its source layer (`workflow default`, `org defaults`, `repo config`, or `summon override`):
+
+```text
+Effective review configuration:
+  review.default_model: claude-sonnet-5 (source: repo config)
+  review.auto_pause_rounds: 8 (source: org defaults)
+  review.skip_authors: dependabot[bot] (source: workflow default)
+  review.path_filters: ['packages/**'] (source: org defaults)
+```
+
+Security-critical controls remain workflow-only inputs and are never configurable in `.github/claude-review.yml` or `.github/claude-review-defaults.yml`: `--allowed-tools`, `id-token` write permissions, and fork handling.
+
+### Model escalation from changed files (#34)
+
+Before the review agent runs, the lane inspects the list of changed files in the pull request and selects the model up front:
+
+- **Default**: `review.default_model` (Sonnet by default: `claude-sonnet-5`).
+- **High-Risk Escalation**: If the repository config or organization defaults define `review.path_filters` and any file modified in the pull request matches one of the glob patterns, the review model is escalated to Opus (`claude-opus-5`).
+  - Glob matching uses Python's `fnmatch`, with trailing `/**` matching a directory and all of its descendants recursively.
+- **Summon Override Precedence**: An explicit model alias in a summon (e.g. `@claude review --model sonnet` or `@claude review --model opus`) always takes precedence over path-based escalation. Manual intent wins.
+- **Evidence Naming**: The advisory liveness comment explicitly names the model used and the resolution reason (`default`, `summon override`, `escalated by path match`, or `default (changed-files fetch failed)`).
 
 ```yaml
   review:
@@ -123,6 +206,7 @@ The `announce` job upserts an advisory comment on the pull request timeline matc
 - **Round counter (`rounds=N`)**: Increments only on automatic `pull_request` runs that actually executed and succeeded. Paused, cancelled, failed, or token-less runs do not increment it. An explicit `@claude review` summon that posts review output resets `rounds` to 0.
 - **Head baseline (`sha=<head>`)**: Advances to the current PR head only when the review round produces posted review output.
 - **Inline comment counting**: The liveness marker counts inline review comments left by `claude[bot]`. The count strictly matches `original_commit_id == HEAD_SHA` (the commit against which the comment was originally created). It avoids `commit_id`, which GitHub automatically rewrites forward as new commits are pushed to the PR. Carried-forward comments from prior heads are therefore never counted as work performed during the current round, preventing stale comments from advancing the baseline or resetting the auto-pause limit.
+- **Suppressed for skipped authors**: When a pull request's author matches `skip_authors`, the lane skips the round entirely and posts no liveness comment to the pull request timeline (preventing comment noise on automated PRs).
 - **Summary comments**: Filters `claude[bot]` issue comments created since run start with the `## Code review` heading prefix.
 
 ## Thread resolution

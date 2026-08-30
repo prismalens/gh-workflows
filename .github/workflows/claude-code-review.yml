@@ -52,8 +52,8 @@ jobs:
   # so downstream jobs never branch on event shape. Stories: prismalens/prismalens#403 and #422.
   resolve:
     name: Resolve PR facts
-    # Admission. Automatic rounds drop skipped authors; the delimiter wrap keeps the
-    # match exact-login, so a login like `bot` cannot collide with `dependabot[bot]`.
+    # Admission. pull_request events are admitted unconditionally here; skip_authors
+    # filtering runs in 'Detect verification mode' so repository config can override it.
     # Summons and in-thread replies require write access to this repository, checked live
     # in the `admit` step below. `author_association` is banned from admission here: it is
     # repo-scoped and payload-dependent, and it misreported the maintainer as CONTRIBUTOR
@@ -62,10 +62,7 @@ jobs:
     # an agent posting through a member's credential is admitted and is meant to be.
     # Stories: prismalens/prismalens#403 and #422.
     if: >-
-      (
-        github.event_name == 'pull_request' &&
-        !contains(format(',{0},', inputs.skip_authors), format(',{0},', github.event.pull_request.user.login))
-      ) || (
+      github.event_name == 'pull_request' || (
         github.event.comment.user.type != 'Bot' &&
         !endsWith(github.event.comment.user.login, '[bot]') && (
           (
@@ -87,6 +84,7 @@ jobs:
       admitted: ${{ github.event_name == 'pull_request' && 'true' || steps.admit.outputs.admitted }}
       number: ${{ steps.pr.outputs.number }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
+      base_sha: ${{ steps.pr.outputs.base_sha }}
       draft: ${{ steps.pr.outputs.draft }}
       same_repo: ${{ steps.pr.outputs.same_repo }}
       checkout_ref: ${{ steps.pr.outputs.checkout_ref }}
@@ -124,11 +122,13 @@ jobs:
           set -euo pipefail
           pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
           head_sha="$(jq -r '.head.sha' <<< "$pr")"
+          base_sha="$(jq -r '.base.sha' <<< "$pr")"
           head_repo="$(jq -r '.head.repo.full_name' <<< "$pr")"
 
           {
             echo "number=${PR_NUMBER}"
             echo "head_sha=${head_sha}"
+            echo "base_sha=${base_sha}"
             echo "draft=$(jq -r '.draft' <<< "$pr")"
           } >> "$GITHUB_OUTPUT"
 
@@ -175,11 +175,356 @@ jobs:
       # The verify job runs the same allowlisted model resolution; resolving it twice
       # would be two places to keep in sync.
       model: ${{ steps.model.outputs.model }}
+      model_source: ${{ steps.model.outputs.model_source }}
 
     steps:
       - name: Record review start time
         id: clock
         run: echo "started_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Install review dependencies
+        # Non-fatal: the config step falls back to workflow defaults when PyYAML is absent.
+        run: pip install --quiet pyyaml || echo "::warning::PyYAML install failed; review configuration falls back to workflow defaults."
+
+      # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
+      # Reading from head would let a pull request modify its own review policy
+      # (e.g. raise auto_pause_rounds, change model, skip authors) in the commit under review.
+      - name: Read repository review configuration
+        id: config
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          INPUT_DEFAULT_MODEL: ${{ inputs.default_model }}
+          INPUT_AUTO_PAUSE_ROUNDS: ${{ inputs.auto_pause_rounds }}
+          INPUT_SKIP_AUTHORS: ${{ inputs.skip_authors }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import subprocess
+          import sys
+
+          try:
+              import yaml
+          except ImportError:
+              yaml = None
+              print("::warning::PyYAML is not installed; applying workflow defaults.")
+
+          repo = os.environ.get("REPO", "")
+          base_sha = os.environ.get("BASE_SHA", "")
+          workflow_ref = os.environ.get("WORKFLOW_REF", "")
+          default_model = os.environ.get("INPUT_DEFAULT_MODEL", "claude-sonnet-5")
+          auto_pause_rounds = int(os.environ.get("INPUT_AUTO_PAUSE_ROUNDS", 5))
+          raw_skip_authors = os.environ.get("INPUT_SKIP_AUTHORS", "dependabot[bot]")
+          skip_authors = ",".join(x.strip() for x in raw_skip_authors.split(",") if x.strip())
+          path_filters = []
+
+          sources = {
+              "default_model": "workflow default",
+              "auto_pause_rounds": "workflow default",
+              "skip_authors": "workflow default",
+              "path_filters": "workflow default",
+          }
+
+          # Schema lives here and only here (#33).
+          # The callee runs inside the consumer's checkout where this repository's
+          # tools/ directory does not exist at runtime.
+          ALLOWED_TOP_LEVEL_KEYS = {"version", "review", "findings"}
+          ALLOWED_REVIEW_KEYS = {
+              "default_model",
+              "auto_pause_rounds",
+              "skip_authors",
+              "path_filters",
+              "path_instructions",
+          }
+          ALLOWED_PATH_INSTRUCTION_KEYS = {"path", "instructions"}
+          ALLOWED_FINDINGS_KEYS = {
+              "suppress_below",
+              "enable_ai_fix_prompt",
+              "include_verification_note",
+          }
+          ALLOWED_DEFAULT_MODELS = {"claude-sonnet-5", "claude-opus-5"}
+          ALLOWED_SUPPRESS_BELOW = {"none", "Minor", "Major", "Critical"}
+
+          def validate_config(data, filename=".github/claude-review.yml"):
+              errors = []
+              if data is None:
+                  return errors
+              if not isinstance(data, dict):
+                  return [f"Invalid YAML structure in {filename}: expected a mapping/dictionary, got {type(data).__name__}"]
+
+              for key in data:
+                  if key not in ALLOWED_TOP_LEVEL_KEYS:
+                      errors.append(f"Unknown configuration key '{key}' in {filename}")
+
+              if errors:
+                  return errors
+
+              if "version" not in data:
+                  errors.append(f"Missing required key 'version' in {filename}")
+              else:
+                  version = data["version"]
+                  if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+                      errors.append(f"Invalid value for 'version' in {filename}: expected integer 1, got {version!r}")
+
+              if "review" in data:
+                  review = data["review"]
+                  if not isinstance(review, dict):
+                      errors.append(f"Invalid value for 'review' in {filename}: expected mapping, got {type(review).__name__}")
+                  else:
+                      for key in review:
+                          if key not in ALLOWED_REVIEW_KEYS:
+                              errors.append(f"Unknown configuration key 'review.{key}' in {filename}")
+
+                      if "default_model" in review:
+                          model = review["default_model"]
+                          if not isinstance(model, str) or model not in ALLOWED_DEFAULT_MODELS:
+                              errors.append(
+                                  f"Invalid value for 'review.default_model' in {filename}: {model!r}. "
+                                  f"Allowed values: {sorted(ALLOWED_DEFAULT_MODELS)}"
+                              )
+
+                      if "auto_pause_rounds" in review:
+                          rounds = review["auto_pause_rounds"]
+                          if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1:
+                              errors.append(
+                                  f"Invalid value for 'review.auto_pause_rounds' in {filename}: {rounds!r}. "
+                                  f"Must be an integer >= 1"
+                              )
+
+                      if "skip_authors" in review:
+                          skip = review["skip_authors"]
+                          if not isinstance(skip, list) or not all(isinstance(x, str) for x in skip):
+                              errors.append(f"Invalid value for 'review.skip_authors' in {filename}: expected list of strings")
+
+                      if "path_filters" in review:
+                          filters = review["path_filters"]
+                          if not isinstance(filters, list) or not all(isinstance(x, str) for x in filters):
+                              errors.append(f"Invalid value for 'review.path_filters' in {filename}: expected list of strings")
+
+                      if "path_instructions" in review:
+                          instructions = review["path_instructions"]
+                          if not isinstance(instructions, list):
+                              errors.append(
+                                  f"Invalid value for 'review.path_instructions' in {filename}: expected list of mappings"
+                              )
+                          else:
+                              for i, item in enumerate(instructions):
+                                  if not isinstance(item, dict):
+                                      errors.append(
+                                          f"Invalid value for 'review.path_instructions[{i}]' in {filename}: expected mapping"
+                                      )
+                                      continue
+                                  for k in item:
+                                      if k not in ALLOWED_PATH_INSTRUCTION_KEYS:
+                                          errors.append(
+                                              f"Unknown configuration key 'review.path_instructions[{i}].{k}' in {filename}"
+                                          )
+                                  if "path" not in item or not isinstance(item["path"], str):
+                                      errors.append(
+                                          f"Missing or invalid required key 'path' in 'review.path_instructions[{i}]' in {filename}"
+                                      )
+                                  if "instructions" not in item or not isinstance(item["instructions"], str):
+                                      errors.append(
+                                          f"Missing or invalid required key 'instructions' in 'review.path_instructions[{i}]' in {filename}"
+                                      )
+
+              if "findings" in data:
+                  findings = data["findings"]
+                  if not isinstance(findings, dict):
+                      errors.append(f"Invalid value for 'findings' in {filename}: expected mapping, got {type(findings).__name__}")
+                  else:
+                      for key in findings:
+                          if key not in ALLOWED_FINDINGS_KEYS:
+                              errors.append(f"Unknown configuration key 'findings.{key}' in {filename}")
+
+                      if "suppress_below" in findings:
+                          sb = findings["suppress_below"]
+                          if not isinstance(sb, str) or sb not in ALLOWED_SUPPRESS_BELOW:
+                              errors.append(
+                                  f"Invalid value for 'findings.suppress_below' in {filename}: {sb!r}. "
+                                  f"Allowed values: {sorted(ALLOWED_SUPPRESS_BELOW)}"
+                              )
+
+                      if "enable_ai_fix_prompt" in findings:
+                          eafp = findings["enable_ai_fix_prompt"]
+                          if not isinstance(eafp, bool):
+                              errors.append(f"Invalid value for 'findings.enable_ai_fix_prompt' in {filename}: expected boolean")
+
+                      if "include_verification_note" in findings:
+                          ivn = findings["include_verification_note"]
+                          if not isinstance(ivn, bool):
+                              errors.append(f"Invalid value for 'findings.include_verification_note' in {filename}: expected boolean")
+
+              return errors
+
+          # Story #54: Fetch org defaults at the ref this reusable workflow was resolved at
+          # (from github.workflow_ref), not a hardcoded @main. If a consumer pins a SHA for
+          # supply-chain security, fetching @main would hand it newer policy than pinned code.
+          org_repo = "prismalens/gh-workflows"
+          if "/.github/" in workflow_ref:
+              org_repo = workflow_ref.split("/.github/", 1)[0]
+          if "@" in workflow_ref:
+              org_ref = workflow_ref.rsplit("@", 1)[1]
+          else:
+              org_ref = "main"
+
+          if yaml is not None:
+              org_fetch_cmd = ["gh", "api", f"repos/{org_repo}/contents/.github/claude-review-defaults.yml?ref={org_ref}", "--jq", ".content"]
+              org_res = subprocess.run(org_fetch_cmd, capture_output=True, text=True)
+
+              org_config_content = None
+              if org_res.returncode == 0:
+                  if org_res.stdout.strip():
+                      try:
+                          org_config_content = base64.b64decode(org_res.stdout.strip()).decode("utf-8")
+                      except Exception as e:
+                          print(f"::warning::.github/claude-review-defaults.yml at ref {org_ref} failed to decode base64: {e}; ignoring org defaults.")
+                  else:
+                      org_config_content = ""
+              elif "404" in org_res.stderr:
+                  print(f"No .github/claude-review-defaults.yml found at ref {org_ref}; applying workflow defaults.")
+              else:
+                  err = org_res.stderr.strip() if org_res.stderr else f"exit code {org_res.returncode}"
+                  print(f"::warning::Failed to fetch .github/claude-review-defaults.yml at ref {org_ref}: {err}; applying workflow defaults.")
+
+              if org_config_content is not None:
+                  try:
+                      org_data = yaml.safe_load(org_config_content)
+                  except Exception as exc:
+                      org_data = "MALFORMED"
+                      org_errors = [f"Malformed YAML in .github/claude-review-defaults.yml: {exc}"]
+
+                  if org_data != "MALFORMED":
+                      org_errors = validate_config(org_data, filename=".github/claude-review-defaults.yml")
+
+                  if org_errors:
+                      err_msg = "; ".join(org_errors)
+                      print(f"::warning::.github/claude-review-defaults.yml at ref {org_ref} is malformed; ignoring org defaults: {err_msg}")
+                  else:
+                      if org_data is not None and isinstance(org_data, dict):
+                          org_consumed = []
+                          org_unconsumed = []
+
+                          review = org_data.get("review", {})
+                          if isinstance(review, dict):
+                              if "default_model" in review:
+                                  default_model = review["default_model"]
+                                  sources["default_model"] = "org defaults"
+                                  org_consumed.append(f"review.default_model={default_model}")
+                              if "auto_pause_rounds" in review:
+                                  auto_pause_rounds = review["auto_pause_rounds"]
+                                  sources["auto_pause_rounds"] = "org defaults"
+                                  org_consumed.append(f"review.auto_pause_rounds={auto_pause_rounds}")
+                              if "skip_authors" in review:
+                                  skip_authors = ",".join(x.strip() for x in review["skip_authors"] if isinstance(x, str) and x.strip())
+                                  sources["skip_authors"] = "org defaults"
+                                  org_consumed.append(f"review.skip_authors={skip_authors}")
+                              if "path_filters" in review:
+                                  path_filters = review["path_filters"]
+                                  sources["path_filters"] = "org defaults"
+                                  org_consumed.append(f"review.path_filters={path_filters}")
+                              if "path_instructions" in review:
+                                  org_unconsumed.append("review.path_instructions")
+
+                          findings = org_data.get("findings", {})
+                          if isinstance(findings, dict):
+                              for k in findings:
+                                  org_unconsumed.append(f"findings.{k}")
+
+                          print(f"Consumed configuration from .github/claude-review-defaults.yml (ref {org_ref}): {', '.join(org_consumed) if org_consumed else 'none'}")
+                          if org_unconsumed:
+                              print(f"::warning::Configuration key(s) in .github/claude-review-defaults.yml accepted by schema but not yet wired in this workflow: {', '.join(sorted(org_unconsumed))}")
+
+          if yaml is not None:
+              # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
+              # Reading from head would let a pull request modify its own review policy
+              # (e.g. raise auto_pause_rounds, change model, skip authors) in the commit under review.
+              ref_name = base_sha[:8] if base_sha else "unknown"
+              fetch_cmd = ["gh", "api", f"repos/{repo}/contents/.github/claude-review.yml?ref={base_sha}", "--jq", ".content"]
+              res = subprocess.run(fetch_cmd, capture_output=True, text=True)
+
+              config_content = None
+              if res.returncode == 0:
+                  if res.stdout.strip():
+                      try:
+                          config_content = base64.b64decode(res.stdout.strip()).decode("utf-8")
+                      except Exception as e:
+                          print(f"::warning::.github/claude-review.yml at base ref {ref_name} failed to decode base64: {e}; applying workflow defaults.")
+                  else:
+                      config_content = ""
+              elif "404" in res.stderr:
+                  print(f"No .github/claude-review.yml found at base ref {ref_name}; applying workflow defaults.")
+              else:
+                  err = res.stderr.strip() if res.stderr else f"exit code {res.returncode}"
+                  print(f"::warning::Failed to fetch .github/claude-review.yml at base ref {ref_name}: {err}; applying workflow defaults.")
+
+              if config_content is not None:
+                  try:
+                      data = yaml.safe_load(config_content)
+                  except Exception as exc:
+                      data = "MALFORMED"
+                      errors = [f"Malformed YAML in .github/claude-review.yml: {exc}"]
+
+                  if data != "MALFORMED":
+                      errors = validate_config(data, filename=".github/claude-review.yml")
+
+                  if errors:
+                      err_msg = "; ".join(errors)
+                      print(f"::warning::.github/claude-review.yml at base ref {ref_name} is malformed; applying workflow defaults: {err_msg}")
+                  else:
+                      if data is not None and isinstance(data, dict):
+                          consumed = []
+                          unconsumed = []
+
+                          review = data.get("review", {})
+                          if isinstance(review, dict):
+                              if "default_model" in review:
+                                  default_model = review["default_model"]
+                                  sources["default_model"] = "repo config"
+                                  consumed.append(f"review.default_model={default_model}")
+                              if "auto_pause_rounds" in review:
+                                  auto_pause_rounds = review["auto_pause_rounds"]
+                                  sources["auto_pause_rounds"] = "repo config"
+                                  consumed.append(f"review.auto_pause_rounds={auto_pause_rounds}")
+                              if "skip_authors" in review:
+                                  skip_authors = ",".join(x.strip() for x in review["skip_authors"] if isinstance(x, str) and x.strip())
+                                  sources["skip_authors"] = "repo config"
+                                  consumed.append(f"review.skip_authors={skip_authors}")
+                              if "path_filters" in review:
+                                  path_filters = review["path_filters"]
+                                  sources["path_filters"] = "repo config"
+                                  consumed.append(f"review.path_filters={path_filters}")
+                              if "path_instructions" in review:
+                                  unconsumed.append("review.path_instructions")
+
+                          findings = data.get("findings", {})
+                          if isinstance(findings, dict):
+                              for k in findings:
+                                  unconsumed.append(f"findings.{k}")
+
+                          print(f"Consumed configuration from .github/claude-review.yml (base ref {ref_name}): {', '.join(consumed) if consumed else 'none (defaults applied)'}")
+                          if unconsumed:
+                              print(f"::warning::Configuration key(s) accepted by schema but not yet wired in this workflow: {', '.join(sorted(unconsumed))}")
+
+          print("Effective review configuration:")
+          print(f"  review.default_model: {default_model} (source: {sources['default_model']})")
+          print(f"  review.auto_pause_rounds: {auto_pause_rounds} (source: {sources['auto_pause_rounds']})")
+          print(f"  review.skip_authors: {skip_authors} (source: {sources['skip_authors']})")
+          print(f"  review.path_filters: {path_filters} (source: {sources['path_filters']})")
+
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as f:
+                  f.write(f"default_model={default_model}\n")
+                  f.write(f"auto_pause_rounds={auto_pause_rounds}\n")
+                  f.write(f"skip_authors={skip_authors}\n")
+                  f.write(f"path_filters={json.dumps(path_filters)}\n")
+          PY
 
       # Mode switch (#403 incremental re-review): on non-bot replies or summons,
       # unresolved claude[bot] threads trigger a verify round to re-evaluate and resolve.
@@ -194,7 +539,9 @@ jobs:
           HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
           EVENT_NAME: ${{ github.event_name }}
           SUMMON: ${{ needs.resolve.outputs.summon }}
-          MAX_ROUNDS: ${{ inputs.auto_pause_rounds }}
+          MAX_ROUNDS: ${{ steps.config.outputs.auto_pause_rounds }}
+          SKIP_AUTHORS: ${{ steps.config.outputs.skip_authors }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           # Presence only — the token value never enters the shell.
           HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
@@ -282,6 +629,20 @@ jobs:
             exit 0
           fi
 
+          # Skip authors check for automatic pull_request events
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "${PR_AUTHOR:-}" ]; then
+            IFS=',' read -ra skip_list <<< "${SKIP_AUTHORS:-}"
+            for skip_login in "${skip_list[@]}"; do
+              skip_login="${skip_login#"${skip_login%%[![:space:]]*}"}"
+              skip_login="${skip_login%"${skip_login##*[![:space:]]}"}"
+              if [ "$PR_AUTHOR" = "$skip_login" ] && [ -n "$skip_login" ]; then
+                echo "skipping review: author '$PR_AUTHOR' matches skip_authors"
+                emit skip skipped-author
+                exit 0
+              fi
+            done
+          fi
+
           # Auto-pause reads the round counter off our own liveness comment. Summons are
           # the resume, so they neither read nor trip it. Story: prismalens/prismalens#403.
           if [ "$EVENT_NAME" = "pull_request" ]; then
@@ -330,71 +691,133 @@ jobs:
           resolve_range
 
       # Match --model against allowlisted aliases; ID emitted from list, never read from body.
-      # Misses fall back to default_model and emit a warning. Story: #27.
+      # If no summon override is present, escalate to opus if changed files match review.path_filters.
+      # Misses fall back to default_model and emit a warning. Stories: #27, #34.
       - name: Resolve review model
         id: model
         env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.resolve.outputs.number }}
           BODY: ${{ github.event.comment.body }}
           ALIASES: ${{ inputs.model_aliases }}
-          DEFAULT_MODEL: ${{ inputs.default_model }}
+          DEFAULT_MODEL: ${{ steps.config.outputs.default_model }}
+          PATH_FILTERS: ${{ steps.config.outputs.path_filters }}
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import fnmatch
+          import json
+          import os
+          import subprocess
+          import sys
 
-          selected_model=""
-          if [ -z "${ALIASES:-}" ]; then
-            echo "::error::model_aliases input is empty" >&2
-            exit 1
-          fi
+          repo = os.environ.get("REPO", "")
+          pr = os.environ.get("PR", "")
+          body = os.environ.get("BODY", "")
+          aliases_raw = os.environ.get("ALIASES", "")
+          default_model = os.environ.get("DEFAULT_MODEL", "claude-sonnet-5")
+          path_filters_raw = os.environ.get("PATH_FILTERS", "[]")
 
-          # The token after `--model `, up to the next whitespace. Read as DATA only: it is
-          # compared against the allowlist and never emitted. Story: #27.
-          requested_alias=""
-          case "$BODY" in
-            *"--model "*)
-              rest="${BODY#*--model }"
-              requested_alias="${rest%%[[:space:]]*}"
-              ;;
-          esac
+          if not aliases_raw.strip():
+              print("::error::model_aliases input is empty", file=sys.stderr)
+              sys.exit(1)
 
-          IFS=',' read -ra pairs <<< "$ALIASES"
-          for pair in "${pairs[@]}"; do
-            case "$pair" in
-              *=*)
-                alias="${pair%%=*}"
-                model_id="${pair#*=}"
-                ;;
-              *)
-                echo "::error::Malformed model_aliases entry (missing '='): $pair" >&2
-                exit 1
-                ;;
-            esac
-            if [ -z "$alias" ] || [ -z "$model_id" ]; then
-              echo "::error::Malformed model_aliases entry (empty alias or ID): $pair" >&2
-              exit 1
-            fi
-            # Whole-token match. A prefix test would let `--model sonnet-preview` select the
-            # `sonnet` alias and skip the unknown-alias fallback. Story: #27.
-            if [ "$requested_alias" = "$alias" ]; then
-              selected_model="$model_id"
-              break
-            fi
-          done
+          aliases = {}
+          for pair in aliases_raw.split(","):
+              pair = pair.strip()
+              if not pair:
+                  continue
+              if "=" not in pair:
+                  print(f"::error::Malformed model_aliases entry (missing '='): {pair}", file=sys.stderr)
+                  sys.exit(1)
+              alias, model_id = pair.split("=", 1)
+              alias = alias.strip()
+              model_id = model_id.strip()
+              if not alias or not model_id:
+                  print(f"::error::Malformed model_aliases entry (empty alias or ID): {pair}", file=sys.stderr)
+                  sys.exit(1)
+              aliases[alias] = model_id
 
-          if [ -n "$selected_model" ]; then
-            echo "model=$selected_model" >> "$GITHUB_OUTPUT"
-            echo "model_fallback=" >> "$GITHUB_OUTPUT"
-          else
-            echo "model=$DEFAULT_MODEL" >> "$GITHUB_OUTPUT"
-            case "$BODY" in
-              *"--model "*)
-                echo "model_fallback=true" >> "$GITHUB_OUTPUT"
-                echo "::warning::Unrecognized --model alias in comment; falling back to default model ($DEFAULT_MODEL)"
-                ;;
-              *)
-                echo "model_fallback=" >> "$GITHUB_OUTPUT"
-                ;;
-            esac
-          fi
+          opus_model = aliases.get("opus", "claude-opus-5")
+
+          # 1. Check for explicit --model <alias> in summon
+          requested_alias = None
+          if "--model " in body:
+              rest = body.split("--model ", 1)[1]
+              requested_alias = rest.split()[0] if rest.split() else ""
+
+          selected_model = None
+          model_source = None
+          model_fallback = ""
+
+          if requested_alias:
+              if requested_alias in aliases:
+                  selected_model = aliases[requested_alias]
+                  model_source = "summon override"
+              else:
+                  selected_model = default_model
+                  model_source = "default"
+                  model_fallback = "true"
+                  print(f"::warning::Unrecognized --model alias in comment; falling back to default model ({default_model})")
+          else:
+              # 2. No summon override: check path-based escalation against changed files
+              try:
+                  path_filters = json.loads(path_filters_raw) if path_filters_raw else []
+              except Exception:
+                  path_filters = []
+
+              if path_filters and repo and pr:
+                  cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--jq", ".[].filename"]
+                  res = subprocess.run(cmd, capture_output=True, text=True)
+                  if res.returncode != 0:
+                      err = res.stderr.strip() if res.stderr else "unknown error"
+                      print(f"::warning::Command '{' '.join(cmd)}' failed with exit code {res.returncode}: {err}")
+                      selected_model = default_model
+                      model_source = "default (changed-files fetch failed)"
+                  else:
+                      changed_files = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+
+                      def matches_pattern(path: str, pattern: str) -> bool:
+                          if pattern.endswith("/**"):
+                              prefix = pattern[:-3]
+                              if path == prefix or path.startswith(prefix + "/"):
+                                  return True
+                              if fnmatch.fnmatch(path, pattern):
+                                  return True
+                          elif fnmatch.fnmatch(path, pattern):
+                              return True
+                          return False
+
+                      matched_file = None
+                      matched_pattern = None
+                      for f in changed_files:
+                          for pat in path_filters:
+                              if matches_pattern(f, pat):
+                                  matched_file = f
+                                  matched_pattern = pat
+                                  break
+                          if matched_file:
+                              break
+
+                      if matched_file:
+                          selected_model = opus_model
+                          model_source = "escalated by path match"
+                          print(f"High-risk path matched: '{matched_file}' matched '{matched_pattern}'; escalating model to {selected_model}")
+                      else:
+                          selected_model = default_model
+                          model_source = "default"
+              else:
+                  selected_model = default_model
+                  model_source = "default"
+
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as f:
+                  f.write(f"model={selected_model}\n")
+                  f.write(f"model_source={model_source}\n")
+                  f.write(f"model_fallback={model_fallback}\n")
+          PY
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1241,9 +1664,15 @@ jobs:
           STARTED_AT: ${{ needs.review.outputs.started_at }}
           RANGE_BASE: ${{ needs.review.outputs.range_base }}
           RANGE_HEAD: ${{ needs.review.outputs.range_head }}
+          MODEL: ${{ needs.review.outputs.model }}
+          MODEL_SOURCE: ${{ needs.review.outputs.model_source }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          if [ "${SKIP_REASON:-}" = "skipped-author" ]; then
+            echo "PR author matches skip_authors; skipping liveness comment."
+            exit 0
+          fi
           short=${HEAD_SHA:0:8}
           # If review died before its clock step, STARTED_AT is empty and the
           # `>=` filter below would count every claude[bot] comment ever made.
@@ -1328,12 +1757,17 @@ jobs:
                     | select(.created_at >= \"$STARTED_AT\")
                     | select(.body | startswith(\"## Code review\"))] | length")
 
+            model_info=""
+            if [ -n "${MODEL:-}" ]; then
+              model_info="with \`$MODEL\` (${MODEL_SOURCE:-default}) "
+            fi
+
             if [ "$((inline + summary))" -gt 0 ]; then
               if [ "$MODE" = "incremental" ] && [ -n "${RANGE_BASE:-}" ]; then
                 short_base=${RANGE_BASE:0:8}
-                verdict="reviewed \`$short\` (incremental from \`$short_base\`) and posted ${inline} inline / ${summary} summary comment(s)."
+                verdict="reviewed \`$short\` (incremental from \`$short_base\`) ${model_info}and posted ${inline} inline / ${summary} summary comment(s)."
               else
-                verdict="reviewed \`$short\` and posted ${inline} inline / ${summary} summary comment(s)."
+                verdict="reviewed \`$short\` ${model_info}and posted ${inline} inline / ${summary} summary comment(s)."
               fi
 
               # The summon resume clears the auto-pause counter, gated on the SAME posted

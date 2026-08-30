@@ -60,7 +60,8 @@ exit 1
 
 def run_case(script, *, event="pull_request", has_token="true", summon="none",
              max_rounds="5", head_sha=NEW, fake_liveness="", fake_threads="[]",
-             fake_compare_json="{}", fake_compare_404="0"):
+             fake_compare_json="{}", fake_compare_404="0",
+             skip_authors="dependabot[bot]", pr_author=""):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
@@ -86,6 +87,8 @@ def run_case(script, *, event="pull_request", has_token="true", summon="none",
             SUMMON=summon,
             MAX_ROUNDS=str(max_rounds),
             HAS_TOKEN=has_token,
+            SKIP_AUTHORS=str(skip_authors),
+            PR_AUTHOR=str(pr_author),
             FAKE_LIVENESS=fake_liveness,
             FAKE_THREADS=fake_threads,
             FAKE_COMPARE_JSON=fake_compare_json,
@@ -157,6 +160,14 @@ CASES = [
      dict(fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + OLD + " -->",
           fake_compare_json="<html>502 Bad Gateway</html>"),
      "review", "unexpected-status-", "", False),
+
+    ("pull_request, author matches skip_authors exact",
+     dict(skip_authors="dependabot[bot]", pr_author="dependabot[bot]"),
+     "skip", "", "skipped-author", False),
+
+    ("pull_request, author matches skip_authors with whitespace",
+     dict(skip_authors="dependabot[bot], renovate[bot] ", pr_author="renovate[bot]"),
+     "skip", "", "skipped-author", False),
 
     ("summon full",
      dict(event="issue_comment", summon="full"),

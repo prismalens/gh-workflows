@@ -1,0 +1,3 @@
+# Organization-level review defaults for prismalens ecosystem repositories (Story #54).
+# Policy defined here applies across all consumers unless overridden per repo in .github/claude-review.yml.
+version: 1
