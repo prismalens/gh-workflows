@@ -82,7 +82,7 @@ jobs:
 7. **Cancel Automatic Rounds Only**: On a lane that takes both `pull_request` and comment triggers, use `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`: a summon never cancels an in-flight automatic round; it queues behind it. A push still supersedes anything in the group, including a summon.
 8. **Admission is effective repository permission, not `author_association`**: Comment events in both lanes are admitted only when the acting account holds `admin` or `write` on the repository, checked live in the `admit` composite action. `author_association` is banned from admission: it is repo-scoped and payload-dependent, and it reported `CONTRIBUTOR` in the webhook for a maintainer whose REST record said `MEMBER`, so replies on `prismalens/prismalens` were never admitted. A failed check is red, never silently open and never silently closed. Story: `prismalens/gh-workflows#20`.
 
-See [docs/review-lane.md](docs/review-lane.md) for review lane inputs, consumer stub configuration, summon grammar, incremental review, step summaries, thread resolution, and fork handling.
+See [docs/review-lane.md](docs/review-lane.md) for review lane inputs, per-repo configuration (`.github/claude-review.yml`), model escalation, consumer stub configuration, summon grammar, incremental review, step summaries, thread resolution, and fork handling.
 
 ---
 

@@ -69,7 +69,55 @@ All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults ar
 
 ## Setting inputs per repository
 
-The only mechanism today is a `with:` block on the `uses:` line in the caller stub. There is no configuration file, no repository-level UI, and no validation of what a stub passes. Every consumer therefore runs the callee's defaults unless its own stub overrides them, and today none of them override anything. A per-repo configuration file is tracked as issue #33, and until it lands, changing a knob for one repository means editing that repository's stub.
+Repository-level settings can be configured using a per-repo configuration file (`.github/claude-review.yml`) or via the `with:` input block in the caller stub.
+
+### Configuration file (`.github/claude-review.yml`)
+
+Repositories can define review settings in `.github/claude-review.yml`.
+
+#### Security invariant: read from the base ref, never the head (#33)
+
+The configuration file is read strictly from the pull request's **base ref** (`.base.sha`) via GitHub's Contents REST API (`gh api repos/$REPO/contents/.github/claude-review.yml?ref=$BASE_SHA`), and never from the checked-out working tree or PR head commit.
+
+Because the PR head and merge ref are under the author's control, reading configuration from the head would allow an attacker to modify review policies for their own PR (e.g. increase `auto_pause_rounds`, downgrade `default_model`, alter `path_filters`, or add themselves to `skip_authors`) in the very commit under review.
+
+#### Configuration schema and wired keys
+
+The configuration schema is strictly validated against the S0 specification (`tools/validate-review-config.py`).
+
+| Key | Type | Status | Meaning |
+| --- | --- | --- | --- |
+| `version` | integer | **Consumed** | Schema version (must be integer `1`). |
+| `review.default_model` | string | **Consumed** | Default model ID for review runs (`claude-sonnet-5` or `claude-opus-5`). |
+| `review.auto_pause_rounds` | integer | **Consumed** | Automatic review rounds limit before pausing (integer >= 1). |
+| `review.skip_authors` | list of strings | **Consumed** | Author logins whose automatic `pull_request` rounds are skipped entirely. |
+| `review.path_filters` | list of strings | **Consumed** | Glob patterns for high-risk files that escalate the review model to Opus. |
+| `review.path_instructions` | list of mappings | *Schema-accepted, not yet wired* | Path-specific instructions for review agents. Emits warning if present. |
+| `findings.suppress_below` | string | *Schema-accepted, not yet wired* | Minimum severity threshold (`none`, `Minor`, `Major`, `Critical`). Emits warning if present. |
+| `findings.enable_ai_fix_prompt` | boolean | *Schema-accepted, not yet wired* | Whether to include AI fix prompt details. Emits warning if present. |
+| `findings.include_verification_note` | boolean | *Schema-accepted, not yet wired* | Whether to include verification notes. Emits warning if present. |
+
+#### Three parse outcomes
+
+1. **Absent (HTTP 404)**: When `.github/claude-review.yml` does not exist at the base ref, workflow defaults apply and a single informative line is logged (`No .github/claude-review.yml found at base ref <sha>; applying workflow defaults.`). No warning is emitted.
+2. **Malformed**: If the file contains invalid YAML, unknown keys, invalid schema versions, or disallowed values, the lane emits a `::warning::` annotation naming the file, the base SHA, and the validator's error output, and falls back to workflow defaults. A broken configuration is never silently treated as intentional defaults.
+3. **Valid**: The lane consumes supported keys (`default_model`, `auto_pause_rounds`, `skip_authors`, `path_filters`), logs the consumed values, and overrides the corresponding workflow inputs. If any schema-valid but unwired keys are present (e.g. `review.path_instructions` or `findings.*`), one `::warning::` annotation is emitted listing those keys.
+
+#### Precedence
+
+- A valid setting in `.github/claude-review.yml` overrides the corresponding `workflow_call` input in the caller stub's `with:` block.
+- Any setting absent or omitted from `.github/claude-review.yml` falls back to the caller stub's `with:` input (or the workflow's built-in default).
+- Security-critical controls remain workflow-only inputs and are never configurable in `.github/claude-review.yml`: `--allowed-tools`, `id-token` write permissions, and fork handling.
+
+### Model escalation from changed files (#34)
+
+Before the review agent runs, the lane inspects the list of changed files in the pull request and selects the model up front:
+
+- **Default**: `review.default_model` (Sonnet by default: `claude-sonnet-5`).
+- **High-Risk Escalation**: If the repository config defines `review.path_filters` and any file modified in the pull request matches one of the glob patterns, the review model is escalated to Opus (`claude-opus-5`).
+  - Glob matching uses Python's `fnmatch`, with trailing `/**` matching a directory and all of its descendants recursively.
+- **Summon Override Precedence**: An explicit model alias in a summon (e.g. `@claude review --model sonnet` or `@claude review --model opus`) always takes precedence over path-based escalation. Manual intent wins.
+- **Evidence Naming**: The advisory liveness comment explicitly names the model used and the resolution reason (`default`, `summon override`, or `escalated by path match`).
 
 ```yaml
   review:
