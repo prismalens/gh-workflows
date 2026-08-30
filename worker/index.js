@@ -1,6 +1,12 @@
 let cachedCerts = null;
 let certsExpiry = 0;
 
+const READ_HEADERS = {
+  "content-type": "application/json",
+  "cache-control": "no-store",
+  "vary": "Cf-Access-Jwt-Assertion",
+};
+
 function serializeJson(val, fallback) {
   if (val === undefined || val === null) {
     return fallback;
@@ -66,7 +72,7 @@ async function verifyAccess(request, env) {
   if (!teamDomain || !expectedAud) {
     return new Response(JSON.stringify({ error: "read API not configured" }), {
       status: 503,
-      headers: { "content-type": "application/json" },
+      headers: READ_HEADERS,
     });
   }
 
@@ -74,7 +80,7 @@ async function verifyAccess(request, env) {
   if (!token) {
     return new Response(JSON.stringify({ error: "forbidden" }), {
       status: 403,
-      headers: { "content-type": "application/json" },
+      headers: READ_HEADERS,
     });
   }
 
@@ -82,7 +88,7 @@ async function verifyAccess(request, env) {
   if (parts.length !== 3) {
     return new Response(JSON.stringify({ error: "forbidden" }), {
       status: 403,
-      headers: { "content-type": "application/json" },
+      headers: READ_HEADERS,
     });
   }
 
@@ -93,14 +99,14 @@ async function verifyAccess(request, env) {
   } catch {
     return new Response(JSON.stringify({ error: "forbidden" }), {
       status: 403,
-      headers: { "content-type": "application/json" },
+      headers: READ_HEADERS,
     });
   }
 
   if (header?.alg !== "RS256" || !header?.kid) {
     return new Response(JSON.stringify({ error: "forbidden" }), {
       status: 403,
-      headers: { "content-type": "application/json" },
+      headers: READ_HEADERS,
     });
   }
 
@@ -110,7 +116,7 @@ async function verifyAccess(request, env) {
   } catch {
     return new Response(JSON.stringify({ error: "failed to fetch signing keys" }), {
       status: 503,
-      headers: { "content-type": "application/json" },
+      headers: READ_HEADERS,
     });
   }
 
@@ -118,7 +124,7 @@ async function verifyAccess(request, env) {
   if (!matchingKey) {
     return new Response(JSON.stringify({ error: "forbidden" }), {
       status: 403,
-      headers: { "content-type": "application/json" },
+      headers: READ_HEADERS,
     });
   }
 
@@ -141,13 +147,13 @@ async function verifyAccess(request, env) {
     if (!isValid) {
       return new Response(JSON.stringify({ error: "forbidden" }), {
         status: 403,
-        headers: { "content-type": "application/json" },
+        headers: READ_HEADERS,
       });
     }
   } catch {
     return new Response(JSON.stringify({ error: "forbidden" }), {
       status: 403,
-      headers: { "content-type": "application/json" },
+      headers: READ_HEADERS,
     });
   }
 
@@ -156,7 +162,7 @@ async function verifyAccess(request, env) {
   if (!hasAud) {
     return new Response(JSON.stringify({ error: "forbidden" }), {
       status: 403,
-      headers: { "content-type": "application/json" },
+      headers: READ_HEADERS,
     });
   }
 
@@ -164,14 +170,14 @@ async function verifyAccess(request, env) {
   if (typeof payload?.exp !== "number" || payload.exp <= now) {
     return new Response(JSON.stringify({ error: "forbidden" }), {
       status: 403,
-      headers: { "content-type": "application/json" },
+      headers: READ_HEADERS,
     });
   }
 
   if (payload?.iss !== `https://${teamDomain}`) {
     return new Response(JSON.stringify({ error: "forbidden" }), {
       status: 403,
-      headers: { "content-type": "application/json" },
+      headers: READ_HEADERS,
     });
   }
 
@@ -206,7 +212,7 @@ async function handleSummary(env) {
         first_recorded_at: null,
         last_recorded_at: null,
       }),
-      { headers: { "content-type": "application/json" } }
+      { headers: READ_HEADERS }
     );
   }
 
@@ -220,10 +226,21 @@ async function handleSummary(env) {
   ).first();
   let p95 = null;
   if (countRow && countRow.cnt > 0) {
-    const offset = Math.min(Math.floor(countRow.cnt * 0.95), countRow.cnt - 1);
-    const p95Row = await env.DB.prepare(
+    let offset = Math.max(0, Math.ceil(countRow.cnt * 0.95) - 1);
+    let p95Row = await env.DB.prepare(
       "SELECT duration_ms FROM usage_records WHERE duration_ms IS NOT NULL ORDER BY duration_ms ASC LIMIT 1 OFFSET ?"
     ).bind(offset).first();
+    if (!p95Row) {
+      const currentCountRow = await env.DB.prepare(
+        "SELECT COUNT(*) as cnt FROM usage_records WHERE duration_ms IS NOT NULL"
+      ).first();
+      if (currentCountRow && currentCountRow.cnt > 0) {
+        const clampedOffset = Math.max(0, Math.min(offset, currentCountRow.cnt - 1));
+        p95Row = await env.DB.prepare(
+          "SELECT duration_ms FROM usage_records WHERE duration_ms IS NOT NULL ORDER BY duration_ms ASC LIMIT 1 OFFSET ?"
+        ).bind(clampedOffset).first();
+      }
+    }
     p95 = p95Row ? p95Row.duration_ms : null;
   }
 
@@ -256,7 +273,7 @@ async function handleSummary(env) {
       first_recorded_at: stats.first_recorded_at,
       last_recorded_at: stats.last_recorded_at,
     }),
-    { headers: { "content-type": "application/json" } }
+    { headers: READ_HEADERS }
   );
 }
 
@@ -268,17 +285,30 @@ async function handleRuns(url, env) {
     if (!/^[1-9]\d*$/.test(limitParam)) {
       return new Response(JSON.stringify({ error: "invalid limit" }), {
         status: 400,
-        headers: { "content-type": "application/json" },
+        headers: READ_HEADERS,
       });
     }
     const parsedLimit = Number(limitParam);
     if (parsedLimit > 1000) {
       return new Response(JSON.stringify({ error: "invalid limit" }), {
         status: 400,
-        headers: { "content-type": "application/json" },
+        headers: READ_HEADERS,
       });
     }
     limit = parsedLimit;
+  }
+
+  const includeParam = searchParams.get("include");
+  let includeBlobs = false;
+  if (includeParam !== null) {
+    if (includeParam !== "blobs") {
+      return new Response(JSON.stringify({ error: "invalid include" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    includeBlobs = true;
+    limit = Math.min(limit, 50);
   }
 
   const conditions = [];
@@ -310,55 +340,77 @@ async function handleRuns(url, env) {
 
   const cursor = searchParams.get("cursor");
   if (cursor !== null) {
-    conditions.push("recorded_at < ?");
-    bindings.push(cursor);
+    const pipeIndex = cursor.indexOf("|");
+    if (pipeIndex === -1) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const cursorRecordedAt = cursor.slice(0, pipeIndex);
+    const cursorSessionId = cursor.slice(pipeIndex + 1);
+    if (!cursorRecordedAt || !cursorSessionId) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    conditions.push("(recorded_at < ? OR (recorded_at = ? AND session_id < ?))");
+    bindings.push(cursorRecordedAt, cursorRecordedAt, cursorSessionId);
+  }
+
+  const columns = [
+    "session_id",
+    "recorded_at",
+    "repository",
+    "pr_number",
+    "pr_url",
+    "head_sha",
+    "run_id",
+    "run_attempt",
+    "run_url",
+    "round_type",
+    "model",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "total_cost_usd",
+    "duration_ms",
+    "duration_api_ms",
+    "num_turns",
+    "permission_denials",
+    "changed_files",
+    "diff_lines",
+  ];
+  if (includeBlobs) {
+    columns.push("per_model_usage", "subagent_stats", "raw_result");
   }
 
   let query = `SELECT
-    session_id,
-    recorded_at,
-    repository,
-    pr_number,
-    pr_url,
-    head_sha,
-    run_id,
-    run_attempt,
-    run_url,
-    round_type,
-    model,
-    input_tokens,
-    output_tokens,
-    cache_read_input_tokens,
-    cache_creation_input_tokens,
-    total_cost_usd,
-    duration_ms,
-    duration_api_ms,
-    num_turns,
-    permission_denials,
-    changed_files,
-    diff_lines,
-    per_model_usage,
-    subagent_stats,
-    raw_result
+    ${columns.join(",\n    ")}
   FROM usage_records`;
 
   if (conditions.length > 0) {
     query += ` WHERE ${conditions.join(" AND ")}`;
   }
 
-  query += ` ORDER BY recorded_at DESC LIMIT ?`;
+  query += ` ORDER BY recorded_at DESC, session_id DESC LIMIT ?`;
   bindings.push(limit);
 
   const { results } = await env.DB.prepare(query).bind(...bindings).all();
   const rows = results ?? [];
-  const nextCursor = rows.length > 0 ? rows[rows.length - 1].recorded_at : null;
+  const nextCursor =
+    rows.length === limit && rows.length > 0
+      ? `${rows[rows.length - 1].recorded_at}|${rows[rows.length - 1].session_id}`
+      : null;
 
   return new Response(
     JSON.stringify({
       rows,
       next_cursor: nextCursor,
     }),
-    { headers: { "content-type": "application/json" } }
+    { headers: READ_HEADERS }
   );
 }
 
