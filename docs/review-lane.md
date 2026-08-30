@@ -88,7 +88,7 @@ Because `Sumit1993/mage-memory` is user-owned while other consumer repositories 
 
 #### Dynamic ref resolution (No hardcoded `@main`) (#54)
 
-Organization defaults are fetched from `gh-workflows` at the exact ref the callee reusable workflow is running as, resolved dynamically from `github.workflow_ref` (parsing the ref following the final `@`):
+Organization defaults are fetched from `gh-workflows` at the exact ref the callee reusable workflow is running as, resolved dynamically from `job.workflow_ref` (parsing the ref following the final `@`):
 
 ```text
 gh api repos/prismalens/gh-workflows/contents/.github/claude-review-defaults.yml?ref=<org_ref>

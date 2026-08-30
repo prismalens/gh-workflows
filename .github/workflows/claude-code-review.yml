@@ -195,7 +195,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
-          WORKFLOW_REF: ${{ github.workflow_ref }}
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
           INPUT_DEFAULT_MODEL: ${{ inputs.default_model }}
           INPUT_AUTO_PAUSE_ROUNDS: ${{ inputs.auto_pause_rounds }}
           INPUT_SKIP_AUTHORS: ${{ inputs.skip_authors }}
@@ -216,7 +216,7 @@ jobs:
 
           repo = os.environ.get("REPO", "")
           base_sha = os.environ.get("BASE_SHA", "")
-          workflow_ref = os.environ.get("WORKFLOW_REF", "")
+          job_workflow_ref = os.environ.get("JOB_WORKFLOW_REF", "")
           default_model = os.environ.get("INPUT_DEFAULT_MODEL", "claude-sonnet-5")
           auto_pause_rounds = int(os.environ.get("INPUT_AUTO_PAUSE_ROUNDS", 5))
           raw_skip_authors = os.environ.get("INPUT_SKIP_AUTHORS", "dependabot[bot]")
@@ -362,16 +362,20 @@ jobs:
 
               return errors
 
-          # Story #54: Fetch org defaults at the ref this reusable workflow was resolved at
-          # (from github.workflow_ref), not a hardcoded @main. If a consumer pins a SHA for
-          # supply-chain security, fetching @main would hand it newer policy than pinned code.
+          # Story #54: Org defaults repository is deliberately fixed (prismalens/gh-workflows is policy source),
+          # while ref is deliberately derived from job_workflow_ref so callers pinning a SHA get matching policy.
           org_repo = "prismalens/gh-workflows"
-          if "/.github/" in workflow_ref:
-              org_repo = workflow_ref.split("/.github/", 1)[0]
-          if "@" in workflow_ref:
-              org_ref = workflow_ref.rsplit("@", 1)[1]
+          org_ref = "main"
+          if not job_workflow_ref:
+              print(f"::warning::Could not resolve org defaults ref: JOB_WORKFLOW_REF is empty; falling back to {org_repo}@{org_ref}.")
+          elif "/.github/" not in job_workflow_ref or "@" not in job_workflow_ref:
+              print(f"::warning::Could not resolve org defaults ref: JOB_WORKFLOW_REF '{job_workflow_ref}' is unparseable; falling back to {org_repo}@{org_ref}.")
           else:
-              org_ref = "main"
+              parsed_ref = job_workflow_ref.rsplit("@", 1)[1].strip()
+              if not parsed_ref:
+                  print(f"::warning::Could not resolve org defaults ref: JOB_WORKFLOW_REF '{job_workflow_ref}' is unparseable; falling back to {org_repo}@{org_ref}.")
+              else:
+                  org_ref = parsed_ref
 
           if yaml is not None:
               org_fetch_cmd = ["gh", "api", f"repos/{org_repo}/contents/.github/claude-review-defaults.yml?ref={org_ref}", "--jq", ".content"]
