@@ -610,6 +610,34 @@ jobs:
             exit 0
           fi
 
+          # 1. Extract usage metrics (safely, before building the document).
+          input_tokens=$(jq '[.[] | try (.message.usage.input_tokens) catch empty | numbers] | add // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          output_tokens=$(jq '[.[] | try (.message.usage.output_tokens) catch empty | numbers] | add // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          cache_read=$(jq '[.[] | try (.message.usage.cache_read_input_tokens) catch empty | numbers] | add // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          cache_create=$(jq '[.[] | try (.message.usage.cache_creation_input_tokens) catch empty | numbers] | add // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          total_cost=$(jq '[.[] | try (select(.type == "result") | .total_cost_usd) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          duration_ms=$(jq '[.[] | try (select(.type == "result") | .duration_ms) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          num_turns=$(jq '[.[] | try (select(.type == "result") | .num_turns) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+          perm_denials=$(jq '[.[] | try (select(.type == "result") | .permission_denials) catch empty | numbers][0] // 0' "$EXECUTION_FILE" 2>/dev/null || true)
+
+          has_usage=$(jq '[.[] | try (.message.usage) catch empty] | length' "$EXECUTION_FILE" 2>/dev/null || echo 0)
+          has_result=$(jq '[.[] | try (select(.type == "result")) catch empty] | length' "$EXECUTION_FILE" 2>/dev/null || echo 0)
+
+          # Belt and braces: if an extraction still fails or no metrics found, warn and continue.
+          if [ -z "$input_tokens" ] || [ -z "$output_tokens" ] || [ -z "$cache_read" ] || [ -z "$cache_create" ] || \
+             [ -z "$total_cost" ] || [ -z "$duration_ms" ] || [ -z "$num_turns" ] || [ -z "$perm_denials" ] || \
+             { [ "$has_usage" -eq 0 ] && [ "$has_result" -eq 0 ]; }; then
+            echo "::warning::display_report: could not extract usage metrics from the execution file"
+            input_tokens="${input_tokens:-0}"
+            output_tokens="${output_tokens:-0}"
+            cache_read="${cache_read:-0}"
+            cache_create="${cache_create:-0}"
+            total_cost="${total_cost:-0}"
+            duration_ms="${duration_ms:-0}"
+            num_turns="${num_turns:-0}"
+            perm_denials="${perm_denials:-0}"
+          fi
+
           {
             # 1. Context line
             echo "### Review Round Report"
@@ -625,16 +653,7 @@ jobs:
             echo "| Session ID | \`${SESSION_ID:-unknown}\` |"
             echo ""
 
-            # 2. Usage table — extracted field-by-field, never echoed wholesale.
-            input_tokens=$(jq '[.[] | select(.message.usage) | .message.usage.input_tokens // 0] | add // 0' "$EXECUTION_FILE")
-            output_tokens=$(jq '[.[] | select(.message.usage) | .message.usage.output_tokens // 0] | add // 0' "$EXECUTION_FILE")
-            cache_read=$(jq '[.[] | select(.message.usage) | .message.usage.cache_read_input_tokens // 0] | add // 0' "$EXECUTION_FILE")
-            cache_create=$(jq '[.[] | select(.message.usage) | .message.usage.cache_creation_input_tokens // 0] | add // 0' "$EXECUTION_FILE")
-            total_cost=$(jq '[.[] | select(.type == "result") | .total_cost_usd // 0][0] // 0' "$EXECUTION_FILE")
-            duration_ms=$(jq '[.[] | select(.type == "result") | .duration_ms // 0][0] // 0' "$EXECUTION_FILE")
-            num_turns=$(jq '[.[] | select(.type == "result") | .num_turns // 0][0] // 0' "$EXECUTION_FILE")
-            perm_denials=$(jq '[.[] | select(.type == "result") | .permission_denials // 0][0] // 0' "$EXECUTION_FILE")
-
+            # 2. Usage table
             echo "### Usage"
             echo ""
             echo "| Metric | Value |"
@@ -652,14 +671,16 @@ jobs:
             # 3. Reasoning — assistant text turns rendered as markdown.
             echo "### Reasoning"
             echo ""
-            jq -r '.[] | select(.message.role == "assistant") | .message.content // [] | .[] | select(.type == "text") | .text // empty' "$EXECUTION_FILE"
+            jq -r '.[] | try (select(.message.role == "assistant") | .message.content // [] | .[] | select(.type == "text") | .text // empty) catch empty' "$EXECUTION_FILE"
           } > /tmp/step-summary-draft.md
 
           # Cap the output size.
           actual=$(wc -c < /tmp/step-summary-draft.md)
           if [ "$actual" -gt "$MAX_BYTES" ]; then
-            dropped=$((actual - MAX_BYTES + 200))
-            head -c "$MAX_BYTES" /tmp/step-summary-draft.md > "$GITHUB_STEP_SUMMARY"
+            notice_reserve=200
+            content_bytes=$((MAX_BYTES - notice_reserve))
+            dropped=$((actual - content_bytes))
+            head -c "$content_bytes" /tmp/step-summary-draft.md > "$GITHUB_STEP_SUMMARY"
             printf '\n\n---\n*Output truncated: %d bytes dropped to stay under the 1 MiB Step Summary limit.*\n' "$dropped" >> "$GITHUB_STEP_SUMMARY"
           else
             cp /tmp/step-summary-draft.md "$GITHUB_STEP_SUMMARY"

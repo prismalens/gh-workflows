@@ -168,6 +168,49 @@ def main():
         fails.append(f"empty path: no warning emitted")
     print(f"  {'ok  ' if ok else 'FAIL'}  empty execution file path")
 
+    # Case 6: valid-JSON with unexpected element shape — must warn, exit 0, write summary
+    content, stderr, rc = run_report(script, execution_file_content=json.dumps([{"message": "text"}]))
+    ok = True
+    if rc != 0:
+        ok = False
+        fails.append(f"unexpected element shape: exited {rc}, expected 0")
+    if "::warning::" not in stderr:
+        ok = False
+        fails.append("unexpected element shape: no warning emitted")
+    if "could not extract usage metrics" not in stderr.lower():
+        ok = False
+        fails.append("unexpected element shape: warning does not mention 'could not extract usage metrics'")
+    if "### Review Round Report" not in content:
+        ok = False
+        fails.append("unexpected element shape: missing context header")
+    if "| Input tokens | 0 |" not in content:
+        ok = False
+        fails.append("unexpected element shape: missing input_tokens in table")
+    print(f"  {'ok  ' if ok else 'FAIL'}  valid-JSON unexpected element shape")
+
+    # Case 7: draft larger than 1 MiB cap — summary must stay under 1,000,000 bytes including notice
+    large_payload = [
+        {"message": {"role": "assistant", "content": [{"type": "text", "text": "A" * 1_200_000}],
+                     "usage": {"input_tokens": 100, "output_tokens": 50,
+                               "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+                     "model": "claude-sonnet-5"}, "type": "assistant"},
+        {"type": "result", "total_cost_usd": 0.01, "duration_ms": 5000,
+         "num_turns": 1, "permission_denials": 0, "session_id": "sess-large"},
+    ]
+    content, stderr, rc = run_report(script, execution_file_content=json.dumps(large_payload))
+    ok = True
+    if rc != 0:
+        ok = False
+        fails.append(f"large draft: exited {rc}, expected 0")
+    summary_bytes = len(content.encode("utf-8"))
+    if summary_bytes > 1_000_000:
+        ok = False
+        fails.append(f"large draft: summary size {summary_bytes} bytes exceeds 1,000,000 cap")
+    if "Output truncated:" not in content:
+        ok = False
+        fails.append("large draft: missing truncation notice")
+    print(f"  {'ok  ' if ok else 'FAIL'}  truncation cap respected ({summary_bytes} bytes <= 1,000,000)")
+
     print()
     if fails:
         print(f"{len(fails)} FAILED")
