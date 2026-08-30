@@ -42,16 +42,24 @@ def extract_step_script(step_name: str) -> str:
 GH_STUB = r"""#!/usr/bin/env bash
 args="$*"
 case "$args" in
-  *"contents/.github/claude-review-defaults.yml"*)
+  *"contents/.github/claude-review-defaults.yml?ref=${EXPECTED_ORG_REF}"*)
     if [ "${FAKE_ORG_CONFIG_404:-0}" = "1" ]; then
       echo "gh stub: 404 Not Found" >&2
       exit 1
     fi
+    if [ "${FAKE_ORG_CONFIG_FAIL:-0}" = "1" ]; then
+      echo "gh stub: 500 Internal Server Error" >&2
+      exit 1
+    fi
     printf '%s\n' "$FAKE_ORG_CONFIG_B64"
     exit 0 ;;
-  *"contents/.github/claude-review.yml"*)
+  *"contents/.github/claude-review.yml?ref=${EXPECTED_BASE_SHA}"*)
     if [ "${FAKE_CONFIG_404:-0}" = "1" ]; then
       echo "gh stub: 404 Not Found" >&2
+      exit 1
+    fi
+    if [ "${FAKE_CONFIG_FAIL:-0}" = "1" ]; then
+      echo "gh stub: 500 Internal Server Error" >&2
       exit 1
     fi
     printf '%s\n' "$FAKE_CONFIG_B64"
@@ -77,14 +85,16 @@ exit 1
 """
 
 
-def run_config_case(script, *, org_config_yaml=None, org_is_404=True,
-                    config_yaml=None, is_404=False,
+def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=False,
+                    config_yaml=None, is_404=False, config_fail=False,
                     input_default_model="claude-sonnet-5",
                     input_auto_pause_rounds="5",
                     input_skip_authors="dependabot[bot]",
                     base_sha=BASE_SHA,
                     workflow_ref="prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main",
-                    no_pyyaml=False):
+                    no_pyyaml=False,
+                    expected_base_sha=None,
+                    expected_org_ref=None):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
@@ -103,6 +113,21 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True,
             fake_org_b64 = base64.b64encode(org_config_yaml.encode("utf-8")).decode("ascii")
             org_is_404 = False
 
+        if org_fail:
+            org_is_404 = False
+
+        if config_fail:
+            is_404 = False
+
+        if expected_base_sha is None:
+            expected_base_sha = base_sha
+
+        if expected_org_ref is None:
+            if "@" in workflow_ref:
+                expected_org_ref = workflow_ref.rsplit("@", 1)[1]
+            else:
+                expected_org_ref = "main"
+
         env = dict(os.environ)
         pythonpath = env.get("PYTHONPATH", "")
         if no_pyyaml:
@@ -119,12 +144,16 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True,
             REPO="prismalens/test-repo",
             BASE_SHA=base_sha,
             WORKFLOW_REF=workflow_ref,
+            EXPECTED_BASE_SHA=expected_base_sha,
+            EXPECTED_ORG_REF=expected_org_ref,
             INPUT_DEFAULT_MODEL=str(input_default_model),
             INPUT_AUTO_PAUSE_ROUNDS=str(input_auto_pause_rounds),
             INPUT_SKIP_AUTHORS=str(input_skip_authors),
             FAKE_ORG_CONFIG_404="1" if org_is_404 else "0",
+            FAKE_ORG_CONFIG_FAIL="1" if org_fail else "0",
             FAKE_ORG_CONFIG_B64=fake_org_b64,
             FAKE_CONFIG_404="1" if is_404 else "0",
+            FAKE_CONFIG_FAIL="1" if config_fail else "0",
             FAKE_CONFIG_B64=fake_b64,
         )
 
@@ -372,6 +401,42 @@ def main():
     check("missing pyyaml applies auto_pause_rounds", out.get("auto_pause_rounds") == "5", f"got {out.get('auto_pause_rounds')}")
     check("missing pyyaml applies skip_authors", out.get("skip_authors") == "dependabot[bot]", f"got {out.get('skip_authors')}")
     check("missing pyyaml emits warning naming PyYAML", "::warning::" in stdout and "PyYAML" in stdout, f"stdout={stdout!r}")
+
+    # 4c. Base-ref invariant: repository config fetched strictly with supplied BASE_SHA
+    custom_base_sha = "abcdef0123456789abcdef0123456789abcdef01"
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_FULL, base_sha=custom_base_sha)
+    check("base-ref invariant: repo config fetched at supplied BASE_SHA exits 0", rc == 0, f"rc={rc}")
+    check("base-ref invariant: repo config fetched at supplied BASE_SHA applies config", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
+    check("base-ref invariant: repo config produces no warning", "::warning::" not in stdout, f"stdout={stdout}")
+
+    # 4d. Base-ref invariant: org defaults fetched strictly with supplied workflow ref (not hardcoded main)
+    custom_wf_ref = "prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/tags/v2.5.0"
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, workflow_ref=custom_wf_ref, is_404=True)
+    check("base-ref invariant: org defaults fetched at supplied workflow ref exits 0", rc == 0, f"rc={rc}")
+    check("base-ref invariant: org defaults fetched at supplied workflow ref applies config", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
+    check("base-ref invariant: org defaults produces no warning", "::warning::" not in stdout, f"stdout={stdout}")
+
+    # 4e. Org defaults fetch failure (non-404): emits warning, applies defaults, does not report file absent
+    rc, out, stdout, stderr = run_config_case(config_script, org_fail=True, is_404=False)
+    check("org config fetch failure (non-404) exits 0", rc == 0, f"rc={rc}")
+    check("org config fetch failure (non-404) applies default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
+    check("org config fetch failure (non-404) emits warning naming file, ref, and failure",
+          "::warning::" in stdout and ".github/claude-review-defaults.yml" in stdout and "refs/heads/main" in stdout and "500 Internal Server Error" in stdout,
+          f"stdout={stdout!r}")
+    check("org config fetch failure (non-404) does not report absence", "No .github/claude-review-defaults.yml found" not in stdout, f"stdout={stdout!r}")
+
+    # 4f. Repo config fetch failure (non-404): emits warning, applies defaults, does not report file absent
+    rc, out, stdout, stderr = run_config_case(config_script, config_fail=True, is_404=False)
+    check("repo config fetch failure (non-404) exits 0", rc == 0, f"rc={rc}")
+    check("repo config fetch failure (non-404) applies default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
+    check("repo config fetch failure (non-404) emits warning naming file, base ref, and failure",
+          "::warning::" in stdout and ".github/claude-review.yml" in stdout and BASE_SHA[:8] in stdout and "500 Internal Server Error" in stdout,
+          f"stdout={stdout!r}")
+    check("repo config fetch failure (non-404) does not report absence", "No .github/claude-review.yml found" not in stdout, f"stdout={stdout!r}")
+
+    # 4g. Whitespace in skip_authors is stripped cleanly
+    rc, out, stdout, stderr = run_config_case(config_script, input_skip_authors=" dependabot[bot] , renovate[bot] , custom-bot ", is_404=True)
+    check("skip_authors input with whitespace is stripped", out.get("skip_authors") == "dependabot[bot],renovate[bot],custom-bot", f"got {out.get('skip_authors')}")
 
     print("\n=== Testing Model Escalation (Part B: #34) ===")
 

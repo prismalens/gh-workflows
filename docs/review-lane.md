@@ -149,10 +149,10 @@ Security-critical controls remain workflow-only inputs and are never configurabl
 Before the review agent runs, the lane inspects the list of changed files in the pull request and selects the model up front:
 
 - **Default**: `review.default_model` (Sonnet by default: `claude-sonnet-5`).
-- **High-Risk Escalation**: If the repository config defines `review.path_filters` and any file modified in the pull request matches one of the glob patterns, the review model is escalated to Opus (`claude-opus-5`).
+- **High-Risk Escalation**: If the repository config or organization defaults define `review.path_filters` and any file modified in the pull request matches one of the glob patterns, the review model is escalated to Opus (`claude-opus-5`).
   - Glob matching uses Python's `fnmatch`, with trailing `/**` matching a directory and all of its descendants recursively.
 - **Summon Override Precedence**: An explicit model alias in a summon (e.g. `@claude review --model sonnet` or `@claude review --model opus`) always takes precedence over path-based escalation. Manual intent wins.
-- **Evidence Naming**: The advisory liveness comment explicitly names the model used and the resolution reason (`default`, `summon override`, or `escalated by path match`).
+- **Evidence Naming**: The advisory liveness comment explicitly names the model used and the resolution reason (`default`, `summon override`, `escalated by path match`, or `default (changed-files fetch failed)`).
 
 ```yaml
   review:

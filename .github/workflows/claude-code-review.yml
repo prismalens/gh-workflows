@@ -183,7 +183,8 @@ jobs:
         run: echo "started_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
 
       - name: Install review dependencies
-        run: pip install --quiet pyyaml
+        # Non-fatal: the config step falls back to workflow defaults when PyYAML is absent.
+        run: pip install --quiet pyyaml || echo "::warning::PyYAML install failed; review configuration falls back to workflow defaults."
 
       # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
       # Reading from head would let a pull request modify its own review policy
@@ -218,7 +219,8 @@ jobs:
           workflow_ref = os.environ.get("WORKFLOW_REF", "")
           default_model = os.environ.get("INPUT_DEFAULT_MODEL", "claude-sonnet-5")
           auto_pause_rounds = int(os.environ.get("INPUT_AUTO_PAUSE_ROUNDS", 5))
-          skip_authors = os.environ.get("INPUT_SKIP_AUTHORS", "dependabot[bot]")
+          raw_skip_authors = os.environ.get("INPUT_SKIP_AUTHORS", "dependabot[bot]")
+          skip_authors = ",".join(x.strip() for x in raw_skip_authors.split(",") if x.strip())
           path_filters = []
 
           sources = {
@@ -376,15 +378,21 @@ jobs:
               org_res = subprocess.run(org_fetch_cmd, capture_output=True, text=True)
 
               org_config_content = None
-              if org_res.returncode == 0 and org_res.stdout.strip():
-                  try:
-                      org_config_content = base64.b64decode(org_res.stdout.strip()).decode("utf-8")
-                  except Exception as e:
-                      print(f"::warning::.github/claude-review-defaults.yml at ref {org_ref} failed to decode base64: {e}; ignoring org defaults.")
-
-              if org_config_content is None:
+              if org_res.returncode == 0:
+                  if org_res.stdout.strip():
+                      try:
+                          org_config_content = base64.b64decode(org_res.stdout.strip()).decode("utf-8")
+                      except Exception as e:
+                          print(f"::warning::.github/claude-review-defaults.yml at ref {org_ref} failed to decode base64: {e}; ignoring org defaults.")
+                  else:
+                      org_config_content = ""
+              elif "404" in org_res.stderr:
                   print(f"No .github/claude-review-defaults.yml found at ref {org_ref}; applying workflow defaults.")
               else:
+                  err = org_res.stderr.strip() if org_res.stderr else f"exit code {org_res.returncode}"
+                  print(f"::warning::Failed to fetch .github/claude-review-defaults.yml at ref {org_ref}: {err}; applying workflow defaults.")
+
+              if org_config_content is not None:
                   try:
                       org_data = yaml.safe_load(org_config_content)
                   except Exception as exc:
@@ -413,7 +421,7 @@ jobs:
                                   sources["auto_pause_rounds"] = "org defaults"
                                   org_consumed.append(f"review.auto_pause_rounds={auto_pause_rounds}")
                               if "skip_authors" in review:
-                                  skip_authors = ",".join(review["skip_authors"])
+                                  skip_authors = ",".join(x.strip() for x in review["skip_authors"] if isinstance(x, str) and x.strip())
                                   sources["skip_authors"] = "org defaults"
                                   org_consumed.append(f"review.skip_authors={skip_authors}")
                               if "path_filters" in review:
@@ -436,19 +444,26 @@ jobs:
               # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
               # Reading from head would let a pull request modify its own review policy
               # (e.g. raise auto_pause_rounds, change model, skip authors) in the commit under review.
+              ref_name = base_sha[:8] if base_sha else "unknown"
               fetch_cmd = ["gh", "api", f"repos/{repo}/contents/.github/claude-review.yml?ref={base_sha}", "--jq", ".content"]
               res = subprocess.run(fetch_cmd, capture_output=True, text=True)
 
               config_content = None
-              if res.returncode == 0 and res.stdout.strip():
-                  try:
-                      config_content = base64.b64decode(res.stdout.strip()).decode("utf-8")
-                  except Exception as e:
-                      print(f"::warning::.github/claude-review.yml at base ref {base_sha[:8] if base_sha else 'unknown'} failed to decode base64: {e}; applying workflow defaults.")
-
-              if config_content is None:
-                  print(f"No .github/claude-review.yml found at base ref {base_sha[:8] if base_sha else 'unknown'}; applying workflow defaults.")
+              if res.returncode == 0:
+                  if res.stdout.strip():
+                      try:
+                          config_content = base64.b64decode(res.stdout.strip()).decode("utf-8")
+                      except Exception as e:
+                          print(f"::warning::.github/claude-review.yml at base ref {ref_name} failed to decode base64: {e}; applying workflow defaults.")
+                  else:
+                      config_content = ""
+              elif "404" in res.stderr:
+                  print(f"No .github/claude-review.yml found at base ref {ref_name}; applying workflow defaults.")
               else:
+                  err = res.stderr.strip() if res.stderr else f"exit code {res.returncode}"
+                  print(f"::warning::Failed to fetch .github/claude-review.yml at base ref {ref_name}: {err}; applying workflow defaults.")
+
+              if config_content is not None:
                   try:
                       data = yaml.safe_load(config_content)
                   except Exception as exc:
@@ -460,7 +475,7 @@ jobs:
 
                   if errors:
                       err_msg = "; ".join(errors)
-                      print(f"::warning::.github/claude-review.yml at base ref {base_sha[:8] if base_sha else 'unknown'} is malformed; applying workflow defaults: {err_msg}")
+                      print(f"::warning::.github/claude-review.yml at base ref {ref_name} is malformed; applying workflow defaults: {err_msg}")
                   else:
                       if data is not None and isinstance(data, dict):
                           consumed = []
@@ -477,7 +492,7 @@ jobs:
                                   sources["auto_pause_rounds"] = "repo config"
                                   consumed.append(f"review.auto_pause_rounds={auto_pause_rounds}")
                               if "skip_authors" in review:
-                                  skip_authors = ",".join(review["skip_authors"])
+                                  skip_authors = ",".join(x.strip() for x in review["skip_authors"] if isinstance(x, str) and x.strip())
                                   sources["skip_authors"] = "repo config"
                                   consumed.append(f"review.skip_authors={skip_authors}")
                               if "path_filters" in review:
@@ -492,7 +507,7 @@ jobs:
                               for k in findings:
                                   unconsumed.append(f"findings.{k}")
 
-                          print(f"Consumed configuration from .github/claude-review.yml (base ref {base_sha[:8] if base_sha else 'unknown'}): {', '.join(consumed) if consumed else 'none (defaults applied)'}")
+                          print(f"Consumed configuration from .github/claude-review.yml (base ref {ref_name}): {', '.join(consumed) if consumed else 'none (defaults applied)'}")
                           if unconsumed:
                               print(f"::warning::Configuration key(s) accepted by schema but not yet wired in this workflow: {', '.join(sorted(unconsumed))}")
 
@@ -618,7 +633,9 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request" ] && [ -n "${PR_AUTHOR:-}" ]; then
             IFS=',' read -ra skip_list <<< "${SKIP_AUTHORS:-}"
             for skip_login in "${skip_list[@]}"; do
-              if [ "$PR_AUTHOR" = "$skip_login" ]; then
+              skip_login="${skip_login#"${skip_login%%[![:space:]]*}"}"
+              skip_login="${skip_login%"${skip_login##*[![:space:]]}"}"
+              if [ "$PR_AUTHOR" = "$skip_login" ] && [ -n "$skip_login" ]; then
                 echo "skipping review: author '$PR_AUTHOR' matches skip_authors"
                 emit skip skipped-author
                 exit 0
