@@ -195,7 +195,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
-          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
           INPUT_DEFAULT_MODEL: ${{ inputs.default_model }}
           INPUT_AUTO_PAUSE_ROUNDS: ${{ inputs.auto_pause_rounds }}
           INPUT_SKIP_AUTHORS: ${{ inputs.skip_authors }}
