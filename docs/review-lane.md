@@ -67,23 +67,50 @@ All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults ar
 | `model_aliases` | string | `opus=claude-opus-5,sonnet=claude-sonnet-5` | Comma-separated `alias=model-id` pairs selectable with `--model <alias>` in a summon. The alias is matched against the comment; the ID is emitted from this list and is never read out of the comment. An alias absent here is not selectable. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
 | `display_report` | boolean | `false` | Render the review round's reasoning and token/cost usage into the Actions Step Summary (opt-in; set `display_report: true` in the stub to turn on). The summary is world-readable on a public repository; the content is Claude-authored text derived from the pull request diff, which is already public there. When the execution file is missing, empty, or unparseable, the step warns and does not fail the job. |
 
-## Setting inputs per repository
+## Review configuration and four-layer precedence (#33, #54)
 
-Repository-level settings can be configured using a per-repo configuration file (`.github/claude-review.yml`) or via the `with:` input block in the caller stub.
+Review lane settings are resolved dynamically through a **four-layer precedence hierarchy** (evaluated from lowest to highest):
 
-### Configuration file (`.github/claude-review.yml`)
+1. **Workflow Input Defaults**: Built-in defaults declared in the `claude-code-review.yml` callee workflow (`default_model: claude-sonnet-5`, `auto_pause_rounds: 5`, `skip_authors: dependabot[bot]`, `path_filters: []`).
+2. **Organization-Level Defaults**: Shared ecosystem defaults defined in [`.github/claude-review-defaults.yml`](../.github/claude-review-defaults.yml) hosted in this repository (`prismalens/gh-workflows`).
+3. **Repository Configuration**: Per-repository review configuration defined in `.github/claude-review.yml` in the consumer repository, read from its base ref.
+4. **Summon Override**: An explicit `--model <alias>` parameter in a `@claude review` or `@claude full review` PR comment (highest precedence).
 
-Repositories can define review settings in `.github/claude-review.yml`.
+### Key-by-key pure override
+
+Configuration merges **per key**, not per file:
+- **Pure override**: The repository layer wins outright over organization defaults on any key it defines. Repositories may loosen shared constraints, not only tighten them (e.g. if org defaults specify `auto_pause_rounds: 3`, a repository may set `auto_pause_rounds: 10`).
+- **Inheritance**: Any key omitted by a repository falls back to the organization defaults (or workflow defaults). A repository configuring only `default_model` inherits `auto_pause_rounds`, `skip_authors`, and `path_filters` from the org defaults.
+
+### Shared organization defaults (`.github/claude-review-defaults.yml`)
+
+Because `Sumit1993/mage-memory` is user-owned while other consumer repositories are organization-owned, organization rulesets and a `prismalens/.github` repository cannot reach all consumers. Hosting shared defaults in `gh-workflows` allows all callers to access ecosystem policy via a standard REST API read with no new credentials.
+
+#### Dynamic ref resolution (No hardcoded `@main`) (#54)
+
+Organization defaults are fetched from `gh-workflows` at the exact ref the callee reusable workflow is running as, resolved dynamically from `github.workflow_ref` (parsing the ref following the final `@`):
+
+```text
+gh api repos/prismalens/gh-workflows/contents/.github/claude-review-defaults.yml?ref=<org_ref>
+```
+
+- **Why**: Hardcoding `@main` would break consumers that pin a SHA or release tag for supply-chain security by serving newer organization policy than the code they deliberately pinned. Dynamic ref resolution guarantees policy stays in lockstep with the pinned callee version.
+
+### Repository configuration (`.github/claude-review.yml`)
 
 #### Security invariant: read from the base ref, never the head (#33)
 
-The configuration file is read strictly from the pull request's **base ref** (`.base.sha`) via GitHub's Contents REST API (`gh api repos/$REPO/contents/.github/claude-review.yml?ref=$BASE_SHA`), and never from the checked-out working tree or PR head commit.
+The per-repo configuration file is read strictly from the pull request's **base ref** (`.base.sha`) via GitHub's Contents REST API:
+
+```text
+gh api repos/$REPO/contents/.github/claude-review.yml?ref=$BASE_SHA
+```
 
 Because the PR head and merge ref are under the author's control, reading configuration from the head would allow an attacker to modify review policies for their own PR (e.g. increase `auto_pause_rounds`, downgrade `default_model`, alter `path_filters`, or add themselves to `skip_authors`) in the very commit under review.
 
-#### Configuration schema and wired keys
+### Configuration schema and wired keys
 
-The configuration schema is strictly validated against the S0 specification.
+Both `.github/claude-review-defaults.yml` and `.github/claude-review.yml` share the exact same schema, strictly validated by the same inline validator:
 
 | Key | Type | Status | Meaning |
 | --- | --- | --- | --- |
@@ -97,17 +124,25 @@ The configuration schema is strictly validated against the S0 specification.
 | `findings.enable_ai_fix_prompt` | boolean | *Schema-accepted, not yet wired* | Whether to include AI fix prompt details. Emits warning if present. |
 | `findings.include_verification_note` | boolean | *Schema-accepted, not yet wired* | Whether to include verification notes. Emits warning if present. |
 
-#### Three parse outcomes
+### Three parse outcomes (Org and Repo layers)
 
-1. **Absent (HTTP 404)**: When `.github/claude-review.yml` does not exist at the base ref, workflow defaults apply and a single informative line is logged (`No .github/claude-review.yml found at base ref <sha>; applying workflow defaults.`). No warning is emitted.
-2. **Malformed**: If the file contains invalid YAML, unknown keys, invalid schema versions, or disallowed values, the lane emits a `::warning::` annotation naming the file, the base SHA, and the validator's error output, and falls back to workflow defaults. A broken configuration is never silently treated as intentional defaults.
-3. **Valid**: The lane consumes supported keys (`default_model`, `auto_pause_rounds`, `skip_authors`, `path_filters`), logs the consumed values, and overrides the corresponding workflow inputs. If any schema-valid but unwired keys are present (e.g. `review.path_instructions` or `findings.*`), one `::warning::` annotation is emitted listing those keys.
+1. **Absent (HTTP 404)**: When a config file does not exist, prior defaults apply cleanly and a single info line is logged (`No .github/claude-review-defaults.yml found at ref <ref>; applying workflow defaults.` or `No .github/claude-review.yml found at base ref <sha>; applying workflow defaults.`). No warning is emitted.
+2. **Malformed**: If a file contains invalid YAML, unknown keys, invalid schema versions, or disallowed values, the lane emits a `::warning::` annotation naming the file, the ref / base SHA, and the validator's error output, and ignores that layer entirely. A broken config file never takes down the review lane.
+3. **Valid**: Supported keys (`default_model`, `auto_pause_rounds`, `skip_authors`, `path_filters`) are consumed, logged, and merged into the effective configuration. Any schema-valid but unwired keys emit a `::warning::` annotation listing those keys.
 
-#### Precedence
+### Per-key source logging
 
-- A valid setting in `.github/claude-review.yml` overrides the corresponding `workflow_call` input in the caller stub's `with:` block.
-- Any setting absent or omitted from `.github/claude-review.yml` falls back to the caller stub's `with:` input (or the workflow's built-in default).
-- Security-critical controls remain workflow-only inputs and are never configurable in `.github/claude-review.yml`: `--allowed-tools`, `id-token` write permissions, and fork handling.
+When configuration loading completes, the run logs the effective configuration and explicitly attributes each key to its source layer (`workflow default`, `org defaults`, `repo config`, or `summon override`):
+
+```text
+Effective review configuration:
+  review.default_model: claude-sonnet-5 (source: repo config)
+  review.auto_pause_rounds: 8 (source: org defaults)
+  review.skip_authors: dependabot[bot] (source: workflow default)
+  review.path_filters: ['packages/**'] (source: org defaults)
+```
+
+Security-critical controls remain workflow-only inputs and are never configurable in `.github/claude-review.yml` or `.github/claude-review-defaults.yml`: `--allowed-tools`, `id-token` write permissions, and fork handling.
 
 ### Model escalation from changed files (#34)
 
