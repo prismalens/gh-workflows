@@ -1078,7 +1078,9 @@ jobs:
             def num(s): if s == "" then null else (s | tonumber? // null) end;
             def denials: (.permission_denials | if type == "array" then length else 0 end);
             def denial_tools:
-              [ .permission_denials[]? | (.tool_name? // "unknown") ]
+              [ .permission_denials[]?
+                | (.tool_name? // "unknown")
+                | if type == "string" and test("^[A-Za-z0-9_]{1,64}$") then . else "other" end ]
               | group_by(.) | map({tool: .[0], count: length});
             def safe_strings:
               {type, subtype, session_id, uuid, stop_reason, terminal_reason,
@@ -1110,10 +1112,11 @@ jobs:
               per_model_usage: ((.modelUsage // {}) | tojson),
               subagent_stats: (if .subagent_stats == null then null else (.subagent_stats | tojson) end),
               raw_result: (
-                (. as $o
-                 | ($o | del(.result, .permission_denials)) + {denial_tools: ($o | denial_tools)}
-                ) as $r
-                | ($r | walk(if type == "string" then null else . end)) * ($r | safe_strings)
+                . as $o
+                | ($o | del(.result, .permission_denials)) as $base
+                | ($base | walk(if type == "string" then null else . end))
+                  * ($base | safe_strings)
+                  + {denial_tools: ($o | denial_tools)}
                 | tojson)
             }' 2>/dev/null || true)
 
