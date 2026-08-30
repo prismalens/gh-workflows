@@ -42,7 +42,7 @@ def extract_step_script(step_name: str) -> str:
 GH_STUB = r"""#!/usr/bin/env bash
 args="$*"
 case "$args" in
-  *"contents/.github/claude-review-defaults.yml?ref=${EXPECTED_ORG_REF}"*)
+  *"repos/${EXPECTED_ORG_REPO}/contents/.github/claude-review-defaults.yml?ref=${EXPECTED_ORG_REF}"*)
     if [ "${FAKE_ORG_CONFIG_404:-0}" = "1" ]; then
       echo "gh stub: 404 Not Found" >&2
       exit 1
@@ -91,9 +91,11 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
                     input_auto_pause_rounds="5",
                     input_skip_authors="dependabot[bot]",
                     base_sha=BASE_SHA,
-                    workflow_ref="prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main",
+                    workflow_ref="prismalens/prismalens/.github/workflows/claude-code-review.yml@refs/pull/514/merge",
+                    job_workflow_ref="prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main",
                     no_pyyaml=False,
                     expected_base_sha=None,
+                    expected_org_repo=None,
                     expected_org_ref=None):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
@@ -122,9 +124,17 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
         if expected_base_sha is None:
             expected_base_sha = base_sha
 
+        if expected_org_repo is None:
+            if job_workflow_ref and "/.github/" in job_workflow_ref:
+                parsed = job_workflow_ref.split("/.github/", 1)[0].strip()
+                expected_org_repo = parsed if parsed else "prismalens/gh-workflows"
+            else:
+                expected_org_repo = "prismalens/gh-workflows"
+
         if expected_org_ref is None:
-            if "@" in workflow_ref:
-                expected_org_ref = workflow_ref.rsplit("@", 1)[1]
+            if job_workflow_ref and "@" in job_workflow_ref:
+                parsed = job_workflow_ref.rsplit("@", 1)[1].strip()
+                expected_org_ref = parsed if parsed else "main"
             else:
                 expected_org_ref = "main"
 
@@ -144,7 +154,9 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
             REPO="prismalens/test-repo",
             BASE_SHA=base_sha,
             WORKFLOW_REF=workflow_ref,
+            JOB_WORKFLOW_REF=job_workflow_ref,
             EXPECTED_BASE_SHA=expected_base_sha,
+            EXPECTED_ORG_REPO=expected_org_repo,
             EXPECTED_ORG_REF=expected_org_ref,
             INPUT_DEFAULT_MODEL=str(input_default_model),
             INPUT_AUTO_PAUSE_ROUNDS=str(input_auto_pause_rounds),
@@ -332,7 +344,7 @@ def main():
         ("yaml syntax error", MALFORMED_YAML_SYNTAX, "Malformed YAML"),
     ]:
         rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=malformed_yaml, is_404=True,
-                                                  workflow_ref="prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main")
+                                                  job_workflow_ref="prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main")
         check(f"malformed org config ({label}) exits 0", rc == 0, f"rc={rc}")
         check(f"malformed org config ({label}) applies default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
         check(f"malformed org config ({label}) applies auto_pause_rounds", out.get("auto_pause_rounds") == "5", f"got {out.get('auto_pause_rounds')}")
@@ -411,10 +423,26 @@ def main():
 
     # 4d. Base-ref invariant: org defaults fetched strictly with supplied workflow ref (not hardcoded main)
     custom_wf_ref = "prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/tags/v2.5.0"
-    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, workflow_ref=custom_wf_ref, is_404=True)
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, job_workflow_ref=custom_wf_ref, is_404=True)
     check("base-ref invariant: org defaults fetched at supplied workflow ref exits 0", rc == 0, f"rc={rc}")
     check("base-ref invariant: org defaults fetched at supplied workflow ref applies config", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
     check("base-ref invariant: org defaults produces no warning", "::warning::" not in stdout, f"stdout={stdout}")
+
+    # 4d-2. Fallback invariant: empty JOB_WORKFLOW_REF falls back loudly to prismalens/gh-workflows@main
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, job_workflow_ref="", expected_org_ref="main", is_404=True)
+    check("empty job_workflow_ref: falls back to main and exits 0", rc == 0, f"rc={rc}")
+    check("empty job_workflow_ref: applies org config at fallback", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
+    check("empty job_workflow_ref: emits warning naming fallback",
+          "::warning::" in stdout and "JOB_WORKFLOW_REF is empty" in stdout and "prismalens/gh-workflows@main" in stdout,
+          f"stdout={stdout!r}")
+
+    # 4d-3. Fallback invariant: unparseable JOB_WORKFLOW_REF falls back loudly to prismalens/gh-workflows@main
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, job_workflow_ref="unparseable-ref-without-at", expected_org_ref="main", is_404=True)
+    check("unparseable job_workflow_ref: falls back to main and exits 0", rc == 0, f"rc={rc}")
+    check("unparseable job_workflow_ref: applies org config at fallback", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
+    check("unparseable job_workflow_ref: emits warning naming fallback",
+          "::warning::" in stdout and "is unparseable" in stdout and "prismalens/gh-workflows@main" in stdout,
+          f"stdout={stdout!r}")
 
     # 4e. Org defaults fetch failure (non-404): emits warning, applies defaults, does not report file absent
     rc, out, stdout, stderr = run_config_case(config_script, org_fail=True, is_404=False)
