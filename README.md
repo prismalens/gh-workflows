@@ -146,7 +146,7 @@ All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults ar
 | `auto_pause_rounds` | number | `5` | Automatic rounds allowed on one PR before the lane pauses itself. The count lives in the liveness comment's marker (`<!-- claude-review-liveness rounds=N sha=<head> -->`); only automatic rounds that actually ran increment it. On pause the lane posts `auto-paused after N automatic rounds` instead of reviewing. A `@claude review` summon that **posts review output** resumes the lane and resets the counter to 0; a summon that finished green having posted nothing is not a resume and leaves the count untouched. |
 | `default_model` | string | `claude-sonnet-5` | Model ID handed to `claude-code-action` as `--model`, for all three review shapes (review, full review, verify). Sonnet is the default deliberately: the review lane is the highest-volume Claude spend across the consumer repos. A single run can deviate with `--model <alias>` in a summon, choosing from the `model_aliases` allowlist. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
 | `model_aliases` | string | `opus=claude-opus-5,sonnet=claude-sonnet-5` | Comma-separated `alias=model-id` pairs selectable with `--model <alias>` in a summon. The alias is matched against the comment; the ID is emitted from this list and is never read out of the comment. An alias absent here is not selectable. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
-| `display_report` | boolean | `true` | Render the review round's reasoning and token/cost usage into the Actions Step Summary. The summary is world-readable on a public repository; the content is Claude-authored text derived from the pull request diff, which is already public there. When the execution file is missing, empty, or unparseable, the step warns and does not fail the job. |
+| `display_report` | boolean | `false` | Render the review round's reasoning and token/cost usage into the Actions Step Summary (opt-in; set `display_report: true` in the stub to turn on). The summary is world-readable on a public repository; the content is Claude-authored text derived from the pull request diff, which is already public there. When the execution file is missing, empty, or unparseable, the step warns and does not fail the job. |
 
 ### Summon grammar
 
@@ -175,7 +175,7 @@ An incremental round's summary comment is headed `## Code review — incremental
 
 ### Step Summary review report
 
-When `display_report` is `true` (the default), the review lane renders a structured report of the review round directly into the Actions Step Summary:
+When `display_report` is `true` (opt-in; defaults to `false`), the review lane renders a structured report of the review round directly into the Actions Step Summary:
 
 - **Context Table**: Pull request number, repository, head SHA (short), review round type (`review`, `review-full`, `incremental`), model ID, GitHub run ID, and session ID.
 - **Usage Table**: Aggregates token usage (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`), total cost in USD (`total_cost_usd`), run duration (`duration_ms`), turn count (`num_turns`), and permission denials (`permission_denials`).

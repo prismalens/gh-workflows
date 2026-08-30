@@ -35,10 +35,11 @@ on:
       display_report:
         description: >-
           Render the review round's reasoning and token/cost usage into the Actions Step Summary.
-          The summary is world-readable on a public repository; the content is Claude-authored text
-          derived from the pull request diff, which is already public there.
+          Opt-in: a stub sets `display_report: true` to turn it on. The summary is world-readable
+          on a public repository; the content is Claude-authored text derived from the pull request
+          diff, which is already public there.
         type: boolean
-        default: true
+        default: false
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         # required:false so fork pull_request runs — where the secrets context is always
