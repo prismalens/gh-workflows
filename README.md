@@ -14,9 +14,10 @@ Reusable workflow callees live in `.github/workflows/` and are invoked by consum
 
 ### Callees
 
-- [.github/workflows/claude-code-review.yml](docs/review-lane.md)
+- [`.github/workflows/claude-code-review.yml`](.github/workflows/claude-code-review.yml) — behaviour: [docs/review-lane.md](docs/review-lane.md)
 - `.github/workflows/claude.yml`
 - `.github/workflows/dependabot-auto-merge.yml`
+- `.github/workflows/dependabot-auto-merge-caller.yml` — this repository's own caller stub for the auto-merge callee
 
 ### Worked-Example Consumer Stub (Mention Lane)
 
@@ -185,7 +186,7 @@ Dependabot (`.github/dependabot.yml`) checks for updates to pinned GitHub Action
 - `/` for root workflows (`.github/workflows/`)
 - `/actions/pr-title` for composite action dependencies
 
-Minor and patch updates are grouped into a single PR (`minor-and-patch`). Major updates are excluded from grouping and open as individual PRs for manual human review.
+Minor and patch updates are grouped into a single PR (`github-actions`). Major updates are excluded from grouping and open as individual PRs for manual human review.
 
 Consumer repositories can invoke `.github/workflows/dependabot-auto-merge.yml` to automatically merge grouped minor and patch action bumps once required status checks pass.
 

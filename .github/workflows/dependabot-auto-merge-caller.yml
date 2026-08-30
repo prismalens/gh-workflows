@@ -8,6 +8,11 @@ on:
   pull_request:
     branches: [main]
 
+# Keyed on PR number so concurrent events on the same pull request cancel in-flight runs.
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   auto-merge:
     uses: ./.github/workflows/dependabot-auto-merge.yml
