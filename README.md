@@ -148,6 +148,20 @@ All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults ar
 | `model_aliases` | string | `opus=claude-opus-5,sonnet=claude-sonnet-5` | Comma-separated `alias=model-id` pairs selectable with `--model <alias>` in a summon. The alias is matched against the comment; the ID is emitted from this list and is never read out of the comment. An alias absent here is not selectable. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
 | `display_report` | boolean | `false` | Render the review round's reasoning and token/cost usage into the Actions Step Summary (opt-in; set `display_report: true` in the stub to turn on). The summary is world-readable on a public repository; the content is Claude-authored text derived from the pull request diff, which is already public there. When the execution file is missing, empty, or unparseable, the step warns and does not fail the job. |
 
+### Setting inputs per repository
+
+The only mechanism today is a `with:` block on the `uses:` line in the caller stub. There is no configuration file, no repository-level UI, and no validation of what a stub passes. Every consumer therefore runs the callee's defaults unless its own stub overrides them, and today none of them override anything. A per-repo configuration file is tracked as issue #33, and until it lands, changing a knob for one repository means editing that repository's stub.
+
+```yaml
+  review:
+    uses: prismalens/gh-workflows/.github/workflows/claude-code-review.yml@main
+    with:
+      display_report: true
+      auto_pause_rounds: 3
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
 ### Summon grammar
 
 Bare PR comments, admitted accounts only: the summoning account must hold `admin` or `write` on the repository, checked live by the `admit` action. The comment body is read only by workflow `contains()` expressions and alias matching — it never reaches a prompt.
