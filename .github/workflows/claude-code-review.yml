@@ -1076,7 +1076,11 @@ jobs:
             --arg diff_lines "${diff_lines:-}" \
             '
             def num(s): if s == "" then null else (s | tonumber? // null) end;
-            def denials: (.permission_denials | if type == "array" then length else 0 end);
+            def denials:
+              (.permission_denials
+               | if type == "array" then length
+                 elif type == "number" then .
+                 else 0 end);
             def denial_tools:
               [ .permission_denials[]?
                 | (.tool_name? // "unknown")
@@ -1312,26 +1316,38 @@ jobs:
             exit 0
           fi
 
+          case "$INGEST_URL" in
+            https://*) ;;
+            *)
+              echo "::warning::telemetry: REVIEW_TELEMETRY_URL is not https, so the token was not sent and this round was not recorded."
+              exit 0
+              ;;
+          esac
+
           hdr="$(mktemp)"
           trap 'rm -f "$hdr"' EXIT
           umask 077
           printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
 
           code=$(printf '%s' "$RECORD" | curl -sS -m 10 \
+            --proto '=https' \
             -o /dev/null -w '%{http_code}' \
             -X POST "$INGEST_URL" \
             -H "@$hdr" \
             --data-binary @-) || {
-              echo "::warning::telemetry: the ingest POST did not complete; this round was not recorded."
+              echo "::warning::telemetry: the ingest POST did not complete; delivery of this round is unconfirmed."
               exit 0
             }
 
-          if [ "$code" != "204" ]; then
-            echo "::warning::telemetry: ingest returned HTTP $code; this round was not recorded."
-            exit 0
-          fi
+          case "$code" in
+            2??) ;;
+            *)
+              echo "::warning::telemetry: ingest returned HTTP $code; delivery of this round is unconfirmed."
+              exit 0
+              ;;
+          esac
 
-          echo "Recorded review round telemetry."
+          echo "Recorded review round telemetry (HTTP $code)."
 
   # The verify round runs here and nowhere else, because its verdicts drive the
   # write-capable `mutate` job. Two load-bearing lines, both invariants, not tuning:
