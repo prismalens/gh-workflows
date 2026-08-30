@@ -146,6 +146,7 @@ All optional `workflow_call` inputs on `claude-code-review.yml`; the defaults ar
 | `auto_pause_rounds` | number | `5` | Automatic rounds allowed on one PR before the lane pauses itself. The count lives in the liveness comment's marker (`<!-- claude-review-liveness rounds=N sha=<head> -->`); only automatic rounds that actually ran increment it. On pause the lane posts `auto-paused after N automatic rounds` instead of reviewing. A `@claude review` summon that **posts review output** resumes the lane and resets the counter to 0; a summon that finished green having posted nothing is not a resume and leaves the count untouched. |
 | `default_model` | string | `claude-sonnet-5` | Model ID handed to `claude-code-action` as `--model`, for all three review shapes (review, full review, verify). Sonnet is the default deliberately: the review lane is the highest-volume Claude spend across the consumer repos. A single run can deviate with `--model <alias>` in a summon, choosing from the `model_aliases` allowlist. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
 | `model_aliases` | string | `opus=claude-opus-5,sonnet=claude-sonnet-5` | Comma-separated `alias=model-id` pairs selectable with `--model <alias>` in a summon. The alias is matched against the comment; the ID is emitted from this list and is never read out of the comment. An alias absent here is not selectable. Which IDs actually resolve is decided by the `CLAUDE_CODE_OAUTH_TOKEN` subscription, not by this input. |
+| `display_report` | boolean | `true` | Render the review round's reasoning and token/cost usage into the Actions Step Summary. The summary is world-readable on a public repository; the content is Claude-authored text derived from the pull request diff, which is already public there. When the execution file is missing, empty, or unparseable, the step warns and does not fail the job. |
 
 ### Summon grammar
 
@@ -171,6 +172,25 @@ Six conditions fall back to a full review, each logged by name: `no-baseline`, `
 An automatic round on a head with no new commits skips, and the liveness comment says so rather than reporting a review.
 
 An incremental round's summary comment is headed `## Code review — incremental (<base>..<head>)` with 7-character short SHAs, and it still begins with the literal `## Code review` because the liveness evidence filter matches on that prefix.
+
+### Step Summary review report
+
+When `display_report` is `true` (the default), the review lane renders a structured report of the review round directly into the Actions Step Summary:
+
+- **Context Table**: Pull request number, repository, head SHA (short), review round type (`review`, `review-full`, `incremental`), model ID, GitHub run ID, and session ID.
+- **Usage Table**: Aggregates token usage (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`), total cost in USD (`total_cost_usd`), run duration (`duration_ms`), turn count (`num_turns`), and permission denials (`permission_denials`).
+- **Reasoning**: Renders the assistant's text reasoning turns directly as Markdown.
+
+The output is capped at 1,000,000 bytes to stay within GitHub's 1 MiB Step Summary limit. When the execution file is missing, empty, or fails to parse as JSON, the step emits a warning annotation and exits cleanly (exit 0) without failing the review job.
+
+### Advisory liveness comment
+
+The `announce` job upserts an advisory comment on the pull request timeline matching `<!-- claude-review-liveness rounds=N sha=<head> -->` to report review status and prevent silent review failures.
+
+- **Round counter (`rounds=N`)**: Increments only on automatic `pull_request` runs that actually executed and succeeded. Paused, cancelled, failed, or token-less runs do not increment it. An explicit `@claude review` summon that posts review output resets `rounds` to 0.
+- **Head baseline (`sha=<head>`)**: Advances to the current PR head only when the review round produces posted review output.
+- **Inline comment counting**: The liveness marker counts inline review comments left by `claude[bot]`. The count strictly matches `original_commit_id == HEAD_SHA` (the commit against which the comment was originally created). It avoids `commit_id`, which GitHub automatically rewrites forward as new commits are pushed to the PR. Carried-forward comments from prior heads are therefore never counted as work performed during the current round, preventing stale comments from advancing the baseline or resetting the auto-pause limit.
+- **Summary comments**: Filters `claude[bot]` issue comments created since run start with the `## Code review` heading prefix.
 
 ## Thread resolution
 
@@ -329,6 +349,31 @@ jobs:
       - if: github.event_name == 'merge_group'
         run: echo "Title validated on the pull request before it entered the merge queue."
 ```
+
+---
+
+## Action Pinning and Dependabot
+
+To guard against supply chain tampering from repointed tags, every third-party GitHub Action used across workflows and composite actions is pinned to a full commit SHA:
+
+- `actions/checkout`
+- `actions/upload-artifact`
+- `actions/download-artifact`
+- `anthropics/claude-code-action`
+- `amannn/action-semantic-pull-request`
+- `dependabot/fetch-metadata`
+
+First-party actions and workflows hosted in `prismalens/gh-workflows` (such as `actions/admit` and caller stubs) reference `@main` for live inheritance across ecosystem repositories.
+
+### Dependabot configuration
+
+Dependabot (`.github/dependabot.yml`) checks for updates to pinned GitHub Actions weekly across:
+- `/` for root workflows (`.github/workflows/`)
+- `/actions/pr-title` for composite action dependencies
+
+Minor and patch updates are grouped into a single PR (`minor-and-patch`). Major updates are excluded from grouping and open as individual PRs for manual human review.
+
+Consumer repositories can invoke `.github/workflows/dependabot-auto-merge.yml` to automatically merge grouped minor and patch action bumps once required status checks pass.
 
 ---
 
