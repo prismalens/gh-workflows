@@ -49,13 +49,10 @@ jobs:
         run: |
           set -euo pipefail
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
-          # Three suppressions, all verified false positives, all re-checkable by deleting the flag:
-          # `job_workflow_ref` is documented by GitHub and emitted as an OIDC claim; actionlint's
-          # bundled github-context schema predates it. Same stale-schema class as `conclusion`.
+          # Two suppressions, all verified false positives, all re-checkable by deleting the flag:
           # `conclusion` IS claude-code-action@v1's first declared output — actionlint's bundled
           # action schema is stale. SC2016 fires on $owner/$name/$pr inside a single-quoted GraphQL
           # query, where not expanding them is the entire point.
           ./actionlint -color \
             -ignore 'property "conclusion" is not defined' \
-            -ignore 'property "job_workflow_ref" is not defined' \
             -ignore 'SC2016'
