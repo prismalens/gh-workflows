@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { rangeSince, type RangeKey } from "@/honesty/range";
-import { lookupRound, MAX_LIMIT, type RunsQuery } from "./client";
+import { lookupRound, MAX_LIMIT, MAX_LIMIT_WITH_BLOBS, type RunsQuery } from "./client";
 import { useApi } from "./provider";
 import type { RoundRow } from "./types";
 
@@ -21,6 +21,31 @@ export function useRoundsQuery(filters: RoundsFilters, now: Date) {
   const since = rangeSince(filters.range, now);
   const query: RunsQuery = {
     limit: MAX_LIMIT,
+    ...(filters.repository ? { repository: filters.repository } : {}),
+    ...(filters.roundType ? { round_type: filters.roundType } : {}),
+    ...(since ? { since } : {}),
+  };
+
+  return useQuery({
+    queryKey: ["runs", query],
+    queryFn: () => api.fetchRuns(query),
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * A second, deliberately smaller page for the attention feed. `is_error` and the
+ * denied tool names are inside raw_result, which only arrives with include=blobs,
+ * and the Worker caps a blob page at MAX_LIMIT_WITH_BLOBS. So the feed reads the
+ * most recent rounds of the window rather than all of them, and the screen says
+ * how many it read.
+ */
+export function useAttentionQuery(filters: RoundsFilters, now: Date) {
+  const api = useApi();
+  const since = rangeSince(filters.range, now);
+  const query: RunsQuery = {
+    include: "blobs",
+    limit: MAX_LIMIT_WITH_BLOBS,
     ...(filters.repository ? { repository: filters.repository } : {}),
     ...(filters.roundType ? { round_type: filters.roundType } : {}),
     ...(since ? { since } : {}),

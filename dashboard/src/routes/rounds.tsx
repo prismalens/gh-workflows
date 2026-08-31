@@ -7,6 +7,7 @@ import { z } from "zod";
 import { MAX_LIMIT } from "@/api/client";
 import { downloadCsv } from "@/api/csv";
 import { distinctRoundTypes, useRoundsQuery, useSummaryQuery } from "@/api/queries";
+import { FilterChips } from "@/components/FilterChips";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -177,38 +178,3 @@ function RoundsPage() {
 }
 
 const EMPTY_ROWS = Object.freeze([]) as never[];
-
-interface FilterChipsProps {
-  label: string;
-  options: string[];
-  value: string | undefined;
-  onChange: (next: string | undefined) => void;
-}
-
-function FilterChips({ label, options, value, onChange }: FilterChipsProps) {
-  if (options.length === 0) return null;
-  return (
-    <div role="group" aria-label={label} className="flex flex-wrap items-center gap-1">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <Button
-        size="sm"
-        variant={value === undefined ? "secondary" : "ghost"}
-        aria-pressed={value === undefined}
-        onClick={() => onChange(undefined)}
-      >
-        All
-      </Button>
-      {options.map((option) => (
-        <Button
-          key={option}
-          size="sm"
-          variant={value === option ? "secondary" : "ghost"}
-          aria-pressed={value === option}
-          onClick={() => onChange(value === option ? undefined : option)}
-        >
-          {option}
-        </Button>
-      ))}
-    </div>
-  );
-}

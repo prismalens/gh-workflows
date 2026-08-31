@@ -16,6 +16,14 @@ export const TILES_MIN_ROUNDS = 10;
 export const ROLLING_ROUNDS = 50;
 export const ROLLING_DAYS = 7;
 
+/**
+ * A count is true at any n, so the overview's headline counts never collapse the
+ * way an average does. Only the line under them switches: below this many rounds
+ * in the window it carries the all-time cumulative, because a per-day rate over a
+ * seven-round week is noise wearing a decimal. At or above it, the per-day mean.
+ */
+export const PER_DAY_RATE_MIN_ROUNDS = 30;
+
 /** The label `total_cost_usd` carries everywhere it is shown. */
 export const LIST_RATE_EQUIVALENT = "list-rate equivalent";
 

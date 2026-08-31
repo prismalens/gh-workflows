@@ -13,14 +13,101 @@ const fullApi = makeFixtureApi(makeRounds({ count: 64, now }));
 const sparseApi = makeFixtureApi(makeRounds({ count: 6, now, seed: 11 }));
 const emptyApi = makeFixtureApi([]);
 
-describe("/", () => {
-  it("redirects to the rounds table", async () => {
+describe("/ overview: the altitude ruling", () => {
+  it("puts throughput and adoption first, and the verdict strip directly under it", async () => {
     renderRoute({ path: "/", api: fullApi });
-    expect(await screen.findByRole("table")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Rolling" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+
+    const band = await screen.findByTestId("activity-band");
+    const strip = screen.getByTestId("verdict-strip");
+    const health = screen.getByText("Lane health");
+
+    // DOCUMENT_POSITION_FOLLOWING: the band comes before the strip, and the strip
+    // before lane health. Diagnostics never lead this page.
+    expect(band.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(strip.compareDocumentPosition(health) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    expect(within(band).getByText("PRs reviewed")).toBeInTheDocument();
+    expect(within(band).getByText("Review rounds")).toBeInTheDocument();
+    expect(within(band).getByText("Repositories")).toBeInTheDocument();
+    expect(within(band).getByText("Rounds per day, by type")).toBeInTheDocument();
+  });
+
+  it("headlines counts even at a volume that withholds every aggregate tile", async () => {
+    const api = makeFixtureApi(makeRounds({ count: 4, now, seed: 3 }));
+    renderRoute({ path: "/", api });
+
+    const band = await screen.findByTestId("activity-band");
+    expect(within(band).getAllByTestId("count-tile")).toHaveLength(3);
+    // A count is true at any n. A mean over four rounds is not.
+    expect(screen.getByText(/the table below is the summary/)).toBeInTheDocument();
+    expect(screen.queryByTestId("tile-n")).not.toBeInTheDocument();
+    // And the table that notice names is actually there, with all four rounds.
+    const table = screen.getAllByRole("table")[0];
+    expect(within(table).getAllByRole("row").length).toBe(5);
+  });
+
+  it("switches only the supporting line on volume, at the ruled threshold", async () => {
+    const thin = makeFixtureApi(makeRounds({ count: 12, now, seed: 7 }));
+    renderRoute({ path: "/", api: thin });
+    expect(await screen.findByText(/12 rounds all time/)).toBeInTheDocument();
+    expect(screen.queryByText(/\/day mean/)).not.toBeInTheDocument();
+
+    cleanup();
+    renderRoute({ path: "/", api: fullApi });
+    expect((await screen.findAllByText(/\/day mean/)).length).toBeGreaterThan(0);
+  });
+
+  it("renders the verdict mix in its two-state degraded form and says why", async () => {
+    renderRoute({ path: "/", api: fullApi });
+    const strip = await screen.findByTestId("verdict-strip");
+    expect(within(strip).getByText("reviewed")).toBeInTheDocument();
+    expect(within(strip).getByText("unknown")).toBeInTheDocument();
+    for (const absent of ["threads-only", "did-not-run", "silent"]) {
+      expect(within(strip).queryByText(absent)).not.toBeInTheDocument();
+    }
+    expect(within(strip).getByTestId("approximate")).toBeInTheDocument();
+  });
+
+  it("carries only the attention cards the recorded columns support", async () => {
+    renderRoute({ path: "/", api: fullApi });
+    expect(await screen.findByText("Needs attention")).toBeInTheDocument();
+    const reasons = screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => row.querySelectorAll("td")[3]?.textContent ?? "");
+    expect(reasons.length).toBeGreaterThan(0);
+    for (const reason of reasons) {
+      expect(reason).toMatch(/permission denial|attempt \d|reported an error/);
+    }
+    const degraded = screen
+      .getAllByTestId("degraded")
+      .find((node) => node.textContent?.includes("Silent rounds"));
+    expect(degraded).toHaveAttribute("data-reason", "unbuilt");
+  });
+
+  it("keeps money out of every headline on the overview", async () => {
+    renderRoute({ path: "/", api: fullApi });
+    await screen.findByTestId("activity-band");
+    // No tile at any altitude, and at this volume no table either.
+    expect(document.body.textContent).not.toMatch(/\$\d/);
+    expect(document.body.textContent).not.toMatch(new RegExp(LIST_RATE_EQUIVALENT, "i"));
+
+    cleanup();
+    // At thin volume the round table replaces the tiles, and there money is a
+    // sortable column labelled list-rate equivalent. That is the ruling, not a leak.
+    renderRoute({ path: "/", api: makeFixtureApi(makeRounds({ count: 4, now, seed: 3 })) });
+    const table = (await screen.findAllByRole("table"))[0];
+    expect(within(table).getByText(LIST_RATE_EQUIVALENT)).toBeInTheDocument();
+    for (const tile of screen.getAllByTestId("count-tile")) {
+      expect(tile.textContent).not.toMatch(/\$/);
+    }
+  });
+
+  it("says no rounds in range rather than drawing empty charts", async () => {
+    renderRoute({ path: "/", api: emptyApi });
+    expect(await screen.findByText("No rounds in range")).toBeInTheDocument();
+    expect(screen.queryByTestId("activity-band")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("verdict-strip")).not.toBeInTheDocument();
   });
 });
 
