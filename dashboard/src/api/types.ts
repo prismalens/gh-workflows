@@ -1,6 +1,6 @@
 /**
- * Every field here is a column of `usage_records` in worker/schema.sql, returned
- * verbatim by GET /api/runs. Nothing may be added that the Worker does not send.
+ * Every field here is a column of `usage_records` in worker/migrations/0001_initial_schema.sql,
+ * returned verbatim by GET /api/runs. Nothing may be added that the Worker does not send.
  */
 export interface RoundRow {
   session_id: string;

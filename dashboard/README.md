@@ -51,6 +51,12 @@ assets binding silently shadows `POST /`. `.github/workflows/deploy-worker.yml` 
 same steps on every merge to `main` that touches `worker/` or `dashboard/`, and asserts the
 resolved version before it deploys. Story: #84.
 
+The deploy workflow does not automatically apply D1 migrations to remote databases to protect
+live production telemetry from non-transactional schema failures. Database migrations live in
+`worker/migrations/` and are applied deliberately by the operator via
+`cd worker && ./node_modules/.bin/wrangler d1 migrations apply review-telemetry --remote`.
+See `worker/README.md` for the full migration workflow.
+
 ## Deploy note
 
 Attaching an `[assets]` binding would shadow the Worker's `POST /` ingest alias, because the asset
@@ -85,7 +91,7 @@ The sparse-range rulings of #46 are code, not convention, and they live in `src/
 
 ## Fixtures
 
-`src/fixtures/rounds.ts` builds rounds from `../worker/schema.sql` and the extraction step in
+`src/fixtures/rounds.ts` builds rounds from `../worker/migrations/0001_initial_schema.sql` and the extraction step in
 `.github/workflows/claude-code-review.yml`. `src/fixtures/api.ts` reimplements the Worker's
 `handleRuns` and `handleSummary` filter, ordering, limit and cursor semantics so the route tests
 exercise the real contract. The live deployment is behind Access and is never scraped for these.

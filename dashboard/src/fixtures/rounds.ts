@@ -1,9 +1,9 @@
 import type { RoundRow } from "@/api/types";
 
 /**
- * Fixtures are derived from worker/schema.sql and the jq that builds the record
- * in claude-code-review.yml. The live deployment sits behind Access and is not
- * scraped for them.
+ * Fixtures are derived from worker/migrations/0001_initial_schema.sql and the jq
+ * that builds the record in claude-code-review.yml. The live deployment sits
+ * behind Access and is not scraped for them.
  */
 
 const REPOSITORIES = ["prismalens/prismalens", "prismalens/sreforge", "Sumit1993/mage-memory"];
