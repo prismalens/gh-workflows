@@ -125,6 +125,19 @@ describe("/rounds/$sessionId", () => {
     ).toBe(true);
   });
 
+  it("reads a fan-out round's summed API time as parallelism, never negative overhead", async () => {
+    // The artboards show API time exceeding wall clock, because duration_api_ms is
+    // summed across concurrent agents. Subtracting would render a negative duration.
+    const parallel = { ...rows[0], duration_ms: 338_000, duration_api_ms: 493_000 };
+    const one = makeFixtureApi([parallel]);
+    renderRoute({ path: detailPath(parallel.session_id, parallel.recorded_at), api: one });
+
+    expect(await screen.findByText("Parallelism")).toBeInTheDocument();
+    expect(screen.getByText("1.46x")).toBeInTheDocument();
+    expect(screen.queryByText("Outside the API")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/-\d+m/);
+  });
+
   it("explains the bounded scan when the round is outside the readable window", async () => {
     renderRoute({ path: "/rounds/does-not-exist", api });
     expect(await screen.findByText(/not in the readable window/)).toBeInTheDocument();

@@ -84,6 +84,29 @@ describe("blob parsing", () => {
     expect(parseSubagentStats(verify)).toBeNull();
   });
 
+  it("reads the subagent_stats shape the design artboards show", () => {
+    // From docs/design/canvas/RoundDetail.dc.html on the #82 branch.
+    const stats = parseSubagentStats({
+      ...rows[0],
+      subagent_stats: JSON.stringify({
+        spawned: 7,
+        completed: 7,
+        failed: 0,
+        max_depth: 1,
+        by_type: { "general-purpose": 7 },
+        refused: { depth: 0, concurrency: 0, budget: 0 },
+      }),
+    });
+    expect(stats?.lifecycle.map((e) => e.key)).toEqual([
+      "spawned",
+      "completed",
+      "failed",
+      "max_depth",
+    ]);
+    expect(stats?.groups.map((g) => g.key)).toEqual(["by_type", "refused"]);
+    expect(stats?.unreadable).toBe(false);
+  });
+
   it("renders any numeric field of subagent_stats without assuming its keys", () => {
     const stats = parseSubagentStats({
       ...rows[0],

@@ -133,21 +133,33 @@ export function ResolutionPanel({ row }: { row: RoundRow }) {
 }
 
 export function TimingPanel({ row }: { row: RoundRow }) {
-  const overhead =
-    row.duration_ms !== null && row.duration_api_ms !== null
-      ? row.duration_ms - row.duration_api_ms
-      : null;
+  const wall = row.duration_ms;
+  const api = row.duration_api_ms;
+  // duration_api_ms is summed across concurrent subagents, so on a fan-out round it
+  // exceeds wall clock. Subtracting then yields a negative "overhead" that reads as a
+  // broken clock; the ratio is the honest reading of the same two columns.
+  const parallel = wall !== null && api !== null && api > wall;
+  const overhead = wall !== null && api !== null && !parallel ? wall - api : null;
+  const parallelism = parallel && wall! > 0 ? api! / wall! : null;
+
   return (
     <Panel title="Timing">
       <Facts>
-        <Fact label="Wall clock">{orDash(row.duration_ms, formatDuration)}</Fact>
-        <Fact label="API time">{orDash(row.duration_api_ms, formatDuration)}</Fact>
-        <Fact label="Outside the API">{orDash(overhead, formatDuration)}</Fact>
+        <Fact label="Wall clock">{orDash(wall, formatDuration)}</Fact>
+        <Fact label="API time, summed">{orDash(api, formatDuration)}</Fact>
+        {parallel ? (
+          <Fact label="Parallelism">
+            {parallelism === null ? "—" : `${parallelism.toFixed(2)}x`}
+          </Fact>
+        ) : (
+          <Fact label="Outside the API">{orDash(overhead, formatDuration)}</Fact>
+        )}
         <Fact label="Turns">{orDash(row.num_turns)}</Fact>
       </Facts>
       <p className="text-xs text-muted-foreground">
-        Time outside the API is checkout, tool calls and posting, derived as wall clock minus API
-        time. It is not measured separately.
+        {parallel
+          ? "API seconds are summed across concurrent agents, so exceeding wall clock means the fan-out ran in parallel, not that the round was slow. Time spent outside the API cannot be separated out on such a round."
+          : "Time outside the API is checkout, tool calls and posting, derived as wall clock minus API time. It is not measured separately."}
       </p>
     </Panel>
   );
