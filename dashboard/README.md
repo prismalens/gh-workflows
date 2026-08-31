@@ -5,7 +5,8 @@ the telemetry Worker in `../worker` through its `[assets]` binding, reading the 
 `GET /api/summary` and `GET /api/runs` routes behind Cloudflare Access.
 
 This slice ships two routes: `/rounds` and `/rounds/$sessionId`. The overview, `/repos`, the
-failures page, compare and every PR view arrive with their own issues (#46).
+failures page, compare and every PR view arrive with their own issues (#46). Recharts is not
+installed: it arrives in slice 2 with the first chart that needs it.
 
 ## Commands
 
@@ -28,10 +29,16 @@ cd worker && npx wrangler deploy
 
 ## Deploy note
 
-Attaching the `[assets]` binding shadows the Worker's `POST /` ingest alias: the asset router
-answers a POST to the site root with 405 and never reaches the Worker. `POST /ingest` is
-unaffected, so `REVIEW_TELEMETRY_URL` must end in `/ingest`. Verified with `wrangler dev --local`
-against this configuration.
+Attaching an `[assets]` binding would shadow the Worker's `POST /` ingest alias, because the asset
+router answers a POST to the site root with 405 and never invokes the Worker. Both ingest shapes
+keep working because `run_worker_first = ["/", "/ingest", "/api/*"]` puts the Worker ahead of asset
+serving on exactly those paths, and `"/"` matches the root only. The Worker then serves the SPA
+shell for `GET /` through its `ASSETS` binding; every other client-side route is asset-served under
+`not_found_handling = "single-page-application"` without invoking the Worker at all.
+
+So `REVIEW_TELEMETRY_URL` ending in `/ingest` is the recommendation, not a requirement: the bare
+origin still reaches the ingest handler. Verified with `wrangler dev --local` against this exact
+configuration.
 
 ## Where the rules live
 
