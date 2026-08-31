@@ -53,6 +53,11 @@ on:
       REVIEW_TELEMETRY_TOKEN:
         required: false
 
+# Bumped whenever the ingest payload shape gains or changes a field (#70 amendment).
+# The Worker uses this version to distinguish an older workflow lane from a broken one.
+env:
+  LANE_VERSION: '2'
+
 jobs:
   # ONE set of PR facts for automatic rounds, summons, and in-thread replies alike,
   # so downstream jobs never branch on event shape. Stories: prismalens/prismalens#403 and #422.
@@ -98,6 +103,11 @@ jobs:
       summon: ${{ steps.summon.outputs.summon }}
       changed_files: ${{ steps.pr.outputs.changed_files }}
       diff_lines: ${{ steps.pr.outputs.diff_lines }}
+      pr_title: ${{ steps.pr.outputs.pr_title }}
+      pr_author: ${{ steps.pr.outputs.pr_author }}
+      pr_state: ${{ steps.pr.outputs.pr_state }}
+      pr_base_ref: ${{ steps.pr.outputs.pr_base_ref }}
+      pr_head_ref: ${{ steps.pr.outputs.pr_head_ref }}
 
     steps:
       - name: Admit commenter
@@ -134,6 +144,12 @@ jobs:
           base_sha="$(jq -r '.base.sha' <<< "$pr")"
           head_repo="$(jq -r '.head.repo.full_name' <<< "$pr")"
 
+          pr_title="$(jq -r '.title // ""' <<< "$pr")"
+          pr_author="$(jq -r '.user.login // ""' <<< "$pr")"
+          pr_state="$(jq -r '.state // ""' <<< "$pr")"
+          pr_base_ref="$(jq -r '.base.ref // ""' <<< "$pr")"
+          pr_head_ref="$(jq -r '.head.ref // ""' <<< "$pr")"
+
           {
             echo "number=${PR_NUMBER}"
             echo "head_sha=${head_sha}"
@@ -141,6 +157,25 @@ jobs:
             echo "draft=$(jq -r '.draft' <<< "$pr")"
             echo "changed_files=$(jq -r '.changed_files // ""' <<< "$pr")"
             echo "diff_lines=$(jq -r 'if .additions == null and .deletions == null then "" else ((.additions // 0) + (.deletions // 0)) end' <<< "$pr")"
+          } >> "$GITHUB_OUTPUT"
+
+          delim="$(openssl rand -hex 16 2>/dev/null || echo "PR_DELIM_${RANDOM}_$$")"
+          {
+            echo "pr_title<<${delim}"
+            echo "${pr_title}"
+            echo "${delim}"
+            echo "pr_author<<${delim}"
+            echo "${pr_author}"
+            echo "${delim}"
+            echo "pr_state<<${delim}"
+            echo "${pr_state}"
+            echo "${delim}"
+            echo "pr_base_ref<<${delim}"
+            echo "${pr_base_ref}"
+            echo "${delim}"
+            echo "pr_head_ref<<${delim}"
+            echo "${pr_head_ref}"
+            echo "${delim}"
           } >> "$GITHUB_OUTPUT"
 
           # Comment events check out the default branch by default, which is not the code
@@ -190,6 +225,7 @@ jobs:
       # would be two places to keep in sync.
       model: ${{ steps.model.outputs.model }}
       model_source: ${{ steps.model.outputs.model_source }}
+      config_resolution: ${{ steps.config.outputs.config_resolution }}
       telemetry_record: ${{ steps.telemetry.outputs.record }}
 
     steps:
@@ -383,6 +419,23 @@ jobs:
           org_repo = "prismalens/gh-workflows"
           org_ref = "main"
 
+          layers = {
+              "workflow_inputs": {
+                  "outcome": "ok",
+                  "unconsumed": [],
+              },
+              "org_defaults": {
+                  "outcome": "absent",
+                  "unconsumed": [],
+              },
+              "repo_config": {
+                  "outcome": "absent",
+                  "unconsumed": [],
+              },
+          }
+
+          org_unconsumed = []
+          org_outcome = "absent"
           if yaml is not None:
               org_fetch_cmd = ["gh", "api", f"repos/{org_repo}/contents/.github/claude-review-defaults.yml?ref={org_ref}", "--jq", ".content"]
               org_res = subprocess.run(org_fetch_cmd, capture_output=True, text=True)
@@ -393,6 +446,7 @@ jobs:
                       try:
                           org_config_content = base64.b64decode(org_res.stdout.strip()).decode("utf-8")
                       except Exception as e:
+                          org_outcome = "unparseable"
                           print(f"::warning::.github/claude-review-defaults.yml at ref {org_ref} failed to decode base64: {e}; ignoring org defaults.")
                   else:
                       org_config_content = ""
@@ -413,12 +467,13 @@ jobs:
                       org_errors = validate_config(org_data, filename=".github/claude-review-defaults.yml")
 
                   if org_errors:
+                      org_outcome = "unparseable" if org_data == "MALFORMED" else "schema-rejected"
                       err_msg = "; ".join(org_errors)
                       print(f"::warning::.github/claude-review-defaults.yml at ref {org_ref} is malformed; ignoring org defaults: {err_msg}")
                   else:
+                      org_outcome = "ok"
                       if org_data is not None and isinstance(org_data, dict):
                           org_consumed = []
-                          org_unconsumed = []
 
                           review = org_data.get("review", {})
                           if isinstance(review, dict):
@@ -450,6 +505,13 @@ jobs:
                           if org_unconsumed:
                               print(f"::warning::Configuration key(s) in .github/claude-review-defaults.yml accepted by schema but not yet wired in this workflow: {', '.join(sorted(org_unconsumed))}")
 
+          layers["org_defaults"] = {
+              "outcome": org_outcome,
+              "unconsumed": sorted(org_unconsumed),
+          }
+
+          unconsumed = []
+          repo_outcome = "absent"
           if yaml is not None:
               # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
               # Reading from head would let a pull request modify its own review policy
@@ -464,6 +526,7 @@ jobs:
                       try:
                           config_content = base64.b64decode(res.stdout.strip()).decode("utf-8")
                       except Exception as e:
+                          repo_outcome = "unparseable"
                           print(f"::warning::.github/claude-review.yml at base ref {ref_name} failed to decode base64: {e}; applying workflow defaults.")
                   else:
                       config_content = ""
@@ -484,12 +547,13 @@ jobs:
                       errors = validate_config(data, filename=".github/claude-review.yml")
 
                   if errors:
+                      repo_outcome = "unparseable" if data == "MALFORMED" else "schema-rejected"
                       err_msg = "; ".join(errors)
                       print(f"::warning::.github/claude-review.yml at base ref {ref_name} is malformed; applying workflow defaults: {err_msg}")
                   else:
+                      repo_outcome = "ok"
                       if data is not None and isinstance(data, dict):
                           consumed = []
-                          unconsumed = []
 
                           review = data.get("review", {})
                           if isinstance(review, dict):
@@ -521,6 +585,13 @@ jobs:
                           if unconsumed:
                               print(f"::warning::Configuration key(s) accepted by schema but not yet wired in this workflow: {', '.join(sorted(unconsumed))}")
 
+          layers["repo_config"] = {
+              "outcome": repo_outcome,
+              "unconsumed": sorted(unconsumed),
+          }
+
+          config_resolution = json.dumps({"sources": sources, "layers": layers}, separators=(',', ':'))
+
           print("Effective review configuration:")
           print(f"  review.default_model: {default_model} (source: {sources['default_model']})")
           print(f"  review.auto_pause_rounds: {auto_pause_rounds} (source: {sources['auto_pause_rounds']})")
@@ -534,6 +605,7 @@ jobs:
                   f.write(f"auto_pause_rounds={auto_pause_rounds}\n")
                   f.write(f"skip_authors={skip_authors}\n")
                   f.write(f"path_filters={json.dumps(path_filters)}\n")
+                  f.write(f"config_resolution={config_resolution}\n")
           PY
 
       # Mode switch (#403 incremental re-review): on non-bot replies or summons,
@@ -1302,7 +1374,7 @@ jobs:
   # Holds the ingest credential, so it lives outside the read-only review job that handles
   # attacker-influencable diff text. A failure here warns and never fails the run (#41).
   telemetry:
-    needs: review
+    needs: [resolve, review, announce]
     if: ${{ !cancelled() && needs.review.outputs.telemetry_record != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1311,8 +1383,26 @@ jobs:
       - name: Post the review round record
         env:
           RECORD: ${{ needs.review.outputs.telemetry_record }}
+          LANE_VERSION: ${{ env.LANE_VERSION }}
           INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
           INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          FALLBACK_REASON: ${{ needs.review.outputs.fallback_reason }}
+          RANGE_BASE: ${{ needs.review.outputs.range_base }}
+          RANGE_HEAD: ${{ needs.review.outputs.range_head }}
+          MODEL_SOURCE: ${{ needs.review.outputs.model_source }}
+          CONFIG_RESOLUTION: ${{ needs.review.outputs.config_resolution }}
+          JOB_CONCLUSION: ${{ needs.review.result }}
+          ROUND_ORDINAL: ${{ needs.announce.outputs.round_ordinal }}
+          VERDICT_KIND: ${{ needs.announce.outputs.verdict_kind }}
+          VERDICT_TEXT: ${{ needs.announce.outputs.verdict_text }}
+          INLINE_COUNT: ${{ needs.announce.outputs.inline_count }}
+          SUMMARY_COUNT: ${{ needs.announce.outputs.summary_count }}
+          COMMENT_NODE_IDS: ${{ needs.announce.outputs.comment_node_ids }}
+          PR_TITLE: ${{ needs.resolve.outputs.pr_title }}
+          PR_AUTHOR: ${{ needs.resolve.outputs.pr_author }}
+          PR_STATE: ${{ needs.resolve.outputs.pr_state }}
+          PR_BASE_REF: ${{ needs.resolve.outputs.pr_base_ref }}
+          PR_HEAD_REF: ${{ needs.resolve.outputs.pr_head_ref }}
         run: |
           set -uo pipefail
 
@@ -1329,12 +1419,62 @@ jobs:
               ;;
           esac
 
+          merged=$(printf '%s' "$RECORD" | jq -c \
+            --arg lane_version "${LANE_VERSION:-}" \
+            --arg fallback_reason "${FALLBACK_REASON:-}" \
+            --arg range_base "${RANGE_BASE:-}" \
+            --arg range_head "${RANGE_HEAD:-}" \
+            --arg model_source "${MODEL_SOURCE:-}" \
+            --arg config_resolution "${CONFIG_RESOLUTION:-}" \
+            --arg job_conclusion "${JOB_CONCLUSION:-}" \
+            --arg round_ordinal "${ROUND_ORDINAL:-}" \
+            --arg verdict_kind "${VERDICT_KIND:-}" \
+            --arg verdict_text "${VERDICT_TEXT:-}" \
+            --arg inline_count "${INLINE_COUNT:-}" \
+            --arg summary_count "${SUMMARY_COUNT:-}" \
+            --arg comment_node_ids "${COMMENT_NODE_IDS:-}" \
+            --arg pr_title "${PR_TITLE:-}" \
+            --arg pr_author "${PR_AUTHOR:-}" \
+            --arg pr_state "${PR_STATE:-}" \
+            --arg pr_base_ref "${PR_BASE_REF:-}" \
+            --arg pr_head_ref "${PR_HEAD_REF:-}" \
+            '
+            def str_val(s): if s == "" then null else s end;
+            def num_val(s): if s == "" then null else (s | tonumber? // null) end;
+            def json_val(s): if s == "" or s == "null" then null else (try (s | fromjson) catch null) end;
+            . + {
+              lane_version: str_val($lane_version),
+              fallback_reason: str_val($fallback_reason),
+              range_base: str_val($range_base),
+              range_head: str_val($range_head),
+              model_source: str_val($model_source),
+              config_resolution: json_val($config_resolution),
+              job_conclusion: str_val($job_conclusion),
+              round_ordinal: num_val($round_ordinal),
+              verdict_kind: str_val($verdict_kind),
+              verdict_text: str_val($verdict_text),
+              inline_count: num_val($inline_count),
+              summary_count: num_val($summary_count),
+              comment_node_ids: json_val($comment_node_ids),
+              pr_title: str_val($pr_title),
+              pr_author: str_val($pr_author),
+              pr_state: str_val($pr_state),
+              pr_base_ref: str_val($pr_base_ref),
+              pr_head_ref: str_val($pr_head_ref)
+            }
+          ' 2>/dev/null || true)
+
+          if [ -z "$merged" ]; then
+            echo "::warning::telemetry: failed to merge wave 2 fields into telemetry record; posting base record."
+            merged="$RECORD"
+          fi
+
           hdr="$(mktemp)"
           trap 'rm -f "$hdr"' EXIT
           umask 077
           printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
 
-          code=$(printf '%s' "$RECORD" | curl -sS -m 10 \
+          code=$(printf '%s' "$merged" | curl -sS -m 10 \
             --proto '=https' \
             -o /dev/null -w '%{http_code}' \
             -X POST "$INGEST_URL" \
@@ -1850,8 +1990,16 @@ jobs:
     timeout-minutes: 5
     permissions:
       pull-requests: write
+    outputs:
+      verdict_kind: ${{ steps.liveness.outputs.verdict_kind }}
+      verdict_text: ${{ steps.liveness.outputs.verdict_text }}
+      inline_count: ${{ steps.liveness.outputs.inline_count }}
+      summary_count: ${{ steps.liveness.outputs.summary_count }}
+      comment_node_ids: ${{ steps.liveness.outputs.comment_node_ids }}
+      round_ordinal: ${{ steps.liveness.outputs.round_ordinal }}
     steps:
       - name: Upsert liveness comment
+        id: liveness
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -1912,15 +2060,23 @@ jobs:
             rounds=$((prev + 1))
           fi
 
+          verdict_kind=""
+          inline_count=0
+          summary_count=0
+          comment_node_ids="[]"
+
           if [ "$SKIP_REASON" = "paused" ]; then
             # The `@claude review` text below cannot self-summon: GITHUB_TOKEN-authored events
             # never trigger workflows, and this upsert PATCHes rather than creating a comment.
             verdict="auto-paused after ${rounds} automatic rounds at \`$short\` — re-request with \`@claude review\`."
+            verdict_kind="auto-paused"
           elif [ "$SKIP_REASON" = "no-token" ]; then
             verdict="did not run at \`$short\`: no CLAUDE_CODE_OAUTH_TOKEN reached this lane. \
           This head has no machine review on record — map the secret explicitly in the caller stub."
+            verdict_kind="no-token"
           elif [ "$SKIP_REASON" = "no-new-commits" ]; then
             verdict="no new commits since \`$short\` was last reviewed; nothing to re-review."
+            verdict_kind="no-new-commits"
           elif [ "$MODE" = "verify" ]; then
             # A hardened verify round posts nothing as claude[bot] — `mutate` posts as
             # `github-actions[bot]` — so the claude[bot] count below would report a
@@ -1931,9 +2087,11 @@ jobs:
                     | select((.body | split(\"\n\")[0] | rtrimstr(\"\r\")) == \"## Code review — verification round\")][0] // empty")
             if [ -n "$found_summary" ]; then
               verdict="re-checked open threads at \`$short\`: ${RESOLVED:-0} resolved / ${OPEN:-0} left open."
+              verdict_kind="verify-rechecked"
             else
               verdict="ran a verification round on \`$short\` (mutate result: ${MUTATE_RESULT}) but posted **nothing**. \
           No thread was re-checked on the record. Read the [run log]($RUN_URL) for the cause."
+              verdict_kind="verify-silent"
             fi
             # A verify round reviews no code, so the baseline must not move: doing so would
             # make a future incremental range start past commits nothing read.
@@ -1943,9 +2101,11 @@ jobs:
             # the comment was posted against and never moves. `commit_id` is
             # rewritten forward by GitHub and would count a prior head's
             # comments as this round's.
-            inline=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate --jq \
+            inline_raw=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate --jq \
               "[.[] | select(.user.login==\"claude[bot]\")
-                    | select(.original_commit_id==\"$HEAD_SHA\")] | length")
+                    | select(.original_commit_id==\"$HEAD_SHA\") | .node_id // empty]")
+            inline=$(jq -r 'if type == "array" then length elif type == "number" then . else (tonumber? // 0) end' <<< "${inline_raw:-0}" 2>/dev/null || echo 0)
+            inline_nodes=$(jq -c 'if type == "array" then . else [] end' <<< "${inline_raw:-[]}" 2>/dev/null || echo "[]")
 
             # Summary comments (the plugin's no-issues path posts one). Three
             # filters, each necessary: author, because only claude[bot] posts
@@ -1955,10 +2115,16 @@ jobs:
             # reply landing mid-review must not be counted as review output.
             # This stays an advisory display, not evidence (#415): it reports
             # what was posted, it does not certify who read what.
-            summary=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            summary_raw=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
               "[.[] | select(.user.login==\"claude[bot]\")
                     | select(.created_at >= \"$STARTED_AT\")
-                    | select(.body | startswith(\"## Code review\"))] | length")
+                    | select(.body | startswith(\"## Code review\")) | .node_id // empty]")
+            summary=$(jq -r 'if type == "array" then length elif type == "number" then . else (tonumber? // 0) end' <<< "${summary_raw:-0}" 2>/dev/null || echo 0)
+            summary_nodes=$(jq -c 'if type == "array" then . else [] end' <<< "${summary_raw:-[]}" 2>/dev/null || echo "[]")
+
+            comment_node_ids=$(jq -c -n --argjson in "$inline_nodes" --argjson sum "$summary_nodes" '$in + $sum' 2>/dev/null || echo "[]")
+            inline_count=$inline
+            summary_count=$summary
 
             model_info=""
             if [ -n "${MODEL:-}" ]; then
@@ -1969,8 +2135,10 @@ jobs:
               if [ "$MODE" = "incremental" ] && [ -n "${RANGE_BASE:-}" ]; then
                 short_base=${RANGE_BASE:0:8}
                 verdict="reviewed \`$short\` (incremental from \`$short_base\`) ${model_info}and posted ${inline} inline / ${summary} summary comment(s)."
+                verdict_kind="reviewed-incremental"
               else
                 verdict="reviewed \`$short\` ${model_info}and posted ${inline} inline / ${summary} summary comment(s)."
+                verdict_kind="reviewed"
               fi
 
               # The summon resume clears the auto-pause counter, gated on the SAME posted
@@ -1988,7 +2156,22 @@ jobs:
               verdict="finished on \`$short\` (job result: ${REVIEW_RESULT}) but posted **nothing**. \
           Silence is not approval: this head has no machine review on record. \
           Read the [run log]($RUN_URL) (full transcript is enabled) and consider the \`coderabbit_review\` label."
+              verdict_kind="silent"
             fi
+          fi
+
+          if [ -n "${GITHUB_OUTPUT:-}" ]; then
+            delim="$(openssl rand -hex 16 2>/dev/null || echo "VERDICT_DELIM_${RANDOM}_$$")"
+            {
+              echo "verdict_kind=${verdict_kind}"
+              echo "verdict_text<<${delim}"
+              echo "${verdict}"
+              echo "${delim}"
+              echo "inline_count=${inline_count}"
+              echo "summary_count=${summary_count}"
+              echo "comment_node_ids=${comment_node_ids}"
+              echo "round_ordinal=${rounds}"
+            } >> "$GITHUB_OUTPUT"
           fi
 
           # `sha=` is omitted entirely when there is no baseline, so markers on never-reviewed
@@ -2062,3 +2245,132 @@ jobs:
                  "This head has NO machine review on record. A maintainer can apply the coderabbit_review label." \
                  "Posting this as a PR comment was denied: fork runs hold a read-only token."
           fi
+
+  # Posts a minimal lane_event record when the lane declined to review (#71).
+  # Holds only the ingest credential; permissions: {} ensures read-only isolation.
+  lane-event:
+    name: Record lane event
+    needs: [resolve, review, announce]
+    if: >-
+      always() && !cancelled() && (
+        (
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name != github.repository
+        ) || (
+          needs.resolve.outputs.admitted == 'true' &&
+          needs.resolve.outputs.same_repo == 'false'
+        ) ||
+        needs.review.outputs.skip_reason == 'no-token' ||
+        needs.review.outputs.skip_reason == 'paused' ||
+        needs.review.outputs.skip_reason == 'skipped-author'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Record lane event
+        env:
+          IS_FORK: >-
+            ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) || (needs.resolve.outputs.admitted == 'true' && needs.resolve.outputs.same_repo == 'false') }}
+          SKIP_REASON: ${{ needs.review.outputs.skip_reason }}
+          ROUND_ORDINAL: ${{ needs.announce.outputs.round_ordinal }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.resolve.outputs.number || github.event.pull_request.number || github.event.issue.number }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha || github.event.pull_request.head.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
+          INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          LANE_VERSION: ${{ env.LANE_VERSION }}
+        run: |
+          set -uo pipefail
+
+          reason=""
+          rounds_used=""
+          if [ "$IS_FORK" = "true" ]; then
+            reason="fork-head"
+          elif [ "$SKIP_REASON" = "paused" ]; then
+            reason="auto-paused"
+            rounds_used="${ROUND_ORDINAL:-}"
+          elif [ "$SKIP_REASON" = "skipped-author" ]; then
+            reason="skip-author"
+          elif [ "$SKIP_REASON" = "no-token" ]; then
+            reason="no-token"
+          # no-new-commits is deliberately NOT a lane event: nothing was skipped, there was simply nothing to review.
+          fi
+
+          if [ -z "$reason" ]; then
+            echo "No lane event reason matched; skipping."
+            exit 0
+          fi
+
+          if [ -z "${INGEST_URL:-}" ] || [ -z "${INGEST_TOKEN:-}" ]; then
+            if [ "$reason" = "fork-head" ]; then
+              echo "::warning::lane-event: REVIEW_TELEMETRY_TOKEN is empty (expected on fork pull_request runs without secrets access); fork-head lane event was not posted."
+            else
+              echo "Telemetry is not configured for this repository; skipping."
+            fi
+            exit 0
+          fi
+
+          case "$INGEST_URL" in
+            https://*) ;;
+            *)
+              echo "::warning::lane-event: REVIEW_TELEMETRY_URL is not https, so the token was not sent and this event was not recorded."
+              exit 0
+              ;;
+          esac
+
+          payload=$(jq -c -n \
+            --arg repo "$REPO" \
+            --arg reason "$reason" \
+            --arg run_id "$RUN_ID" \
+            --arg run_attempt "$RUN_ATTEMPT" \
+            --arg run_url "$RUN_URL" \
+            --arg pr "${PR_NUMBER:-}" \
+            --arg head_sha "${HEAD_SHA:-}" \
+            --arg rounds_used "${rounds_used:-}" \
+            --arg lane_version "${LANE_VERSION:-}" \
+            '
+            def str_val(s): if s == "" then null else s end;
+            def num_val(s): if s == "" then null else (s | tonumber? // null) end;
+            {
+              event_kind: "lane_event",
+              repository: $repo,
+              reason: $reason,
+              run_id: num_val($run_id),
+              run_attempt: num_val($run_attempt),
+              run_url: str_val($run_url),
+              recorded_at: (now | todateiso8601),
+              pr_number: num_val($pr),
+              head_sha: str_val($head_sha),
+              rounds_used: num_val($rounds_used),
+              lane_version: str_val($lane_version)
+            }
+          ')
+
+          hdr="$(mktemp)"
+          trap 'rm -f "$hdr"' EXIT
+          umask 077
+          printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+
+          code=$(printf '%s' "$payload" | curl -sS -m 10 \
+            --proto '=https' \
+            -o /dev/null -w '%{http_code}' \
+            -X POST "$INGEST_URL" \
+            -H "@$hdr" \
+            --data-binary @-) || {
+              echo "::warning::lane-event: the ingest POST did not complete; delivery of this lane event is unconfirmed."
+              exit 0
+            }
+
+          case "$code" in
+            2??) ;;
+            *)
+              echo "::warning::lane-event: ingest returned HTTP $code; delivery of this lane event is unconfirmed."
+              exit 0
+              ;;
+          esac
+
+          echo "Recorded lane event ($reason, HTTP $code)."

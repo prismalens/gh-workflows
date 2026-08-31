@@ -48,6 +48,10 @@ jobs:
       - name: Deploy Worker migration check behaviour
         run: python3 tests/test-deploy-worker-migration-check.py
 
+      # Extracts and runs the real scripts out of claude-code-review.yml. Stories: #70, #71, #72, #87.
+      - name: Telemetry wave 2 record and lane event behaviour
+        run: python3 tests/test-telemetry-record.py
+
       # Version pinned: an actionlint release must not turn a green branch red on its own.
       - name: actionlint
         run: |
