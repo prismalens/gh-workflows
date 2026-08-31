@@ -10,13 +10,13 @@ routes = [
 
 # The dashboard SPA. dist/ is gitignored, so a deploy must run
 # `npm --prefix dashboard ci && npm --prefix dashboard run build` first.
-# Attaching assets shadows the POST / ingest alias with the SPA shell, which answers
-# 405: REVIEW_TELEMETRY_URL must end in /ingest. Story: #46.
+# run_worker_first lists "/" because assets otherwise answer POST / with 405 and the
+# ingest alias dies silently; "/" matches the root only. Story: #46.
 [assets]
 directory = "../dashboard/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/ingest"]
+run_worker_first = ["/", "/ingest", "/api/*"]
 
 [[d1_databases]]
 binding = "DB"
