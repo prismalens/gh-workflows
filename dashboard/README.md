@@ -24,8 +24,15 @@ VITE_FIXTURES=1 npm run dev # same, but against the in-memory fixture table
 ```bash
 npm --prefix dashboard ci
 npm --prefix dashboard run build
-cd worker && npx wrangler deploy
+npm --prefix worker ci
+cd worker && ./node_modules/.bin/wrangler deploy
 ```
+
+Never a bare `npx wrangler`. `worker/package.json` pins wrangler because
+`run_worker_first` in its array form needs 4.20.0 or later, and on an older wrangler the
+assets binding silently shadows `POST /`. `.github/workflows/deploy-worker.yml` runs these
+same steps on every merge to `main` that touches `worker/` or `dashboard/`, and asserts the
+resolved version before it deploys. Story: #84.
 
 ## Deploy note
 
