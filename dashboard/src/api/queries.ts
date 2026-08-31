@@ -1,7 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { rangeSince, type RangeKey } from "@/honesty/range";
-import { lookupRound, MAX_LIMIT, MAX_LIMIT_WITH_BLOBS, type RunsQuery } from "./client";
+import {
+  lookupRound,
+  MAX_LIMIT,
+  MAX_LIMIT_WITH_BLOBS,
+  type LaneEventsQuery,
+  type RunsQuery,
+} from "./client";
 import { useApi } from "./provider";
 import type { RoundRow } from "./types";
 
@@ -78,4 +84,25 @@ export function useRoundQuery(sessionId: string, recordedAt?: string) {
 
 export function distinctRoundTypes(rows: RoundRow[]): string[] {
   return [...new Set(rows.map((row) => row.round_type).filter((t): t is string => !!t))].sort();
+}
+
+export interface LaneEventsFilters {
+  range: RangeKey;
+  repository?: string;
+}
+
+export function useLaneEventsQuery(filters: LaneEventsFilters, now: Date) {
+  const api = useApi();
+  const since = rangeSince(filters.range, now);
+  const query: LaneEventsQuery = {
+    limit: MAX_LIMIT,
+    ...(filters.repository ? { repository: filters.repository } : {}),
+    ...(since ? { since } : {}),
+  };
+
+  return useQuery({
+    queryKey: ["lane-events", query],
+    queryFn: () => api.fetchLaneEvents(query),
+    staleTime: 30_000,
+  });
 }

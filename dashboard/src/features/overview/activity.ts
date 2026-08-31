@@ -1,5 +1,5 @@
 import type { RoundRow } from "@/api/types";
-import { decodeVerdict } from "@/honesty/verdict";
+import { decodeVerdict, type VerdictState } from "@/honesty/verdict";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -129,7 +129,7 @@ export interface ScatterPoint {
   durationMs: number;
   sessionId: string;
   repository: string;
-  state: "reviewed" | "unknown";
+  state: VerdictState;
 }
 
 /** Every round that recorded a wall clock. A round without one is not a zero. */

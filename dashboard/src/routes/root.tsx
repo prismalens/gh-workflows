@@ -31,6 +31,7 @@ function FixtureBanner() {
 const NAV = [
   { to: "/", label: "Overview" },
   { to: "/rounds", label: "Rounds" },
+  { to: "/failures", label: "Failures" },
   { to: "/repos", label: "Repos" },
 ] as const;
 
@@ -78,8 +79,7 @@ function NotFound() {
     <Alert variant="muted">
       <AlertTitle>No such page</AlertTitle>
       <AlertDescription>
-        This build ships the overview, the rounds table, the round detail and the repos list. The
-        failures page, compare and every PR view each land with their own issue.{" "}
+        This build ships the overview, the rounds table, the round detail, the failures page and the repos list. Compare and every PR view each land with their own issue.{" "}
         <Link to="/" search={{ range: DEFAULT_RANGE }} className="underline underline-offset-4">
           Go to the overview
         </Link>

@@ -1,5 +1,6 @@
 import { createRouter } from "@tanstack/react-router";
 
+import { failuresRoute } from "./routes/failures";
 import { indexRoute } from "./routes/index";
 import { reposRoute } from "./routes/repos";
 import { roundDetailRoute } from "./routes/roundDetail";
@@ -11,6 +12,7 @@ export const routeTree = rootRoute.addChildren([
   roundsRoute,
   roundDetailRoute,
   reposRoute,
+  failuresRoute,
 ]);
 
 export function createAppRouter() {

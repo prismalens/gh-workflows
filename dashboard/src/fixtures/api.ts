@@ -1,6 +1,12 @@
 import type { LaneEventsQuery, RunsQuery, TelemetryApi } from "@/api/client";
 import { MAX_LIMIT_WITH_BLOBS } from "@/api/client";
-import type { LaneEventsResponse, RoundRow, RunsResponse, SummaryResponse } from "@/api/types";
+import type {
+  LaneEventRow,
+  LaneEventsResponse,
+  RoundRow,
+  RunsResponse,
+  SummaryResponse,
+} from "@/api/types";
 import { FIXTURE_ROUNDS } from "./rounds";
 
 const BLOB_COLUMNS = [
@@ -18,11 +24,18 @@ const BLOB_COLUMNS = [
  * ordering, limit and cursor semantics have to match the Worker exactly, or a
  * green test proves nothing about the deployed contract.
  */
-export function makeFixtureApi(rows: RoundRow[] = FIXTURE_ROUNDS): TelemetryApi {
+export function makeFixtureApi(
+  rows: RoundRow[] = FIXTURE_ROUNDS,
+  laneEvents: LaneEventRow[] = [],
+): TelemetryApi {
   const sorted = [...rows].sort((a, b) => {
     const byTime = b.recorded_at.localeCompare(a.recorded_at);
     return byTime !== 0 ? byTime : b.session_id.localeCompare(a.session_id);
   });
+
+  const sortedEvents = [...laneEvents].sort((a, b) =>
+    b.recorded_at.localeCompare(a.recorded_at),
+  );
 
   return {
     fixtures: true,
@@ -123,8 +136,19 @@ export function makeFixtureApi(rows: RoundRow[] = FIXTURE_ROUNDS): TelemetryApi 
       };
     },
 
-    async fetchLaneEvents(_query: LaneEventsQuery = {}): Promise<LaneEventsResponse> {
-      return { rows: [], next_cursor: null };
+    async fetchLaneEvents(query: LaneEventsQuery = {}): Promise<LaneEventsResponse> {
+      let filtered = sortedEvents;
+      if (query.repository) filtered = filtered.filter((r) => r.repository === query.repository);
+      if (query.since) filtered = filtered.filter((r) => r.recorded_at >= query.since!);
+      if (query.until) filtered = filtered.filter((r) => r.recorded_at <= query.until!);
+      const limit = query.limit ?? 100;
+      const page = filtered.slice(0, limit);
+      const last = page[page.length - 1];
+      return {
+        rows: page,
+        next_cursor:
+          page.length === limit && last ? `${last.recorded_at}|${last.run_id}` : null,
+      };
     },
   };
 }

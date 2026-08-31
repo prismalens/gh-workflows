@@ -464,3 +464,26 @@ describe("a nulled column is absent, never smallest", () => {
     expect(costs.slice(-4)).toEqual(["—", "—", "—", "—"]);
   });
 });
+
+describe("/failures route integration", () => {
+  it("renders all five failure sections in fixed order", async () => {
+    renderRoute({ path: "/failures", api: fullApi });
+    const s1 = await screen.findByTestId("section-verdicts");
+    const s2 = screen.getByTestId("section-fallbacks");
+    const s3 = screen.getByTestId("section-configs");
+    const s4 = screen.getByTestId("section-model-resolution");
+    const s5 = screen.getByTestId("section-lane-events");
+
+    expect(s1.compareDocumentPosition(s2) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(s2.compareDocumentPosition(s3) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(s3.compareDocumentPosition(s4) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(s4.compareDocumentPosition(s5) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("offers range control and repository filter without date picker", async () => {
+    const { container } = renderRoute({ path: "/failures", api: fullApi });
+    const group = await screen.findByRole("group", { name: "Range" });
+    expect(within(group).getAllByRole("button")).toHaveLength(4);
+    expect(container.querySelector('input[type="date"]')).toBeNull();
+  });
+});
