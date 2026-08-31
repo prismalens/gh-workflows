@@ -25,10 +25,28 @@ export interface RoundRow {
   permission_denials: number | null;
   changed_files: number | null;
   diff_lines: number | null;
+  lane_version: string | null;
+  verdict_kind: string | null;
+  inline_count: number | null;
+  summary_count: number | null;
+  round_ordinal: number | null;
+  fallback_reason: string | null;
+  range_base: string | null;
+  range_head: string | null;
+  model_source: string | null;
+  job_conclusion: string | null;
+  pr_title: string | null;
+  pr_author: string | null;
+  pr_state: string | null;
+  pr_base_ref: string | null;
+  pr_head_ref: string | null;
   /** Only present when the request passed include=blobs. */
   per_model_usage?: string | null;
   subagent_stats?: string | null;
   raw_result?: string | null;
+  verdict_text?: string | null;
+  comment_node_ids?: string | null;
+  config_resolution?: string | null;
 }
 
 export interface RunsResponse {
@@ -46,6 +64,28 @@ export interface SummaryResponse {
   total_cost_usd: number | null;
   first_recorded_at: string | null;
   last_recorded_at: string | null;
+  verdict_kinds: Record<string, number>;
+  fallback_reasons: Record<string, number>;
+  model_sources: Record<string, number>;
+  canary_last_seen_at: string | null;
+}
+
+export interface LaneEventRow {
+  run_id: number;
+  run_attempt: number;
+  recorded_at: string;
+  repository: string;
+  reason: string;
+  pr_number: number | null;
+  head_sha: string | null;
+  run_url: string | null;
+  rounds_used: number | null;
+  lane_version: string | null;
+}
+
+export interface LaneEventsResponse {
+  rows: LaneEventRow[];
+  next_cursor: string | null;
 }
 
 /** One entry of the `modelUsage` map the review lane serialises into per_model_usage. */

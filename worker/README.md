@@ -113,6 +113,129 @@ Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_
   - `run_url` (TEXT)
   - `lane_version` (TEXT)
 
+## Read Contract (v2)
+
+Read endpoints are served under `/api/*` and gated behind Cloudflare Access JWT validation (`verifyAccess`).
+
+### Authentication & Access Control
+
+- Read routes require a valid Cloudflare Access JWT passed in the `Cf-Access-Jwt-Assertion` header.
+- If `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` is not configured in the Worker environment, read endpoints fail closed with **503 Service Unavailable** (`{"error": "read API not configured"}`).
+- If the `Cf-Access-Jwt-Assertion` header is missing, expired, signed with an untrusted key, or targeted at a different audience, read endpoints reject the request with **403 Forbidden** (`{"error": "forbidden"}`).
+
+---
+
+### `GET /api/summary`
+
+Returns aggregate metrics and telemetry status over all stored usage records and canary health.
+
+#### Response Shape
+
+```json
+{
+  "rows": 42,
+  "repositories": ["prismalens/gh-workflows"],
+  "wall_clock_ms": {
+    "mean": 5400,
+    "p95": 8200
+  },
+  "denials_per_run": 0.05,
+  "cache_hit_rate": 0.82,
+  "caching_multiplier": 3.4,
+  "total_cost_usd": 1.25,
+  "first_recorded_at": "2026-08-01T00:00:00.000Z",
+  "last_recorded_at": "2026-08-31T22:00:00.000Z",
+  "verdict_kinds": {
+    "clean": 35,
+    "findings": 7
+  },
+  "fallback_reasons": {
+    "none": 42
+  },
+  "model_sources": {
+    "workflow-default": 42
+  },
+  "canary_last_seen_at": "2026-08-31T22:30:00.000Z"
+}
+```
+
+- **Aggregated breakdowns** (`verdict_kinds`, `fallback_reasons`, `model_sources`): Computed using aggregate SQL `GROUP BY` counts. Empty object `{}` when no records match.
+- **`canary_last_seen_at`**: Read directly from the singleton `canary_pings` row (`id = 'canary'`). Returns `null` when `canary_pings` is empty (never `0` and never a fabricated timestamp). Returns the last canary timestamp even if `usage_records` is empty.
+
+---
+
+### `GET /api/runs`
+
+Returns paginated telemetry review rounds from `usage_records`.
+
+#### Query Parameters
+
+- `limit` (optional): Integer `1`..`1000` (default `100`). When `include=blobs`, `limit` is capped to at most `50`.
+- `repository` (optional): Filter by exact repository string (e.g. `prismalens/gh-workflows`).
+- `round_type` (optional): Filter by round type (e.g. `review`, `incremental`, `verify`).
+- `since` (optional): ISO timestamp lower bound on `recorded_at` (`recorded_at >= ?`).
+- `until` (optional): ISO timestamp upper bound on `recorded_at` (`recorded_at <= ?`).
+- `cursor` (optional): Composite cursor `<recorded_at>|<session_id>` for pagination.
+- `include` (optional): Must be `"blobs"`. Includes heavy JSON/text blob columns and caps limit at 50.
+
+#### Selected Columns
+
+- **Default Response**:
+  - v1 columns: `session_id`, `recorded_at`, `repository`, `pr_number`, `pr_url`, `head_sha`, `run_id`, `run_attempt`, `run_url`, `round_type`, `model`, `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `total_cost_usd`, `duration_ms`, `duration_api_ms`, `num_turns`, `permission_denials`, `changed_files`, `diff_lines`.
+  - 15 Wave 2 columns: `lane_version`, `verdict_kind`, `inline_count`, `summary_count`, `round_ordinal`, `fallback_reason`, `range_base`, `range_head`, `model_source`, `job_conclusion`, `pr_title`, `pr_author`, `pr_state`, `pr_base_ref`, `pr_head_ref`.
+- **Behind `include=blobs`**:
+  - v1 blobs: `per_model_usage`, `subagent_stats`, `raw_result`.
+  - Wave 2 blobs: `verdict_text`, `comment_node_ids`, `config_resolution`.
+
+#### Response Shape
+
+```json
+{
+  "rows": [ ... ],
+  "next_cursor": "2026-08-31T12:00:00.000Z|session-123"
+}
+```
+
+---
+
+### `GET /api/lane-events`
+
+Returns paginated lane lifecycle events from `lane_events` (skipped or non-executed rounds).
+
+#### Query Parameters
+
+- `limit` (optional): Integer `1`..`1000` (default `100`).
+- `repository` (optional): Filter by exact repository string.
+- `since` (optional): ISO timestamp lower bound on `recorded_at` (`recorded_at >= ?`).
+- `until` (optional): ISO timestamp upper bound on `recorded_at` (`recorded_at <= ?`).
+- `cursor` (optional): Composite cursor `<recorded_at>|<run_id>` for pagination.
+
+#### Columns
+
+- `run_id`, `run_attempt`, `recorded_at`, `repository`, `reason`, `pr_number`, `head_sha`, `run_url`, `rounds_used`, `lane_version`.
+
+#### Response Shape
+
+```json
+{
+  "rows": [
+    {
+      "run_id": 123456,
+      "run_attempt": 1,
+      "recorded_at": "2026-08-31T14:20:00.000Z",
+      "repository": "prismalens/gh-workflows",
+      "reason": "auto-paused",
+      "pr_number": 88,
+      "head_sha": "aabbccddeeff00112233445566778899aabbccdd",
+      "run_url": "https://github.com/prismalens/gh-workflows/actions/runs/123456",
+      "rounds_used": 3,
+      "lane_version": "v2.0.0"
+    }
+  ],
+  "next_cursor": "2026-08-31T14:20:00.000Z|123456"
+}
+```
+
 ## Local Development & Deployment
 
 ```bash

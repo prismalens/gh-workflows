@@ -1,9 +1,16 @@
-import type { RunsQuery, TelemetryApi } from "@/api/client";
+import type { LaneEventsQuery, RunsQuery, TelemetryApi } from "@/api/client";
 import { MAX_LIMIT_WITH_BLOBS } from "@/api/client";
-import type { RoundRow, RunsResponse, SummaryResponse } from "@/api/types";
+import type { LaneEventsResponse, RoundRow, RunsResponse, SummaryResponse } from "@/api/types";
 import { FIXTURE_ROUNDS } from "./rounds";
 
-const BLOB_COLUMNS = ["per_model_usage", "subagent_stats", "raw_result"] as const;
+const BLOB_COLUMNS = [
+  "per_model_usage",
+  "subagent_stats",
+  "raw_result",
+  "verdict_text",
+  "comment_node_ids",
+  "config_resolution",
+] as const;
 
 /**
  * Reimplements handleRuns and handleSummary from worker/index.js against an
@@ -67,6 +74,10 @@ export function makeFixtureApi(rows: RoundRow[] = FIXTURE_ROUNDS): TelemetryApi 
           total_cost_usd: null,
           first_recorded_at: null,
           last_recorded_at: null,
+          verdict_kinds: {},
+          fallback_reasons: {},
+          model_sources: {},
+          canary_last_seen_at: null,
         };
       }
       const durations = sorted
@@ -80,6 +91,15 @@ export function makeFixtureApi(rows: RoundRow[] = FIXTURE_ROUNDS): TelemetryApi 
       const create = sum((r) => r.cache_creation_input_tokens);
       const total = input + read + create;
       const billed = input + 1.25 * create + 0.1 * read;
+
+      const verdict_kinds: Record<string, number> = {};
+      const fallback_reasons: Record<string, number> = {};
+      const model_sources: Record<string, number> = {};
+      for (const r of sorted) {
+        if (r.verdict_kind) verdict_kinds[r.verdict_kind] = (verdict_kinds[r.verdict_kind] ?? 0) + 1;
+        if (r.fallback_reason) fallback_reasons[r.fallback_reason] = (fallback_reasons[r.fallback_reason] ?? 0) + 1;
+        if (r.model_source) model_sources[r.model_source] = (model_sources[r.model_source] ?? 0) + 1;
+      }
 
       return {
         rows: sorted.length,
@@ -96,7 +116,15 @@ export function makeFixtureApi(rows: RoundRow[] = FIXTURE_ROUNDS): TelemetryApi 
         total_cost_usd: sum((r) => r.total_cost_usd),
         first_recorded_at: sorted[sorted.length - 1].recorded_at,
         last_recorded_at: sorted[0].recorded_at,
+        verdict_kinds,
+        fallback_reasons,
+        model_sources,
+        canary_last_seen_at: null,
       };
+    },
+
+    async fetchLaneEvents(_query: LaneEventsQuery = {}): Promise<LaneEventsResponse> {
+      return { rows: [], next_cursor: null };
     },
   };
 }

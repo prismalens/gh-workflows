@@ -343,6 +343,11 @@ async function verifyAccess(request, env) {
 }
 
 async function handleSummary(env) {
+  const canaryRow = await env.DB.prepare(
+    "SELECT last_seen_at FROM canary_pings WHERE id = 'canary' LIMIT 1"
+  ).first();
+  const canary_last_seen_at = canaryRow ? canaryRow.last_seen_at : null;
+
   const stats = await env.DB.prepare(
     `SELECT
       COUNT(*) as rows,
@@ -369,6 +374,10 @@ async function handleSummary(env) {
         total_cost_usd: null,
         first_recorded_at: null,
         last_recorded_at: null,
+        verdict_kinds: {},
+        fallback_reasons: {},
+        model_sources: {},
+        canary_last_seen_at,
       }),
       { headers: READ_HEADERS }
     );
@@ -416,6 +425,30 @@ async function handleSummary(env) {
     }
   }
 
+  const verdictRows = await env.DB.prepare(
+    "SELECT verdict_kind, COUNT(*) as cnt FROM usage_records WHERE verdict_kind IS NOT NULL GROUP BY verdict_kind ORDER BY verdict_kind"
+  ).all();
+  const verdict_kinds = {};
+  for (const r of verdictRows.results ?? []) {
+    verdict_kinds[r.verdict_kind] = r.cnt;
+  }
+
+  const fallbackRows = await env.DB.prepare(
+    "SELECT fallback_reason, COUNT(*) as cnt FROM usage_records WHERE fallback_reason IS NOT NULL GROUP BY fallback_reason ORDER BY fallback_reason"
+  ).all();
+  const fallback_reasons = {};
+  for (const r of fallbackRows.results ?? []) {
+    fallback_reasons[r.fallback_reason] = r.cnt;
+  }
+
+  const modelSourceRows = await env.DB.prepare(
+    "SELECT model_source, COUNT(*) as cnt FROM usage_records WHERE model_source IS NOT NULL GROUP BY model_source ORDER BY model_source"
+  ).all();
+  const model_sources = {};
+  for (const r of modelSourceRows.results ?? []) {
+    model_sources[r.model_source] = r.cnt;
+  }
+
   return new Response(
     JSON.stringify({
       rows: stats.rows,
@@ -430,6 +463,10 @@ async function handleSummary(env) {
       total_cost_usd: stats.total_cost_usd,
       first_recorded_at: stats.first_recorded_at,
       last_recorded_at: stats.last_recorded_at,
+      verdict_kinds,
+      fallback_reasons,
+      model_sources,
+      canary_last_seen_at,
     }),
     { headers: READ_HEADERS }
   );
@@ -540,9 +577,31 @@ async function handleRuns(url, env) {
     "permission_denials",
     "changed_files",
     "diff_lines",
+    "lane_version",
+    "verdict_kind",
+    "inline_count",
+    "summary_count",
+    "round_ordinal",
+    "fallback_reason",
+    "range_base",
+    "range_head",
+    "model_source",
+    "job_conclusion",
+    "pr_title",
+    "pr_author",
+    "pr_state",
+    "pr_base_ref",
+    "pr_head_ref",
   ];
   if (includeBlobs) {
-    columns.push("per_model_usage", "subagent_stats", "raw_result");
+    columns.push(
+      "per_model_usage",
+      "subagent_stats",
+      "raw_result",
+      "verdict_text",
+      "comment_node_ids",
+      "config_resolution"
+    );
   }
 
   let query = `SELECT
@@ -561,6 +620,109 @@ async function handleRuns(url, env) {
   const nextCursor =
     rows.length === limit && rows.length > 0
       ? `${rows[rows.length - 1].recorded_at}|${rows[rows.length - 1].session_id}`
+      : null;
+
+  return new Response(
+    JSON.stringify({
+      rows,
+      next_cursor: nextCursor,
+    }),
+    { headers: READ_HEADERS }
+  );
+}
+
+async function handleLaneEvents(url, env) {
+  const searchParams = url.searchParams;
+  let limit = 100;
+  const limitParam = searchParams.get("limit");
+  if (limitParam !== null) {
+    if (!/^[1-9]\d*$/.test(limitParam)) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const parsedLimit = Number(limitParam);
+    if (parsedLimit > 1000) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    limit = parsedLimit;
+  }
+
+  const conditions = [];
+  const bindings = [];
+
+  const repository = searchParams.get("repository");
+  if (repository !== null) {
+    conditions.push("repository = ?");
+    bindings.push(repository);
+  }
+
+  const since = searchParams.get("since");
+  if (since !== null) {
+    conditions.push("recorded_at >= ?");
+    bindings.push(since);
+  }
+
+  const until = searchParams.get("until");
+  if (until !== null) {
+    conditions.push("recorded_at <= ?");
+    bindings.push(until);
+  }
+
+  const cursor = searchParams.get("cursor");
+  if (cursor !== null) {
+    const pipeIndex = cursor.indexOf("|");
+    if (pipeIndex === -1) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const cursorRecordedAt = cursor.slice(0, pipeIndex);
+    const cursorRunId = cursor.slice(pipeIndex + 1);
+    if (!cursorRecordedAt || !cursorRunId || !/^\d+$/.test(cursorRunId)) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    conditions.push("(recorded_at < ? OR (recorded_at = ? AND run_id < ?))");
+    bindings.push(cursorRecordedAt, cursorRecordedAt, Number(cursorRunId));
+  }
+
+  const columns = [
+    "run_id",
+    "run_attempt",
+    "recorded_at",
+    "repository",
+    "reason",
+    "pr_number",
+    "head_sha",
+    "run_url",
+    "rounds_used",
+    "lane_version",
+  ];
+
+  let query = `SELECT
+    ${columns.join(",\n    ")}
+  FROM lane_events`;
+
+  if (conditions.length > 0) {
+    query += ` WHERE ${conditions.join(" AND ")}`;
+  }
+
+  query += ` ORDER BY recorded_at DESC, run_id DESC LIMIT ?`;
+  bindings.push(limit);
+
+  const { results } = await env.DB.prepare(query).bind(...bindings).all();
+  const rows = results ?? [];
+  const nextCursor =
+    rows.length === limit && rows.length > 0
+      ? `${rows[rows.length - 1].recorded_at}|${rows[rows.length - 1].run_id}`
       : null;
 
   return new Response(
@@ -898,7 +1060,10 @@ export default {
       return handleIngest(request, env);
     }
 
-    if (method === "GET" && (pathname === "/api/summary" || pathname === "/api/runs")) {
+    if (
+      method === "GET" &&
+      (pathname === "/api/summary" || pathname === "/api/runs" || pathname === "/api/lane-events")
+    ) {
       const authError = await verifyAccess(request, env);
       if (authError) {
         return authError;
@@ -906,7 +1071,12 @@ export default {
       if (pathname === "/api/summary") {
         return handleSummary(env);
       }
-      return handleRuns(url, env);
+      if (pathname === "/api/runs") {
+        return handleRuns(url, env);
+      }
+      if (pathname === "/api/lane-events") {
+        return handleLaneEvents(url, env);
+      }
     }
 
     // run_worker_first routes GET / here so POST / keeps reaching the ingest

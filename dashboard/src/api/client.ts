@@ -1,4 +1,4 @@
-import type { RoundRow, RunsResponse, SummaryResponse } from "./types";
+import type { LaneEventRow, LaneEventsResponse, RoundRow, RunsResponse, SummaryResponse } from "./types";
 
 /**
  * Access sends an HTML login redirect rather than a 401 when the session is gone,
@@ -28,6 +28,14 @@ export interface RunsQuery {
   include?: "blobs";
 }
 
+export interface LaneEventsQuery {
+  limit?: number;
+  repository?: string;
+  since?: string;
+  until?: string;
+  cursor?: string;
+}
+
 /** The Worker caps limit at 1000, and at 50 once include=blobs is set. */
 export const MAX_LIMIT = 1000;
 export const MAX_LIMIT_WITH_BLOBS = 50;
@@ -41,6 +49,17 @@ export function runsUrl(query: RunsQuery = {}): string {
   }
   const qs = params.toString();
   return qs ? `/api/runs?${qs}` : "/api/runs";
+}
+
+export function laneEventsUrl(query: LaneEventsQuery = {}): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  const qs = params.toString();
+  return qs ? `/api/lane-events?${qs}` : "/api/lane-events";
 }
 
 async function getJson<T>(path: string, validate: (value: unknown) => value is T): Promise<T> {
@@ -111,25 +130,129 @@ async function getJson<T>(path: string, validate: (value: unknown) => value is T
   return parsed;
 }
 
-function isRunsResponse(value: unknown): value is RunsResponse {
+export const REQUIRED_ROUND_KEYS = [
+  "session_id",
+  "recorded_at",
+  "repository",
+  "pr_number",
+  "pr_url",
+  "head_sha",
+  "run_id",
+  "run_attempt",
+  "run_url",
+  "round_type",
+  "model",
+  "input_tokens",
+  "output_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "total_cost_usd",
+  "duration_ms",
+  "duration_api_ms",
+  "num_turns",
+  "permission_denials",
+  "changed_files",
+  "diff_lines",
+  "lane_version",
+  "verdict_kind",
+  "inline_count",
+  "summary_count",
+  "round_ordinal",
+  "fallback_reason",
+  "range_base",
+  "range_head",
+  "model_source",
+  "job_conclusion",
+  "pr_title",
+  "pr_author",
+  "pr_state",
+  "pr_base_ref",
+  "pr_head_ref",
+] as const;
+
+export function isRoundRow(row: unknown): row is RoundRow {
+  if (!row || typeof row !== "object") return false;
+  return REQUIRED_ROUND_KEYS.every((key) => key in (row as Record<string, unknown>));
+}
+
+export function isRunsResponse(value: unknown): value is RunsResponse {
   if (!value || typeof value !== "object") return false;
   const { rows, next_cursor } = value as { rows?: unknown; next_cursor?: unknown };
   return (
     Array.isArray(rows) &&
-    rows.every((row) => !!row && typeof row === "object") &&
+    rows.every(isRoundRow) &&
     (next_cursor === null || next_cursor === undefined || typeof next_cursor === "string")
   );
 }
 
-function isSummaryResponse(value: unknown): value is SummaryResponse {
+export const REQUIRED_SUMMARY_KEYS = [
+  "rows",
+  "repositories",
+  "wall_clock_ms",
+  "denials_per_run",
+  "cache_hit_rate",
+  "caching_multiplier",
+  "total_cost_usd",
+  "first_recorded_at",
+  "last_recorded_at",
+  "verdict_kinds",
+  "fallback_reasons",
+  "model_sources",
+  "canary_last_seen_at",
+] as const;
+
+export function isSummaryResponse(value: unknown): value is SummaryResponse {
   if (!value || typeof value !== "object") return false;
-  const { rows, repositories } = value as { rows?: unknown; repositories?: unknown };
-  return typeof rows === "number" && Array.isArray(repositories);
+  const val = value as Record<string, unknown>;
+  if (!REQUIRED_SUMMARY_KEYS.every((key) => key in val)) return false;
+  return (
+    typeof val.rows === "number" &&
+    Array.isArray(val.repositories) &&
+    typeof val.verdict_kinds === "object" &&
+    val.verdict_kinds !== null &&
+    !Array.isArray(val.verdict_kinds) &&
+    typeof val.fallback_reasons === "object" &&
+    val.fallback_reasons !== null &&
+    !Array.isArray(val.fallback_reasons) &&
+    typeof val.model_sources === "object" &&
+    val.model_sources !== null &&
+    !Array.isArray(val.model_sources) &&
+    (val.canary_last_seen_at === null || typeof val.canary_last_seen_at === "string")
+  );
+}
+
+export const REQUIRED_LANE_EVENT_KEYS = [
+  "run_id",
+  "run_attempt",
+  "recorded_at",
+  "repository",
+  "reason",
+  "pr_number",
+  "head_sha",
+  "run_url",
+  "rounds_used",
+  "lane_version",
+] as const;
+
+export function isLaneEventRow(row: unknown): row is LaneEventRow {
+  if (!row || typeof row !== "object") return false;
+  return REQUIRED_LANE_EVENT_KEYS.every((key) => key in (row as Record<string, unknown>));
+}
+
+export function isLaneEventsResponse(value: unknown): value is LaneEventsResponse {
+  if (!value || typeof value !== "object") return false;
+  const { rows, next_cursor } = value as { rows?: unknown; next_cursor?: unknown };
+  return (
+    Array.isArray(rows) &&
+    rows.every(isLaneEventRow) &&
+    (next_cursor === null || next_cursor === undefined || typeof next_cursor === "string")
+  );
 }
 
 export interface TelemetryApi {
   fetchRuns(query?: RunsQuery): Promise<RunsResponse>;
   fetchSummary(): Promise<SummaryResponse>;
+  fetchLaneEvents(query?: LaneEventsQuery): Promise<LaneEventsResponse>;
   /** Set only by the fixture table, so the UI can say the rounds are invented. */
   readonly fixtures?: boolean;
 }
@@ -137,6 +260,7 @@ export interface TelemetryApi {
 export const httpApi: TelemetryApi = {
   fetchRuns: (query = {}) => getJson(runsUrl(query), isRunsResponse),
   fetchSummary: () => getJson("/api/summary", isSummaryResponse),
+  fetchLaneEvents: (query = {}) => getJson(laneEventsUrl(query), isLaneEventsResponse),
 };
 
 /**
