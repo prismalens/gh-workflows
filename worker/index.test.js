@@ -802,12 +802,14 @@ describe("Worker telemetry read API", () => {
     return accessHelper;
   }
 
-  function makeAuthenticatedRequest(path, jwt) {
+  function makeAuthenticatedRequest(path, jwt, { method = "GET", headers = {}, body } = {}) {
     return makeRequest(path, {
-      method: "GET",
+      method,
       headers: {
         "Cf-Access-Jwt-Assertion": jwt,
+        ...headers,
       },
+      body,
     });
   }
 
@@ -1213,6 +1215,421 @@ describe("Worker telemetry read API", () => {
       const query = db.queries[0];
       assert.ok(query.sql.includes("(recorded_at < ? OR (recorded_at = ? AND run_id < ?))"));
       assert.deepEqual(query.args, ["2026-08-31T15:00:00.000Z", "2026-08-31T15:00:00.000Z", 1002, 100]);
+    });
+  });
+
+  describe("Changes Registry API (/api/changes)", () => {
+    describe("Access Authentication on Changes Routes", () => {
+      const cases = [
+        { route: "/api/changes", method: "GET" },
+        {
+          route: "/api/changes",
+          method: "POST",
+          body: {
+            name: "Upgrade model",
+            at: "2026-08-31T12:00:00.000Z",
+            scope: "repo",
+            repository: "prismalens/gh-workflows",
+          },
+        },
+        { route: "/api/changes/test-change-uuid-1", method: "DELETE" },
+      ];
+
+      for (const { route, method, body } of cases) {
+        it(`returns 503 on ${method} ${route} when Access is not configured in env`, async () => {
+          const db = createFakeDb();
+          const env = { DB: db };
+          const req = makeRequest(route, { method, body });
+          const res = await worker.fetch(req, env);
+          assert.equal(res.status, 503);
+        });
+
+        it(`returns 403 on ${method} ${route} when Cf-Access-Jwt-Assertion header is missing`, async () => {
+          const helper = await getAccessHelper();
+          const db = createFakeDb();
+          const env = { ...helper.env, DB: db };
+          const req = makeRequest(route, { method, body });
+          const res = await worker.fetch(req, env);
+          assert.equal(res.status, 403);
+        });
+
+        it(`returns 403 on ${method} ${route} when JWT is invalid`, async () => {
+          const helper = await getAccessHelper();
+          const db = createFakeDb();
+          const env = { ...helper.env, DB: db };
+          const req = makeAuthenticatedRequest(route, "invalid.jwt.token", { method, body });
+          const res = await worker.fetch(req, env);
+          assert.equal(res.status, 403);
+        });
+      }
+    });
+
+    describe("POST /api/changes (Creation & Validation)", () => {
+      it("a valid repo-scoped create stores every field, with a server-generated id and created_at", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const payload = {
+          name: "Upgrade reviewer to Claude 3.7 Sonnet",
+          at: "2026-08-31T12:00:00.000Z",
+          source_url: "https://github.com/prismalens/gh-workflows/pull/73",
+          scope: "repo",
+          repository: "prismalens/gh-workflows",
+        };
+
+        const req = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+          method: "POST",
+          body: payload,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 201);
+
+        const data = await res.json();
+        assert.ok(typeof data.id === "string" && data.id.length > 0);
+        assert.match(
+          data.id,
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+        );
+        assert.ok(typeof data.created_at === "string" && data.created_at.length > 0);
+        assert.equal(data.name, payload.name);
+        assert.equal(data.at, payload.at);
+        assert.equal(data.source_url, payload.source_url);
+        assert.equal(data.scope, "repo");
+        assert.equal(data.repository, "prismalens/gh-workflows");
+
+        assert.equal(db.queries.length, 1);
+        const query = db.queries[0];
+        assert.match(query.sql, /INSERT INTO changes/);
+        assert.deepEqual(query.args, [
+          data.id,
+          payload.name,
+          payload.at,
+          payload.source_url,
+          "repo",
+          "prismalens/gh-workflows",
+          data.created_at,
+        ]);
+      });
+
+      it("a valid fleet-scoped create with no repository stores", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const payload = {
+          name: "Fleetwide prompt update",
+          at: "2026-08-31T10:00:00.000Z",
+          scope: "fleet",
+        };
+
+        const req = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+          method: "POST",
+          body: payload,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 201);
+
+        const data = await res.json();
+        assert.equal(data.name, payload.name);
+        assert.equal(data.at, payload.at);
+        assert.equal(data.scope, "fleet");
+        assert.equal(data.repository, null);
+        assert.equal(data.source_url, null);
+
+        assert.equal(db.queries.length, 1);
+        const query = db.queries[0];
+        assert.equal(query.args[4], "fleet");
+        assert.equal(query.args[5], null);
+        assert.equal(query.args[3], null);
+      });
+
+      it("scope: 'fleet' with a repository is 400, and scope: 'repo' without one is 400", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+
+        // fleet with repository
+        const fleetWithRepoReq = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+          method: "POST",
+          body: {
+            name: "Fleet change with repo",
+            at: "2026-08-31T10:00:00.000Z",
+            scope: "fleet",
+            repository: "prismalens/gh-workflows",
+          },
+        });
+        const fleetWithRepoRes = await worker.fetch(fleetWithRepoReq, env);
+        assert.equal(fleetWithRepoRes.status, 400);
+
+        // repo without repository
+        const repoWithoutRepoReq = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+          method: "POST",
+          body: {
+            name: "Repo change missing repo",
+            at: "2026-08-31T10:00:00.000Z",
+            scope: "repo",
+          },
+        });
+        const repoWithoutRepoRes = await worker.fetch(repoWithoutRepoReq, env);
+        assert.equal(repoWithoutRepoRes.status, 400);
+
+        // repo with empty string repository
+        const repoEmptyRepoReq = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+          method: "POST",
+          body: {
+            name: "Repo change empty repo",
+            at: "2026-08-31T10:00:00.000Z",
+            scope: "repo",
+            repository: "",
+          },
+        });
+        const repoEmptyRepoRes = await worker.fetch(repoEmptyRepoReq, env);
+        assert.equal(repoEmptyRepoRes.status, 400);
+
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("an unknown scope is 400", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+
+        for (const badScope of ["org", "global", "repository", "", null, 123]) {
+          const req = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+            method: "POST",
+            body: {
+              name: "Bad scope change",
+              at: "2026-08-31T10:00:00.000Z",
+              scope: badScope,
+              repository: "prismalens/gh-workflows",
+            },
+          });
+          const res = await worker.fetch(req, env);
+          assert.equal(res.status, 400, `Expected 400 for scope: ${badScope}`);
+        }
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("a non-ISO at is 400; a valid non-UTC at is stored normalised to UTC", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+
+        // Non-ISO dates
+        for (const badAt of ["not-a-date", "2026-99-99T99:99:99Z", "2026-08-31", "", 123456789]) {
+          const req = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+            method: "POST",
+            body: {
+              name: "Bad at change",
+              at: badAt,
+              scope: "fleet",
+            },
+          });
+          const res = await worker.fetch(req, env);
+          assert.equal(res.status, 400, `Expected 400 for at: ${badAt}`);
+        }
+        assert.equal(db.queries.length, 0);
+
+        // Valid non-UTC at normalized to UTC (+02:00 -> -2 hours to UTC)
+        const nonUtcReq = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+          method: "POST",
+          body: {
+            name: "Non-UTC at change",
+            at: "2026-08-31T15:00:00+02:00",
+            scope: "fleet",
+          },
+        });
+        const nonUtcRes = await worker.fetch(nonUtcReq, env);
+        assert.equal(nonUtcRes.status, 201);
+        const data = await nonUtcRes.json();
+        assert.equal(data.at, "2026-08-31T13:00:00.000Z");
+
+        assert.equal(db.queries.length, 1);
+        assert.equal(db.queries[0].args[2], "2026-08-31T13:00:00.000Z");
+      });
+
+      it("an http:// source_url is 400", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+
+        const httpReq = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+          method: "POST",
+          body: {
+            name: "Insecure url change",
+            at: "2026-08-31T12:00:00.000Z",
+            scope: "fleet",
+            source_url: "http://github.com/prismalens/gh-workflows/pull/73",
+          },
+        });
+        const httpRes = await worker.fetch(httpReq, env);
+        assert.equal(httpRes.status, 400);
+
+        const longUrl = "https://example.com/" + "x".repeat(500);
+        const tooLongUrlReq = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+          method: "POST",
+          body: {
+            name: "Too long url change",
+            at: "2026-08-31T12:00:00.000Z",
+            scope: "fleet",
+            source_url: longUrl,
+          },
+        });
+        const tooLongUrlRes = await worker.fetch(tooLongUrlReq, env);
+        assert.equal(tooLongUrlRes.status, 400);
+
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("a 201-character name is 400", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+
+        const overLimitName = "N".repeat(201);
+        const req = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+          method: "POST",
+          body: {
+            name: overLimitName,
+            at: "2026-08-31T12:00:00.000Z",
+            scope: "fleet",
+          },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+
+        // Empty name
+        const emptyReq = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+          method: "POST",
+          body: {
+            name: "",
+            at: "2026-08-31T12:00:00.000Z",
+            scope: "fleet",
+          },
+        });
+        const emptyRes = await worker.fetch(emptyReq, env);
+        assert.equal(emptyRes.status, 400);
+
+        // Valid 200-character name
+        const validMaxName = "N".repeat(200);
+        const validMaxReq = makeAuthenticatedRequest("/api/changes", helper.jwt, {
+          method: "POST",
+          body: {
+            name: validMaxName,
+            at: "2026-08-31T12:00:00.000Z",
+            scope: "fleet",
+          },
+        });
+        const validMaxRes = await worker.fetch(validMaxReq, env);
+        assert.equal(validMaxRes.status, 201);
+      });
+    });
+
+    describe("GET /api/changes (Listing & Pagination)", () => {
+      it("GET returns rows ordered by at descending and paginates", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb({
+          handler: (sql, args) => {
+            if (sql.includes("FROM changes")) {
+              return {
+                results: [
+                  {
+                    id: "change-uuid-2",
+                    name: "Upgrade reviewer to Claude 3.7 Sonnet",
+                    at: "2026-08-31T14:00:00.000Z",
+                    source_url: "https://github.com/prismalens/gh-workflows/pull/73",
+                    scope: "repo",
+                    repository: "prismalens/gh-workflows",
+                    created_at: "2026-08-31T14:05:00.000Z",
+                  },
+                  {
+                    id: "change-uuid-1",
+                    name: "Fleetwide prompt update",
+                    at: "2026-08-31T10:00:00.000Z",
+                    source_url: null,
+                    scope: "fleet",
+                    repository: null,
+                    created_at: "2026-08-31T10:05:00.000Z",
+                  },
+                ],
+              };
+            }
+            return null;
+          },
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/changes?limit=2", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+
+        const data = await res.json();
+        assert.equal(data.rows.length, 2);
+        assert.equal(data.rows[0].id, "change-uuid-2");
+        assert.equal(data.rows[0].at, "2026-08-31T14:00:00.000Z");
+        assert.equal(data.rows[1].id, "change-uuid-1");
+        assert.equal(data.rows[1].at, "2026-08-31T10:00:00.000Z");
+        assert.equal(data.next_cursor, "2026-08-31T10:00:00.000Z|change-uuid-1");
+
+        const query = db.queries[0];
+        assert.ok(query.sql.includes("ORDER BY at DESC, id DESC LIMIT ?"));
+        assert.equal(query.args[query.args.length - 1], 2);
+      });
+
+      it("handles cursor pagination and rejects invalid cursor or limit", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+
+        const badLimitReq = makeAuthenticatedRequest("/api/changes?limit=0", helper.jwt);
+        assert.equal((await worker.fetch(badLimitReq, env)).status, 400);
+
+        const badCursorReq = makeAuthenticatedRequest("/api/changes?cursor=no-pipe-symbol", helper.jwt);
+        assert.equal((await worker.fetch(badCursorReq, env)).status, 400);
+
+        const cursorReq = makeAuthenticatedRequest(
+          "/api/changes?cursor=2026-08-31T14:00:00.000Z|change-uuid-2",
+          helper.jwt
+        );
+        const res = await worker.fetch(cursorReq, env);
+        assert.equal(res.status, 200);
+
+        const query = db.queries[0];
+        assert.ok(query.sql.includes("(at < ? OR (at = ? AND id < ?))"));
+        assert.deepEqual(query.args, [
+          "2026-08-31T14:00:00.000Z",
+          "2026-08-31T14:00:00.000Z",
+          "change-uuid-2",
+          100,
+        ]);
+      });
+    });
+
+    describe("DELETE /api/changes/:id (Deletion & Idempotency)", () => {
+      it("DELETE removes the row and is idempotent about an id that is not there", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+
+        // Deleting existing or non-existing row returns 204
+        const req = makeAuthenticatedRequest("/api/changes/some-change-uuid", helper.jwt, {
+          method: "DELETE",
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 204);
+
+        assert.equal(db.queries.length, 1);
+        const query = db.queries[0];
+        assert.equal(query.sql, "DELETE FROM changes WHERE id = ?");
+        assert.deepEqual(query.args, ["some-change-uuid"]);
+
+        // Calling again with an id that is not there also returns 204
+        const req2 = makeAuthenticatedRequest("/api/changes/non-existent-uuid", helper.jwt, {
+          method: "DELETE",
+        });
+        const res2 = await worker.fetch(req2, env);
+        assert.equal(res2.status, 204);
+        assert.equal(db.queries.length, 2);
+        assert.deepEqual(db.queries[1].args, ["non-existent-uuid"]);
+      });
     });
   });
 });

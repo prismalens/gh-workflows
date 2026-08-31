@@ -1050,6 +1050,231 @@ async function handleIngest(request, env) {
   });
 }
 
+async function handleGetChanges(url, env) {
+  const searchParams = url.searchParams;
+  let limit = 100;
+  const limitParam = searchParams.get("limit");
+  if (limitParam !== null) {
+    if (!/^[1-9]\d*$/.test(limitParam)) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const parsedLimit = Number(limitParam);
+    if (parsedLimit > 1000) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    limit = parsedLimit;
+  }
+
+  const conditions = [];
+  const bindings = [];
+
+  const cursor = searchParams.get("cursor");
+  if (cursor !== null) {
+    const pipeIndex = cursor.indexOf("|");
+    if (pipeIndex === -1) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const cursorAt = cursor.slice(0, pipeIndex);
+    const cursorId = cursor.slice(pipeIndex + 1);
+    if (!cursorAt || !cursorId) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    conditions.push("(at < ? OR (at = ? AND id < ?))");
+    bindings.push(cursorAt, cursorAt, cursorId);
+  }
+
+  const columns = [
+    "id",
+    "name",
+    "at",
+    "source_url",
+    "scope",
+    "repository",
+    "created_at",
+  ];
+
+  let query = `SELECT
+    ${columns.join(",\n    ")}
+  FROM changes`;
+
+  if (conditions.length > 0) {
+    query += ` WHERE ${conditions.join(" AND ")}`;
+  }
+
+  query += ` ORDER BY at DESC, id DESC LIMIT ?`;
+  bindings.push(limit);
+
+  const { results } = await env.DB.prepare(query).bind(...bindings).all();
+  const rows = results ?? [];
+  const nextCursor =
+    rows.length === limit && rows.length > 0
+      ? `${rows[rows.length - 1].at}|${rows[rows.length - 1].id}`
+      : null;
+
+  return new Response(
+    JSON.stringify({
+      rows,
+      next_cursor: nextCursor,
+    }),
+    { headers: READ_HEADERS }
+  );
+}
+
+async function handlePostChanges(request, env) {
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: "invalid json body" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return new Response(JSON.stringify({ error: "invalid body" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  // name: required, non-empty, capped at 200 characters
+  if (typeof payload.name !== "string" || payload.name.length === 0 || payload.name.length > 200) {
+    return new Response(JSON.stringify({ error: "invalid or missing name" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  // at: required and must parse as an ISO 8601 instant; store it normalised to UTC
+  if (typeof payload.at !== "string") {
+    return new Response(JSON.stringify({ error: "invalid or missing at" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+  const isoInstantPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}(:?\d{2})?)$/i;
+  if (!isoInstantPattern.test(payload.at)) {
+    return new Response(JSON.stringify({ error: "invalid at format" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+  const atDate = new Date(payload.at);
+  if (Number.isNaN(atDate.getTime())) {
+    return new Response(JSON.stringify({ error: "invalid at timestamp" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+  const normalizedAt = atDate.toISOString();
+
+  // scope: required and exactly repo or fleet
+  if (payload.scope !== "repo" && payload.scope !== "fleet") {
+    return new Response(JSON.stringify({ error: "invalid scope" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  // repository: required when scope is repo, and must be absent or null when scope is fleet
+  if (payload.scope === "repo") {
+    if (typeof payload.repository !== "string" || payload.repository.length === 0) {
+      return new Response(JSON.stringify({ error: "repository required for repo scope" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+  } else if (payload.scope === "fleet") {
+    if (payload.repository !== undefined && payload.repository !== null) {
+      return new Response(JSON.stringify({ error: "repository must be absent or null for fleet scope" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+  }
+
+  // source_url: optional, and when present must be https:// and capped at 500 characters
+  if (payload.source_url !== undefined && payload.source_url !== null) {
+    if (
+      typeof payload.source_url !== "string" ||
+      !payload.source_url.startsWith("https://") ||
+      payload.source_url.length > 500
+    ) {
+      return new Response(JSON.stringify({ error: "invalid source_url" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+  }
+
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const repository = payload.scope === "repo" ? payload.repository : null;
+  const sourceUrl = payload.source_url ?? null;
+
+  try {
+    await env.DB.prepare(
+      `INSERT INTO changes (
+        id,
+        name,
+        at,
+        source_url,
+        scope,
+        repository,
+        created_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+    ).bind(
+      id,
+      payload.name,
+      normalizedAt,
+      sourceUrl,
+      payload.scope,
+      repository,
+      createdAt
+    ).run();
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+
+  const createdRow = {
+    id,
+    name: payload.name,
+    at: normalizedAt,
+    source_url: sourceUrl,
+    scope: payload.scope,
+    repository,
+    created_at: createdAt,
+  };
+
+  return new Response(JSON.stringify(createdRow), {
+    status: 201,
+    headers: READ_HEADERS,
+  });
+}
+
+async function handleDeleteChange(id, env) {
+  try {
+    await env.DB.prepare("DELETE FROM changes WHERE id = ?").bind(id).run();
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+
+  return new Response(null, { status: 204 });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -1077,6 +1302,30 @@ export default {
       if (pathname === "/api/lane-events") {
         return handleLaneEvents(url, env);
       }
+    }
+
+    if (pathname === "/api/changes" || pathname.startsWith("/api/changes/")) {
+      const authError = await verifyAccess(request, env);
+      if (authError) {
+        return authError;
+      }
+      if (method === "GET" && pathname === "/api/changes") {
+        return handleGetChanges(url, env);
+      }
+      if (method === "POST" && pathname === "/api/changes") {
+        return handlePostChanges(request, env);
+      }
+      if (method === "DELETE" && pathname.startsWith("/api/changes/")) {
+        const id = pathname.slice("/api/changes/".length);
+        if (!id) {
+          return new Response(JSON.stringify({ error: "missing id" }), {
+            status: 400,
+            headers: READ_HEADERS,
+          });
+        }
+        return handleDeleteChange(id, env);
+      }
+      return new Response(null, { status: 404 });
     }
 
     // run_worker_first routes GET / here so POST / keeps reaching the ingest

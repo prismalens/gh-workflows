@@ -88,6 +88,21 @@ export interface LaneEventsResponse {
   next_cursor: string | null;
 }
 
+export interface ChangeRow {
+  id: string;
+  name: string;
+  at: string;
+  source_url: string | null;
+  scope: "repo" | "fleet";
+  repository: string | null;
+  created_at: string;
+}
+
+export interface ChangesResponse {
+  rows: ChangeRow[];
+  next_cursor: string | null;
+}
+
 /** One entry of the `modelUsage` map the review lane serialises into per_model_usage. */
 export interface ModelUsage {
   inputTokens?: number;

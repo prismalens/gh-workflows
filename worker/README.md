@@ -236,6 +236,84 @@ Returns paginated lane lifecycle events from `lane_events` (skipped or non-execu
 }
 ```
 
+---
+
+### `GET /api/changes`
+
+Returns paginated named changes from `changes`, ordered newest `at` first.
+
+#### Query Parameters
+
+- `limit` (optional): Integer `1`..`1000` (default `100`).
+- `cursor` (optional): Composite cursor `<at>|<id>` for pagination.
+
+#### Response Shape
+
+```json
+{
+  "rows": [
+    {
+      "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "name": "Upgrade reviewer to Claude 3.7 Sonnet",
+      "at": "2026-08-31T12:00:00.000Z",
+      "source_url": "https://github.com/prismalens/gh-workflows/pull/73",
+      "scope": "repo",
+      "repository": "prismalens/gh-workflows",
+      "created_at": "2026-08-31T12:05:00.000Z"
+    }
+  ],
+  "next_cursor": "2026-08-31T12:00:00.000Z|f47ac10b-58cc-4372-a567-0e02b2c3d479"
+}
+```
+
+---
+
+### `POST /api/changes`
+
+Creates a named change row with server-generated `id` (`crypto.randomUUID()`) and server-stamped `created_at` (`new Date().toISOString()`).
+
+#### Validation Rules
+
+- `name` (required, string): Non-empty, capped at 200 characters.
+- `at` (required, string): ISO 8601 instant, normalized and stored in UTC.
+- `scope` (required, string): Exactly `"repo"` or `"fleet"`.
+- `repository` (string): Required when `scope` is `"repo"`; must be absent or `null` when `scope` is `"fleet"`.
+- `source_url` (optional, string): Must start with `https://` and be capped at 500 characters when present.
+
+#### Authentication & Service Token Dependency
+
+The write route uses `verifyAccess`, the same Cloudflare Access check as all `/api/*` read routes. It does not reuse the ingest token.
+
+Writing a change row via `curl` requires a Cloudflare Access **Service Token** configured on the application by the operator. Cloudflare Access is a browser authentication flow by default; the service token must exist on the Access application before non-browser HTTP requests can authenticate.
+
+```bash
+# Writing a change requires an Access Service Token configured on the application first.
+curl -X POST https://review-telemetry.sfun.cloud/api/changes \
+  -H "Content-Type: application/json" \
+  -H "CF-Access-Client-Id: <SERVICE_TOKEN_CLIENT_ID>" \
+  -H "CF-Access-Client-Secret: <SERVICE_TOKEN_CLIENT_SECRET>" \
+  -d '{
+    "name": "Upgrade reviewer to Claude 3.7 Sonnet",
+    "at": "2026-08-31T12:00:00Z",
+    "scope": "repo",
+    "repository": "prismalens/gh-workflows",
+    "source_url": "https://github.com/prismalens/gh-workflows/pull/73"
+  }'
+```
+
+---
+
+### `DELETE /api/changes/:id`
+
+Removes a change row by `id`. Returns 204. Idempotent when the `id` does not exist.
+
+#### Deliberate Omission of `PATCH`
+
+Editing a change row silently rewrites the anchor of every comparison already drawn against it, and nothing would say so.
+A mis-entered change is deleted and re-added.
+
+---
+
 ## Local Development & Deployment
 
 ```bash
