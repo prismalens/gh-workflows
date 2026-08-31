@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    html,body{margin:0;padding:0;background:#f6f5f2}
+    body{font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;color:#1c1a16;-webkit-font-smoothing:antialiased;font-size:14px}
+    a{color:#8f6400;text-decoration:none}a:hover{color:#6e4d00;text-decoration:underline}
+    .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+    .shell{display:flex;width:1280px;background:#f6f5f2;align-items:stretch}
+    .side{width:212px;flex-shrink:0;background:#181510;color:#cfc8ba;display:flex;flex-direction:column;padding:18px 0 14px}
+    .logo{display:flex;align-items:center;gap:9px;padding:2px 20px 16px}
+    .wordmark{font-weight:600;font-size:15px;color:#f4efe3;letter-spacing:.3px}
+    .orgsel{margin:0 12px 16px;padding:7px 10px;border:1px solid #322c21;border-radius:6px;font-size:12.5px;color:#efe9dc;display:flex;justify-content:space-between;align-items:center;background:#221d15}
+    .nav{display:flex;flex-direction:column;gap:1px;padding:0 10px}
+    .nav a{display:block;padding:7px 10px;border-radius:6px;font-size:13px;color:#a89f8d;text-decoration:none}
+    .nav a.on{background:#2c2415;color:#f2c96b;font-weight:500}
+    .sidefoot{margin-top:auto;padding:14px 20px 0;border-top:1px solid #2a251c;font-size:11.5px;color:#7d7666;line-height:1.7}
+    .main{flex:1;min-width:0;padding:22px 28px 28px;display:flex;flex-direction:column;gap:14px}
+    .crumb{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#98928a}
+    h1{font-size:17px;font-weight:600;margin:0}
+    .sub{font-size:12.5px;color:#6f6a5e;margin-top:4px;line-height:1.6}
+    .card{background:#fff;border:1px solid #e6e2d8;border-radius:8px;overflow:hidden}
+    .tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+    .tbl th{font-size:11px;font-weight:500;color:#98928a;text-align:left;padding:8px 14px;border-bottom:1px solid #eee9df;white-space:nowrap}
+    .tbl td{padding:9px 14px;border-bottom:1px solid #f2eee5;vertical-align:middle}
+    .tbl tr:last-child td{border-bottom:none}
+    .chip{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:500;padding:0 8px;border-radius:999px;border:1px solid;line-height:1.9;white-space:nowrap}
+    .c-warn{color:#8a5a00;background:#fdf3d7;border-color:#eddaa1}
+    .c-neut{color:#6f6a5e;background:#f1efe9;border-color:#ddd8cc}
+    .c-ok{color:#006300;background:#ecf6ec;border-color:#c2e0c2}
+    .c-pend{color:#8a5a00;background:#fff;border-color:#dcb45e;border-style:dashed}
+    .note{font-size:11.5px;color:#98928a;line-height:1.6}
+    .banner{display:flex;gap:10px;align-items:flex-start;border:1px solid #c8d9ee;background:#f0f4fa;color:#28425f;border-radius:8px;padding:12px 14px;font-size:12.5px;line-height:1.6}
+    .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid #d8d2c4;background:#fff;border-radius:6px;padding:6px 12px;font-size:12.5px;font-weight:500;color:#1c1a16}
+  </style>
+</helmet>
+<div class="shell">
+  <div class="side">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1.5 18 16.5H2Z" stroke="#f2c96b" stroke-width="1.6" stroke-linejoin="round"></path><circle cx="10" cy="12.2" r="2.1" fill="#f2c96b"></circle></svg>
+      <span class="wordmark">Assayer</span>
+    </div>
+    <div class="orgsel"><span>prismalens</span><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#8d8574" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></div>
+    <nav class="nav">
+      <a href="#">Overview</a>
+      <a href="#">Repos</a>
+      <a href="#">Rounds</a>
+      <a href="#">Findings</a>
+      <a href="#">Keys</a>
+      <a href="#">Agents</a>
+      <a class="on" href="#">Config</a>
+      <a href="#">Settings</a>
+    </nav>
+    <div class="sidefoot">Priya Nair · org admin<br>v0.4.2 · latest</div>
+  </div>
+  <div class="main">
+    <div>
+      <div class="crumb">/o/prismalens/config</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-top:2px">
+        <div>
+          <h1>Org defaults</h1>
+          <div class="sub"><span class="mono">.github/claude-review-defaults.yml</span> in <span class="mono">prismalens/.github</span>,
+          read at <span class="mono">@main</span>. Defaults, not policy: a repo layer wins outright on any key it
+          defines, and may loosen as well as tighten.</div>
+        </div>
+        <a class="btn" href="#">Edit via PR</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <table class="tbl">
+        <tr><th style="width:270px">Key</th><th>Org value</th><th>Repo overrides</th></tr>
+        <tr>
+          <td class="mono">review.default_model</td><td class="mono">claude-sonnet-5</td>
+          <td><span class="note">none · applies to all 3 repos</span></td>
+        </tr>
+        <tr>
+          <td class="mono">review.auto_pause_rounds</td><td class="mono">3</td>
+          <td><span class="chip c-warn"><span class="mono">prismalens</span> &#8594; 10 · loosened</span></td>
+        </tr>
+        <tr>
+          <td class="mono">review.skip_authors</td><td class="mono">[dependabot[bot]]</td>
+          <td><span class="note">none</span></td>
+        </tr>
+        <tr>
+          <td class="mono">review.path_filters</td><td class="mono">['src/auth/**']</td>
+          <td><span class="chip c-pend"><span class="mono">prismalens</span> · pending <a href="#">PR #488</a></span></td>
+        </tr>
+        <tr style="color:#98928a">
+          <td class="mono">findings.suppress_below</td><td class="mono">Minor</td>
+          <td><span class="chip c-neut">accepted, not wired</span></td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="banner">
+      <svg width="15" height="15" viewBox="0 0 15 15" fill="none" style="flex-shrink:0;margin-top:1px"><rect x="3" y="6.5" width="9" height="6" rx="1.2" stroke="#28425f" stroke-width="1.4"></rect><path d="M5 6.5V4.8a2.5 2.5 0 0 1 5 0v1.7" stroke="#28425f" stroke-width="1.4"></path></svg>
+      <div><b>Enforcement is not built yet.</b> A planned <span class="mono">constraints:</span> block would let this
+      file lock keys against loosening. Until the workflow honors it, this page shows loosening as
+      information and draws no lock icons. The UI never claims an enforcement that does not run.</div>
+    </div>
+
+    <div class="note">Parse state per layer, last 50 rounds: workflow defaults always valid · org layer valid ·
+    repo layers: <span class="mono">prismalens</span> valid, <span class="mono">gh-workflows</span> absent (silent fallback),
+    <span class="mono">assayer</span> absent.</div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

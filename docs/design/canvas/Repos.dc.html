@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap">
+  <style>
+  body { margin:0; background:#0C0F16; color:#DEE3EE; font-family:'IBM Plex Sans', system-ui, sans-serif; font-size:13px; -webkit-font-smoothing:antialiased; }
+  a { color:#7A9BEF; text-decoration:none; } a:hover { color:#9CB6F5; }
+  table { border-collapse:collapse; width:100%; }
+  th { text-align:left; font-size:10.5px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:#5A6377; padding:7px 10px; border-bottom:1px solid #1E2433; white-space:nowrap; }
+  td { padding:7px 10px; border-bottom:1px solid #1E2433; vertical-align:middle; white-space:nowrap; }
+  .num { font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:12px; font-variant-numeric:tabular-nums; }
+  .mono { font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:11.5px; }
+  .muted { color:#8B93A7; } .faint { color:#5A6377; }
+</style>
+</helmet>
+<div style="display:flex; height:100%; min-height:100vh; align-items:stretch;">
+  <div style="width:196px; flex-shrink:0; border-right:1px solid #1E2433; display:flex; flex-direction:column; padding:14px 10px; gap:2px;">
+    <div style="display:flex; align-items:center; gap:8px; padding:2px 12px 14px;">
+      <svg width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="1" width="16" height="16" rx="3" fill="none" stroke="#7A9BEF" stroke-width="1.5"/><path d="M5 11 8 6l2.5 3.5L12.5 7" stroke="#7A9BEF" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><div style="font-weight:600; font-size:13px;">Lane console</div><div style="font-size:10px; color:#5A6377;">prismalens review lane</div></div>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 13h3V7H2zM6.5 13h3V3h-3zM11 13h3V9h-3z"/></svg>Overview</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 4h12M2 8h12M2 12h12"/></svg>Rounds</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M8 2 14 13H2z M8 6v3.5 M8 11.2v.6"/></svg>Failures</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M8 2v12 M3 5h3.5 M3 8h3.5 M3 11h3.5 M9.5 5H13 M9.5 8H13 M9.5 11H13"/></svg>Compare</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><circle cx="4.5" cy="4" r="2"/><circle cx="4.5" cy="12" r="2"/><circle cx="11.5" cy="12" r="2"/><path d="M4.5 6v4 M11.5 10V7.5A2.5 2.5 0 0 0 9 5H8"/></svg>PRs</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 8h3l1.5 3 2-6 1.5 3h4 M2 12.5h12"/></svg>Findings</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; background:#151A2A; color:#DEE3EE; font-weight:600; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#7A9BEF" stroke-width="1.5"><path d="M3 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5H4.5A1.5 1.5 0 0 1 3 12z M3 11h10"/></svg>Repos</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><circle cx="5" cy="8" r="3"/><path d="M8 8h6 M11 8v2.5 M13.5 8v2"/></svg>Keys</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><rect x="2.5" y="5" width="5" height="6" rx="1"/><rect x="9.5" y="5" width="4" height="6" rx="1"/><path d="M7.5 8h2"/></svg>Agents</div>
+    <div style="flex:1;"></div>
+    <div style="padding:10px 12px; border-top:1px solid #1E2433; display:flex; flex-direction:column; gap:6px; font-size:10.5px; color:#5A6377;">
+      <div style="display:flex; gap:5px; align-items:center;"><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">j</span><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">k</span> rows &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">enter</span> open</div>
+      <div style="display:flex; gap:5px; align-items:center;"><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">o</span> run &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">p</span> PR &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">cmd+k</span> jump</div>
+    </div>
+  </div>
+  <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+    <div style="height:52px; flex-shrink:0; border-bottom:1px solid #1E2433; display:flex; align-items:center; gap:14px; padding:0 20px;">
+    <div style="font-size:14px; font-weight:600;">Repos</div>
+    <div style="flex:1;"></div>
+    <div style="display:flex; align-items:center; gap:7px; border:1px solid #1E2433; border-radius:4px; padding:4px 10px; font-size:11.5px; color:#8B93A7;">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M3 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5H4.5A1.5 1.5 0 0 1 3 12z"/></svg>
+      All repos <span style="color:#5A6377;">&#9662;</span></div>
+    <div style="display:flex; gap:4px;"><span style="padding:4px 10px; font-size:11px; border:1px solid #7A9BEF88; background:#7A9BEF1a; color:#7A9BEF; font-weight:600; border-radius:4px;">Last 50 rounds / 7d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">30d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">90d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">All time</span></div>
+  </div>
+    <div style="flex:1; padding:18px 20px; display:flex; flex-direction:column; gap:14px; min-width:0;">
+    
+    <div style="background:#121623; border:1px solid #1E2433; border-radius:6px; ">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Fleet</div><div style="flex:1;"></div><span style="padding:4px 12px; border:1px solid #7A9BEF88; background:#7A9BEF1a; color:#7A9BEF; border-radius:4px; font-size:11.5px; font-weight:600;">Add repo</span></div>
+    <div style="padding:0 0 6px;"><table>
+      <tr><th>Repository</th><th>Lane</th><th>Key mode</th><th>Last round</th><th>Last verdict</th><th>Config</th><th></th></tr>
+      <tr>
+    <td style="font-weight:500;">prismalens/prismalens</td><td class="muted" style="font-size:11.5px;">built-in claude lane</td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #8B93A766; color:#8B93A7; font-size:10.5px; font-weight:500;">seat (OAuth)</span></td><td class="num muted">Aug 30 19:12</td><td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed</span></td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">valid: 5 keys</span></td>
+    <td style="text-align:right;"><a style="font-size:11px;">config &#8599;</a></td></tr>
+      <tr>
+    <td style="font-weight:500;">prismalens/gh-workflows</td><td class="muted" style="font-size:11.5px;">built-in claude lane</td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #8B93A766; color:#8B93A7; font-size:10.5px; font-weight:500;">seat (OAuth)</span></td><td class="num muted">Aug 31 08:14</td><td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed</span></td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #DB4A7866; color:#DB4A78; font-size:10.5px; font-weight:500;">malformed: dropped</span></td>
+    <td style="text-align:right;"><a style="font-size:11px;">config &#8599;</a></td></tr>
+      <tr>
+    <td style="font-weight:500;">prismalens/assayer</td><td class="muted" style="font-size:11.5px;">built-in claude lane</td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #8B93A766; color:#8B93A7; font-size:10.5px; font-weight:500;">seat (OAuth)</span></td><td class="num muted">Aug 24 10:31</td><td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#AD87341f; border:1px solid #AD873455; color:#AD8734; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#AD8734"/></svg>did-not-run</span></td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #5A637766; color:#5A6377; font-size:10.5px; font-weight:500;">absent: defaults</span></td>
+    <td style="text-align:right;"><a style="font-size:11px;">config &#8599;</a></td></tr>
+      </table></div>
+  </div>
+    <div style="display:flex; gap:12px;">
+      <div style="background:#121623; border:1px solid #1E2433; border-radius:6px; flex:1; min-width:0;">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Watch out</div></div>
+    <div style="padding:12px 14px;"><div style="display:flex; flex-direction:column; gap:8px; font-size:12px; color:#8B93A7;">
+        <div>prismalens/gh-workflows: repo config layer is <span style="color:#DB4A78;">malformed</span> and was dropped whole. The lane runs on workflow defaults. <a>view parse warning</a></div>
+        <div>prismalens/assayer: last verdict was <span style="color:#AD8734;">did-not-run</span> 7 days ago and skips are not recorded (gap G7): a dead lane and a quiet repo look the same here.</div>
+      </div></div>
+  </div>
+      <div style="background:#121623; border:1px solid #1E2433; border-radius:6px; flex:1; min-width:0;">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Fleet totals, rolling window</div></div>
+    <div style="padding:12px 14px;"><div style="display:flex; gap:26px; font-size:12px; color:#8B93A7;">
+        <span>rounds <span class="num" style="color:#DEE3EE;">47</span></span>
+        <span>repos active <span class="num" style="color:#DEE3EE;">2/3</span></span>
+        <span>silent <span class="num" style="color:#DEE3EE;">1</span></span>
+        <span>denials <span class="num" style="color:#DEE3EE;">5</span></span>
+      </div></div>
+  </div>
+    </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

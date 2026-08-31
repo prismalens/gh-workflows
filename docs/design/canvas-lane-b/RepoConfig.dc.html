@@ -1,0 +1,160 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body{margin:0;background:#f4f3ef;color:#0b0b0b;font:13px/1.45 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;}
+    a{color:#1c5cab;text-decoration:none} a:hover{color:#104281}
+    .mono{font-family:"IBM Plex Mono","SFMono-Regular",ui-monospace,monospace}
+    .card{background:#fcfcfb;border:1px solid rgba(11,11,11,0.10);border-radius:6px}
+    .chip{display:inline-flex;align-items:center;gap:6px;padding:1px 9px;border-radius:999px;font-size:11.5px;font-weight:600;border:1px solid;white-space:nowrap}
+    .c-rev{color:#006300;border-color:rgba(0,99,0,.28);background:#eef6ea}
+    .c-not{color:#8a5600;border-color:rgba(138,86,0,.30);background:#faf2df}
+    .c-gry{color:#52514e;border-color:rgba(11,11,11,.16);background:#f1f0ec}
+    .c-thr{color:#1c5cab;border-color:rgba(28,92,171,.28);background:#eaf1fa}
+    .navi{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:6px;color:#52514e;font-weight:500}
+    .navi.on{background:#eaf1fa;color:#1c5cab}
+    th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600;text-align:left;padding:8px 10px;border-bottom:1px solid #e1e0d9}
+    td{padding:9px 10px;border-bottom:1px solid #efeee9;vertical-align:middle}
+    .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600}
+    .btn{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:6px;border:1px solid rgba(11,11,11,.14);background:#fcfcfb;font-weight:600;font-size:12.5px;color:#0b0b0b}
+    .abs{color:#c3c2b7}
+  </style>
+</helmet>
+
+<div style="width:1440px;height:1140px;display:flex;background:#f4f3ef;overflow:hidden">
+
+  <div style="width:208px;flex:none;border-right:1px solid rgba(11,11,11,.08);background:#faf9f6;display:flex;flex-direction:column;padding:16px 12px;gap:2px">
+    <div style="display:flex;align-items:center;gap:9px;padding:4px 12px 18px 12px">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="1.5" y="1.5" width="17" height="17" rx="4" stroke="#0b0b0b" stroke-width="1.6"/><path d="M6 10.5l2.6 2.6L14 7.5" stroke="#2a78d6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div style="font-weight:700;font-size:14px;letter-spacing:-.01em">Review lane</div>
+    </div>
+    <div class="navi">Overview</div>
+    <div class="navi">Pull requests</div>
+    <div class="navi">Findings</div>
+    <div class="navi on">Repos</div>
+    <div class="navi">Health</div>
+    <div class="navi">Settings</div>
+    <div style="margin-top:auto;padding:10px 12px;color:#898781;font-size:11.5px">prismalens org · Access: sumit@</div>
+  </div>
+
+  <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+    <div style="height:52px;flex:none;display:flex;align-items:center;gap:10px;padding:0 24px;border-bottom:1px solid rgba(11,11,11,.08);background:#faf9f6">
+      <span style="color:#898781">Repos</span><span style="color:#c3c2b7">/</span>
+      <span style="font-weight:600">prismalens/prismalens</span>
+      <span class="chip c-rev" style="margin-left:6px">lane live</span>
+      <div style="margin-left:auto"><span class="btn">Propose config PR</span></div>
+    </div>
+
+    <div style="padding:18px 24px;display:flex;flex-direction:column;gap:14px">
+
+      <div style="display:flex;gap:2px;border-bottom:1px solid #e1e0d9">
+        <div style="padding:8px 14px;color:#52514e">Rounds</div>
+        <div style="padding:8px 14px;color:#52514e">Findings</div>
+        <div style="padding:8px 14px;font-weight:600;border-bottom:2px solid #2a78d6;color:#1c5cab">Config</div>
+      </div>
+
+      <div style="color:#52514e;font-size:12.5px">
+        Files are the source of truth. This table shows which layer supplied each key for the last resolution
+        (round 2 on <a href="#">#312</a>, yesterday 17:06). Repo layer read from the PR <b>base</b> ref, never the head.
+        Edits here compose a PR against <span class="mono">.github/claude-review.yml</span>; nothing writes around the file.
+      </div>
+
+      <div class="card">
+        <table style="width:100%;border-collapse:collapse">
+          <tr>
+            <th style="width:22%">Key</th>
+            <th>workflow default</th>
+            <th>org defaults <span class="mono" style="text-transform:none">.github/claude-review-defaults.yml@main</span></th>
+            <th>repo config <span class="mono" style="text-transform:none">.github/claude-review.yml@main</span></th>
+            <th style="width:24%">effective · supplied by</th>
+          </tr>
+          <tr>
+            <td class="mono" style="font-size:12px">version</td>
+            <td class="abs">—</td><td class="mono" style="font-size:12px">1</td><td class="mono" style="font-size:12px">1</td>
+            <td><span class="mono" style="font-size:12px">1</span> · <span class="chip c-thr">repo config</span></td>
+          </tr>
+          <tr>
+            <td class="mono" style="font-size:12px">review.default_model</td>
+            <td class="mono" style="font-size:12px">claude-sonnet-5</td><td class="mono" style="font-size:12px">claude-sonnet-5</td><td class="abs">absent</td>
+            <td><span class="mono" style="font-size:12px">claude-sonnet-5</span> · <span class="chip c-gry">org defaults</span></td>
+          </tr>
+          <tr>
+            <td class="mono" style="font-size:12px">review.auto_pause_rounds</td>
+            <td class="mono" style="font-size:12px">3</td><td class="abs">absent</td><td class="mono" style="font-size:12px">3</td>
+            <td><span class="mono" style="font-size:12px">3</span> · <span class="chip c-thr">repo config</span></td>
+          </tr>
+          <tr>
+            <td class="mono" style="font-size:12px">review.skip_authors</td>
+            <td class="mono" style="font-size:12px">[]</td><td class="mono" style="font-size:12px">[dependabot]</td><td class="abs">absent</td>
+            <td><span class="mono" style="font-size:12px">[dependabot]</span> · <span class="chip c-gry">org defaults</span></td>
+          </tr>
+          <tr style="background:#faf9f6">
+            <td class="mono" style="font-size:12px">review.path_filters</td>
+            <td class="mono" style="font-size:12px">[]</td><td class="abs">absent</td><td class="mono" style="font-size:12px">["worker/**"]</td>
+            <td><span class="mono" style="font-size:12px">["worker/**"]</span> · <span class="chip c-thr">repo config</span> · match escalates to Opus</td>
+          </tr>
+          <tr>
+            <td class="mono" style="font-size:12px">review.path_instructions</td>
+            <td class="abs">—</td><td class="abs">absent</td><td class="mono" style="font-size:12px">2 mappings</td>
+            <td><span class="chip c-not">schema-accepted · not wired</span></td>
+          </tr>
+          <tr>
+            <td class="mono" style="font-size:12px">findings.suppress_below</td>
+            <td class="abs">—</td><td class="abs">absent</td><td class="abs">absent</td>
+            <td><span class="chip c-not">schema-accepted · not wired</span></td>
+          </tr>
+          <tr>
+            <td class="mono" style="font-size:12px">findings.enable_ai_fix_prompt</td>
+            <td class="abs">—</td><td class="abs">absent</td><td class="abs">absent</td>
+            <td><span class="chip c-not">schema-accepted · not wired</span></td>
+          </tr>
+          <tr>
+            <td class="mono" style="font-size:12px;border-bottom:none">findings.include_verification_note</td>
+            <td class="abs" style="border-bottom:none">—</td><td class="abs" style="border-bottom:none">absent</td><td class="abs" style="border-bottom:none">absent</td>
+            <td style="border-bottom:none"><span class="chip c-not">schema-accepted · not wired</span></td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="display:flex;gap:14px;align-items:flex-start">
+        <div class="card" style="flex:1;padding:14px 16px;border-left:3px solid #fab219">
+          <div class="lbl" style="margin-bottom:8px">When a layer is malformed</div>
+          <div style="color:#52514e;font-size:12.5px">
+            A malformed layer is dropped whole and its column header turns amber, quoting the workflow's warning
+            annotation, e.g. <span class="mono" style="font-size:12px">"org defaults dropped: mapping expected at line 12"</span>.
+            The lane never dies on a parse error; the table shows exactly which layer went missing and what the
+            fallback resolved to.
+          </div>
+        </div>
+        <div class="card" style="flex:1;padding:14px 16px;border-style:dashed">
+          <div class="lbl" style="margin-bottom:8px">DB override · not built <span class="chip c-gry" style="font-weight:500;margin-left:4px">vision</span></div>
+          <div style="color:#52514e;font-size:12.5px">
+            A future write path: a dashboard-saved override the workflow reads at start, slotted between repo config
+            and summon override in precedence, with its own row in this table and an expiry. Drawn so the
+            reconciliation is designed before anyone builds it; not part of v1.
+          </div>
+        </div>
+        <div class="card" style="flex:1;padding:14px 16px">
+          <div class="lbl" style="margin-bottom:8px">Model resolution, last 5 rounds</div>
+          <div style="display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:#52514e">
+            <div><span class="mono">opus-5</span> · escalated by path match · <a href="#">#312 r2</a></div>
+            <div><span class="mono">sonnet-5</span> · default · <a href="#">#312 r1</a></div>
+            <div><span class="mono">sonnet-5</span> · default · <a href="#">#309 r3</a></div>
+            <div><span class="mono">opus-5</span> · summon override · <a href="#">#309 r2</a></div>
+            <div><span class="mono">sonnet-5</span> · default (changed-files fetch failed) · <a href="#">#307 r1</a></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

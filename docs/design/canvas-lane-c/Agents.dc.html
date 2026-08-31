@@ -1,0 +1,130 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    html,body{margin:0;padding:0;background:#f6f5f2}
+    body{font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;color:#1c1a16;-webkit-font-smoothing:antialiased;font-size:14px}
+    a{color:#8f6400;text-decoration:none}a:hover{color:#6e4d00;text-decoration:underline}
+    .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+    .shell{display:flex;width:1280px;background:#f6f5f2;align-items:stretch}
+    .side{width:212px;flex-shrink:0;background:#181510;color:#cfc8ba;display:flex;flex-direction:column;padding:18px 0 14px}
+    .logo{display:flex;align-items:center;gap:9px;padding:2px 20px 16px}
+    .wordmark{font-weight:600;font-size:15px;color:#f4efe3;letter-spacing:.3px}
+    .orgsel{margin:0 12px 16px;padding:7px 10px;border:1px solid #322c21;border-radius:6px;font-size:12.5px;color:#efe9dc;display:flex;justify-content:space-between;align-items:center;background:#221d15}
+    .nav{display:flex;flex-direction:column;gap:1px;padding:0 10px}
+    .nav a{display:block;padding:7px 10px;border-radius:6px;font-size:13px;color:#a89f8d;text-decoration:none}
+    .nav a.on{background:#2c2415;color:#f2c96b;font-weight:500}
+    .sidefoot{margin-top:auto;padding:14px 20px 0;border-top:1px solid #2a251c;font-size:11.5px;color:#7d7666;line-height:1.7}
+    .main{flex:1;min-width:0;padding:22px 28px 28px;display:flex;flex-direction:column;gap:14px}
+    .crumb{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#98928a}
+    h1{font-size:17px;font-weight:600;margin:0}
+    .sub{font-size:12.5px;color:#6f6a5e;margin-top:4px;line-height:1.6}
+    .card{background:#fff;border:1px solid #e6e2d8;border-radius:8px}
+    .chip{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:500;padding:0 8px;border-radius:999px;border:1px solid;line-height:1.9;white-space:nowrap}
+    .c-ok{color:#006300;background:#ecf6ec;border-color:#c2e0c2}
+    .c-bad{color:#a32222;background:#fbeaea;border-color:#eec3c3}
+    .c-neut{color:#6f6a5e;background:#f1efe9;border-color:#ddd8cc}
+    .dot{width:7px;height:7px;border-radius:99px;display:inline-block;flex-shrink:0}
+    .arow{display:flex;gap:16px;align-items:flex-start;padding:15px 18px;border-bottom:1px solid #f2eee5}
+    .arow:last-child{border-bottom:none}
+    .aname{width:200px;flex-shrink:0}
+    .ameta{font-size:11.5px;color:#98928a;margin-top:3px;line-height:1.6}
+    .abody{flex:1;font-size:12px;color:#52514e;line-height:1.75}
+    .note{font-size:11.5px;color:#98928a;line-height:1.6}
+    .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid #d8d2c4;background:#fff;border-radius:6px;padding:5px 11px;font-size:12px;font-weight:500;color:#1c1a16}
+    .contract{background:#faf9f5;border:1px solid #eee9df;border-radius:8px;padding:14px 18px;font-size:12px;line-height:1.8;color:#52514e}
+  </style>
+</helmet>
+<div class="shell">
+  <div class="side">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1.5 18 16.5H2Z" stroke="#f2c96b" stroke-width="1.6" stroke-linejoin="round"></path><circle cx="10" cy="12.2" r="2.1" fill="#f2c96b"></circle></svg>
+      <span class="wordmark">Assayer</span>
+    </div>
+    <div class="orgsel"><span>prismalens</span><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#8d8574" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></div>
+    <nav class="nav">
+      <a href="#">Overview</a>
+      <a href="#">Repos</a>
+      <a href="#">Rounds</a>
+      <a href="#">Findings</a>
+      <a href="#">Keys</a>
+      <a class="on" href="#">Agents</a>
+      <a href="#">Config</a>
+      <a href="#">Settings</a>
+    </nav>
+    <div class="sidefoot">Priya Nair · org admin<br>v0.4.2 · latest</div>
+  </div>
+  <div class="main">
+    <div>
+      <div class="crumb">/o/prismalens/agents</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-top:2px">
+        <div>
+          <h1>Agents</h1>
+          <div class="sub">A reviewer is a reusable workflow registered by reference. The built-in lane is the
+          first row and obeys the same contract it asks of strangers. Assignment is one primary agent per
+          repo, via the <span class="mono">review.agent</span> config key.</div>
+        </div>
+        <a class="btn" href="#">Register an agent</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="arow">
+        <div class="aname">
+          <div class="mono" style="font-size:13px;font-weight:500">claude-lane</div>
+          <div class="ameta">built-in · contract <span class="mono">assayer/v1</span></div>
+        </div>
+        <div class="abody">
+          <span class="mono" style="font-size:11.5px">prismalens/gh-workflows/.github/workflows/claude-code-review.yml@v1</span><br>
+          capabilities: summons · verify · incremental · auto-pause &#160;·&#160; credential:
+          subscription OAuth token or metered API key<br>
+          assigned to <span class="mono">prismalens</span>, <span class="mono">gh-workflows</span>, <span class="mono">assayer</span> · last round 2h ago
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+          <span class="chip c-ok"><span class="dot" style="background:#0ca30c"></span>contract check pass</span>
+          <a class="btn" href="#">Compare</a>
+        </div>
+      </div>
+
+      <div class="arow">
+        <div class="aname">
+          <div class="mono" style="font-size:13px;font-weight:500">sweep-agent</div>
+          <div class="ameta">external · contract <span class="mono">assayer/v1</span></div>
+        </div>
+        <div class="abody">
+          <span class="mono" style="font-size:11.5px">acme/sweep-review/.github/workflows/review.yml@v0.4.1</span><br>
+          capabilities: incremental · no summons (renders as "does not support summons") &#160;·&#160;
+          credential: third-party (Vertex AI)<br>
+          assigned to none yet · dry-run only
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+          <span class="chip c-bad"><span class="dot" style="background:#d03b3b"></span>contract check fail</span>
+          <span class="note">POST missing <span class="mono">verdict_kind</span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="contract">
+      <b style="color:#1c1a16">The lane contract, assayer/v1.</b> The registry validates and displays it; the
+      contract check is a dry-run dispatch that proves the POST shape without reviewing anything.<br>
+      1 · accept the standard <span class="mono">workflow_call</span> inputs: PR context, resolved config JSON, the
+      name of the secret to read (never the value)<br>
+      2 · post inline comments and a summary comment on the PR<br>
+      3 · upsert the liveness comment with one of the eight verdict strings, verbatim grammar<br>
+      4 · POST a usage record per round: <span class="mono">session_id, repository, pr_number, head_sha,
+      round_type, verdict_kind, duration_ms, agent_id, contract_version</span> required; tokens, cost, turns,
+      denials optional (unreported renders as "not reported by this agent", never zero)<br>
+      5 · respect the summon grammar and auto-pause counter, or declare the capability out
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

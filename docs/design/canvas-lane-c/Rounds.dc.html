@@ -1,0 +1,182 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    html,body{margin:0;padding:0;background:#f6f5f2}
+    body{font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;color:#1c1a16;-webkit-font-smoothing:antialiased;font-size:14px}
+    a{color:#8f6400;text-decoration:none}a:hover{color:#6e4d00;text-decoration:underline}
+    .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+    .shell{display:flex;width:1280px;background:#f6f5f2;align-items:stretch}
+    .side{width:212px;flex-shrink:0;background:#181510;color:#cfc8ba;display:flex;flex-direction:column;padding:18px 0 14px}
+    .logo{display:flex;align-items:center;gap:9px;padding:2px 20px 16px}
+    .wordmark{font-weight:600;font-size:15px;color:#f4efe3;letter-spacing:.3px}
+    .orgsel{margin:0 12px 16px;padding:7px 10px;border:1px solid #322c21;border-radius:6px;font-size:12.5px;color:#efe9dc;display:flex;justify-content:space-between;align-items:center;background:#221d15}
+    .nav{display:flex;flex-direction:column;gap:1px;padding:0 10px}
+    .nav a{display:block;padding:7px 10px;border-radius:6px;font-size:13px;color:#a89f8d;text-decoration:none}
+    .nav a.on{background:#2c2415;color:#f2c96b;font-weight:500}
+    .sidefoot{margin-top:auto;padding:14px 20px 0;border-top:1px solid #2a251c;font-size:11.5px;color:#7d7666;line-height:1.7}
+    .main{flex:1;min-width:0;padding:22px 28px 28px;display:flex;flex-direction:column;gap:14px}
+    .crumb{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#98928a}
+    .pagehead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px}
+    h1{font-size:19px;font-weight:600;margin:0}
+    .sub{font-size:12.5px;color:#6f6a5e;margin-top:4px}
+    .seg{display:inline-flex;border:1px solid #d8d2c4;border-radius:6px;overflow:hidden;background:#fff}
+    .seg span{padding:5px 12px;font-size:12px;color:#6f6a5e;border-left:1px solid #eee9df}
+    .seg span:first-child{border-left:none}
+    .seg .on{background:#1c1a16;color:#fff;font-weight:500}
+    .filters{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .sel{display:inline-flex;align-items:center;gap:7px;border:1px solid #d8d2c4;background:#fff;border-radius:6px;padding:5px 10px;font-size:12px;color:#52514e}
+    .sel b{font-weight:500;color:#1c1a16}
+    .card{background:#fff;border:1px solid #e6e2d8;border-radius:8px;overflow:hidden}
+    .tbl{width:100%;border-collapse:collapse;font-size:12px}
+    .tbl th{font-size:10.5px;font-weight:500;color:#98928a;text-align:left;padding:8px 9px;border-bottom:1px solid #eee9df;white-space:nowrap}
+    .tbl td{padding:7px 9px;border-bottom:1px solid #f2eee5;vertical-align:middle;white-space:nowrap;font-variant-numeric:tabular-nums}
+    .r{text-align:right}
+    .chip{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:500;padding:0 7px;border-radius:999px;border:1px solid;line-height:1.8;white-space:nowrap}
+    .c-ok{color:#006300;background:#ecf6ec;border-color:#c2e0c2}
+    .c-warn{color:#8a5a00;background:#fdf3d7;border-color:#eddaa1}
+    .c-neut{color:#6f6a5e;background:#f1efe9;border-color:#ddd8cc}
+    .expand{background:#faf9f5;border-bottom:1px solid #eee9df}
+    .expand td{padding:14px 16px;white-space:normal}
+    .note{font-size:11.5px;color:#98928a}
+    .subbar{display:flex;align-items:center;gap:8px;font-size:11px;color:#52514e}
+    .subbar .bar{height:10px;background:#2a78d6;border-radius:0 4px 4px 0}
+  </style>
+</helmet>
+<div class="shell">
+  <div class="side">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1.5 18 16.5H2Z" stroke="#f2c96b" stroke-width="1.6" stroke-linejoin="round"></path><circle cx="10" cy="12.2" r="2.1" fill="#f2c96b"></circle></svg>
+      <span class="wordmark">Assayer</span>
+    </div>
+    <div class="orgsel"><span>prismalens</span><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#8d8574" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></div>
+    <nav class="nav">
+      <a href="#">Overview</a>
+      <a href="#">Repos</a>
+      <a class="on" href="#">Rounds</a>
+      <a href="#">Findings</a>
+      <a href="#">Keys</a>
+      <a href="#">Agents</a>
+      <a href="#">Config</a>
+      <a href="#">Settings</a>
+    </nav>
+    <div class="sidefoot">Priya Nair · org admin<br>v0.4.2 · latest</div>
+  </div>
+  <div class="main">
+    <div>
+      <div class="crumb">/o/prismalens/rounds?repo=all&amp;type=all&amp;verdict=all&amp;range=window</div>
+      <div class="pagehead">
+        <div>
+          <h1>Rounds</h1>
+          <div class="sub">One row per review round · immutable usage records · n=50 in window</div>
+        </div>
+        <div class="seg"><span class="on">Window</span><span>30 days</span><span>90 days</span><span>All time</span></div>
+      </div>
+    </div>
+
+    <div class="filters">
+      <span class="sel">Repo <b>all</b><svg width="9" height="9" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#98928a" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></span>
+      <span class="sel">Type <b>all</b><svg width="9" height="9" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#98928a" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></span>
+      <span class="sel">Model <b>all</b><svg width="9" height="9" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#98928a" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></span>
+      <span class="sel">Agent <b>claude-lane</b><svg width="9" height="9" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#98928a" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></span>
+      <span class="sel">Verdict <b>all</b><svg width="9" height="9" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#98928a" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></span>
+      <span class="note" style="margin-left:auto">CSV export · org admins</span>
+    </div>
+
+    <div class="card">
+      <table class="tbl">
+        <tr><th></th><th>When</th><th>Repo</th><th>PR</th><th>Type</th><th>Model</th><th>Verdict</th><th class="r">Duration</th><th class="r">Turns</th><th class="r">Denials</th><th class="r">Cache read</th><th class="r">List-rate eq</th><th>Run</th></tr>
+        <tr style="background:#fbfaf7">
+          <td><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#52514e" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></td>
+          <td>Aug 31 09:12</td><td class="mono">prismalens/prismalens</td><td><a href="#" class="mono">#482</a></td>
+          <td><span class="chip c-neut">incremental</span></td><td class="mono">sonnet-5</td>
+          <td><span class="chip c-ok">reviewed</span></td>
+          <td class="r">4m 02s</td><td class="r">41</td><td class="r">0</td><td class="r">81%</td><td class="r">$2.31</td><td><a href="#">logs</a></td>
+        </tr>
+        <tr class="expand"><td colspan="13">
+          <div style="display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:20px">
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div class="mono" style="font-size:11px;color:#52514e;line-height:1.6">reviewed 9c3d1e2 (incremental from 4f2c91a) and posted 1 inline / 1 summary comment(s)</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <span class="chip c-warn">model: default (changed-files fetch failed)</span>
+                <span class="chip c-neut">scope: 2 commits · 41 files · 3,804 diff lines</span>
+              </div>
+              <table class="tbl" style="font-size:11px">
+                <tr><th>Per-model usage</th><th class="r">input</th><th class="r">cache read</th><th class="r">cache write</th><th class="r">output</th><th class="r">list-rate eq</th></tr>
+                <tr><td class="mono">claude-sonnet-5</td><td class="r">22.4k</td><td class="r">412k</td><td class="r">58k</td><td class="r">5.9k</td><td class="r">$2.31</td></tr>
+              </table>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="note" style="font-weight:500;color:#52514e">Subagent fan-out · duration</div>
+              <div class="subbar"><span style="width:78px">walkthrough</span><span class="bar" style="width:150px"></span><span>1m 44s</span></div>
+              <div class="subbar"><span style="width:78px">correctness</span><span class="bar" style="width:190px"></span><span>2m 12s</span></div>
+              <div class="subbar"><span style="width:78px">security</span><span class="bar" style="width:96px"></span><span>1m 06s</span></div>
+              <div class="subbar"><span style="width:78px">tests</span><span class="bar" style="width:70px"></span><span>0m 49s</span></div>
+              <div class="note">From <span class="mono">subagent_stats</span> · <a href="#">raw result JSON</a></div>
+            </div>
+          </div>
+        </td></tr>
+        <tr>
+          <td></td><td>Aug 31 07:48</td><td class="mono">prismalens/gh-workflows</td><td><a href="#" class="mono">#71</a></td>
+          <td><span class="chip c-neut">review</span></td><td class="mono">sonnet-5</td>
+          <td><span class="chip c-ok">reviewed</span></td>
+          <td class="r">6m 21s</td><td class="r">52</td><td class="r">1</td><td class="r">74%</td><td class="r">$3.05</td><td><a href="#">logs</a></td>
+        </tr>
+        <tr>
+          <td></td><td>Aug 30 22:15</td><td class="mono">prismalens/gh-workflows</td><td><a href="#" class="mono">#70</a></td>
+          <td><span class="chip c-neut">review</span></td><td class="mono">sonnet-5</td>
+          <td><span class="chip c-warn">posted nothing</span></td>
+          <td class="r">0m 58s</td><td class="r">4</td><td class="r">0</td><td class="r">—</td><td class="r">$0.09</td><td><a href="#">logs</a></td>
+        </tr>
+        <tr>
+          <td></td><td>Aug 30 18:40</td><td class="mono">prismalens/prismalens</td><td><a href="#" class="mono">#482</a></td>
+          <td><span class="chip c-neut">verify</span></td><td class="mono">sonnet-5</td>
+          <td><span class="chip c-neut">threads: 3 resolved / 1 open</span></td>
+          <td class="r">1m 12s</td><td class="r">11</td><td class="r">0</td><td class="r">88%</td><td class="r">$0.41</td><td><a href="#">logs</a></td>
+        </tr>
+        <tr>
+          <td></td><td>Aug 30 14:03</td><td class="mono">prismalens/prismalens</td><td><a href="#" class="mono">#481</a></td>
+          <td><span class="chip c-neut">review-full</span></td><td class="mono">opus-5</td>
+          <td><span class="chip c-ok">reviewed</span></td>
+          <td class="r">9m 47s</td><td class="r">66</td><td class="r">2</td><td class="r">69%</td><td class="r">$6.12</td><td><a href="#">logs</a></td>
+        </tr>
+        <tr>
+          <td></td><td>Aug 30 09:31</td><td class="mono">prismalens/gh-workflows</td><td><a href="#" class="mono">#69</a></td>
+          <td><span class="chip c-neut">incremental</span></td><td class="mono">sonnet-5</td>
+          <td><span class="chip c-ok">reviewed</span></td>
+          <td class="r">2m 40s</td><td class="r">27</td><td class="r">0</td><td class="r">85%</td><td class="r">$1.18</td><td><a href="#">logs</a></td>
+        </tr>
+        <tr>
+          <td></td><td>Aug 29 20:55</td><td class="mono">prismalens/prismalens</td><td><a href="#" class="mono">#480</a></td>
+          <td><span class="chip c-neut">review</span></td><td class="mono">sonnet-5</td>
+          <td><span class="chip c-warn">auto-paused after 3 rounds</span></td>
+          <td class="r">0m 12s</td><td class="r">1</td><td class="r">0</td><td class="r">—</td><td class="r">$0.01</td><td><a href="#">logs</a></td>
+        </tr>
+        <tr>
+          <td></td><td>Aug 29 16:19</td><td class="mono">prismalens/prismalens</td><td><a href="#" class="mono">#479</a></td>
+          <td><span class="chip c-neut">review</span></td><td class="mono">opus-5</td>
+          <td><span class="chip c-ok">reviewed</span></td>
+          <td class="r">8m 03s</td><td class="r">58</td><td class="r">1</td><td class="r">71%</td><td class="r">$5.44</td><td><a href="#">logs</a></td>
+        </tr>
+        <tr>
+          <td></td><td>Aug 29 11:37</td><td class="mono">prismalens/gh-workflows</td><td><a href="#" class="mono">#68</a></td>
+          <td><span class="chip c-neut">incremental</span></td><td class="mono">sonnet-5</td>
+          <td><span class="chip c-neut">no new commits</span></td>
+          <td class="r">0m 21s</td><td class="r">2</td><td class="r">0</td><td class="r">—</td><td class="r">$0.02</td><td><a href="#">logs</a></td>
+        </tr>
+      </table>
+    </div>
+    <div class="note">Model escalation by path match shows as <span class="mono">escalated by path match</span> on the model chip.
+    List-rate equivalent is a compute-weight proxy on subscription seats, never a bill. Rows 1–9 of 50 · <a href="#">next</a></div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

@@ -1,0 +1,196 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    html,body{margin:0;padding:0;background:#f6f5f2}
+    body{font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;color:#1c1a16;-webkit-font-smoothing:antialiased;font-size:14px}
+    a{color:#8f6400;text-decoration:none}a:hover{color:#6e4d00;text-decoration:underline}
+    .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+    .shell{display:flex;width:1280px;background:#f6f5f2;align-items:stretch}
+    .side{width:212px;flex-shrink:0;background:#181510;color:#cfc8ba;display:flex;flex-direction:column;padding:18px 0 14px}
+    .logo{display:flex;align-items:center;gap:9px;padding:2px 20px 16px}
+    .wordmark{font-weight:600;font-size:15px;color:#f4efe3;letter-spacing:.3px}
+    .orgsel{margin:0 12px 16px;padding:7px 10px;border:1px solid #322c21;border-radius:6px;font-size:12.5px;color:#efe9dc;display:flex;justify-content:space-between;align-items:center;background:#221d15}
+    .nav{display:flex;flex-direction:column;gap:1px;padding:0 10px}
+    .nav a{display:block;padding:7px 10px;border-radius:6px;font-size:13px;color:#a89f8d;text-decoration:none}
+    .nav a:hover{background:#241f16;color:#efe9dc;text-decoration:none}
+    .nav a.on{background:#2c2415;color:#f2c96b;font-weight:500}
+    .sidefoot{margin-top:auto;padding:14px 20px 0;border-top:1px solid #2a251c;font-size:11.5px;color:#7d7666;line-height:1.7}
+    .main{flex:1;min-width:0;padding:22px 28px 28px;display:flex;flex-direction:column;gap:16px}
+    .crumb{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#98928a}
+    .pagehead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px}
+    h1{font-size:19px;font-weight:600;margin:0}
+    .sub{font-size:12.5px;color:#6f6a5e;margin-top:4px}
+    .card{background:#fff;border:1px solid #e6e2d8;border-radius:8px}
+    .cardpad{padding:16px 18px}
+    .cardhead{display:flex;align-items:center;justify-content:space-between;padding:11px 18px;border-bottom:1px solid #eee9df;font-size:13px;font-weight:600}
+    .tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+    .tile{background:#fff;border:1px solid #e6e2d8;border-radius:8px;padding:13px 16px;display:flex;flex-direction:column;gap:4px}
+    .tlabel{font-size:12px;color:#6f6a5e}
+    .tval{font-size:23px;font-weight:600;font-variant-numeric:tabular-nums}
+    .tsub{font-size:11.5px;color:#98928a}
+    .chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:500;padding:1px 8px;border-radius:999px;border:1px solid;line-height:1.7;white-space:nowrap}
+    .c-ok{color:#006300;background:#ecf6ec;border-color:#c2e0c2}
+    .c-warn{color:#8a5a00;background:#fdf3d7;border-color:#eddaa1}
+    .c-bad{color:#a32222;background:#fbeaea;border-color:#eec3c3}
+    .c-neut{color:#6f6a5e;background:#f1efe9;border-color:#ddd8cc}
+    .dot{width:7px;height:7px;border-radius:99px;display:inline-block;flex-shrink:0}
+    .seg{display:inline-flex;border:1px solid #d8d2c4;border-radius:6px;overflow:hidden;background:#fff}
+    .seg span{padding:5px 12px;font-size:12px;color:#6f6a5e;border-left:1px solid #eee9df}
+    .seg span:first-child{border-left:none}
+    .seg .on{background:#1c1a16;color:#fff;font-weight:500}
+    .note{font-size:11.5px;color:#98928a}
+    .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:#52514e}
+    .legend span{display:inline-flex;align-items:center;gap:6px}
+  </style>
+</helmet>
+<div class="shell">
+  <div class="side">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1.5 18 16.5H2Z" stroke="#f2c96b" stroke-width="1.6" stroke-linejoin="round"></path><circle cx="10" cy="12.2" r="2.1" fill="#f2c96b"></circle></svg>
+      <span class="wordmark">Assayer</span>
+    </div>
+    <div class="orgsel"><span>prismalens</span><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#8d8574" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></div>
+    <nav class="nav">
+      <a class="on" href="#">Overview</a>
+      <a href="#">Repos</a>
+      <a href="#">Rounds</a>
+      <a href="#">Findings</a>
+      <a href="#">Keys</a>
+      <a href="#">Agents</a>
+      <a href="#">Config</a>
+      <a href="#">Settings</a>
+    </nav>
+    <div class="sidefoot">Priya Nair · org admin<br>v0.4.2 · latest</div>
+  </div>
+  <div class="main">
+    <div>
+      <div class="crumb">/o/prismalens</div>
+      <div class="pagehead">
+        <div>
+          <h1>Overview</h1>
+          <div class="sub">Rolling window resolved to <span class="mono">last 50 rounds · Aug 12 – Aug 31</span></div>
+        </div>
+        <div class="seg"><span class="on">Window</span><span>30 days</span><span>90 days</span><span>All time</span></div>
+      </div>
+    </div>
+
+    <div class="tiles">
+      <div class="tile">
+        <div class="tlabel">Wall clock</div>
+        <div class="tval">6m 40s <span style="font-size:13px;font-weight:400;color:#6f6a5e">p95</span></div>
+        <div class="tsub">mean 3m 05s · n=50</div>
+      </div>
+      <div class="tile">
+        <div class="tlabel">Average turns</div>
+        <div class="tval">38</div>
+        <div class="tsub">per round · n=50</div>
+      </div>
+      <div class="tile">
+        <div class="tlabel">Permission denials</div>
+        <div class="tval">0.3</div>
+        <div class="tsub">per run · n=50</div>
+      </div>
+      <div class="tile">
+        <div class="tlabel">Caching multiplier</div>
+        <div class="tval">3.1&#215;</div>
+        <div class="tsub">cache read share 78% · n=50</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:12px">
+      <div class="card">
+        <div class="cardhead"><span>Verdicts in window</span><span class="note">n=50 · click a segment to filter rounds</span></div>
+        <div class="cardpad" style="display:flex;flex-direction:column;gap:12px">
+          <div style="display:flex;gap:2px;height:16px;border-radius:4px;overflow:hidden">
+            <div style="width:82%;background:#0ca30c"></div>
+            <div style="width:8%;background:#a8a294"></div>
+            <div style="width:4%;background:#d5d0c4"></div>
+            <div style="width:4%;background:#fab219"></div>
+            <div style="width:2%;background:#ec835a"></div>
+          </div>
+          <div class="legend">
+            <span><span class="dot" style="background:#0ca30c"></span>reviewed 41</span>
+            <span><span class="dot" style="background:#a8a294"></span>verify only 4</span>
+            <span><span class="dot" style="background:#d5d0c4"></span>no new commits 2</span>
+            <span><span class="dot" style="background:#fab219"></span>posted nothing 2</span>
+            <span><span class="dot" style="background:#ec835a"></span>auto-paused 1</span>
+            <span><span class="dot" style="background:#d03b3b"></span>no token 0</span>
+          </div>
+          <div class="note">Only <span class="mono">reviewed</span> verdicts mean the head was read. 2 rounds posted nothing &#8594; <a href="#">see those rounds</a></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="cardhead"><span>Spend</span><span class="chip c-neut">metered keys only</span></div>
+        <div class="cardpad" style="display:flex;flex-direction:column;gap:8px">
+          <div class="tval">$14.20 <span style="font-size:12px;font-weight:400;color:#6f6a5e">month to date</span></div>
+          <div style="height:8px;border-radius:4px;background:#f1efe9;overflow:hidden"><div style="width:24%;height:100%;background:#2a78d6;border-radius:4px"></div></div>
+          <div class="tsub">soft alert at $60 · billed at provider list rate</div>
+          <div class="note">Excludes 32 rounds on subscription seats (no marginal cost). n=18 metered rounds.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="cardhead"><span>Wall clock p95, daily buckets</span><span class="note">minutes · headline tiles never aggregate a single day</span></div>
+      <div class="cardpad">
+        <svg width="990" height="180" viewBox="0 0 990 180" style="display:block;max-width:100%">
+          <line x1="40" y1="20" x2="960" y2="20" stroke="#e1e0d9" stroke-width="1"></line>
+          <line x1="40" y1="65" x2="960" y2="65" stroke="#e1e0d9" stroke-width="1"></line>
+          <line x1="40" y1="110" x2="960" y2="110" stroke="#e1e0d9" stroke-width="1"></line>
+          <line x1="40" y1="155" x2="960" y2="155" stroke="#c3c2b7" stroke-width="1"></line>
+          <text x="32" y="24" font-size="10" fill="#898781" text-anchor="end">12</text>
+          <text x="32" y="69" font-size="10" fill="#898781" text-anchor="end">8</text>
+          <text x="32" y="114" font-size="10" fill="#898781" text-anchor="end">4</text>
+          <text x="32" y="159" font-size="10" fill="#898781" text-anchor="end">0</text>
+          <line x1="620" y1="14" x2="620" y2="155" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"></line>
+          <text x="620" y="10" font-size="10.5" fill="#52514e" text-anchor="middle">default model &#8594; sonnet · Aug 24</text>
+          <polyline fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" points="60,63 108,58 156,66 204,54 252,60 300,70 348,57 396,64 444,52 492,61 540,66 572,59 620,62 668,83 716,79 764,86 812,80 860,84 908,78 950,81"></polyline>
+          <circle cx="950" cy="81" r="3.5" fill="#2a78d6"></circle>
+          <text x="60" y="172" font-size="10" fill="#898781" text-anchor="middle">Aug 12</text>
+          <text x="396" y="172" font-size="10" fill="#898781" text-anchor="middle">Aug 19</text>
+          <text x="716" y="172" font-size="10" fill="#898781" text-anchor="middle">Aug 26</text>
+          <text x="950" y="172" font-size="10" fill="#898781" text-anchor="middle">Aug 31</text>
+        </svg>
+        <div class="note" style="margin-top:6px">Before the marker: p95 8m 10s (n=61). After: 6m 40s (n=50). A measured statement of record, not a savings claim.</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
+      <div class="card cardpad" style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="mono" style="font-size:12.5px;font-weight:500">prismalens/prismalens</span>
+          <span class="chip c-ok"><span class="dot" style="background:#0ca30c"></span>wired</span>
+        </div>
+        <div class="note">last round 2h ago · claude-lane · n=27 in window</div>
+        <div class="mono" style="font-size:11px;color:#52514e;line-height:1.6">reviewed 9c3d1e2 (incremental from 4f2c91a) and posted 1 inline / 1 summary comment(s)</div>
+      </div>
+      <div class="card cardpad" style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="mono" style="font-size:12.5px;font-weight:500">prismalens/gh-workflows</span>
+          <span class="chip c-ok"><span class="dot" style="background:#0ca30c"></span>wired</span>
+        </div>
+        <div class="note">last round 5h ago · claude-lane · n=23 in window</div>
+        <div class="mono" style="font-size:11px;color:#52514e;line-height:1.6">reviewed 89d0c07 and posted 2 inline / 1 summary comment(s)</div>
+      </div>
+      <div class="card cardpad" style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="mono" style="font-size:12.5px;font-weight:500">prismalens/assayer</span>
+          <span class="chip c-warn"><span class="dot" style="background:#fab219"></span>onboarding</span>
+        </div>
+        <div class="note">no rounds yet · 2 of 5 checks verified</div>
+        <div style="font-size:12px"><a href="#">Finish setup &#8594;</a></div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

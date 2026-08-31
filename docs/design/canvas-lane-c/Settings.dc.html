@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    html,body{margin:0;padding:0;background:#f6f5f2}
+    body{font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;color:#1c1a16;-webkit-font-smoothing:antialiased;font-size:14px}
+    a{color:#8f6400;text-decoration:none}a:hover{color:#6e4d00;text-decoration:underline}
+    .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+    .shell{display:flex;width:1280px;background:#f6f5f2;align-items:stretch}
+    .side{width:212px;flex-shrink:0;background:#181510;color:#cfc8ba;display:flex;flex-direction:column;padding:18px 0 14px}
+    .logo{display:flex;align-items:center;gap:9px;padding:2px 20px 16px}
+    .wordmark{font-weight:600;font-size:15px;color:#f4efe3;letter-spacing:.3px}
+    .orgsel{margin:0 12px 16px;padding:7px 10px;border:1px solid #322c21;border-radius:6px;font-size:12.5px;color:#efe9dc;display:flex;justify-content:space-between;align-items:center;background:#221d15}
+    .nav{display:flex;flex-direction:column;gap:1px;padding:0 10px}
+    .nav a{display:block;padding:7px 10px;border-radius:6px;font-size:13px;color:#a89f8d;text-decoration:none}
+    .nav a.on{background:#2c2415;color:#f2c96b;font-weight:500}
+    .sidefoot{margin-top:auto;padding:14px 20px 0;border-top:1px solid #2a251c;font-size:11.5px;color:#7d7666;line-height:1.7}
+    .main{flex:1;min-width:0;padding:22px 28px 28px;display:flex;flex-direction:column;gap:14px}
+    .crumb{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#98928a}
+    h1{font-size:17px;font-weight:600;margin:0}
+    .sub{font-size:12.5px;color:#6f6a5e;margin-top:4px;line-height:1.6}
+    .card{background:#fff;border:1px solid #e6e2d8;border-radius:8px;overflow:hidden}
+    .cardhead{display:flex;align-items:center;justify-content:space-between;padding:11px 18px;border-bottom:1px solid #eee9df;font-size:13px;font-weight:600}
+    .tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+    .tbl th{font-size:11px;font-weight:500;color:#98928a;text-align:left;padding:8px 14px;border-bottom:1px solid #eee9df;white-space:nowrap}
+    .tbl td{padding:9px 14px;border-bottom:1px solid #f2eee5;vertical-align:middle}
+    .tbl tr:last-child td{border-bottom:none}
+    .chip{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:500;padding:0 8px;border-radius:999px;border:1px solid;line-height:1.9;white-space:nowrap}
+    .c-ok{color:#006300;background:#ecf6ec;border-color:#c2e0c2}
+    .c-neut{color:#6f6a5e;background:#f1efe9;border-color:#ddd8cc}
+    .note{font-size:11.5px;color:#98928a;line-height:1.6}
+    .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid #d8d2c4;background:#fff;border-radius:6px;padding:5px 11px;font-size:12px;font-weight:500;color:#1c1a16}
+    .grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+  </style>
+</helmet>
+<div class="shell">
+  <div class="side">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1.5 18 16.5H2Z" stroke="#f2c96b" stroke-width="1.6" stroke-linejoin="round"></path><circle cx="10" cy="12.2" r="2.1" fill="#f2c96b"></circle></svg>
+      <span class="wordmark">Assayer</span>
+    </div>
+    <div class="orgsel"><span>prismalens</span><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#8d8574" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></div>
+    <nav class="nav">
+      <a href="#">Overview</a>
+      <a href="#">Repos</a>
+      <a href="#">Rounds</a>
+      <a href="#">Findings</a>
+      <a href="#">Keys</a>
+      <a href="#">Agents</a>
+      <a href="#">Config</a>
+      <a class="on" href="#">Settings</a>
+    </nav>
+    <div class="sidefoot">Priya Nair · org admin<br>v0.4.2 · latest</div>
+  </div>
+  <div class="main">
+    <div>
+      <div class="crumb">/o/prismalens/settings</div>
+      <h1 style="margin-top:2px">Org settings</h1>
+      <div class="sub">Roles derive from GitHub and cannot drift from who can actually merge. The one
+      assignable role is invited viewer.</div>
+    </div>
+
+    <div class="card">
+      <div class="cardhead"><span>Members</span><span class="note">derived · cached 15 minutes · refreshed 4m ago</span></div>
+      <table class="tbl">
+        <tr><th>Person</th><th>Role</th><th>Derived from</th></tr>
+        <tr>
+          <td><span style="font-weight:500">Priya Nair</span> <span class="mono note">priya-n</span></td>
+          <td><span class="chip c-ok">org admin</span></td>
+          <td class="note">GitHub org owner</td>
+        </tr>
+        <tr>
+          <td><span style="font-weight:500">Marcus Hale</span> <span class="mono note">marcus-h</span></td>
+          <td><span class="chip c-neut">member</span></td>
+          <td class="note">write on <span class="mono">prismalens/prismalens</span></td>
+        </tr>
+        <tr>
+          <td><span style="font-weight:500">Dana Osei</span> <span class="mono note">dosei</span></td>
+          <td><span class="chip c-neut">viewer</span></td>
+          <td class="note">invited Aug 20 · telemetry only, no config pages</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <div class="cardhead"><span>Ingest token</span><a class="btn" href="#">Rotate</a></div>
+        <div style="padding:14px 18px;display:flex;flex-direction:column;gap:8px">
+          <div class="mono" style="font-size:12.5px">asy_ingest_&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;7f2a</div>
+          <div class="note">One per org, shown once at mint. The POST route accepts only this bearer.
+          Rotation lands in named changes automatically.</div>
+          <div class="note">Read tokens for programmatic export: 1 active · <a href="#">manage</a></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="cardhead"><span>Named changes</span><a class="btn" href="#">Add</a></div>
+        <table class="tbl">
+          <tr>
+            <td>widened auth globs</td><td class="note">Aug 30</td><td class="note"><a href="#">PR #488</a></td>
+          </tr>
+          <tr>
+            <td>default model &#8594; sonnet</td><td class="note">Aug 24</td><td class="note"><a href="#">PR #71</a></td>
+          </tr>
+          <tr>
+            <td>rotated anthropic-seat-1</td><td class="note">Aug 18</td><td class="note">key event</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="note">Markers draw on trend charts and become range endpoints
+    (<span class="mono">range=marker:&#60;a&#62;..&#60;b&#62;</span>), so before/after deltas are measured statements of
+    record. Danger zone: <a href="#">disconnect this org</a>.</div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

@@ -1,0 +1,297 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body{margin:0;background:#f4f3ef;color:#0b0b0b;font:13px/1.45 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;}
+    a{color:#1c5cab;text-decoration:none} a:hover{color:#104281}
+    .mono{font-family:"IBM Plex Mono","SFMono-Regular",ui-monospace,monospace}
+    .card{background:#fcfcfb;border:1px solid rgba(11,11,11,0.10);border-radius:6px}
+    .chip{display:inline-flex;align-items:center;gap:6px;padding:1px 9px;border-radius:999px;font-size:11.5px;font-weight:600;border:1px solid;white-space:nowrap}
+    .dot{width:7px;height:7px;border-radius:50%;flex:none}
+    .c-rev{color:#006300;border-color:rgba(0,99,0,.28);background:#eef6ea}
+    .c-thr{color:#1c5cab;border-color:rgba(28,92,171,.28);background:#eaf1fa}
+    .c-not{color:#8a5600;border-color:rgba(138,86,0,.30);background:#faf2df}
+    .c-blk{color:#a12e2e;border-color:rgba(160,46,46,.30);background:#f9ecec}
+    .c-gry{color:#52514e;border-color:rgba(11,11,11,.16);background:#f1f0ec}
+    .navi{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:6px;color:#52514e;font-weight:500}
+    .navi.on{background:#eaf1fa;color:#1c5cab}
+    .navi svg{flex:none}
+    th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600;text-align:left;padding:8px 10px;border-bottom:1px solid #e1e0d9}
+    td{padding:9px 10px;border-bottom:1px solid #efeee9;vertical-align:top}
+    .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600}
+    .btn{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:6px;border:1px solid rgba(11,11,11,.14);background:#fcfcfb;font-weight:600;font-size:12.5px;color:#0b0b0b}
+  </style>
+</helmet>
+
+<div style="width:1440px;height:2140px;display:flex;background:#f4f3ef;overflow:hidden">
+
+  <!-- sidebar -->
+  <div style="width:208px;flex:none;border-right:1px solid rgba(11,11,11,.08);background:#faf9f6;display:flex;flex-direction:column;padding:16px 12px;gap:2px">
+    <div style="display:flex;align-items:center;gap:9px;padding:4px 12px 18px 12px">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="1.5" y="1.5" width="17" height="17" rx="4" stroke="#0b0b0b" stroke-width="1.6"/><path d="M6 10.5l2.6 2.6L14 7.5" stroke="#2a78d6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div style="font-weight:700;font-size:14px;letter-spacing:-.01em">Review lane</div>
+    </div>
+    <div class="navi">Overview</div>
+    <div class="navi on">Pull requests</div>
+    <div class="navi">Findings</div>
+    <div class="navi">Repos</div>
+    <div class="navi">Health</div>
+    <div class="navi">Settings</div>
+    <div style="margin-top:auto;padding:10px 12px;color:#898781;font-size:11.5px">prismalens org · Access: sumit@</div>
+  </div>
+
+  <!-- main -->
+  <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+
+    <!-- top bar -->
+    <div style="height:52px;flex:none;display:flex;align-items:center;gap:10px;padding:0 24px;border-bottom:1px solid rgba(11,11,11,.08);background:#faf9f6">
+      <span style="color:#898781">Pull requests</span><span style="color:#c3c2b7">/</span>
+      <span style="color:#898781">prismalens/prismalens</span><span style="color:#c3c2b7">/</span>
+      <span style="font-weight:600">#312</span>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <span class="btn"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M5.5 8.5L12 2M12 2H8M12 2v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 8.5V11a1.5 1.5 0 01-1.5 1.5h-6A1.5 1.5 0 012 11V5a1.5 1.5 0 011.5-1.5H6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>Open on GitHub</span>
+      </div>
+    </div>
+
+    <div style="padding:22px 24px;display:flex;flex-direction:column;gap:16px">
+
+      <!-- PR header -->
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="font-size:20px;font-weight:700;letter-spacing:-.01em">Bound webhook retries and dead-letter them</div>
+        <div style="display:flex;align-items:center;gap:14px;color:#52514e">
+          <span><span class="chip" style="color:#006300;border-color:rgba(0,99,0,.28);background:#eef6ea">open</span></span>
+          <span>sumit wants to merge <span class="mono">fix/webhook-retries</span> into <span class="mono">main</span></span>
+          <span>opened 2d ago · 3 review rounds</span>
+        </div>
+      </div>
+
+      <!-- head banner -->
+      <div class="card" style="border-left:3px solid #0ca30c;padding:14px 18px;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>head reviewed</span>
+          <span style="font-weight:600">Head <span class="mono">d41f2c8</span> reviewed (incremental from <span class="mono">89d0c07</span>) · 2 inline / 1 summary</span>
+        </div>
+        <div class="mono" style="font-size:11.5px;color:#898781">liveness: reviewed d41f2c8 (incremental from 89d0c07) and posted 2 inline / 1 summary comment(s) · rounds=3</div>
+      </div>
+
+      <div style="display:flex;gap:20px;align-items:flex-start">
+
+        <!-- LEFT column -->
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:16px">
+
+          <!-- round timeline -->
+          <div class="card" style="padding:16px 18px">
+            <div class="lbl" style="margin-bottom:12px">Round timeline</div>
+            <div style="display:flex;flex-direction:column;gap:0">
+
+              <!-- round 3 -->
+              <div style="display:flex;gap:14px">
+                <div style="display:flex;flex-direction:column;align-items:center;width:16px;flex:none">
+                  <span class="dot" style="background:#2a78d6;margin-top:5px"></span>
+                  <div style="width:1px;flex:1;background:#e1e0d9"></div>
+                </div>
+                <div style="flex:1;padding-bottom:18px">
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                    <span class="chip c-thr">verify</span>
+                    <span style="font-weight:600">Round 3 · today 09:41</span>
+                    <span style="color:#52514e">re-checked open threads at <span class="mono">d41f2c8</span>: <a href="#">3 resolved</a> / <a href="#">1 left open</a></span>
+                  </div>
+                  <div style="display:flex;gap:16px;color:#898781;font-size:12px;margin-top:5px">
+                    <span>read no new code</span><span>1m 58s</span><span>12 turns</span><span>0 denials</span><span>list-rate eq $0.31</span>
+                    <a href="#">Actions run 33285114 · attempt 1</a>
+                  </div>
+                </div>
+              </div>
+
+              <!-- round 2 -->
+              <div style="display:flex;gap:14px">
+                <div style="display:flex;flex-direction:column;align-items:center;width:16px;flex:none">
+                  <span class="dot" style="background:#0ca30c;margin-top:5px"></span>
+                  <div style="width:1px;flex:1;background:#e1e0d9"></div>
+                </div>
+                <div style="flex:1;padding-bottom:18px">
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                    <span class="chip c-rev">incremental</span>
+                    <span style="font-weight:600">Round 2 · yesterday 17:06</span>
+                    <span style="color:#52514e">read <span class="mono">89d0c07..d41f2c8</span> · 6 files · +214 / −89</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+                    <span style="color:#52514e">posted <a href="#">2 inline</a> / <a href="#">1 summary</a></span>
+                    <span class="mono" style="font-size:12px;color:#52514e">claude-opus-5</span>
+                    <span class="chip c-gry" style="font-weight:500">escalated by path match: worker/**</span>
+                  </div>
+                  <div style="display:flex;gap:16px;color:#898781;font-size:12px;margin-top:5px">
+                    <span>6m 12s</span><span>87 turns</span><span style="color:#8a5600">1 denial</span><span>caching 9.6×</span><span>list-rate eq $1.84</span>
+                    <a href="#">Actions run 33279810 · attempt 1</a>
+                    <a href="#">expand telemetry</a>
+                  </div>
+                </div>
+              </div>
+
+              <!-- round 1 -->
+              <div style="display:flex;gap:14px">
+                <div style="display:flex;flex-direction:column;align-items:center;width:16px;flex:none">
+                  <span class="dot" style="background:#0ca30c;margin-top:5px"></span>
+                </div>
+                <div style="flex:1">
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                    <span class="chip c-rev">full</span>
+                    <span style="font-weight:600">Round 1 · 2d ago 11:19</span>
+                    <span style="color:#52514e">read <span class="mono">89d0c07</span> (whole PR) · 41 files · +1,204 / −388</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+                    <span style="color:#52514e">posted <a href="#">5 inline</a> / <a href="#">1 summary</a></span>
+                    <span class="mono" style="font-size:12px;color:#52514e">claude-sonnet-5</span>
+                    <span class="chip c-gry" style="font-weight:500">model: default</span>
+                  </div>
+                  <div style="display:flex;gap:16px;color:#898781;font-size:12px;margin-top:5px">
+                    <span>8m 31s</span><span>112 turns</span><span>0 denials</span><span>caching 11.2×</span><span>list-rate eq $1.97</span>
+                    <a href="#">Actions run 33271442 · attempt 1</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- report tabs + findings -->
+          <div class="card">
+            <div style="display:flex;gap:2px;padding:10px 14px 0 14px;border-bottom:1px solid #e1e0d9">
+              <div style="padding:8px 14px;font-weight:600;border-bottom:2px solid #2a78d6;color:#1c5cab">Findings <span style="background:#eaf1fa;border-radius:999px;padding:0 7px;margin-left:2px">5</span></div>
+              <div style="padding:8px 14px;color:#52514e">Walkthrough</div>
+              <div style="padding:8px 14px;color:#52514e">Summary</div>
+              <div style="margin-left:auto;color:#898781;font-size:12px;align-self:center;padding-right:6px">swept 41m ago</div>
+            </div>
+
+            <!-- finding 1: open, expanded -->
+            <div style="padding:14px 18px;border-bottom:1px solid #efeee9;background:#faf9f6">
+              <div style="display:flex;align-items:flex-start;gap:10px">
+                <span class="chip c-not" style="margin-top:1px">open</span>
+                <div style="flex:1">
+                  <div style="font-weight:600">Retry loop lacks jitter; parallel deliveries can stampede the origin in lockstep</div>
+                  <div style="display:flex;gap:14px;color:#898781;font-size:12px;margin-top:3px">
+                    <span>Major · lane-assigned</span>
+                    <span class="mono">worker/index.js:214</span>
+                    <span>round 2 · anchored to <span class="mono">d41f2c8</span></span>
+                    <span>no human reply · 18h open</span>
+                  </div>
+                  <div class="mono" style="font-size:12px;background:#fcfcfb;border:1px solid #e1e0d9;border-radius:6px;padding:10px 12px;margin-top:10px;white-space:pre">@@ worker/index.js:208-222
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const res = await deliver(payload);
+    if (res.ok) return res;
+<span style="color:#a12e2e">-   await sleep(backoff(attempt));</span>
+<span style="color:#006300">+   await sleep(Math.min(backoff(attempt), 32_000));</span>
+  }</div>
+                  <div style="border-left:2px solid #e1e0d9;padding:8px 12px;margin-top:10px;color:#52514e">
+                    <span style="font-weight:600;color:#0b0b0b">claude[bot]</span> · All retries computed from the same clock will fire together after a shared outage. Full jitter (<span class="mono">rand(0, min(cap, base·2^attempt))</span>) breaks the stampede without lengthening the p50.
+                  </div>
+                  <div style="display:flex;gap:10px;margin-top:10px;align-items:center">
+                    <span class="btn">Open thread on GitHub</span>
+                    <span class="btn" style="color:#898781;border-style:dashed">Send to your agent <span class="chip c-gry" style="font-weight:500">not wired</span></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- finding 2: addressed -->
+            <div style="padding:12px 18px;border-bottom:1px solid #efeee9;display:flex;gap:10px;align-items:flex-start">
+              <span class="chip c-rev" style="margin-top:1px">addressed</span>
+              <div style="flex:1">
+                <div style="font-weight:600">DLQ insert ignores the D1 error; a failed dead-letter is silently dropped</div>
+                <div style="display:flex;gap:14px;color:#898781;font-size:12px;margin-top:3px">
+                  <span>Major · lane-assigned</span><span class="mono">worker/index.js:187</span>
+                  <span>fix commit <a href="#" class="mono">d41f2c8</a> · file-level, approximate</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- finding 3: human-dismissed -->
+            <div style="padding:12px 18px;border-bottom:1px solid #efeee9;display:flex;gap:10px;align-items:flex-start">
+              <span class="chip c-thr" style="margin-top:1px">human-dismissed</span>
+              <div style="flex:1">
+                <div style="font-weight:600">Backoff cap of 32s may exceed the Workers 30s CPU budget</div>
+                <div style="display:flex;gap:14px;color:#898781;font-size:12px;margin-top:3px">
+                  <span>Minor · lane-assigned</span><span class="mono">worker/index.js:216</span>
+                  <span>human replied · resolved by sumit, no code change</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- finding 4: still-applies -->
+            <div style="padding:12px 18px;border-bottom:1px solid #efeee9;display:flex;gap:10px;align-items:flex-start">
+              <span class="chip c-blk" style="margin-top:1px">still applies</span>
+              <div style="flex:1">
+                <div style="font-weight:600">Retry counter resets on redeploy; attempts can exceed the bound</div>
+                <div style="display:flex;gap:14px;color:#898781;font-size:12px;margin-top:3px">
+                  <span>Major · lane-assigned</span><span class="mono">worker/index.js:171</span>
+                  <span>verify round 3: "the fix moves the counter but does not persist it" · self-graded, fix-loop metric</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- finding 5: lane-resolved -->
+            <div style="padding:12px 18px;display:flex;gap:10px;align-items:flex-start">
+              <span class="chip c-gry" style="margin-top:1px">lane-resolved</span>
+              <div style="flex:1">
+                <div style="font-weight:600;color:#52514e">Missing index on delivery_attempts(created_at) for the sweep query</div>
+                <div style="display:flex;gap:14px;color:#898781;font-size:12px;margin-top:3px">
+                  <span>Minor · lane-assigned</span><span class="mono">worker/schema.sql:24</span>
+                  <span>resolved by claude[bot] · the lane agreeing with itself is not acceptance</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT column -->
+        <div style="width:392px;flex:none;display:flex;flex-direction:column;gap:16px">
+
+          <div class="card" style="padding:14px 16px">
+            <div class="lbl" style="margin-bottom:10px">Heads on this PR</div>
+            <div style="display:flex;flex-direction:column;gap:9px">
+              <div style="display:flex;align-items:center;gap:10px"><span class="mono">d41f2c8</span><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>reviewed · incremental</span><span style="color:#898781;font-size:12px;margin-left:auto">current</span></div>
+              <div style="display:flex;align-items:center;gap:10px"><span class="mono">89d0c07</span><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>reviewed · full</span><span style="color:#898781;font-size:12px;margin-left:auto">2d ago</span></div>
+              <div style="display:flex;align-items:center;gap:10px"><span class="mono">3f1c9aa</span><span class="chip c-not"><span class="dot" style="background:#fab219"></span>not reviewed</span><span style="color:#898781;font-size:12px;margin-left:auto">force-pushed away</span></div>
+            </div>
+          </div>
+
+          <div class="card" style="padding:14px 16px">
+            <div class="lbl" style="margin-bottom:10px">Config in effect (round 2)</div>
+            <div style="display:flex;flex-direction:column;gap:8px;font-size:12.5px">
+              <div style="display:flex;justify-content:space-between;gap:10px"><span style="color:#52514e">model</span><span><span class="mono">claude-opus-5</span> · escalated by path match</span></div>
+              <div style="display:flex;justify-content:space-between;gap:10px"><span style="color:#52514e">path_filters</span><span class="mono">worker/** → hit</span></div>
+              <div style="display:flex;justify-content:space-between;gap:10px"><span style="color:#52514e">auto_pause_rounds</span><span>2 of 3 used since last summon</span></div>
+              <div style="display:flex;justify-content:space-between;gap:10px"><span style="color:#52514e">skip_authors</span><span>author not skipped</span></div>
+            </div>
+            <div style="margin-top:10px;font-size:12px"><a href="#">Key-by-key provenance → repo config</a></div>
+          </div>
+
+          <div class="card" style="padding:14px 16px">
+            <div class="lbl" style="margin-bottom:10px">Totals · across 3 rounds</div>
+            <div style="display:flex;flex-direction:column;gap:8px;font-size:12.5px">
+              <div style="display:flex;justify-content:space-between"><span style="color:#52514e">rounds</span><span>1 full · 1 incremental · 1 verify</span></div>
+              <div style="display:flex;justify-content:space-between"><span style="color:#52514e">wall clock</span><span>16m 41s</span></div>
+              <div style="display:flex;justify-content:space-between"><span style="color:#52514e">list-rate equivalent</span><span>$4.12 <span style="color:#898781">(flat seat; proxy for compute weight)</span></span></div>
+              <div style="display:flex;justify-content:space-between"><span style="color:#52514e">findings</span><span>5 posted · 1 open</span></div>
+            </div>
+          </div>
+
+          <div class="card" style="padding:14px 16px;background:#faf9f6">
+            <div class="lbl" style="margin-bottom:8px">Summon</div>
+            <div style="color:#52514e;font-size:12.5px">Re-review this head from a PR comment:</div>
+            <div class="mono" style="font-size:12px;background:#fcfcfb;border:1px solid #e1e0d9;border-radius:6px;padding:8px 10px;margin-top:8px">@claude review<br>@claude full review<br>@claude review --model opus</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

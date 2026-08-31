@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body{margin:0;background:#f4f3ef;color:#0b0b0b;font:13px/1.45 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;}
+    a{color:#1c5cab;text-decoration:none} a:hover{color:#104281}
+    .mono{font-family:"IBM Plex Mono","SFMono-Regular",ui-monospace,monospace}
+    .card{background:#fcfcfb;border:1px solid rgba(11,11,11,0.10);border-radius:6px}
+    .navi{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:6px;color:#52514e;font-weight:500}
+    .navi.on{background:#eaf1fa;color:#1c5cab}
+    .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600}
+    .btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 14px;border-radius:6px;border:1px solid rgba(11,11,11,.14);background:#fcfcfb;font-weight:600;font-size:12.5px;color:#0b0b0b}
+    .btnp{background:#1c5cab;border-color:#1c5cab;color:#fcfcfb}
+  </style>
+</helmet>
+
+<div style="width:1440px;height:760px;display:flex;background:#f4f3ef;overflow:hidden">
+
+  <div style="width:208px;flex:none;border-right:1px solid rgba(11,11,11,.08);background:#faf9f6;display:flex;flex-direction:column;padding:16px 12px;gap:2px">
+    <div style="display:flex;align-items:center;gap:9px;padding:4px 12px 18px 12px">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="1.5" y="1.5" width="17" height="17" rx="4" stroke="#0b0b0b" stroke-width="1.6"/><path d="M6 10.5l2.6 2.6L14 7.5" stroke="#2a78d6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div style="font-weight:700;font-size:14px;letter-spacing:-.01em">Review lane</div>
+    </div>
+    <div class="navi on">Overview</div>
+    <div class="navi">Pull requests</div>
+    <div class="navi">Findings</div>
+    <div class="navi">Repos</div>
+    <div class="navi">Health</div>
+    <div class="navi">Settings</div>
+    <div style="margin-top:auto;padding:10px 12px;color:#898781;font-size:11.5px">prismalens org · Access: sumit@</div>
+  </div>
+
+  <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+    <div style="height:52px;flex:none;display:flex;align-items:center;gap:10px;padding:0 24px;border-bottom:1px solid rgba(11,11,11,.08);background:#faf9f6">
+      <span style="font-weight:600">Overview</span>
+      <span style="color:#898781;font-size:12px">fresh install · no rounds recorded yet</span>
+    </div>
+
+    <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px">
+      <div style="width:680px;display:flex;flex-direction:column;gap:18px">
+        <div style="text-align:center;display:flex;flex-direction:column;gap:8px;align-items:center">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none"><rect x="4" y="4" width="32" height="32" rx="8" stroke="#c3c2b7" stroke-width="2"/><path d="M13 21l4.6 4.6L27 15.5" stroke="#c3c2b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div style="font-size:19px;font-weight:700">No review rounds yet</div>
+          <div style="color:#52514e;max-width:520px">The lane records a row per round the moment a repo's caller workflow runs.
+          Add a repository and the first round lights this page up. Nothing here shows a zero pretending to be a metric.</div>
+        </div>
+
+        <div class="card" style="padding:16px 18px">
+          <div class="lbl" style="margin-bottom:10px">Three steps</div>
+          <div style="display:flex;flex-direction:column;gap:8px;color:#52514e">
+            <div><b style="color:#0b0b0b">1 · Repo.</b> Point the wizard at <span class="mono">owner/repo</span>; it checks for a caller workflow.</div>
+            <div><b style="color:#0b0b0b">2 · Key.</b> Set <span class="mono">CLAUDE_CODE_OAUTH_TOKEN</span> (or a metered key); verified by name, never read.</div>
+            <div><b style="color:#0b0b0b">3 · Caller + config PR.</b> The wizard opens a PR with the caller workflow and a starter <span class="mono">.github/claude-review.yml</span>; merge it and the lane is live.</div>
+          </div>
+          <div style="margin-top:14px"><span class="btn btnp">Add repository</span></div>
+        </div>
+
+        <div class="card" style="padding:14px 18px">
+          <div class="lbl" style="margin-bottom:8px">Already wired? Self-test the ingest</div>
+          <div class="mono" style="font-size:12px;background:#faf9f6;border:1px solid #e1e0d9;border-radius:6px;padding:10px 12px">curl -X POST https://assayer.sfun.cloud/ingest -H "Authorization: Bearer $INGEST_TOKEN" -d @sample-round.json</div>
+          <div style="color:#898781;font-size:12px;margin-top:6px">A test row appears in the feed within seconds; delete it from the runs table.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

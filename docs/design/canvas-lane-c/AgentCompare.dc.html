@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    html,body{margin:0;padding:0;background:#f6f5f2}
+    body{font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;color:#1c1a16;-webkit-font-smoothing:antialiased;font-size:14px}
+    a{color:#8f6400;text-decoration:none}a:hover{color:#6e4d00;text-decoration:underline}
+    .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+    .shell{display:flex;width:1280px;background:#f6f5f2;align-items:stretch}
+    .side{width:212px;flex-shrink:0;background:#181510;color:#cfc8ba;display:flex;flex-direction:column;padding:18px 0 14px}
+    .logo{display:flex;align-items:center;gap:9px;padding:2px 20px 16px}
+    .wordmark{font-weight:600;font-size:15px;color:#f4efe3;letter-spacing:.3px}
+    .orgsel{margin:0 12px 16px;padding:7px 10px;border:1px solid #322c21;border-radius:6px;font-size:12.5px;color:#efe9dc;display:flex;justify-content:space-between;align-items:center;background:#221d15}
+    .nav{display:flex;flex-direction:column;gap:1px;padding:0 10px}
+    .nav a{display:block;padding:7px 10px;border-radius:6px;font-size:13px;color:#a89f8d;text-decoration:none}
+    .nav a.on{background:#2c2415;color:#f2c96b;font-weight:500}
+    .sidefoot{margin-top:auto;padding:14px 20px 0;border-top:1px solid #2a251c;font-size:11.5px;color:#7d7666;line-height:1.7}
+    .main{flex:1;min-width:0;padding:22px 28px 28px;display:flex;flex-direction:column;gap:14px}
+    .crumb{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#98928a}
+    h1{font-size:17px;font-weight:600;margin:0}
+    .sub{font-size:12.5px;color:#6f6a5e;margin-top:4px;line-height:1.6}
+    .card{background:#fff;border:1px solid #e6e2d8;border-radius:8px}
+    .cardpad{padding:14px 18px}
+    .chip{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:500;padding:0 8px;border-radius:999px;border:1px solid;line-height:1.9;white-space:nowrap}
+    .c-warn{color:#8a5a00;background:#fdf3d7;border-color:#eddaa1}
+    .c-neut{color:#6f6a5e;background:#f1efe9;border-color:#ddd8cc}
+    .grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .colhead{display:flex;align-items:baseline;justify-content:space-between;padding:12px 18px;border-bottom:1px solid #eee9df}
+    .colhead .mono{font-size:14px;font-weight:600}
+    .stat{display:flex;justify-content:space-between;align-items:baseline;padding:10px 18px;border-bottom:1px solid #f2eee5;font-size:12.5px}
+    .stat:last-child{border-bottom:none}
+    .stat .v{font-variant-numeric:tabular-nums;font-weight:600;font-size:14px}
+    .stat .l{color:#6f6a5e}
+    .muted{color:#98928a;font-weight:400;font-size:11.5px}
+    .note{font-size:11.5px;color:#98928a;line-height:1.6}
+    .refuse{background:#faf9f5;border:1px solid #eee9df;border-radius:8px;padding:12px 16px;font-size:12px;line-height:1.7;color:#52514e}
+  </style>
+</helmet>
+<div class="shell">
+  <div class="side">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1.5 18 16.5H2Z" stroke="#f2c96b" stroke-width="1.6" stroke-linejoin="round"></path><circle cx="10" cy="12.2" r="2.1" fill="#f2c96b"></circle></svg>
+      <span class="wordmark">Assayer</span>
+    </div>
+    <div class="orgsel"><span>prismalens</span><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#8d8574" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></div>
+    <nav class="nav">
+      <a href="#">Overview</a>
+      <a href="#">Repos</a>
+      <a href="#">Rounds</a>
+      <a href="#">Findings</a>
+      <a href="#">Keys</a>
+      <a class="on" href="#">Agents</a>
+      <a href="#">Config</a>
+      <a href="#">Settings</a>
+    </nav>
+    <div class="sidefoot">Priya Nair · org admin<br>v0.4.2 · latest</div>
+  </div>
+  <div class="main">
+    <div>
+      <div class="crumb">/o/prismalens/agents/compare?a=claude-lane&amp;b=sweep-agent&amp;range=90d</div>
+      <h1 style="margin-top:2px">Compare agents</h1>
+      <div class="sub">The same measured facts, side by side, each with its own n. Comparison is across
+      repos and time, never same-PR A/B.</div>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <div class="colhead"><span class="mono">claude-lane</span><span class="note">n=214 rounds · 90 days · 3 repos</span></div>
+        <div class="stat"><span class="l">Wall clock p95</span><span class="v">6m 52s</span></div>
+        <div class="stat"><span class="l">Wall clock mean</span><span class="v">3m 10s</span></div>
+        <div class="stat"><span class="l">Posted-nothing share</span><span class="v">4.2%</span></div>
+        <div class="stat"><span class="l">Permission denials / run</span><span class="v">0.4</span></div>
+        <div class="stat"><span class="l">Caching multiplier</span><span class="v">3.0&#215;</span></div>
+        <div class="stat"><span class="l">Average turns</span><span class="v">39</span></div>
+        <div class="stat"><span class="l">Addressed rate <span class="muted">file-level, approximate</span></span><span class="v" style="color:#98928a">needs findings data</span></div>
+      </div>
+      <div class="card">
+        <div class="colhead"><span class="mono">sweep-agent</span><span class="chip c-warn">low n · 9 rounds · 1 repo</span></div>
+        <div class="stat"><span class="l">Wall clock max <span class="muted">p95 suppressed below n=20</span></span><span class="v">4m 12s</span></div>
+        <div class="stat"><span class="l">Wall clock mean <span class="muted">low-n flag</span></span><span class="v">2m 21s</span></div>
+        <div class="stat"><span class="l">Posted-nothing share</span><span class="v">11%</span></div>
+        <div class="stat"><span class="l">Permission denials / run</span><span class="v" style="color:#98928a">not reported by this agent</span></div>
+        <div class="stat"><span class="l">Caching multiplier</span><span class="v" style="color:#98928a">not reported by this agent</span></div>
+        <div class="stat"><span class="l">Average turns <span class="muted">low-n flag</span></span><span class="v">24</span></div>
+        <div class="stat"><span class="l">Addressed rate <span class="muted">file-level, approximate</span></span><span class="v" style="color:#98928a">needs findings data</span></div>
+      </div>
+    </div>
+
+    <div class="refuse">
+      <b style="color:#1c1a16">What this page refuses to conclude.</b> No winner banner, no quality score,
+      no savings claim. The verify round is the same model family judging its own findings, so the lane
+      grading itself is not evidence. The quality tier (addressed rate, human-dismissed rate) appears only
+      when both sides have findings rows, flagged low-n until they mean something. Different repos see
+      different diffs; read these columns as operating characteristics, not a verdict.
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

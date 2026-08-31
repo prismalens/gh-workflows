@@ -1,0 +1,149 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    html,body{margin:0;padding:0;background:#f6f5f2}
+    body{font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;color:#1c1a16;-webkit-font-smoothing:antialiased;font-size:14px}
+    a{color:#8f6400;text-decoration:none}a:hover{color:#6e4d00;text-decoration:underline}
+    .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+    .shell{display:flex;width:1280px;background:#f6f5f2;align-items:stretch}
+    .side{width:212px;flex-shrink:0;background:#181510;color:#cfc8ba;display:flex;flex-direction:column;padding:18px 0 14px}
+    .logo{display:flex;align-items:center;gap:9px;padding:2px 20px 16px}
+    .wordmark{font-weight:600;font-size:15px;color:#f4efe3;letter-spacing:.3px}
+    .orgsel{margin:0 12px 16px;padding:7px 10px;border:1px solid #322c21;border-radius:6px;font-size:12.5px;color:#efe9dc;display:flex;justify-content:space-between;align-items:center;background:#221d15}
+    .nav{display:flex;flex-direction:column;gap:1px;padding:0 10px}
+    .nav a{display:block;padding:7px 10px;border-radius:6px;font-size:13px;color:#a89f8d;text-decoration:none}
+    .nav a.on{background:#2c2415;color:#f2c96b;font-weight:500}
+    .sidefoot{margin-top:auto;padding:14px 20px 0;border-top:1px solid #2a251c;font-size:11.5px;color:#7d7666;line-height:1.7}
+    .main{flex:1;min-width:0;padding:22px 28px 28px;display:flex;flex-direction:column;gap:14px}
+    .crumb{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#98928a}
+    h1{font-size:17px;font-weight:600;margin:0}
+    .sub{font-size:12.5px;color:#6f6a5e;margin-top:4px;line-height:1.6}
+    .card{background:#fff;border:1px solid #e6e2d8;border-radius:8px;overflow:hidden}
+    .tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+    .tbl th{font-size:11px;font-weight:500;color:#98928a;text-align:left;padding:8px 14px;border-bottom:1px solid #eee9df;white-space:nowrap}
+    .tbl td{padding:9px 14px;border-bottom:1px solid #f2eee5;vertical-align:middle}
+    .tbl tr:last-child td{border-bottom:none}
+    .chip{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:500;padding:0 8px;border-radius:999px;border:1px solid;line-height:1.9;white-space:nowrap}
+    .c-org{color:#1c5cab;background:#e9f1fb;border-color:#bcd6f2}
+    .c-repo{color:#a03d12;background:#fdeee6;border-color:#f2cdb8}
+    .c-wf{color:#6f6a5e;background:#f1efe9;border-color:#ddd8cc}
+    .c-warn{color:#8a5a00;background:#fdf3d7;border-color:#eddaa1}
+    .c-pend{color:#8a5a00;background:#fff;border-color:#dcb45e;border-style:dashed}
+    .c-neut{color:#6f6a5e;background:#f1efe9;border-color:#ddd8cc}
+    .note{font-size:11.5px;color:#98928a;line-height:1.6}
+    .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid #d8d2c4;background:#fff;border-radius:6px;padding:6px 12px;font-size:12.5px;font-weight:500;color:#1c1a16}
+    .banner{display:flex;gap:10px;align-items:flex-start;border:1px solid;border-radius:8px;padding:12px 14px;font-size:12.5px;line-height:1.6}
+    .b-bad{background:#fdeeee;border-color:#eec3c3;color:#6b1d1d}
+    .divider{display:flex;align-items:center;gap:10px;color:#98928a;font-size:11px;margin-top:10px}
+    .divider::before,.divider::after{content:'';flex:1;border-top:1px dashed #d8d2c4}
+  </style>
+</helmet>
+<div class="shell">
+  <div class="side">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1.5 18 16.5H2Z" stroke="#f2c96b" stroke-width="1.6" stroke-linejoin="round"></path><circle cx="10" cy="12.2" r="2.1" fill="#f2c96b"></circle></svg>
+      <span class="wordmark">Assayer</span>
+    </div>
+    <div class="orgsel"><span>prismalens</span><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#8d8574" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></div>
+    <nav class="nav">
+      <a href="#">Overview</a>
+      <a href="#">Repos</a>
+      <a href="#">Rounds</a>
+      <a href="#">Findings</a>
+      <a href="#">Keys</a>
+      <a href="#">Agents</a>
+      <a class="on" href="#">Config</a>
+      <a href="#">Settings</a>
+    </nav>
+    <div class="sidefoot">Marcus Hale · member<br>write on prismalens/prismalens</div>
+  </div>
+  <div class="main">
+    <div>
+      <div class="crumb">/o/prismalens/repos/prismalens/config</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-top:2px">
+        <div>
+          <h1>Resolved config · <span class="mono">prismalens/prismalens</span></h1>
+          <div class="sub">Key-by-key pure override: workflow defaults &#60; org defaults (<span class="mono">prismalens/.github@main</span>)
+          &#60; repo file (<span class="mono">.github/claude-review.yml</span>, read from the PR base ref) &#60; per-run summon.
+          Editing here opens a pull request against the file. There is no database override layer.</div>
+        </div>
+        <a class="btn" href="#">View raw files</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <table class="tbl">
+        <tr><th style="width:270px">Key</th><th>Effective value</th><th style="width:170px">Supplied by</th><th>Status</th></tr>
+        <tr>
+          <td class="mono">version</td><td class="mono">1</td>
+          <td><span class="chip c-repo">repo</span></td><td></td>
+        </tr>
+        <tr>
+          <td class="mono">review.default_model</td><td class="mono">claude-sonnet-5</td>
+          <td><span class="chip c-org">org</span></td><td></td>
+        </tr>
+        <tr>
+          <td class="mono">review.auto_pause_rounds</td><td class="mono">10</td>
+          <td><span class="chip c-repo">repo</span></td>
+          <td><span class="chip c-warn">loosened · org sets 3</span></td>
+        </tr>
+        <tr>
+          <td class="mono">review.skip_authors</td><td class="mono">[dependabot[bot]]</td>
+          <td><span class="chip c-org">org</span></td><td></td>
+        </tr>
+        <tr>
+          <td class="mono">review.path_filters</td><td class="mono">['src/auth/**'] &#8594; escalates to opus</td>
+          <td><span class="chip c-org">org</span></td>
+          <td><span class="chip c-pend">pending change · <a href="#">PR #488</a></span></td>
+        </tr>
+        <tr>
+          <td class="mono">review.agent</td><td class="mono">claude-lane</td>
+          <td><span class="chip c-wf">workflow default</span></td><td></td>
+        </tr>
+        <tr style="color:#98928a">
+          <td class="mono">review.path_instructions</td><td class="mono">2 mappings</td>
+          <td><span class="chip c-repo">repo</span></td>
+          <td><span class="chip c-neut">accepted, not wired · <a href="#">#54</a></span></td>
+        </tr>
+        <tr style="color:#98928a">
+          <td class="mono">findings.suppress_below</td><td class="mono">Minor</td>
+          <td><span class="chip c-org">org</span></td>
+          <td><span class="chip c-neut">accepted, not wired · <a href="#">#47</a></span></td>
+        </tr>
+        <tr style="color:#98928a">
+          <td class="mono">findings.enable_ai_fix_prompt</td><td class="mono">true</td>
+          <td><span class="chip c-org">org</span></td>
+          <td><span class="chip c-neut">accepted, not wired · <a href="#">#47</a></span></td>
+        </tr>
+        <tr style="color:#98928a">
+          <td class="mono">findings.include_verification_note</td><td class="mono">true</td>
+          <td><span class="chip c-org">org</span></td>
+          <td><span class="chip c-neut">accepted, not wired · <a href="#">#47</a></span></td>
+        </tr>
+      </table>
+    </div>
+    <div class="note">Greyed keys parse and log but change nothing yet; they render read-only so the UI never
+    shows a control that does nothing. A per-run summon override (<span class="mono">@claude review --model opus</span>)
+    applies to one round and never appears in this table.</div>
+
+    <div class="divider">state variant · shown when the repo layer fails to parse</div>
+    <div class="banner b-bad">
+      <svg width="15" height="15" viewBox="0 0 15 15" fill="none" style="flex-shrink:0;margin-top:2px"><path d="M7.5 1.5 14 13H1Z" stroke="#a32222" stroke-width="1.4" stroke-linejoin="round"></path><path d="M7.5 5.5v3.4M7.5 11v.1" stroke="#a32222" stroke-width="1.5" stroke-linecap="round"></path></svg>
+      <div>Repo layer dropped whole since the round of Aug 29: malformed YAML in
+      <span class="mono">.github/claude-review.yml</span> (<span class="mono">review.auto_pause_rounds: soon</span> is not an
+      integer). Org and workflow defaults are in effect. The lane never dies on a malformed layer.
+      &#160;<a href="#">View file at 4f2c91a</a> · <a href="#">Open a fix PR</a></div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
