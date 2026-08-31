@@ -31,6 +31,9 @@ const NUMERIC_FIELDS = [
   "permission_denials",
   "changed_files",
   "diff_lines",
+  "inline_count",
+  "summary_count",
+  "round_ordinal",
 ];
 
 const STRING_FIELDS = [
@@ -40,7 +43,53 @@ const STRING_FIELDS = [
   "run_url",
   "round_type",
   "model",
+  "lane_version",
+  "verdict_kind",
+  "verdict_text",
+  "fallback_reason",
+  "range_base",
+  "range_head",
+  "model_source",
+  "job_conclusion",
+  "pr_title",
+  "pr_author",
+  "pr_state",
+  "pr_base_ref",
+  "pr_head_ref",
 ];
+
+const VALID_LANE_EVENT_REASONS = new Set([
+  "no-token",
+  "auto-paused",
+  "fork-head",
+  "skip-author",
+]);
+
+const LANE_EVENT_NUMERIC_FIELDS = [
+  "pr_number",
+  "rounds_used",
+];
+
+const LANE_EVENT_STRING_FIELDS = [
+  "recorded_at",
+  "head_sha",
+  "run_url",
+  "lane_version",
+];
+
+const CANARY_STRING_FIELDS = [
+  "last_seen_at",
+  "recorded_at",
+  "run_url",
+  "lane_version",
+];
+
+function truncateString(val, maxLen = 512) {
+  if (typeof val !== "string") {
+    return null;
+  }
+  return val.length > maxLen ? val.slice(0, maxLen) : val;
+}
 
 function serializeJson(val, fallback) {
   if (val === undefined || val === null) {
@@ -536,99 +585,266 @@ async function handleIngest(request, env) {
     return new Response(null, { status: 400 });
   }
 
-  if (
-    !payload ||
-    typeof payload !== "object" ||
-    typeof payload.session_id !== "string" ||
-    typeof payload.repository !== "string"
-  ) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return new Response(null, { status: 400 });
   }
 
-  for (const field of NUMERIC_FIELDS) {
-    const val = payload[field];
-    if (val !== undefined && val !== null && (typeof val !== "number" || !Number.isFinite(val))) {
-      return new Response(JSON.stringify({ error: "invalid field types" }), {
+  const eventKind = payload.event_kind;
+
+  if (eventKind === undefined || eventKind === "usage_record") {
+    if (
+      typeof payload.session_id !== "string" ||
+      typeof payload.repository !== "string"
+    ) {
+      return new Response(null, { status: 400 });
+    }
+
+    for (const field of NUMERIC_FIELDS) {
+      const val = payload[field];
+      if (val !== undefined && val !== null && (typeof val !== "number" || !Number.isFinite(val))) {
+        return new Response(JSON.stringify({ error: "invalid field types" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
+    for (const field of STRING_FIELDS) {
+      const val = payload[field];
+      if (val !== undefined && val !== null && typeof val !== "string") {
+        return new Response(JSON.stringify({ error: "invalid field types" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
+    // Name columns literally so unmapped payload fields are dropped (#41).
+    // Protect against retried POST requests without re-running (#41).
+    try {
+      await env.DB.prepare(
+        `INSERT INTO usage_records (
+          session_id,
+          recorded_at,
+          repository,
+          pr_number,
+          pr_url,
+          head_sha,
+          run_id,
+          run_attempt,
+          run_url,
+          round_type,
+          model,
+          input_tokens,
+          output_tokens,
+          cache_read_input_tokens,
+          cache_creation_input_tokens,
+          total_cost_usd,
+          duration_ms,
+          duration_api_ms,
+          num_turns,
+          permission_denials,
+          changed_files,
+          diff_lines,
+          per_model_usage,
+          subagent_stats,
+          raw_result,
+          lane_version,
+          verdict_kind,
+          verdict_text,
+          inline_count,
+          summary_count,
+          comment_node_ids,
+          fallback_reason,
+          range_base,
+          range_head,
+          model_source,
+          config_resolution,
+          job_conclusion,
+          round_ordinal,
+          pr_title,
+          pr_author,
+          pr_state,
+          pr_base_ref,
+          pr_head_ref
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+          ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+          ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
+          ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
+          ?41, ?42, ?43
+        )
+        ON CONFLICT(session_id) DO NOTHING`
+      ).bind(
+        payload.session_id,
+        payload.recorded_at ?? new Date().toISOString(),
+        payload.repository,
+        payload.pr_number ?? null,
+        payload.pr_url ?? null,
+        payload.head_sha ?? null,
+        payload.run_id ?? null,
+        payload.run_attempt ?? null,
+        payload.run_url ?? null,
+        payload.round_type ?? null,
+        payload.model ?? null,
+        payload.input_tokens ?? null,
+        payload.output_tokens ?? null,
+        payload.cache_read_input_tokens ?? null,
+        payload.cache_creation_input_tokens ?? null,
+        payload.total_cost_usd ?? null,
+        payload.duration_ms ?? null,
+        payload.duration_api_ms ?? null,
+        payload.num_turns ?? null,
+        payload.permission_denials ?? null,
+        payload.changed_files ?? null,
+        payload.diff_lines ?? null,
+        serializeJson(payload.per_model_usage, "{}"),
+        serializeJson(payload.subagent_stats, null),
+        serializeJson(payload.raw_result, null),
+        payload.lane_version ?? null,
+        payload.verdict_kind ?? null,
+        payload.verdict_text ?? null,
+        payload.inline_count ?? null,
+        payload.summary_count ?? null,
+        serializeJson(payload.comment_node_ids, null),
+        payload.fallback_reason ?? null,
+        payload.range_base ?? null,
+        payload.range_head ?? null,
+        payload.model_source ?? null,
+        serializeJson(payload.config_resolution, null),
+        payload.job_conclusion ?? null,
+        payload.round_ordinal ?? null,
+        truncateString(payload.pr_title, 512),
+        truncateString(payload.pr_author, 512),
+        payload.pr_state ?? null,
+        truncateString(payload.pr_base_ref, 512),
+        truncateString(payload.pr_head_ref, 512)
+      ).run();
+    } catch {
+      return new Response(null, { status: 500 });
+    }
+
+    return new Response(null, { status: 204 });
+  }
+
+  if (eventKind === "lane_event") {
+    if (
+      typeof payload.repository !== "string" ||
+      typeof payload.reason !== "string" ||
+      typeof payload.run_id !== "number" ||
+      !Number.isFinite(payload.run_id) ||
+      typeof payload.run_attempt !== "number" ||
+      !Number.isFinite(payload.run_attempt)
+    ) {
+      return new Response(JSON.stringify({ error: "missing or invalid required fields" }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
     }
-  }
 
-  for (const field of STRING_FIELDS) {
-    const val = payload[field];
-    if (val !== undefined && val !== null && typeof val !== "string") {
-      return new Response(JSON.stringify({ error: "invalid field types" }), {
+    if (!VALID_LANE_EVENT_REASONS.has(payload.reason)) {
+      return new Response(JSON.stringify({ error: "invalid reason" }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
     }
+
+    for (const field of LANE_EVENT_NUMERIC_FIELDS) {
+      const val = payload[field];
+      if (val !== undefined && val !== null && (typeof val !== "number" || !Number.isFinite(val))) {
+        return new Response(JSON.stringify({ error: "invalid field types" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
+    for (const field of LANE_EVENT_STRING_FIELDS) {
+      const val = payload[field];
+      if (val !== undefined && val !== null && typeof val !== "string") {
+        return new Response(JSON.stringify({ error: "invalid field types" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
+    try {
+      await env.DB.prepare(
+        `INSERT INTO lane_events (
+          run_id,
+          run_attempt,
+          recorded_at,
+          repository,
+          reason,
+          pr_number,
+          head_sha,
+          run_url,
+          rounds_used,
+          lane_version
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        ON CONFLICT(run_id, run_attempt) DO NOTHING`
+      ).bind(
+        payload.run_id,
+        payload.run_attempt,
+        payload.recorded_at ?? new Date().toISOString(),
+        payload.repository,
+        payload.reason,
+        payload.pr_number ?? null,
+        payload.head_sha ?? null,
+        payload.run_url ?? null,
+        payload.rounds_used ?? null,
+        payload.lane_version ?? null
+      ).run();
+    } catch {
+      return new Response(null, { status: 500 });
+    }
+
+    return new Response(null, { status: 204 });
   }
 
-  // Name columns literally so unmapped payload fields are dropped (#41).
-  // Protect against retried POST requests without re-running (#41).
-  try {
-    await env.DB.prepare(
-      `INSERT INTO usage_records (
-        session_id,
-        recorded_at,
-        repository,
-        pr_number,
-        pr_url,
-        head_sha,
-        run_id,
-        run_attempt,
-        run_url,
-        round_type,
-        model,
-        input_tokens,
-        output_tokens,
-        cache_read_input_tokens,
-        cache_creation_input_tokens,
-        total_cost_usd,
-        duration_ms,
-        duration_api_ms,
-        num_turns,
-        permission_denials,
-        changed_files,
-        diff_lines,
-        per_model_usage,
-        subagent_stats,
-        raw_result
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
-      ON CONFLICT(session_id) DO NOTHING`
-    ).bind(
-      payload.session_id,
-      payload.recorded_at ?? new Date().toISOString(),
-      payload.repository,
-      payload.pr_number ?? null,
-      payload.pr_url ?? null,
-      payload.head_sha ?? null,
-      payload.run_id ?? null,
-      payload.run_attempt ?? null,
-      payload.run_url ?? null,
-      payload.round_type ?? null,
-      payload.model ?? null,
-      payload.input_tokens ?? null,
-      payload.output_tokens ?? null,
-      payload.cache_read_input_tokens ?? null,
-      payload.cache_creation_input_tokens ?? null,
-      payload.total_cost_usd ?? null,
-      payload.duration_ms ?? null,
-      payload.duration_api_ms ?? null,
-      payload.num_turns ?? null,
-      payload.permission_denials ?? null,
-      payload.changed_files ?? null,
-      payload.diff_lines ?? null,
-      serializeJson(payload.per_model_usage, "{}"),
-      serializeJson(payload.subagent_stats, null),
-      serializeJson(payload.raw_result, null)
-    ).run();
-  } catch {
-    return new Response(null, { status: 500 });
+  if (eventKind === "canary") {
+    for (const field of CANARY_STRING_FIELDS) {
+      const val = payload[field];
+      if (val !== undefined && val !== null && typeof val !== "string") {
+        return new Response(JSON.stringify({ error: "invalid field types" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
+    const lastSeenAt = payload.last_seen_at ?? payload.recorded_at ?? new Date().toISOString();
+
+    try {
+      await env.DB.prepare(
+        `INSERT INTO canary_pings (
+          id,
+          last_seen_at,
+          run_url,
+          lane_version
+        ) VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(id) DO UPDATE SET
+          last_seen_at = excluded.last_seen_at,
+          run_url = excluded.run_url,
+          lane_version = excluded.lane_version`
+      ).bind(
+        "canary",
+        lastSeenAt,
+        payload.run_url ?? null,
+        payload.lane_version ?? null
+      ).run();
+    } catch {
+      return new Response(null, { status: 500 });
+    }
+
+    return new Response(null, { status: 204 });
   }
 
-  return new Response(null, { status: 204 });
+  return new Response(JSON.stringify({ error: "invalid event_kind" }), {
+    status: 400,
+    headers: { "content-type": "application/json" },
+  });
 }
 
 export default {

@@ -4,7 +4,7 @@
 Extracts the REAL shell body out of .github/workflows/deploy-worker.yml and runs it
 against stubbed wrangler invocations to prove all three distinct states:
 1. Migrations are up to date (clean schema, exit 0, no warning, no summary).
-2. A migration is pending (exit 0, pending migrations warning & step summary).
+2. A migration is pending (exit 1, pending migrations error & step summary).
 3. The migration state could not be determined (exit 0, check failure warning & step summary).
 
 Run: python3 tests/test-deploy-worker-migration-check.py
@@ -88,7 +88,7 @@ Resource location: remote
     assert summary.strip() == "", f"State 1 step summary must be empty, got: {summary!r}"
     print("  ok    State 1 (Up to date): exit 0, no warning, no step summary")
 
-    # State 2: Pending migration
+    # State 2: Pending migration (fails closed with exit 1)
     pending_output = """
  ⛅️ wrangler 4.127.1
 ────────────────────
@@ -102,11 +102,12 @@ Migrations to be applied:
 └─────────────────────────┘
 """
     proc, summary = run_migration_check(script, wrangler_output=pending_output, wrangler_exit_code=0)
-    assert proc.returncode == 0, f"State 2 failed with non-zero exit: {proc.returncode}"
-    assert "::warning::Pending D1 migrations detected on remote database review-telemetry" in proc.stdout, "State 2 missing warning"
+    assert proc.returncode == 1, f"State 2 must fail closed with exit 1, got: {proc.returncode}"
+    assert "::error::Pending D1 migrations detected on remote database review-telemetry" in proc.stdout, "State 2 missing error"
+    assert "::warning::" not in proc.stdout, "State 2 must not emit warning"
     assert "## ⚠️ Pending D1 Migrations" in summary, "State 2 missing step summary header"
     assert "wrangler d1 migrations apply review-telemetry --remote" in summary, "State 2 missing manual apply command in summary"
-    print("  ok    State 2 (Pending migration): exit 0, pending warning emitted, step summary written")
+    print("  ok    State 2 (Pending migration): exit 1, pending error emitted, step summary written")
 
     # State 3a: Check failed with exit code 1 (e.g. database not found or config missing)
     error_output = """
