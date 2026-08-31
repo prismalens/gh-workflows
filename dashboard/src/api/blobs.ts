@@ -17,10 +17,30 @@ export function parsePerModelUsage(row: RoundRow): Record<string, ModelUsage> | 
   return Object.keys(parsed).length > 0 ? parsed : null;
 }
 
+/**
+ * denial_tools is typed as an optional array but reaches us as unvalidated JSON,
+ * so a non-array value would throw out of the denials panel and take the whole
+ * round detail with it. Absent and unusable both normalise to undefined, which
+ * the panel already renders as its labelled degraded state.
+ */
+function isDenialEntry(entry: unknown): entry is { tool: string; count: number } {
+  if (!entry || typeof entry !== "object") return false;
+  const { tool, count } = entry as { tool?: unknown; count?: unknown };
+  return typeof tool === "string" && typeof count === "number" && Number.isFinite(count);
+}
+
+function normaliseDenialTools(value: unknown): Array<{ tool: string; count: number }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  // An empty array is information: no tool was denied. A list with any unusable
+  // entry is not partially trustworthy, so it degrades whole rather than
+  // silently rendering the subset that happened to parse.
+  return value.every(isDenialEntry) ? (value as Array<{ tool: string; count: number }>) : undefined;
+}
+
 export function parseRawResult(row: RoundRow): RawResult | null {
   const parsed = parseJson<RawResult>(row.raw_result);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  return parsed;
+  return { ...parsed, denial_tools: normaliseDenialTools(parsed.denial_tools) };
 }
 
 export interface CountEntry {

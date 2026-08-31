@@ -50,9 +50,9 @@ function RoundDetailPage() {
       </div>
 
       {round.isPending ? (
-        <LoadingRows rows={4} />
+        <LoadingRows rows={4} label="Loading this round" />
       ) : round.isError ? (
-        <QueryError error={round.error} />
+        <QueryError error={round.error} title="Could not load this round" />
       ) : !round.data.found ? (
         <Alert variant="muted">
           <AlertTitle>This round is not in the readable window</AlertTitle>

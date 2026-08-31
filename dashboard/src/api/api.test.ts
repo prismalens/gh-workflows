@@ -119,6 +119,76 @@ describe("blob parsing", () => {
   });
 });
 
+describe("denial_tools reaches the panel usable or not at all", () => {
+  const withRaw = (denial_tools: unknown) =>
+    parseRawResult({ ...rows[0], raw_result: JSON.stringify({ type: "result", denial_tools }) });
+
+  it("keeps a well-formed list", () => {
+    expect(withRaw([{ tool: "Bash", count: 2 }])?.denial_tools).toEqual([
+      { tool: "Bash", count: 2 },
+    ]);
+  });
+
+  it("keeps an empty list, which means no tool was denied", () => {
+    expect(withRaw([])?.denial_tools).toEqual([]);
+  });
+
+  it("degrades a non-array rather than throwing out of the panel", () => {
+    expect(withRaw(5)?.denial_tools).toBeUndefined();
+    expect(withRaw({ Bash: 1 })?.denial_tools).toBeUndefined();
+  });
+
+  it("degrades whole when any entry is unusable, rather than rendering the subset", () => {
+    expect(withRaw([{ tool: "Bash", count: 1 }, { tool: null }])?.denial_tools).toBeUndefined();
+    expect(withRaw([{ tool: {}, count: "x" }])?.denial_tools).toBeUndefined();
+  });
+
+  it("leaves an absent key absent", () => {
+    expect(parseRawResult({ ...rows[0], raw_result: '{"type":"result"}' })?.denial_tools)
+      .toBeUndefined();
+  });
+});
+
+describe("a 200 of the wrong shape is malformed, not a TypeError", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const jsonBody = (body: unknown) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+  };
+
+  it("rejects a runs payload with no rows array", async () => {
+    jsonBody({ next_cursor: null });
+    await expect(httpApi.fetchRuns()).rejects.toMatchObject({ kind: "malformed" });
+  });
+
+  it("rejects a runs payload whose rows are not objects", async () => {
+    jsonBody({ rows: ["nope"], next_cursor: null });
+    await expect(httpApi.fetchRuns()).rejects.toMatchObject({ kind: "malformed" });
+  });
+
+  it("rejects a summary payload with no row count", async () => {
+    jsonBody({ repositories: [] });
+    await expect(httpApi.fetchSummary()).rejects.toMatchObject({ kind: "malformed" });
+  });
+
+  it("accepts the shapes the Worker actually returns", async () => {
+    jsonBody({ rows: [], next_cursor: null });
+    await expect(httpApi.fetchRuns()).resolves.toMatchObject({ rows: [] });
+    jsonBody({ rows: 0, repositories: [] });
+    await expect(httpApi.fetchSummary()).resolves.toMatchObject({ rows: 0 });
+  });
+});
+
 describe("CSV export", () => {
   it("writes the schema's columns in the schema's order", () => {
     const csv = roundsToCsv(rows.slice(0, 2));
@@ -204,7 +274,7 @@ describe("an error names the failure it actually was", () => {
   it("requests without following redirects", async () => {
     respond({
       status: 200,
-      body: "{}",
+      body: JSON.stringify({ rows: 0, repositories: [] }),
       headers: { "content-type": "application/json" },
     });
     await httpApi.fetchSummary();

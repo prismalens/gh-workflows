@@ -43,7 +43,7 @@ export function runsUrl(query: RunsQuery = {}): string {
   return qs ? `/api/runs?${qs}` : "/api/runs";
 }
 
-async function getJson<T>(path: string): Promise<T> {
+async function getJson<T>(path: string, validate: (value: unknown) => value is T): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, {
@@ -92,11 +92,39 @@ async function getJson<T>(path: string): Promise<T> {
     );
   }
 
+  let parsed: unknown;
   try {
-    return (await res.json()) as T;
+    parsed = await res.json();
   } catch {
     throw new ApiError(`GET ${path} returned a body that is not valid JSON`, res.status, "malformed");
   }
+
+  // A 200 of the wrong shape would otherwise reach lookupRound and throw a bare
+  // TypeError off response.rows, losing the ApiError classification the UI reads.
+  if (!validate(parsed)) {
+    throw new ApiError(
+      `GET ${path} returned JSON that is not the shape this route documents`,
+      res.status,
+      "malformed",
+    );
+  }
+  return parsed;
+}
+
+function isRunsResponse(value: unknown): value is RunsResponse {
+  if (!value || typeof value !== "object") return false;
+  const { rows, next_cursor } = value as { rows?: unknown; next_cursor?: unknown };
+  return (
+    Array.isArray(rows) &&
+    rows.every((row) => !!row && typeof row === "object") &&
+    (next_cursor === null || next_cursor === undefined || typeof next_cursor === "string")
+  );
+}
+
+function isSummaryResponse(value: unknown): value is SummaryResponse {
+  if (!value || typeof value !== "object") return false;
+  const { rows, repositories } = value as { rows?: unknown; repositories?: unknown };
+  return typeof rows === "number" && Array.isArray(repositories);
 }
 
 export interface TelemetryApi {
@@ -107,8 +135,8 @@ export interface TelemetryApi {
 }
 
 export const httpApi: TelemetryApi = {
-  fetchRuns: (query = {}) => getJson<RunsResponse>(runsUrl(query)),
-  fetchSummary: () => getJson<SummaryResponse>("/api/summary"),
+  fetchRuns: (query = {}) => getJson(runsUrl(query), isRunsResponse),
+  fetchSummary: () => getJson("/api/summary", isSummaryResponse),
 };
 
 /**

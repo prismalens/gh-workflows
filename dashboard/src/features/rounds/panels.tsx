@@ -14,7 +14,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Approximate, Degraded } from "@/honesty/Degraded";
-import { LIST_RATE_EQUIVALENT } from "@/honesty/thresholds";
+import {
+  CACHE_CREATION_WEIGHT,
+  CACHE_READ_WEIGHT,
+  LIST_RATE_EQUIVALENT,
+} from "@/honesty/thresholds";
 import {
   formatCount,
   formatDuration,
@@ -258,10 +262,16 @@ export function TokensPanel({ row }: { row: RoundRow }) {
   const read = row.cache_read_input_tokens ?? 0;
   const create = row.cache_creation_input_tokens ?? 0;
   const total = input + read + create;
-  const billed = input + 1.25 * create + 0.1 * read;
+  const billed = input + CACHE_CREATION_WEIGHT * create + CACHE_READ_WEIGHT * read;
   const anyTokens =
     row.input_tokens !== null ||
     row.cache_read_input_tokens !== null ||
+    row.cache_creation_input_tokens !== null;
+  // The same rule tokenSums applies across rounds, applied within one: a count
+  // missing and summed as zero reads as "this round used no cache".
+  const allCounts =
+    row.input_tokens !== null &&
+    row.cache_read_input_tokens !== null &&
     row.cache_creation_input_tokens !== null;
 
   return (
@@ -276,10 +286,10 @@ export function TokensPanel({ row }: { row: RoundRow }) {
               {orDash(row.cache_creation_input_tokens, formatTokens)}
             </Fact>
             <Fact label="Cache hit rate">
-              {total > 0 ? formatPercent(read / total) : "—"}
+              {allCounts && total > 0 ? formatPercent(read / total) : "—"}
             </Fact>
             <Fact label="Caching multiplier">
-              {billed > 0 ? `${(total / billed).toFixed(2)}x` : "—"}
+              {allCounts && billed > 0 ? `${(total / billed).toFixed(2)}x` : "—"}
             </Fact>
             <Fact label={LIST_RATE_EQUIVALENT}>{orDash(row.total_cost_usd, formatUsd)}</Fact>
           </Facts>

@@ -612,6 +612,7 @@ export default {
     const wantsAsset =
       (method === "GET" || method === "HEAD") &&
       pathname !== "/ingest" &&
+      pathname !== "/api" &&
       !pathname.startsWith("/api/");
     if (wantsAsset && env?.ASSETS) {
       return env.ASSETS.fetch(request);

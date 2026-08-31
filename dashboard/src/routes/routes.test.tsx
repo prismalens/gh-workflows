@@ -158,6 +158,51 @@ describe("/rounds/$sessionId", () => {
     expect(document.body.textContent).not.toMatch(/-\d+m/);
   });
 
+  it("withholds the derived token figures on a partially recorded round", async () => {
+    // The same rule tokenSums applies across rounds: a missing count summed as
+    // zero would render "0.0%" and "1.00x" beside a dash for the same column.
+    const partial = { ...rows[0], cache_read_input_tokens: null };
+    const one = makeFixtureApi([partial]);
+    renderRoute({ path: detailPath(partial.session_id, partial.recorded_at), api: one });
+
+    const hitRate = (await screen.findByText("Cache hit rate")).parentElement;
+    const multiplier = screen.getByText("Caching multiplier").parentElement;
+    expect(hitRate).toHaveTextContent("—");
+    expect(hitRate).not.toHaveTextContent("%");
+    expect(multiplier).toHaveTextContent("—");
+    expect(multiplier).not.toHaveTextContent("x");
+  });
+
+  it("still reports them when all three counts are present", async () => {
+    const complete = rows.find((r) => r.cache_read_input_tokens !== null)!;
+    const one = makeFixtureApi([complete]);
+    renderRoute({ path: detailPath(complete.session_id, complete.recorded_at), api: one });
+
+    const hitRate = (await screen.findByText("Cache hit rate")).parentElement;
+    expect(hitRate).toHaveTextContent(/%/);
+  });
+
+  it("renders the denials panel when denial_tools arrives unusable", async () => {
+    const broken = {
+      ...rows[0],
+      raw_result: JSON.stringify({ type: "result", denial_tools: 5 }),
+    };
+    const one = makeFixtureApi([broken]);
+    renderRoute({ path: detailPath(broken.session_id, broken.recorded_at), api: one });
+
+    expect(await screen.findByText("Permission denials")).toBeInTheDocument();
+    const degraded = await screen.findAllByTestId("degraded");
+    expect(
+      degraded.some((node) => node.textContent?.includes("Which tools were denied")),
+    ).toBe(true);
+  });
+
+  it("names the round, not rounds, while the detail route loads", async () => {
+    const slow = { ...makeFixtureApi(rows), fetchRuns: () => new Promise<never>(() => {}) };
+    renderRoute({ path: detailPath(rows[0].session_id, rows[0].recorded_at), api: slow });
+    expect(await screen.findByLabelText("Loading this round")).toBeInTheDocument();
+  });
+
   it("explains the bounded scan when the round is outside the readable window", async () => {
     renderRoute({ path: "/rounds/does-not-exist", api });
     expect(await screen.findByText(/not in the readable window/)).toBeInTheDocument();

@@ -10,7 +10,7 @@ installed: it arrives in slice 2 with the first chart that needs it.
 
 ## Commands
 
-```
+```bash
 npm ci                      # install; the lockfile is committed
 npm run build               # tsc -b && vite build, into dist/
 npm test                    # vitest: honesty rules, API contract, both routes
@@ -21,7 +21,7 @@ VITE_FIXTURES=1 npm run dev # same, but against the in-memory fixture table
 
 `dist/` is gitignored. A deploy has to build it first:
 
-```
+```bash
 npm --prefix dashboard ci
 npm --prefix dashboard run build
 cd worker && npx wrangler deploy
