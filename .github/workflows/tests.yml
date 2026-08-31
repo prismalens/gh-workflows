@@ -44,6 +44,10 @@ jobs:
       - name: Display report Step Summary behaviour
         run: python3 tests/test-display-report.py
 
+      # Extracts and runs the real script out of deploy-worker.yml.
+      - name: Deploy Worker migration check behaviour
+        run: python3 tests/test-deploy-worker-migration-check.py
+
       # Version pinned: an actionlint release must not turn a green branch red on its own.
       - name: actionlint
         run: |

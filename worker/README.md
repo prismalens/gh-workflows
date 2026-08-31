@@ -44,7 +44,7 @@ The GitHub Actions deploy workflow (`.github/workflows/deploy-worker.yml`) delib
 
 1. **No Transactional Rollback**: Cloudflare D1 executes migration statements sequentially without multi-statement atomic rollback across migration statements. If a migration fails midway on remote, the live database can be left in an inconsistent state with no automated rollback.
 2. **Production Data Integrity**: The production `review-telemetry` database stores real recorded telemetry rounds that cannot be regenerated. Schema migrations must be applied deliberately by the operator with explicit confirmation and pre-migration verification.
-3. **Pending Migration Detection**: The deploy workflow checks for unapplied remote migrations using `wrangler d1 migrations list review-telemetry --remote` and emits a warning in the workflow run summary if pending migrations are detected.
+3. **Pending Migration Detection**: The deploy workflow checks for unapplied remote migrations using `wrangler d1 migrations list review-telemetry --remote` and emits a warning in the workflow run summary if pending migrations are detected or if the migration state cannot be determined.
 
 ## Local Development & Deployment
 
