@@ -22,6 +22,19 @@ export const LIST_RATE_EQUIVALENT = "list-rate equivalent";
 /**
  * `total_cost_usd` is counterfactual on a subscription seat, so it is a sortable
  * column and never a headline. Tile labels are matched against this at render
- * time so a later screen cannot promote it by accident.
+ * time so a later screen cannot promote it by accident. Deliberately unanchored:
+ * \bcost\b misses "costs" and \bspend\b misses "spending", which is how a money
+ * headline gets through a green build.
  */
-export const MONEY_LABEL_PATTERN = /(\$|\busd\b|\bcost\b|\bdollar|\bspend\b|\bprice\b)/i;
+export const MONEY_LABEL_PATTERN =
+  /\$|usd|dollar|cost|spend|spent|money|burn|price|pricing|bill|charge|expense|list-rate|per-token|rate eq/i;
+
+/**
+ * The billed-equivalent weights behind the caching multiplier. Cache creation is
+ * charged above base input and a cache read far below it, so the ratio of
+ * uncached-equivalent to billed-equivalent input is an arithmetic identity over
+ * the recorded counts rather than an estimate. Whether 1.25 and 0.1 are the right
+ * constants is the operator's question. Story: #46.
+ */
+export const CACHE_CREATION_WEIGHT = 1.25;
+export const CACHE_READ_WEIGHT = 0.1;

@@ -65,10 +65,15 @@ export function p95Metric(values: ReadonlyArray<number | null | undefined>): Met
 
 /**
  * For a figure computed from sums across rounds rather than an average of
- * per-round values: cache hit rate, the caching multiplier. n is the number of
- * rounds that contributed.
+ * per-round values: cache hit rate, the caching multiplier. It takes the rounds
+ * that contributed rather than a count, so n cannot drift away from the data the
+ * value was computed from.
  */
-export function derivedMetric(value: number | null, n: number): Metric {
+export function derivedMetric(
+  value: number | null,
+  contributing: ReadonlyArray<unknown>,
+): Metric {
+  const n = contributing.length;
   if (n === 0 || value === null || !Number.isFinite(value)) {
     return EMPTY;
   }

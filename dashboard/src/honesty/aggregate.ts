@@ -1,5 +1,6 @@
 import type { RoundRow } from "@/api/types";
 import { derivedMetric, meanMetric, p95Metric, type Metric } from "./metrics";
+import { CACHE_CREATION_WEIGHT, CACHE_READ_WEIGHT } from "./thresholds";
 
 export interface RoundAggregates {
   meanWallClock: Metric;
@@ -9,35 +10,45 @@ export interface RoundAggregates {
   cachingMultiplier: Metric;
 }
 
-interface TokenSums {
+export interface TokenSums {
   input: number;
   read: number;
   create: number;
-  contributing: number;
+  /**
+   * Only the rounds carrying all three counts. A round missing one would
+   * otherwise be summed as a zero, which reads as "this round used no cache"
+   * while still counting towards n.
+   */
+  contributing: RoundRow[];
 }
 
-function tokenSums(rows: RoundRow[]): TokenSums {
+export function tokenSums(rows: RoundRow[]): TokenSums {
   let input = 0;
   let read = 0;
   let create = 0;
-  let contributing = 0;
+  const contributing: RoundRow[] = [];
+
   for (const row of rows) {
-    const rowInput = row.input_tokens;
-    const rowRead = row.cache_read_input_tokens;
-    const rowCreate = row.cache_creation_input_tokens;
-    if (rowInput === null && rowRead === null && rowCreate === null) continue;
-    input += rowInput ?? 0;
-    read += rowRead ?? 0;
-    create += rowCreate ?? 0;
-    contributing += 1;
+    if (
+      row.input_tokens === null ||
+      row.cache_read_input_tokens === null ||
+      row.cache_creation_input_tokens === null
+    ) {
+      continue;
+    }
+    input += row.input_tokens;
+    read += row.cache_read_input_tokens;
+    create += row.cache_creation_input_tokens;
+    contributing.push(row);
   }
+
   return { input, read, create, contributing };
 }
 
 export function cacheHitRate(rows: RoundRow[]): Metric {
   const { input, read, create, contributing } = tokenSums(rows);
   const total = input + read + create;
-  return derivedMetric(total > 0 ? read / total : null, total > 0 ? contributing : 0);
+  return derivedMetric(total > 0 ? read / total : null, contributing);
 }
 
 /**
@@ -47,8 +58,8 @@ export function cacheHitRate(rows: RoundRow[]): Metric {
 export function cachingMultiplier(rows: RoundRow[]): Metric {
   const { input, read, create, contributing } = tokenSums(rows);
   const total = input + read + create;
-  const billed = input + 1.25 * create + 0.1 * read;
-  return derivedMetric(billed > 0 ? total / billed : null, billed > 0 ? contributing : 0);
+  const billed = input + CACHE_CREATION_WEIGHT * create + CACHE_READ_WEIGHT * read;
+  return derivedMetric(billed > 0 ? total / billed : null, contributing);
 }
 
 export function aggregateRounds(rows: RoundRow[]): RoundAggregates {

@@ -1,15 +1,41 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 import { makeRounds } from "@/fixtures/rounds";
 import { formatCount, formatDuration } from "@/lib/format";
+import type { RoundRow } from "@/api/types";
+import { aggregateRounds, cacheHitRate, cachingMultiplier, tokenSums } from "./aggregate";
 import { Degraded } from "./Degraded";
 import { meanMetric, medianMetric, p95Metric, derivedMetric } from "./metrics";
 import { applyRange, RANGE_KEYS, rangeSince } from "./range";
 import { RangeControl } from "./RangeControl";
 import { aggregateMode, TileStrip } from "./TileStrip";
-import { Tile } from "./Tile";
-import { LOW_N_THRESHOLD, P95_MIN_N, ROLLING_ROUNDS, TILES_MIN_ROUNDS } from "./thresholds";
+import { isMoneyLabel, Tile } from "./Tile";
+import {
+  CACHE_CREATION_WEIGHT,
+  CACHE_READ_WEIGHT,
+  LIST_RATE_EQUIVALENT,
+  LOW_N_THRESHOLD,
+  P95_MIN_N,
+  ROLLING_ROUNDS,
+  TILES_MIN_ROUNDS,
+} from "./thresholds";
+
+/** Only the columns the token aggregates read; everything else is irrelevant here. */
+function tokenRow(
+  input: number | null,
+  read: number | null,
+  create: number | null,
+): RoundRow {
+  return {
+    ...makeRounds({ count: 1 })[0],
+    input_tokens: input,
+    cache_read_input_tokens: read,
+    cache_creation_input_tokens: create,
+  };
+}
 
 const seq = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
 
@@ -17,7 +43,7 @@ describe("metrics carry their own honesty state", () => {
   it("reports empty rather than zero when nothing is in range", () => {
     expect(meanMetric([])).toEqual({ kind: "empty", n: 0 });
     expect(p95Metric([null, undefined])).toEqual({ kind: "empty", n: 0 });
-    expect(derivedMetric(0.5, 0)).toEqual({ kind: "empty", n: 0 });
+    expect(derivedMetric(0.5, [])).toEqual({ kind: "empty", n: 0 });
   });
 
   it("flags an average computed over fewer than the low-n threshold", () => {
@@ -146,5 +172,146 @@ describe("degraded states name their reason", () => {
     rerender(<Degraded what="Fan-out" reason="lane-did-not-send" />);
     expect(screen.getByTestId("degraded")).toHaveAttribute("data-reason", "lane-did-not-send");
     expect(screen.getByText("not sent by this lane")).toBeInTheDocument();
+  });
+});
+
+describe("the money guard rejects the labels that would defeat it", () => {
+  const mustReject = [
+    "Total cost (USD)",
+    "Total costs",
+    "Spending per round",
+    "Spent per round",
+    "Money per round",
+    "Burn per round",
+    "Price per round",
+    "Pricing",
+    "Billed per round",
+    "Charge per round",
+    "Expense per round",
+    "Dollars per round",
+    "$ per round",
+    "USD",
+    LIST_RATE_EQUIVALENT,
+  ];
+
+  it.each(mustReject)("refuses %s", (label) => {
+    expect(isMoneyLabel(label)).toBe(true);
+    expect(() => render(<Tile label={label} metric={meanMetric(seq(30))} format={formatCount} />))
+      .toThrow(/never a headline tile/);
+  });
+
+  it("still allows the labels this slice actually renders", () => {
+    for (const label of [
+      "Mean wall clock",
+      "p95 wall clock",
+      "Permission denials per round",
+      "Cache hit rate",
+      "Caching multiplier",
+    ]) {
+      expect(isMoneyLabel(label)).toBe(false);
+    }
+  });
+});
+
+describe("the derived aggregates", () => {
+  it("computes the cache hit rate as reads over all input tokens", () => {
+    const rows = [tokenRow(1_000, 8_000, 1_000), tokenRow(1_000, 8_000, 1_000)];
+    const metric = cacheHitRate(rows);
+    // 16000 read / 20000 total
+    expect(metric).toMatchObject({ kind: "value", value: 0.8, n: 2, lowN: true });
+  });
+
+  it("computes the caching multiplier as the ruled arithmetic identity", () => {
+    const rows = [tokenRow(1_000, 8_000, 1_000)];
+    const total = 1_000 + 8_000 + 1_000;
+    const billed = 1_000 + CACHE_CREATION_WEIGHT * 1_000 + CACHE_READ_WEIGHT * 8_000;
+    const metric = cachingMultiplier(rows);
+    expect(metric).toMatchObject({ kind: "value", n: 1 });
+    if (metric.kind === "value") {
+      expect(metric.value).toBeCloseTo(total / billed, 10);
+      expect(metric.value).toBeCloseTo(10_000 / 3_050, 10);
+    }
+  });
+
+  it("drops a round missing any token column rather than summing it as a zero", () => {
+    const complete = tokenRow(1_000, 8_000, 1_000);
+    const partial = tokenRow(1_000, null, 1_000);
+
+    const sums = tokenSums([complete, partial]);
+    expect(sums.contributing).toHaveLength(1);
+    expect(sums.read).toBe(8_000);
+
+    // The partial round must not drag the rate down while still counting in n.
+    expect(cacheHitRate([complete, partial])).toEqual(cacheHitRate([complete]));
+    expect(cacheHitRate([complete, partial])).toMatchObject({ n: 1 });
+  });
+
+  it("reports empty rather than zero when no round carries token counts", () => {
+    expect(cacheHitRate([tokenRow(null, null, null)])).toEqual({ kind: "empty", n: 0 });
+    expect(cachingMultiplier([])).toEqual({ kind: "empty", n: 0 });
+  });
+
+  it("ties n to the rows behind the value, not to a caller-supplied count", () => {
+    const rows = [tokenRow(1_000, 8_000, 1_000), tokenRow(1_000, null, 1_000)];
+    const metric = cacheHitRate(rows);
+    expect(metric.n).toBe(tokenSums(rows).contributing.length);
+  });
+
+  it("assembles the five tiles the rounds page renders", () => {
+    const rows = makeRounds({ count: 25 });
+    const stats = aggregateRounds(rows);
+    expect(stats.meanWallClock).toMatchObject({ kind: "value", n: 25, lowN: false });
+    expect(stats.p95WallClock).toMatchObject({ kind: "value", n: 25 });
+    expect(stats.denialsPerRound).toMatchObject({ kind: "value", n: 25 });
+    expect(stats.cacheHitRate).toMatchObject({ kind: "value", n: 25 });
+    expect(stats.cachingMultiplier).toMatchObject({ kind: "value", n: 25 });
+  });
+
+  it("suppresses p95 when the durations behind it are too few, not when the rows are", () => {
+    const rows = makeRounds({ count: 25 }).map((row, i) =>
+      i < 20 ? { ...row, duration_ms: null } : row,
+    );
+    expect(aggregateRounds(rows).p95WallClock).toMatchObject({
+      kind: "substituted",
+      n: 5,
+      shown: "max",
+    });
+  });
+});
+
+describe("the all-time range does not overclaim", () => {
+  it("says so when the read route truncated the page", () => {
+    const rows = makeRounds({ count: 5 });
+    expect(applyRange(rows, "all", new Date(), false).label).toBe("all recorded rounds");
+    expect(applyRange(rows, "all", new Date(), true).label).toBe(
+      "the most recent rounds, not all of them",
+    );
+  });
+});
+
+describe("a violated ruling is visible, not a white screen", () => {
+  it("catches the money-label refusal and says what happened", () => {
+    // React logs the caught error; silence it so the suite output stays readable.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      render(
+        <ErrorBoundary>
+          <Tile label="Total costs" metric={meanMetric(seq(30))} format={formatCount} />
+        </ErrorBoundary>,
+      );
+      expect(screen.getByText("The dashboard stopped rendering")).toBeInTheDocument();
+      expect(screen.getByText(/never a headline tile/)).toBeInTheDocument();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("renders its children untouched when nothing throws", () => {
+    render(
+      <ErrorBoundary>
+        <Tile label="Mean wall clock" metric={meanMetric(seq(30))} format={formatDuration} />
+      </ErrorBoundary>,
+    );
+    expect(screen.getByTestId("tile-n")).toHaveTextContent("n = 30");
   });
 });

@@ -43,6 +43,11 @@ const features = tableFeatures({
 
 const helper = createColumnHelper<typeof features, RoundRow>();
 
+/** sortUndefined never fires on a null, and every nullable column in the store is null. */
+function nullToUndefined(value: number | null): number | undefined {
+  return value === null ? undefined : value;
+}
+
 const columns = helper.columns([
   helper.display({
     id: "expander",
@@ -80,7 +85,12 @@ const columns = helper.columns([
     header: "Repository",
     cell: ({ row }) => <span className="whitespace-nowrap">{row.original.repository}</span>,
   }),
-  helper.accessor("pr_number", {
+  // Every nullable numeric column accesses through nullToUndefined: the store writes
+  // null and sortUndefined only ever sees undefined, so without it a nulled column
+  // sorts as the smallest value and a round with no wall clock reads as the fastest.
+  helper.accessor((row) => nullToUndefined(row.pr_number), {
+    id: "pr_number",
+    sortUndefined: "last",
     header: "PR",
     cell: ({ row }) =>
       row.original.pr_url && row.original.pr_number !== null ? (
@@ -105,18 +115,23 @@ const columns = helper.columns([
         <span className="text-muted-foreground">—</span>
       ),
   }),
-  helper.accessor("duration_ms", {
+  helper.accessor((row) => nullToUndefined(row.duration_ms), {
+    id: "duration_ms",
     header: "Wall clock",
     sortUndefined: "last",
     cell: ({ row }) => (
       <span className="tabular">{orDash(row.original.duration_ms, formatDuration)}</span>
     ),
   }),
-  helper.accessor("num_turns", {
+  helper.accessor((row) => nullToUndefined(row.num_turns), {
+    id: "num_turns",
+    sortUndefined: "last",
     header: "Turns",
     cell: ({ row }) => <span className="tabular">{orDash(row.original.num_turns)}</span>,
   }),
-  helper.accessor("permission_denials", {
+  helper.accessor((row) => nullToUndefined(row.permission_denials), {
+    id: "permission_denials",
+    sortUndefined: "last",
     header: "Denials",
     cell: ({ row }) => {
       const denials = row.original.permission_denials;
@@ -128,13 +143,25 @@ const columns = helper.columns([
       );
     },
   }),
-  helper.accessor((row) => (row.input_tokens ?? 0) + (row.output_tokens ?? 0), {
-    id: "billable_tokens",
-    header: "In + out",
-    cell: ({ getValue }) => <span className="tabular">{formatTokens(getValue())}</span>,
-  }),
-  helper.accessor("total_cost_usd", {
+  helper.accessor(
+    (row) =>
+      row.input_tokens === null || row.output_tokens === null
+        ? undefined
+        : row.input_tokens + row.output_tokens,
+    {
+      id: "billable_tokens",
+      sortUndefined: "last",
+      header: "In + out",
+      // Summing with ?? 0 would render a round that recorded no counts as the
+      // lightest one on the page, which is the failure TileStrip exists to name.
+      cell: ({ getValue }) => (
+        <span className="tabular">{orDash(getValue() ?? null, formatTokens)}</span>
+      ),
+    },
+  ),
+  helper.accessor((row) => nullToUndefined(row.total_cost_usd), {
     id: "total_cost_usd",
+    sortUndefined: "last",
     // Never promoted to a tile: on a subscription seat this is counterfactual and
     // only survives as a stable proxy for compute weight (#46).
     header: () => (

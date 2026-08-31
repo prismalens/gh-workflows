@@ -4,7 +4,20 @@ import { cn } from "@/lib/utils";
 import type { Formatter } from "@/lib/format";
 import { formatCount } from "@/lib/format";
 import type { Metric } from "./metrics";
-import { LOW_N_THRESHOLD, MONEY_LABEL_PATTERN, P95_MIN_N } from "./thresholds";
+import {
+  LIST_RATE_EQUIVALENT,
+  LOW_N_THRESHOLD,
+  MONEY_LABEL_PATTERN,
+  P95_MIN_N,
+} from "./thresholds";
+
+/** Exported so the guard can be asserted without rendering a tile. */
+export function isMoneyLabel(label: string): boolean {
+  return (
+    MONEY_LABEL_PATTERN.test(label) ||
+    label.toLowerCase().includes(LIST_RATE_EQUIVALENT.toLowerCase())
+  );
+}
 
 export interface TileProps {
   label: string;
@@ -21,7 +34,7 @@ export interface TileProps {
  * of each screen's hands.
  */
 export function Tile({ label, metric, format, hint, className }: TileProps) {
-  if (MONEY_LABEL_PATTERN.test(label)) {
+  if (isMoneyLabel(label)) {
     // total_cost_usd is a sortable column labelled list-rate equivalent, never a
     // headline: it is counterfactual on a subscription seat (#46).
     throw new Error(

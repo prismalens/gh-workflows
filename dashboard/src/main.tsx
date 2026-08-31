@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 
 import { ApiProvider, defaultApi } from "./api/provider";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { createAppRouter } from "./router";
 import "./styles.css";
 
@@ -22,10 +23,12 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <ApiProvider api={defaultApi}>
-        <RouterProvider router={router} />
-      </ApiProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <ApiProvider api={defaultApi}>
+          <RouterProvider router={router} />
+        </ApiProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );
