@@ -18,6 +18,8 @@ export function makeFixtureApi(rows: RoundRow[] = FIXTURE_ROUNDS): TelemetryApi 
   });
 
   return {
+    fixtures: true,
+
     async fetchRuns(query: RunsQuery = {}): Promise<RunsResponse> {
       const includeBlobs = query.include === "blobs";
       let limit = query.limit ?? 100;

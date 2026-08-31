@@ -1,5 +1,6 @@
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 
+import { useApi } from "@/api/provider";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 export const rootRoute = createRootRoute({
@@ -7,9 +8,29 @@ export const rootRoute = createRootRoute({
   notFoundComponent: NotFound,
 });
 
+/**
+ * A fixtures build shows 64 invented rounds. Leaving that unmarked is the same
+ * dishonesty the rest of this layer exists to prevent, so it is a persistent
+ * banner rather than a dev-only console line.
+ */
+function FixtureBanner() {
+  const api = useApi();
+  if (!api.fixtures) return null;
+  return (
+    <div
+      data-testid="fixture-banner"
+      role="alert"
+      className="bg-[var(--warning)] px-5 py-1.5 text-center text-xs font-medium text-black"
+    >
+      Fixture data. Every round on this page is invented from the schema, not read from D1.
+    </div>
+  );
+}
+
 function RootLayout() {
   return (
     <div className="min-h-screen bg-background text-foreground">
+      <FixtureBanner />
       <header className="border-b border-border">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-4 px-5 py-3">
           <Link to="/rounds" className="text-sm font-semibold tracking-tight">

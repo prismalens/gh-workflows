@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { lookupRound, MAX_LIMIT_WITH_BLOBS, runsUrl } from "./client";
+import { ApiError, httpApi, lookupRound, MAX_LIMIT_WITH_BLOBS, runsUrl } from "./client";
 import { CSV_COLUMNS, roundsToCsv } from "./csv";
 import { parsePerModelUsage, parseRawResult, parseSubagentStats } from "./blobs";
 import { makeFixtureApi } from "@/fixtures/api";
@@ -136,5 +136,78 @@ describe("CSV export", () => {
     const csv = roundsToCsv([{ ...rows[0], repository: "=SUM(A1:A9)", model: 'a"b,c' }]);
     expect(csv).toContain("'=SUM(A1:A9)");
     expect(csv).toContain('"a""b,c"');
+  });
+});
+
+describe("an error names the failure it actually was", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const respond = (init: ResponseInit & { body?: string; type?: string }) => {
+    // An opaqueredirect is status 0, which the Response constructor refuses, so
+    // both fields are stamped on afterwards the way the platform reports them.
+    const { status, type, body, ...rest } = init;
+    const res = new Response(body ?? "", { ...rest, status: status === 0 ? 200 : status });
+    if (status === 0) Object.defineProperty(res, "status", { value: 0 });
+    if (type) Object.defineProperty(res, "type", { value: type });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(res));
+  };
+
+  const kindOf = async (): Promise<ApiError> => {
+    try {
+      await httpApi.fetchSummary();
+    } catch (error) {
+      return error as ApiError;
+    }
+    throw new Error("expected fetchSummary to reject");
+  };
+
+  it("does not tell the operator to sign in again when the route 404s", async () => {
+    respond({ status: 404, body: "<html>not found</html>", headers: { "content-type": "text/html" } });
+    const error = await kindOf();
+    expect(error.kind).toBe("http");
+    expect(error.status).toBe(404);
+  });
+
+  it("does not tell the operator to sign in again on an edge 502", async () => {
+    respond({ status: 502, body: "<html>bad gateway</html>", headers: { "content-type": "text/html" } });
+    expect((await kindOf()).kind).toBe("http");
+  });
+
+  it("names a 403 from Access as unauthenticated", async () => {
+    respond({
+      status: 403,
+      body: JSON.stringify({ error: "forbidden" }),
+      headers: { "content-type": "application/json" },
+    });
+    expect((await kindOf()).kind).toBe("unauthenticated");
+  });
+
+  it("names an Access login page served 200 as unauthenticated", async () => {
+    respond({ status: 200, body: "<html>sign in</html>", headers: { "content-type": "text/html" } });
+    expect((await kindOf()).kind).toBe("unauthenticated");
+  });
+
+  it("names the Access redirect as unauthenticated rather than a network fault", async () => {
+    // redirect: "manual" surfaces a cross-origin 302 as an opaqueredirect, which
+    // following would instead have thrown a CORS TypeError into the network branch.
+    respond({ status: 0, type: "opaqueredirect" });
+    expect((await kindOf()).kind).toBe("unauthenticated");
+  });
+
+  it("keeps a genuine transport failure in the network branch", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    expect((await kindOf()).kind).toBe("network");
+  });
+
+  it("requests without following redirects", async () => {
+    respond({
+      status: 200,
+      body: "{}",
+      headers: { "content-type": "application/json" },
+    });
+    await httpApi.fetchSummary();
+    expect(vi.mocked(fetch).mock.calls[0][1]).toMatchObject({ redirect: "manual" });
   });
 });

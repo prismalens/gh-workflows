@@ -49,24 +49,29 @@ async function getJson<T>(path: string): Promise<T> {
     res = await fetch(path, {
       headers: { accept: "application/json" },
       credentials: "same-origin",
-      redirect: "follow",
+      // Access answers an expired session with a cross-origin 302 to the IdP.
+      // Following it fails CORS and surfaces as an indistinguishable TypeError,
+      // so the redirect is caught here instead and named for what it is.
+      redirect: "manual",
     });
   } catch (cause) {
     throw new ApiError(`could not reach the telemetry Worker: ${String(cause)}`, 0, "network");
   }
 
-  const contentType = res.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) {
+  if (res.type === "opaqueredirect" || res.status === 0) {
     throw new ApiError(
-      "the Worker answered with a non-JSON body, which is what Cloudflare Access serves when the session has expired",
+      "the Worker redirected this request, which is what Cloudflare Access does when the session has expired",
       res.status,
       "unauthenticated",
     );
   }
 
-  if (res.status === 403 || res.status === 401) {
+  // Status is read before content-type, or a 404 or an edge 502 with an HTML body
+  // would tell the operator to sign in again.
+  if (res.status === 401 || res.status === 403) {
     throw new ApiError("Cloudflare Access refused this request", res.status, "unauthenticated");
   }
+
   if (!res.ok) {
     let detail = "";
     try {
@@ -76,6 +81,15 @@ async function getJson<T>(path: string): Promise<T> {
       detail = "";
     }
     throw new ApiError(`GET ${path} returned ${res.status}${detail}`, res.status, "http");
+  }
+
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new ApiError(
+      "the Worker answered 200 with a non-JSON body, which is the Access login page",
+      res.status,
+      "unauthenticated",
+    );
   }
 
   try {
@@ -88,6 +102,8 @@ async function getJson<T>(path: string): Promise<T> {
 export interface TelemetryApi {
   fetchRuns(query?: RunsQuery): Promise<RunsResponse>;
   fetchSummary(): Promise<SummaryResponse>;
+  /** Set only by the fixture table, so the UI can say the rounds are invented. */
+  readonly fixtures?: boolean;
 }
 
 export const httpApi: TelemetryApi = {

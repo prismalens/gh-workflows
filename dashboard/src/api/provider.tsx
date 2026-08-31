@@ -4,8 +4,10 @@ import { makeFixtureApi } from "@/fixtures/api";
 import { httpApi, type TelemetryApi } from "./client";
 
 /**
- * VITE_FIXTURES=1 swaps the Worker for the in-memory fixture table. It folds to
- * a literal at build time, so a production bundle keeps neither branch's dead code.
+ * VITE_FIXTURES=1 swaps the Worker for the in-memory fixture table. The condition
+ * folds to a literal at build time but the module is retained anyway, because
+ * fixtures/rounds.ts calls makeRounds() at module scope; no live path reaches it
+ * in a normal build. A fixtures build says so on screen, see FixtureBanner.
  */
 export const defaultApi: TelemetryApi =
   import.meta.env.VITE_FIXTURES === "1" ? makeFixtureApi() : httpApi;
