@@ -76,11 +76,9 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Typecheck
-        run: npx tsc -b
-
       - name: Unit and route tests
         run: npm test
 
-      - name: Build
+      # `npm run build` is `tsc -b && vite build`, so this typechecks too.
+      - name: Typecheck and build
         run: npm run build

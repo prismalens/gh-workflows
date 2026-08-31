@@ -1,18 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  createMemoryHistory,
-  createRouter,
-  RouterProvider,
-  type AnyRoute,
-} from "@tanstack/react-router";
+import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 import { render, type RenderResult } from "@testing-library/react";
 
 import type { TelemetryApi } from "@/api/client";
 import { ApiProvider } from "@/api/provider";
 import { makeFixtureApi } from "@/fixtures/api";
-import { roundDetailRoute } from "@/routes/roundDetail";
-import { roundsRoute } from "@/routes/rounds";
-import { rootRoute } from "@/routes/root";
+import { routeTree } from "@/router";
 
 export interface RenderRouteOptions {
   path: string;
@@ -24,7 +17,8 @@ export interface RenderRouteOptions {
  * definitions, search validation and query hooks the browser does.
  */
 export function renderRoute({ path, api = makeFixtureApi() }: RenderRouteOptions): RenderResult {
-  const routeTree = rootRoute.addChildren([roundsRoute, roundDetailRoute] as unknown as AnyRoute[]);
+  // The app's own tree, index redirect included, so a test cannot pass against a
+  // route graph the browser never sees.
   const router = createRouter({
     routeTree,
     history: createMemoryHistory({ initialEntries: [path] }),
@@ -36,8 +30,7 @@ export function renderRoute({ path, api = makeFixtureApi() }: RenderRouteOptions
   return render(
     <QueryClientProvider client={queryClient}>
       <ApiProvider api={api}>
-        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-        <RouterProvider router={router as never} />
+        <RouterProvider router={router} />
       </ApiProvider>
     </QueryClientProvider>,
   );

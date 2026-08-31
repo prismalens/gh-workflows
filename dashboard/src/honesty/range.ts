@@ -44,12 +44,25 @@ export interface ResolvedRange {
  * Narrows already-fetched rows to the selected range. The rolling window is the
  * last 50 rounds or 7 days, whichever holds more rounds, and which one won has
  * to reach the label because the two mean different things.
+ *
+ * `truncated` says the read route had more rows than one page, in which case the
+ * all-time range is not all time and must not claim to be.
  */
-export function applyRange(rows: RoundRow[], range: RangeKey, now: Date): ResolvedRange {
+export function applyRange(
+  rows: RoundRow[],
+  range: RangeKey,
+  now: Date,
+  truncated = false,
+): ResolvedRange {
   const sorted = [...rows].sort((a, b) => b.recorded_at.localeCompare(a.recorded_at));
 
   if (range === "all") {
-    return { rows: sorted, label: "all recorded rounds" };
+    return {
+      rows: sorted,
+      label: truncated
+        ? "the most recent rounds, not all of them"
+        : "all recorded rounds",
+    };
   }
 
   if (range === "30d" || range === "90d") {

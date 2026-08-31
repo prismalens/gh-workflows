@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { cleanup, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { makeFixtureApi } from "@/fixtures/api";
@@ -12,6 +12,26 @@ const now = new Date();
 const fullApi = makeFixtureApi(makeRounds({ count: 64, now }));
 const sparseApi = makeFixtureApi(makeRounds({ count: 6, now, seed: 11 }));
 const emptyApi = makeFixtureApi([]);
+
+describe("/", () => {
+  it("redirects to the rounds table", async () => {
+    renderRoute({ path: "/", api: fullApi });
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rolling" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+});
+
+describe("a fixtures build says the rounds are invented", () => {
+  it("shows a persistent banner whenever the fixture table is behind the page", async () => {
+    renderRoute({ path: "/rounds", api: fullApi });
+    expect(await screen.findByTestId("fixture-banner")).toHaveTextContent(
+      /every round on this page is invented/i,
+    );
+  });
+});
 
 describe("/rounds", () => {
   it("renders the table against fixture data", async () => {
@@ -141,5 +161,65 @@ describe("/rounds/$sessionId", () => {
   it("explains the bounded scan when the round is outside the readable window", async () => {
     renderRoute({ path: "/rounds/does-not-exist", api });
     expect(await screen.findByText(/not in the readable window/)).toBeInTheDocument();
+  });
+});
+
+describe("a nulled column is absent, never smallest", () => {
+  // duration_ms comes through unguarded from the workflow, so null is live data.
+  const rows = makeRounds({ count: 12, now, seed: 5 });
+  const withNulls = rows.map((row, i) =>
+    i < 4
+      ? {
+          ...row,
+          duration_ms: null,
+          num_turns: null,
+          permission_denials: null,
+          input_tokens: null,
+          output_tokens: null,
+          total_cost_usd: null,
+        }
+      : row,
+  );
+  const api = makeFixtureApi(withNulls);
+
+  const wallClockColumn = () =>
+    screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => row.querySelectorAll("td")[5]?.textContent?.trim() ?? "");
+
+  it("sorts nulled wall clocks last, ascending and descending", async () => {
+    renderRoute({ path: "/rounds?sort=duration_ms&dir=asc", api });
+    await screen.findByRole("table");
+    const asc = wallClockColumn();
+    expect(asc.slice(-4)).toEqual(["—", "—", "—", "—"]);
+    expect(asc[0]).not.toBe("—");
+
+    cleanup();
+    renderRoute({ path: "/rounds?sort=duration_ms&dir=desc", api });
+    await screen.findByRole("table");
+    const desc = wallClockColumn();
+    expect(desc.slice(-4)).toEqual(["—", "—", "—", "—"]);
+  });
+
+  it("renders a missing token count as absent rather than as the lightest round", async () => {
+    renderRoute({ path: "/rounds?sort=billable_tokens&dir=asc", api });
+    await screen.findByRole("table");
+    const tokens = screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => row.querySelectorAll("td")[8]?.textContent?.trim() ?? "");
+    expect(tokens.slice(-4)).toEqual(["—", "—", "—", "—"]);
+    expect(tokens).not.toContain("0");
+  });
+
+  it("sorts a nulled list-rate equivalent last too", async () => {
+    renderRoute({ path: "/rounds?sort=total_cost_usd&dir=asc", api });
+    await screen.findByRole("table");
+    const costs = screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => row.querySelectorAll("td")[9]?.textContent?.trim() ?? "");
+    expect(costs.slice(-4)).toEqual(["—", "—", "—", "—"]);
   });
 });

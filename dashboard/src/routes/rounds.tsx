@@ -54,9 +54,10 @@ function RoundsPage() {
   );
 
   const fetched = rounds.data?.rows ?? EMPTY_ROWS;
+  const truncated = rounds.data?.next_cursor != null;
   const windowed = useMemo(
-    () => applyRange(fetched, search.range, now),
-    [fetched, search.range, now],
+    () => applyRange(fetched, search.range, now, truncated),
+    [fetched, search.range, now, truncated],
   );
   const stats = useMemo(() => aggregateRounds(windowed.rows), [windowed.rows]);
   const roundTypes = useMemo(() => distinctRoundTypes(fetched), [fetched]);
@@ -163,7 +164,7 @@ function RoundsPage() {
             <RoundsTable rows={windowed.rows} sorting={sorting} onSortingChange={setSorting} />
           )}
 
-          {rounds.data?.next_cursor && (
+          {truncated && (
             <p className="text-xs text-muted-foreground">
               Showing the most recent {MAX_LIMIT} rounds the read route returns in one page. Older
               rounds exist and are not counted in any tile above.
