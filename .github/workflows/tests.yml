@@ -52,6 +52,10 @@ jobs:
       - name: Telemetry wave 2 record and lane event behaviour
         run: python3 tests/test-telemetry-record.py
 
+      # Extracts and runs the real script out of telemetry-canary.yml. Story: #87.
+      - name: Telemetry canary behaviour
+        run: python3 tests/test-telemetry-canary.py
+
       # Version pinned: an actionlint release must not turn a green branch red on its own.
       - name: actionlint
         run: |
