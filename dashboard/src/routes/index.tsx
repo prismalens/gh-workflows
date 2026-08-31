@@ -145,7 +145,14 @@ function OverviewPage() {
             Nothing was recorded over {windowed.label}
             {search.repository ? ` for ${search.repository}` : ""}. Not zeros: either nothing ran,
             or nothing was recorded.{" "}
-            <Link to="/" search={{ range: "all" }} className="underline underline-offset-4">
+            {/* Functional form, not an object: an object replaces the whole search
+                state, and this link would then widen the repository filter as well
+                as the range while claiming to widen only time. */}
+            <Link
+              to="/"
+              search={(prev) => ({ ...prev, range: "all" })}
+              className="underline underline-offset-4"
+            >
               Widen to all time
             </Link>
             .

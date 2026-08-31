@@ -1,4 +1,4 @@
-import { cleanup, screen, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { makeFixtureApi } from "@/fixtures/api";
@@ -103,6 +103,17 @@ describe("/ overview: the altitude ruling", () => {
     }
   });
 
+  it("widens only the range, keeping the repository filter it names in the copy", async () => {
+    // The alert says "for <repo>", so the remedy beside it must not quietly widen
+    // the repository filter too. An object-form Link search would replace the whole
+    // search state and drop it.
+    renderRoute({ path: "/?range=90d&repository=prismalens%2Fsreforge", api: emptyApi });
+    const widen = await screen.findByRole("link", { name: "Widen to all time" });
+    const href = widen.getAttribute("href") ?? "";
+    expect(href).toContain("range=all");
+    expect(decodeURIComponent(href)).toContain("repository=prismalens/sreforge");
+  });
+
   it("says no rounds in range rather than drawing empty charts", async () => {
     renderRoute({ path: "/", api: emptyApi });
     expect(await screen.findByText("No rounds in range")).toBeInTheDocument();
@@ -143,6 +154,58 @@ describe("/repos", () => {
     const table = await screen.findByRole("table");
     expect(within(table).getByText("prismalens/sreforge")).toBeInTheDocument();
     expect(within(table).getAllByText(/no round over/).length).toBeGreaterThan(0);
+  });
+
+  it("waits for the all-time list before drawing a denominator it would get wrong", async () => {
+    // The two queries resolve independently and rounds win the race. Without the
+    // gate, the render that commits the rounds data draws a list built from the
+    // window alone: every quiet repository dropped and the count under-reporting,
+    // with nothing on screen saying so.
+    const base = makeFixtureApi(makeRounds({ count: 64, now }));
+    let roundsSettled = false;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slowSummary = {
+      ...base,
+      fetchRuns: async (query?: Parameters<typeof base.fetchRuns>[0]) => {
+        const page = await base.fetchRuns(query);
+        roundsSettled = true;
+        return page;
+      },
+      fetchSummary: async () => {
+        await held;
+        return base.fetchSummary();
+      },
+    };
+
+    renderRoute({ path: "/repos", api: slowSummary });
+    await waitFor(() => expect(roundsSettled).toBe(true));
+    // Let React commit the rounds result. This is the render the gate has to hold.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Loading repositories")).toBeInTheDocument();
+
+    release();
+    const table = await screen.findByRole("table");
+    expect(within(table).getByText("prismalens/sreforge")).toBeInTheDocument();
+  });
+
+  it("surfaces a failed summary instead of a silently short list", async () => {
+    const base = makeFixtureApi(makeRounds({ count: 64, now }));
+    const brokenSummary = {
+      ...base,
+      fetchSummary: async () => {
+        throw new Error("summary route is down");
+      },
+    };
+
+    renderRoute({ path: "/repos", api: brokenSummary });
+    expect(await screen.findByText("Could not load repositories")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
   it("says the denominator is what has posted, not what is configured", async () => {

@@ -51,11 +51,15 @@ function ReposPage() {
     [fetched, search.range, now, truncated],
   );
 
-  const everPosted = summary.data?.repositories ?? [];
+  // The all-time repository list is this page's denominator, not a decoration.
+  // Falling back to [] while it loads would drop every repository that posted
+  // outside the window, which is the exact confusion the page exists to prevent:
+  // a quiet repository would vanish and the count would silently under-report.
+  // So the render waits for it below rather than defaulting it.
+  const everPosted = summary.data?.repositories;
   const repos = useMemo(
-    () => summariseRepos(windowed.rows, everPosted),
-    // everPosted is a fresh array each render; its contents are what matter.
-    [windowed.rows, everPosted.join("|")],
+    () => summariseRepos(windowed.rows, everPosted ?? []),
+    [windowed.rows, everPosted],
   );
   const active = repos.filter((repo) => repo.rounds > 0).length;
   const denials = repos.reduce((sum, repo) => sum + repo.denials, 0);
@@ -70,10 +74,13 @@ function ReposPage() {
         />
       </div>
 
-      {rounds.isPending ? (
+      {rounds.isPending || summary.isPending ? (
         <LoadingRows label="Loading repositories" />
-      ) : rounds.isError ? (
-        <QueryError error={rounds.error} title="Could not load repositories" />
+      ) : rounds.isError || summary.isError ? (
+        <QueryError
+          error={rounds.error ?? summary.error}
+          title="Could not load repositories"
+        />
       ) : (
         <>
           <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">

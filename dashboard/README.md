@@ -21,6 +21,11 @@ capturable yet.
 
 ## Commands
 
+Run from `dashboard/`. The suite needs **Node `^22.22.2 || ^24.15.0 || >=26.0.0`**, which is
+jsdom 30's floor. On an older Node, `npm ci` prints one `EBADENGINE` warning and the suite still
+runs, so a green result there proves less than it looks like. CI pins Node 24, which resolves
+above the floor.
+
 ```bash
 npm ci                      # install; the lockfile is committed
 npm run build               # tsc -b && vite build, into dist/
@@ -30,7 +35,8 @@ npm run dev                 # Vite dev server, proxying /api to 127.0.0.1:8787
 VITE_FIXTURES=1 npm run dev # same, but against the in-memory fixture table
 ```
 
-`dist/` is gitignored. A deploy has to build it first:
+`dist/` is gitignored. A deploy has to build it first. Unlike the block above, these run
+**from the repository root**, not from `dashboard/`:
 
 ```bash
 npm --prefix dashboard ci
