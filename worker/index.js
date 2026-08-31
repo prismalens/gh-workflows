@@ -2,6 +2,14 @@ let cachedCerts = null;
 let certsExpiry = 0;
 let lastRefetchTime = 0;
 
+// D1 refuses a row over 2,000,000 bytes. Every stored column is re-serialised
+// from this body and re-serialising never grows it, so half the row limit keeps
+// the insert inside D1's ceiling with the other half as headroom. Picking the
+// bound from the row limit is what makes an over-size payload a 413 here rather
+// than a 500 from the insert. Story: #60.
+const D1_MAX_ROW_BYTES = 2_000_000;
+const MAX_INGEST_BYTES = D1_MAX_ROW_BYTES / 2;
+
 const READ_HEADERS = {
   "content-type": "application/json",
   "cache-control": "no-store",
@@ -41,18 +49,56 @@ function serializeJson(val, fallback) {
   return typeof val === "string" ? val : JSON.stringify(val);
 }
 
+// crypto.subtle.timingSafeEqual is a Workers extension, not a web standard, so it
+// is probed rather than assumed: an older compatibility date or a non-Workers
+// runtime running this file falls through to the XOR loop. Story: #60.
 function timingSafeEqual(a, b) {
   const enc = new TextEncoder();
   const aBytes = enc.encode(a);
   const bBytes = enc.encode(b);
+  // The primitive throws on a length mismatch, and length is not a secret here.
   if (aBytes.length !== bBytes.length) {
     return false;
+  }
+  if (typeof crypto?.subtle?.timingSafeEqual === "function") {
+    return crypto.subtle.timingSafeEqual(aBytes, bBytes);
   }
   let acc = 0;
   for (let i = 0; i < aBytes.length; i++) {
     acc |= aBytes[i] ^ bBytes[i];
   }
   return acc === 0;
+}
+
+/**
+ * Reads the body, stopping at `max` bytes. Returns null once the stream goes
+ * past the bound. `request.text()` would buffer the whole thing first, so a
+ * caller omitting content-length could make the Worker hold an unbounded body
+ * in memory before the size check ever ran. Story: #60.
+ */
+async function readBoundedText(request, max) {
+  if (!request.body) {
+    return "";
+  }
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let seen = 0;
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      seen += value.byteLength;
+      if (seen > max) {
+        await reader.cancel();
+        return null;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return text + decoder.decode();
 }
 
 function base64UrlDecode(str) {
@@ -462,7 +508,6 @@ async function handleIngest(request, env) {
     return new Response(null, { status: 401 });
   }
 
-  const MAX_INGEST_BYTES = 256 * 1024;
   const contentLength = request.headers.get("content-length");
   if (contentLength !== null) {
     const length = parseInt(contentLength, 10);
@@ -473,12 +518,14 @@ async function handleIngest(request, env) {
 
   let rawBody;
   try {
-    rawBody = await request.text();
+    rawBody = await readBoundedText(request, MAX_INGEST_BYTES);
   } catch {
     return new Response(null, { status: 400 });
   }
 
-  if (new TextEncoder().encode(rawBody).length > MAX_INGEST_BYTES) {
+  // null means the stream went past the bound, which a caller omitting
+  // content-length is otherwise free to do.
+  if (rawBody === null) {
     return new Response(null, { status: 413 });
   }
 

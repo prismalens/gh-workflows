@@ -22,6 +22,13 @@
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
   --radius: 0.5rem;
+  /* Categorical series. Hue-separated rather than shades of one colour, because
+     round types are categories and nothing about them is ordered. */
+  --chart-1: oklch(0.55 0.16 250);
+  --chart-2: oklch(0.6 0.13 165);
+  --chart-3: oklch(0.66 0.15 70);
+  --chart-4: oklch(0.55 0.18 320);
+  --chart-5: oklch(0.6 0.17 25);
 }
 
 .dark {
@@ -43,6 +50,11 @@
   --border: oklch(0.3 0.006 285);
   --input: oklch(0.3 0.006 285);
   --ring: oklch(0.55 0.01 285);
+  --chart-1: oklch(0.7 0.15 250);
+  --chart-2: oklch(0.75 0.13 165);
+  --chart-3: oklch(0.8 0.14 75);
+  --chart-4: oklch(0.72 0.16 320);
+  --chart-5: oklch(0.72 0.16 25);
 }
 
 @theme inline {
@@ -64,6 +76,11 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);

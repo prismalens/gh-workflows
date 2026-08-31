@@ -1,8 +1,11 @@
+import type { ReactNode } from "react";
+
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { Formatter } from "@/lib/format";
 import { formatCount } from "@/lib/format";
+import { Approximate } from "./Degraded";
 import type { Metric } from "./metrics";
 import {
   LIST_RATE_EQUIVALENT,
@@ -69,6 +72,54 @@ export function Tile({ label, metric, format, hint, className }: TileProps) {
           )}
           {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+export interface CountTileProps {
+  label: string;
+  /** The count itself. It is its own n, which is why there is no Metric here. */
+  count: number;
+  /** What the count is made of, e.g. the split by round type. */
+  detail?: ReactNode;
+  /** The volume-dependent line: an all-time cumulative or a per-day mean. */
+  support?: ReactNode;
+  /** Why the count is an approximation, if it is. Renders the approximate badge. */
+  approximate?: string;
+  className?: string;
+}
+
+/**
+ * A count headline. Separate from Tile because a count is true at any n and an
+ * average is not: a count of 4 rounds is exactly 4 rounds, so it neither carries
+ * a low-n flag nor collapses into the round table the way an aggregate does. The
+ * money guard still applies, because a sum of dollars is a count of nothing (#46).
+ */
+export function CountTile({
+  label,
+  count,
+  detail,
+  support,
+  approximate,
+  className,
+}: CountTileProps) {
+  if (isMoneyLabel(label)) {
+    throw new Error(
+      `CountTile refuses the label "${label}": money is a table column, never a headline tile.`,
+    );
+  }
+
+  return (
+    <Card className={cn("min-w-0", className)}>
+      <CardContent className="flex flex-col gap-1 p-4" data-testid="count-tile">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-xs font-medium text-muted-foreground">{label}</span>
+          {approximate && <Approximate why={approximate} />}
+        </div>
+        <span className="tabular text-3xl font-semibold">{formatCount(count)}</span>
+        {detail && <span className="text-xs text-muted-foreground">{detail}</span>}
+        {support && <span className="text-xs text-muted-foreground">{support}</span>}
       </CardContent>
     </Card>
   );

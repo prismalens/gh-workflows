@@ -2,6 +2,7 @@ import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 
 import { useApi } from "@/api/provider";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { DEFAULT_RANGE } from "@/honesty/range";
 
 export const rootRoute = createRootRoute({
   component: RootLayout,
@@ -27,23 +28,38 @@ function FixtureBanner() {
   );
 }
 
+const NAV = [
+  { to: "/", label: "Overview" },
+  { to: "/rounds", label: "Rounds" },
+  { to: "/repos", label: "Repos" },
+] as const;
+
 function RootLayout() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <FixtureBanner />
       <header className="border-b border-border">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-4 px-5 py-3">
-          <Link to="/rounds" className="text-sm font-semibold tracking-tight">
+          <Link
+            to="/"
+            search={{ range: DEFAULT_RANGE }}
+            className="text-sm font-semibold tracking-tight"
+          >
             Assayer
           </Link>
           <nav className="flex items-center gap-3 text-sm text-muted-foreground">
-            <Link
-              to="/rounds"
-              className="hover:text-foreground"
-              activeProps={{ className: "text-foreground" }}
-            >
-              Rounds
-            </Link>
+            {NAV.map((item) => (
+              <Link
+                key={item.to}
+                to={item.to}
+                search={{ range: DEFAULT_RANGE }}
+                className="hover:text-foreground"
+                activeProps={{ className: "text-foreground" }}
+                activeOptions={{ exact: item.to === "/" }}
+              >
+                {item.label}
+              </Link>
+            ))}
           </nav>
           <span className="ml-auto text-xs text-muted-foreground">
             Review round telemetry, prismalens/gh-workflows
@@ -62,10 +78,10 @@ function NotFound() {
     <Alert variant="muted">
       <AlertTitle>No such page</AlertTitle>
       <AlertDescription>
-        This build ships the rounds table and the round detail. The overview, repos, failures and
-        compare pages each land with their own issue.{" "}
-        <Link to="/rounds" className="underline underline-offset-4">
-          Go to rounds
+        This build ships the overview, the rounds table, the round detail and the repos list. The
+        failures page, compare and every PR view each land with their own issue.{" "}
+        <Link to="/" search={{ range: DEFAULT_RANGE }} className="underline underline-offset-4">
+          Go to the overview
         </Link>
         .
       </AlertDescription>

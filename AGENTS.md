@@ -23,11 +23,14 @@ lane after the first reviewed commit. Review slots come from an org-wide counter
 review per 40 minutes, shared across every repository, session and subagent. One review covering
 four changes is worth four times a review covering one.
 
+`auto_review` is enabled here and there is no separate summon step, so **opening a pull request
+spends a slot, and so does a push to an open one while the lane is unpaused**. Batching means
+batching before the push, not before a summon: by the time you would summon, the slot is gone.
+
 So:
 
 - Land related work as one pull request rather than a chain of small ones.
-- Batch every fix before requesting a review. Never spend a slot on a commit you are about to
-  amend.
+- Batch every fix before you push. Never spend a slot on a commit you are about to amend.
 - A push auto-pauses the lane. Once all fixes are in, re-request with a bare
   `@coderabbitai review`.
 

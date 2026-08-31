@@ -1,0 +1,116 @@
+# The Worker is the only artefact in this repository that is deployed rather than
+# consumed by reference, so its running version can drift from main and no pull
+# request will say so. This workflow is the only thing that closes that. Story: #84.
+name: Deploy Worker
+
+# Never `pull_request`. A fork pull request must not reach the deploy credential.
+on:
+  push:
+    branches: [main]
+    paths:
+      # dashboard/** is in the filter because the Worker's [assets] binding serves
+      # dashboard/dist, so a UI-only merge still changes what is deployed.
+      - worker/**
+      - dashboard/**
+      - .github/workflows/deploy-worker.yml
+
+permissions:
+  contents: read
+
+# Two merges landing close together must not race each other onto one Worker.
+# cancel-in-progress stays false: a cancelled `wrangler deploy` leaves a state
+# nobody can name, and waiting out the run before it costs a minute.
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # persist-credentials: false — nothing here pushes, and this job is the one
+      # place in the repository holding a deploy credential.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Checked before the build, so a missing secret costs seconds and says what
+      # to do rather than failing four minutes later inside wrangler.
+      - name: Require the deploy credential
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not set. Create it as a repository secret from a Cloudflare API token scoped to Workers Scripts:Edit and D1:Edit and nothing else. The ingest token REVIEW_TELEMETRY_TOKEN is a different credential and must not be reused here."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            dashboard/package-lock.json
+            worker/package-lock.json
+
+      - name: Build the dashboard
+        working-directory: dashboard
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      # dashboard/dist is gitignored, so without this a deploy that skipped or
+      # half-finished the build would serve an absent SPA and report success.
+      - name: Require the build output
+        run: |
+          set -euo pipefail
+          if [ ! -f dashboard/dist/index.html ]; then
+            echo "::error::dashboard/dist/index.html is missing after npm run build. Refusing to deploy a Worker whose [assets] binding would serve nothing."
+            exit 1
+          fi
+          echo "built $(find dashboard/dist -type f | wc -l) files into dashboard/dist"
+
+      - name: Install the pinned wrangler
+        working-directory: worker
+        run: |
+          set -euo pipefail
+          npm ci
+
+      # wrangler.toml sets run_worker_first in its array form, which needs 4.20.0
+      # or later. On an older wrangler the option is ignored, the assets binding
+      # shadows POST /, and telemetry ingest dies silently. The lockfile is what
+      # pins it; this asserts the pin rather than trusting it. Story: #84.
+      - name: Require wrangler 4.20.0 or later
+        working-directory: worker
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('wrangler/package.json').version")"
+          echo "resolved wrangler ${version}"
+          if [ "$(printf '%s\n4.20.0\n' "${version}" | sort -V | head -n1)" != "4.20.0" ]; then
+            echo "::error::wrangler ${version} is older than 4.20.0, which does not honour the array form of run_worker_first. Deploying would silently break POST / ingest."
+            exit 1
+          fi
+
+      - name: Deploy
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        # The pinned binary by path, never `npx wrangler`, which resolves whatever
+        # the registry or a warm npx cache happens to offer.
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/wrangler deploy
+
+      # A deploy that fails quietly recreates the gap this workflow closes, so the
+      # run says plainly that main and the running Worker have diverged.
+      - name: Say that the running Worker is now behind main
+        if: failure()
+        run: |
+          echo "::error::Deploy failed. assayer.sfun.cloud is still running the previous build, so main and the deployed Worker have diverged. Re-run this workflow once the cause is fixed."
+          {
+            echo "## Deploy failed"
+            echo
+            echo "The running Worker is still the previous build. \`main\` is ahead of what is deployed."
+          } >> "${GITHUB_STEP_SUMMARY}"
