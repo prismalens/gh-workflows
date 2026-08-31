@@ -58,6 +58,9 @@ const STRING_FIELDS = [
   "pr_head_ref",
 ];
 
+const JSON_ARRAY_FIELDS = ["comment_node_ids"];
+const JSON_OBJECT_FIELDS = ["config_resolution"];
+
 const VALID_LANE_EVENT_REASONS = new Set([
   "no-token",
   "auto-paused",
@@ -96,6 +99,26 @@ function serializeJson(val, fallback) {
     return fallback;
   }
   return typeof val === "string" ? val : JSON.stringify(val);
+}
+
+// Accepts a value already of the given shape, or a string that parses to it.
+// Absent/null is left to the caller, which stores NULL for those (#98 finding 2).
+function isValidJsonShape(val, kind) {
+  if (val === undefined || val === null) {
+    return true;
+  }
+  let parsed = val;
+  if (typeof val === "string") {
+    try {
+      parsed = JSON.parse(val);
+    } catch {
+      return false;
+    }
+  }
+  if (kind === "array") {
+    return Array.isArray(parsed);
+  }
+  return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
 }
 
 // crypto.subtle.timingSafeEqual is a Workers extension, not a web standard, so it
@@ -612,6 +635,24 @@ async function handleIngest(request, env) {
     for (const field of STRING_FIELDS) {
       const val = payload[field];
       if (val !== undefined && val !== null && typeof val !== "string") {
+        return new Response(JSON.stringify({ error: "invalid field types" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
+    for (const field of JSON_ARRAY_FIELDS) {
+      if (!isValidJsonShape(payload[field], "array")) {
+        return new Response(JSON.stringify({ error: "invalid field types" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
+    for (const field of JSON_OBJECT_FIELDS) {
+      if (!isValidJsonShape(payload[field], "object")) {
         return new Response(JSON.stringify({ error: "invalid field types" }), {
           status: 400,
           headers: { "content-type": "application/json" },

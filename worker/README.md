@@ -79,12 +79,12 @@ Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_
   - `verdict_text` (TEXT): Round verdict text (#70 M1).
   - `inline_count` (INTEGER): Count of inline findings (#70 M1).
   - `summary_count` (INTEGER): Count of summary findings (#70 M1).
-  - `comment_node_ids` (TEXT, JSON array): Node IDs of GitHub comments (#70 M1).
+  - `comment_node_ids` (TEXT, JSON array): Node IDs of GitHub comments (#70 M1). Validated: must be a JSON array, or a string that parses to one; absent/`null` stores `NULL`; anything else is a 400 (#98).
   - `fallback_reason` (TEXT): Reason for model fallback (#70 M2).
   - `range_base` (TEXT): Base commit SHA for incremental range (#70 M2).
   - `range_head` (TEXT): Head commit SHA for incremental range (#70 M2).
   - `model_source` (TEXT): Model resolution source (#70 M3).
-  - `config_resolution` (TEXT, JSON object): Snapshot of config layer resolutions (#70 M4).
+  - `config_resolution` (TEXT, JSON object): Snapshot of config layer resolutions (#70 M4). Validated: must be a JSON object, or a string that parses to one; absent/`null` stores `NULL`; anything else is a 400 (#98).
   - `job_conclusion` (TEXT): Workflow job conclusion (#70 M8).
   - `round_ordinal` (INTEGER): Round sequence number per PR (#87).
   - `pr_title` (TEXT, capped to 512): Pull request title (#72).

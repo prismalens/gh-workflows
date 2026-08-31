@@ -246,8 +246,13 @@ def main():
 
     if "pull_request" not in on_section:
         fails.append("workflow missing on.pull_request")
+    elif (on_section["pull_request"] or {}).get("branches") != ["main"]:
+        fails.append(
+            f"workflow pull_request trigger must pin branches: ['main'], "
+            f"got {(on_section['pull_request'] or {}).get('branches')!r}"
+        )
     else:
-        print("  ok    workflow pull_request trigger: present")
+        print("  ok    workflow pull_request trigger: present, pinned to branches: [main]")
 
     # Permissions
     perms = wf_data.get("permissions", {})

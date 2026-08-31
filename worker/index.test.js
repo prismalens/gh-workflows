@@ -407,6 +407,81 @@ describe("Worker telemetry ingest", () => {
       const badStrRes = await worker.fetch(badStringReq, env);
       assert.equal(badStrRes.status, 400);
     });
+
+    it("returns 400 when comment_node_ids is not an array (nor a string that parses to one)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+
+      const notJsonReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-bad-comment-ids-1",
+          repository: "prismalens/gh-workflows",
+          comment_node_ids: "not-json",
+        },
+      });
+      assert.equal((await worker.fetch(notJsonReq, env)).status, 400);
+
+      const wrongShapeReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-bad-comment-ids-2",
+          repository: "prismalens/gh-workflows",
+          comment_node_ids: { not: "an array" },
+        },
+      });
+      assert.equal((await worker.fetch(wrongShapeReq, env)).status, 400);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when config_resolution is not an object (nor a string that parses to one)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+
+      const notJsonReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-bad-config-1",
+          repository: "prismalens/gh-workflows",
+          config_resolution: "not-json",
+        },
+      });
+      assert.equal((await worker.fetch(notJsonReq, env)).status, 400);
+
+      const wrongShapeReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-bad-config-2",
+          repository: "prismalens/gh-workflows",
+          config_resolution: ["not", "an", "object"],
+        },
+      });
+      assert.equal((await worker.fetch(wrongShapeReq, env)).status, 400);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("accepts a JSON-string comment_node_ids array and config_resolution object, and stores them", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const payload = {
+        session_id: "s-good-json-string-fields",
+        repository: "prismalens/gh-workflows",
+        comment_node_ids: JSON.stringify(["MDEyOklzc3VlQ29tbWVudDE="]),
+        config_resolution: JSON.stringify({ review: "repo" }),
+      };
+
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: payload,
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+
+      const query = db.queries[0];
+      assert.equal(query.args[30], payload.comment_node_ids);
+      assert.equal(query.args[35], payload.config_resolution);
+    });
   });
 
   describe("Lane events ingest (event_kind: 'lane_event')", () => {
