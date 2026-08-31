@@ -53,15 +53,27 @@ CodeRabbit withdraws findings it accepts are wrong. Do not resolve a thread befo
 
 ## Nothing here is enforced by the platform
 
-This repository has no rulesets, verified 2026-08-31: `repos/prismalens/gh-workflows/rulesets`
-returns `[]`. No required check blocks a merge, and no gate stops a pull request with unresolved
-review threads. Holding a pull request for the operator is the only gate there is, so treat it as
-one: never merge and never enable auto-merge unless the operator says so on that pull request.
+This repository is unprotected, verified 2026-08-31 by two probes that cover different mechanisms.
+Both are needed, because GitHub protects a branch in two unrelated ways and each endpoint is blind
+to the other:
 
-The 404 from `branches/main/protection` is not evidence of this and should not be cited as such.
-Every consumer repo returns 404 there too, because they use rulesets rather than classic branch
-protection, and they are protected. `rulesets` being empty is the finding; the 404 says nothing
-either way.
+- `repos/prismalens/gh-workflows/rulesets` returns `[]`, both bare and with
+  `includes_parents=true` set explicitly. That parameter is what pulls in inherited organization
+  rulesets, so the empty array rules those out too.
+- `repos/prismalens/gh-workflows/branches/main/protection` returns 404 with the body
+  `{"message": "Branch not protected"}`, which rules out classic branch protection.
+
+So no required check blocks a merge, and no gate stops a pull request with unresolved review
+threads. Holding a pull request for the operator is the only gate there is, so treat it as one:
+never merge and never enable auto-merge unless the operator says so on that pull request.
+
+**Neither probe is sufficient alone, which is what the earlier wording got wrong in both
+directions.** Every consumer repo returns 404 on the classic endpoint while being protected by
+rulesets, so citing the 404 by itself proves nothing. An empty `rulesets` by itself proves nothing
+either, for the mirror-image reason. Run both, and quote both.
+
+A reviewer whose token lacks admin scope gets HTTP 403 rather than 404 from the protection
+endpoint and cannot reproduce this. A 403 is "not allowed to look", never "nothing is there".
 
 ## Pull request titles
 
