@@ -27,3 +27,10 @@ Lane A is the merged, current design. Lanes B and C are dated records of two ear
 | `canvas/review-lane-operator-console-stacked.html` | All lane A artboards on one page |
 
 Not every screen in the table is built yet, and the issues in the `Assayer` milestone carry the build order.
+
+## Research
+
+- `research/review-dashboard-prior-art.md` — six AI review products and four LLM observability tools, what each shows and what to copy or reject.
+- `research/review-dashboard-options.md` — storage and hosting comparison.
+- `research/review-lane-cost-baseline.md` — the measured baseline.
+- `research/review-cost-spec-2026-08-21.md` — the review cost spec of 2026-08-21, including the open warning that incremental review may raise fix-round cost.
