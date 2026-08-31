@@ -19,9 +19,15 @@ of the CodeRabbit review, and never describe one as a review of this repository.
 ### Batch work into fewer, larger pull requests
 
 CodeRabbit reviews once per pull request, because `auto_pause_after_reviewed_commits: 1` pauses the
-lane after the first reviewed commit. Review slots come from an org-wide counter of roughly one
-review per 40 minutes, shared across every repository, session and subagent. One review covering
-four changes is worth four times a review covering one.
+lane after the first reviewed commit. Review slots come from an org-wide counter shared across every
+repository, session and subagent. One review covering four changes is worth four times a review
+covering one.
+
+How long that counter takes to reset is **not settled**. The figure "roughly 40 minutes" circulates
+with no recorded measurement behind it, observation since suggests nearer an hour, and
+`watch-coderabbit.sh` waits 60 minutes before retrying. Budget an hour and confirm acceptance rather
+than trusting any of those numbers. A session recently built a confident, wrong conclusion by doing
+arithmetic on the 40-minute figure and presenting it as a measurement; do not repeat that.
 
 `auto_review` is enabled here and there is no separate summon step, so **opening a pull request
 spends a slot, and so does a push to an open one while the lane is unpaused**. Batching means
@@ -47,11 +53,15 @@ CodeRabbit withdraws findings it accepts are wrong. Do not resolve a thread befo
 
 ## Nothing here is enforced by the platform
 
-This repository has no branch protection and no rulesets, verified 2026-08-31 against
-`repos/prismalens/gh-workflows/rulesets` (empty) and `branches/main/protection` (404). No required
-check blocks a merge, and no gate stops a pull request with unresolved review threads. Holding a
-pull request for the operator is the only gate there is, so treat it as one: never merge and never
-enable auto-merge unless the operator says so on that pull request.
+This repository has no rulesets, verified 2026-08-31: `repos/prismalens/gh-workflows/rulesets`
+returns `[]`. No required check blocks a merge, and no gate stops a pull request with unresolved
+review threads. Holding a pull request for the operator is the only gate there is, so treat it as
+one: never merge and never enable auto-merge unless the operator says so on that pull request.
+
+The 404 from `branches/main/protection` is not evidence of this and should not be cited as such.
+Every consumer repo returns 404 there too, because they use rulesets rather than classic branch
+protection, and they are protected. `rulesets` being empty is the finding; the 404 says nothing
+either way.
 
 ## Pull request titles
 
