@@ -14,6 +14,11 @@ what makes the band's counts trustworthy. Lane health and the diagnostics charts
 count switches, from an all-time cumulative to a per-day mean at
 `PER_DAY_RATE_MIN_ROUNDS`.
 
+`/repos` lists every repository that has ever posted, whether or not it posted inside the
+selected window. Its "active over total" figure counts repositories that have posted, and says
+so: no fleet registry exists, so the denominator a real adoption number would need is not
+capturable yet.
+
 ## Commands
 
 ```bash

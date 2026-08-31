@@ -111,6 +111,52 @@ describe("/ overview: the altitude ruling", () => {
   });
 });
 
+describe("/repos", () => {
+  it("lists what has posted, with its last round and last decoded state", async () => {
+    renderRoute({ path: "/repos", api: fullApi });
+    const table = await screen.findByRole("table");
+    expect(within(table).getAllByText("reviewed").length).toBeGreaterThan(0);
+    for (const repository of [
+      "prismalens/prismalens",
+      "prismalens/sreforge",
+      "Sumit1993/mage-memory",
+    ]) {
+      expect(within(table).getByText(repository)).toBeInTheDocument();
+    }
+  });
+
+  it("keeps a repository that posted nothing in the window on the list", async () => {
+    // One repository's rounds reach the table; the summary still knows all three
+    // have posted, which is the denominator that must not silently shrink.
+    const base = makeFixtureApi(makeRounds({ count: 64, now }));
+    const oneRepo = {
+      ...base,
+      fetchRuns: async (query?: Parameters<typeof base.fetchRuns>[0]) => {
+        const page = await base.fetchRuns(query);
+        return {
+          ...page,
+          rows: page.rows.filter((row) => row.repository === "prismalens/prismalens"),
+        };
+      },
+    };
+    renderRoute({ path: "/repos", api: oneRepo });
+    const table = await screen.findByRole("table");
+    expect(within(table).getByText("prismalens/sreforge")).toBeInTheDocument();
+    expect(within(table).getAllByText(/no round over/).length).toBeGreaterThan(0);
+  });
+
+  it("says the denominator is what has posted, not what is configured", async () => {
+    renderRoute({ path: "/repos", api: fullApi });
+    expect(
+      await screen.findByText(/ever posted a round, which is not the same/),
+    ).toBeInTheDocument();
+    const degraded = screen
+      .getAllByTestId("degraded")
+      .find((node) => node.textContent?.includes("Lane, key mode and config"));
+    expect(degraded).toHaveAttribute("data-reason", "unbuilt");
+  });
+});
+
 describe("a fixtures build says the rounds are invented", () => {
   it("shows a persistent banner whenever the fixture table is behind the page", async () => {
     renderRoute({ path: "/rounds", api: fullApi });

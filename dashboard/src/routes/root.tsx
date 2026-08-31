@@ -31,6 +31,7 @@ function FixtureBanner() {
 const NAV = [
   { to: "/", label: "Overview" },
   { to: "/rounds", label: "Rounds" },
+  { to: "/repos", label: "Repos" },
 ] as const;
 
 function RootLayout() {
