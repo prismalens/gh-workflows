@@ -212,7 +212,8 @@ Consumer repositories can invoke `.github/workflows/dependabot-auto-merge.yml` t
 `worker/` is the Cloudflare Worker that ingests one record per review round into D1 and serves the
 read routes behind Cloudflare Access. `dashboard/` is the SPA that reads them, served by that same
 Worker from its `[assets]` binding. `dashboard/dist` is gitignored, so a deploy builds it first;
-`dashboard/README.md` has the commands and the one deploy consequence worth knowing.
+`dashboard/README.md` has the dashboard commands and deployment details. `worker/README.md` documents
+the Cloudflare D1 migrations workflow and Worker operations.
 
 ---
 

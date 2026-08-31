@@ -22,3 +22,4 @@ run_worker_first = ["/", "/ingest", "/api", "/api/*"]
 binding = "DB"
 database_name = "review-telemetry"
 database_id = "1e2a6dfd-9d77-4fac-aa21-d55652c164e1"
+migrations_dir = "migrations"
