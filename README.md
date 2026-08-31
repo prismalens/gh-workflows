@@ -192,6 +192,15 @@ Consumer repositories can invoke `.github/workflows/dependabot-auto-merge.yml` t
 
 ---
 
+## Review telemetry
+
+`worker/` is the Cloudflare Worker that ingests one record per review round into D1 and serves the
+read routes behind Cloudflare Access. `dashboard/` is the SPA that reads them, served by that same
+Worker from its `[assets]` binding. `dashboard/dist` is gitignored, so a deploy builds it first;
+`dashboard/README.md` has the commands and the one deploy consequence worth knowing.
+
+---
+
 ## Consumer Repositories
 
 The following consumer repositories use shared CI from this repository (replacing `consumers.json`):

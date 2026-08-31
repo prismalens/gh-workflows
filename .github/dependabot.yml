@@ -19,6 +19,23 @@ updates:
           - minor
           - patch
 
+  # The dashboard SPA. dependabot-config-drift.yml compares only the github-actions
+  # entry for directory "/", so an npm entry here drifts nothing. Story: #46.
+  - package-ecosystem: npm
+    directory: "/dashboard"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+    groups:
+      dashboard-npm:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
   # Composite action in actions/pr-title/ — not scanned by the root entry.
   - package-ecosystem: github-actions
     directory: "/actions/pr-title"
