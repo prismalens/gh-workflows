@@ -186,6 +186,7 @@ describe("the money guard rejects the labels that would defeat it", () => {
     "Price per round",
     "Pricing",
     "Billed per round",
+    "Billing per round",
     "Charge per round",
     "Expense per round",
     "Dollars per round",
@@ -200,16 +201,23 @@ describe("the money guard rejects the labels that would defeat it", () => {
       .toThrow(/never a headline tile/);
   });
 
-  it("still allows the labels this slice actually renders", () => {
-    for (const label of [
-      "Mean wall clock",
-      "p95 wall clock",
-      "Permission denials per round",
-      "Cache hit rate",
-      "Caching multiplier",
-    ]) {
-      expect(isMoneyLabel(label)).toBe(false);
-    }
+  // A token count is not money. It was rejected because the money pattern matched
+  // any label containing "bill", which is a false positive the guard has to lose
+  // without letting a real money label through.
+  const mustAllow = [
+    "Mean wall clock",
+    "p95 wall clock",
+    "Permission denials per round",
+    "Cache hit rate",
+    "Caching multiplier",
+    "Billable tokens",
+  ];
+
+  it.each(mustAllow)("allows %s", (label) => {
+    expect(isMoneyLabel(label)).toBe(false);
+    expect(() =>
+      render(<Tile label={label} metric={meanMetric(seq(30))} format={formatCount} />),
+    ).not.toThrow();
   });
 });
 

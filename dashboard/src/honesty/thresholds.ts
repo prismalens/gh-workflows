@@ -25,9 +25,13 @@ export const LIST_RATE_EQUIVALENT = "list-rate equivalent";
  * time so a later screen cannot promote it by accident. Deliberately unanchored:
  * \bcost\b misses "costs" and \bspend\b misses "spending", which is how a money
  * headline gets through a green build.
+ *
+ * `bill` carries the one exception, because a billable token count is a count and
+ * not money: "billable" is excluded so "Billable tokens" can headline, while
+ * bill, billed and billing still fail.
  */
 export const MONEY_LABEL_PATTERN =
-  /\$|usd|dollar|cost|spend|spent|money|burn|price|pricing|bill|charge|expense|list-rate|per-token|rate eq/i;
+  /\$|usd|dollar|cost|spend|spent|money|burn|price|pricing|bill(?!able)|charge|expense|list-rate|per-token|rate eq/i;
 
 /**
  * The billed-equivalent weights behind the caching multiplier. Cache creation is
