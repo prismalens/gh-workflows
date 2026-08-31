@@ -1,0 +1,89 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body{margin:0;background:#f4f3ef;color:#0b0b0b;font:13px/1.45 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;}
+    a{color:#1c5cab;text-decoration:none} a:hover{color:#104281}
+    .mono{font-family:"IBM Plex Mono","SFMono-Regular",ui-monospace,monospace}
+    .card{background:#fcfcfb;border:1px solid rgba(11,11,11,0.10);border-radius:6px}
+    .chip{display:inline-flex;align-items:center;gap:6px;padding:1px 9px;border-radius:999px;font-size:11.5px;font-weight:600;border:1px solid;white-space:nowrap}
+    .dot{width:7px;height:7px;border-radius:50%;flex:none}
+    .c-rev{color:#006300;border-color:rgba(0,99,0,.28);background:#eef6ea}
+    .c-thr{color:#1c5cab;border-color:rgba(28,92,171,.28);background:#eaf1fa}
+    .c-gry{color:#52514e;border-color:rgba(11,11,11,.16);background:#f1f0ec}
+    .navi{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:6px;color:#52514e;font-weight:500}
+    .navi.on{background:#eaf1fa;color:#1c5cab}
+    th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600;text-align:left;padding:8px 10px;border-bottom:1px solid #e1e0d9}
+    td{padding:9px 10px;border-bottom:1px solid #efeee9;vertical-align:middle}
+    .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600}
+  </style>
+</helmet>
+
+<div style="width:1440px;height:840px;display:flex;background:#f4f3ef;overflow:hidden">
+
+  <div style="width:208px;flex:none;border-right:1px solid rgba(11,11,11,.08);background:#faf9f6;display:flex;flex-direction:column;padding:16px 12px;gap:2px">
+    <div style="display:flex;align-items:center;gap:9px;padding:4px 12px 18px 12px">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="1.5" y="1.5" width="17" height="17" rx="4" stroke="#0b0b0b" stroke-width="1.6"/><path d="M6 10.5l2.6 2.6L14 7.5" stroke="#2a78d6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div style="font-weight:700;font-size:14px;letter-spacing:-.01em">Review lane</div>
+    </div>
+    <div class="navi on">Overview</div>
+    <div class="navi">Pull requests</div>
+    <div class="navi">Findings</div>
+    <div class="navi">Repos</div>
+    <div class="navi">Health</div>
+    <div class="navi">Settings</div>
+    <div style="margin-top:auto;padding:10px 12px;color:#898781;font-size:11.5px">prismalens org · Access: sumit@</div>
+  </div>
+
+  <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+    <div style="height:52px;flex:none;display:flex;align-items:center;gap:10px;padding:0 24px;border-bottom:1px solid rgba(11,11,11,.08);background:#faf9f6">
+      <span style="font-weight:600">Overview</span>
+      <span class="chip c-gry">sparse week · n=4 · the normal Monday state</span>
+    </div>
+
+    <div style="padding:22px 24px;display:flex;flex-direction:column;gap:18px">
+
+      <div>
+        <div class="lbl" style="margin-bottom:10px">Needs attention</div>
+        <div class="card" style="padding:16px 18px;display:flex;align-items:center;gap:12px">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.5" stroke="#0ca30c" stroke-width="1.6"/><path d="M5.6 9.4l2.3 2.3L12.6 6.6" stroke="#0ca30c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span style="font-weight:600">Nothing needs attention.</span>
+          <span style="color:#52514e">Every open PR head is reviewed, no lane is paused or blocked, no finding is stale.</span>
+        </div>
+      </div>
+
+      <!-- collapsed health strip: too few rounds for tiles -->
+      <div>
+        <div class="lbl" style="margin-bottom:10px">Lane health · last 50 rounds / 7d</div>
+        <div class="card" style="padding:12px 16px;display:flex;align-items:center;gap:10px;color:#52514e">
+          <span><b>4 rounds</b> in range, too few for tiles (averages need n≥10, p95 needs n≥20). The round table is the view:</span>
+          <a href="#" style="margin-left:auto;font-size:12.5px">open Health →</a>
+        </div>
+      </div>
+
+      <!-- the four rounds, table as the design -->
+      <div class="card">
+        <div style="padding:12px 16px;border-bottom:1px solid #e1e0d9"><span class="lbl">All rounds this week · 4</span></div>
+        <table style="width:100%;border-collapse:collapse">
+          <tr><th>Recorded</th><th>PR</th><th>Round</th><th>Verdict</th><th>Posted</th><th>Model</th><th style="text-align:right">Wall</th><th style="text-align:right">List-rate eq</th><th></th></tr>
+          <tr><td class="mono" style="font-size:12px">Mon 09:41</td><td><a href="#">prismalens#312</a></td><td><span class="chip c-thr">verify</span></td><td><span class="chip c-thr"><span class="dot" style="background:#2a78d6"></span>threads only</span></td><td>3 resolved / 1 open</td><td class="mono" style="font-size:12px">opus-5</td><td style="text-align:right">1m 58s</td><td style="text-align:right">$0.31</td><td><a href="#">run</a></td></tr>
+          <tr><td class="mono" style="font-size:12px">Sun 17:06</td><td><a href="#">prismalens#312</a></td><td><span class="chip c-rev">incremental</span></td><td><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>reviewed</span></td><td>2 inline / 1 summary</td><td class="mono" style="font-size:12px">opus-5</td><td style="text-align:right">6m 12s</td><td style="text-align:right">$1.84</td><td><a href="#">run</a></td></tr>
+          <tr><td class="mono" style="font-size:12px">Sat 11:02</td><td><a href="#">claude-kit#87</a></td><td><span class="chip c-rev">full</span></td><td><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>reviewed</span></td><td>5 inline / 1 summary</td><td class="mono" style="font-size:12px">sonnet-5</td><td style="text-align:right">7m 44s</td><td style="text-align:right">$1.62</td><td><a href="#">run</a></td></tr>
+          <tr><td class="mono" style="font-size:12px;border-bottom:none">Fri 15:44</td><td style="border-bottom:none"><a href="#">gh-workflows#66</a></td><td style="border-bottom:none"><span class="chip c-rev">full</span></td><td style="border-bottom:none"><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>reviewed</span></td><td style="border-bottom:none">3 inline / 1 summary</td><td class="mono" style="font-size:12px;border-bottom:none">sonnet-5</td><td style="text-align:right;border-bottom:none">4m 51s</td><td style="text-align:right;border-bottom:none">$0.98</td><td style="border-bottom:none"><a href="#">run</a></td></tr>
+        </table>
+      </div>
+
+      <div style="color:#898781;font-size:12px">No zeros, no empty charts, no low-n percentages pretending to be rates. Four rounds render as four rows; the screen is complete this way, not degraded.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

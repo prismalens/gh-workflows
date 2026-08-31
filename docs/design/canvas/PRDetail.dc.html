@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap">
+  <style>
+  body { margin:0; background:#0C0F16; color:#DEE3EE; font-family:'IBM Plex Sans', system-ui, sans-serif; font-size:13px; -webkit-font-smoothing:antialiased; }
+  a { color:#7A9BEF; text-decoration:none; } a:hover { color:#9CB6F5; }
+  table { border-collapse:collapse; width:100%; }
+  th { text-align:left; font-size:10.5px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:#5A6377; padding:7px 10px; border-bottom:1px solid #1E2433; white-space:nowrap; }
+  td { padding:7px 10px; border-bottom:1px solid #1E2433; vertical-align:middle; white-space:nowrap; }
+  .num { font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:12px; font-variant-numeric:tabular-nums; }
+  .mono { font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:11.5px; }
+  .muted { color:#8B93A7; } .faint { color:#5A6377; }
+</style>
+</helmet>
+<div style="display:flex; height:100%; min-height:100vh; align-items:stretch;">
+  <div style="width:196px; flex-shrink:0; border-right:1px solid #1E2433; display:flex; flex-direction:column; padding:14px 10px; gap:2px;">
+    <div style="display:flex; align-items:center; gap:8px; padding:2px 12px 14px;">
+      <svg width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="1" width="16" height="16" rx="3" fill="none" stroke="#7A9BEF" stroke-width="1.5"/><path d="M5 11 8 6l2.5 3.5L12.5 7" stroke="#7A9BEF" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><div style="font-weight:600; font-size:13px;">Lane console</div><div style="font-size:10px; color:#5A6377;">prismalens review lane</div></div>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 13h3V7H2zM6.5 13h3V3h-3zM11 13h3V9h-3z"/></svg>Overview</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 4h12M2 8h12M2 12h12"/></svg>Rounds</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M8 2 14 13H2z M8 6v3.5 M8 11.2v.6"/></svg>Failures</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M8 2v12 M3 5h3.5 M3 8h3.5 M3 11h3.5 M9.5 5H13 M9.5 8H13 M9.5 11H13"/></svg>Compare</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; background:#151A2A; color:#DEE3EE; font-weight:600; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#7A9BEF" stroke-width="1.5"><circle cx="4.5" cy="4" r="2"/><circle cx="4.5" cy="12" r="2"/><circle cx="11.5" cy="12" r="2"/><path d="M4.5 6v4 M11.5 10V7.5A2.5 2.5 0 0 0 9 5H8"/></svg>PRs</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 8h3l1.5 3 2-6 1.5 3h4 M2 12.5h12"/></svg>Findings</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M3 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5H4.5A1.5 1.5 0 0 1 3 12z M3 11h10"/></svg>Repos</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><circle cx="5" cy="8" r="3"/><path d="M8 8h6 M11 8v2.5 M13.5 8v2"/></svg>Keys</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><rect x="2.5" y="5" width="5" height="6" rx="1"/><rect x="9.5" y="5" width="4" height="6" rx="1"/><path d="M7.5 8h2"/></svg>Agents</div>
+    <div style="flex:1;"></div>
+    <div style="padding:10px 12px; border-top:1px solid #1E2433; display:flex; flex-direction:column; gap:6px; font-size:10.5px; color:#5A6377;">
+      <div style="display:flex; gap:5px; align-items:center;"><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">j</span><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">k</span> rows &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">enter</span> open</div>
+      <div style="display:flex; gap:5px; align-items:center;"><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">o</span> run &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">p</span> PR &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">cmd+k</span> jump</div>
+    </div>
+  </div>
+  <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+    <div style="height:52px; flex-shrink:0; border-bottom:1px solid #1E2433; display:flex; align-items:center; gap:14px; padding:0 20px;">
+    <div style="font-size:14px; font-weight:600;">PR detail</div>
+    <div style="flex:1;"></div>
+    <div style="display:flex; align-items:center; gap:7px; border:1px solid #1E2433; border-radius:4px; padding:4px 10px; font-size:11.5px; color:#8B93A7;">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M3 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5H4.5A1.5 1.5 0 0 1 3 12z"/></svg>
+      prismalens/prismalens <span style="color:#5A6377;">&#9662;</span></div>
+    <div style="display:flex; gap:4px;"><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">Last 50 rounds / 7d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">30d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">90d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #7A9BEF88; background:#7A9BEF1a; color:#7A9BEF; font-weight:600; border-radius:4px;">All time</span></div>
+  </div>
+    <div style="flex:1; padding:18px 20px; display:flex; flex-direction:column; gap:14px; min-width:0;">
+    <div style="display:flex; flex-direction:column; gap:8px;">
+    <div style="display:flex; align-items:center; gap:12px;">
+      <span style="font-size:15px; font-weight:600;">PR #516 · engine: dedupe correlation replay</span>
+      <span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">open</span><a style="font-size:11.5px;">github &#8599;</a>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; background:#3AA36812; border:1px solid #3AA36844; border-radius:6px;">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#3AA368" stroke-width="1.8"><path d="M3 8.5 6.5 12 13 4.5"/></svg>
+      <span style="font-size:13px;">Head <span class="mono">e524ba6</span>: <b>reviewed</b> (incremental from <span class="mono">6834bbb</span>) · 2 rounds on this PR · auto-pause 2 of 3 automatic rounds used</span>
+      <span style="flex:1;"></span><span style="font-size:10.5px; color:#5A6377;">liveness derived from latest round <span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #AD873466; color:#AD8734; font-size:10.5px; font-weight:500;">gaps G1 G9</span></span>
+    </div></div>
+    <div style="display:flex; gap:12px; align-items:flex-start;">
+      <div style="flex:1.6; display:flex; flex-direction:column; gap:12px; min-width:0;"><div style="background:#121623; border:1px solid #1E2433; border-radius:6px; ">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Rounds on this PR</div></div>
+    <div style="padding:0 0 6px;"><table>
+    <tr><th>When</th><th>Type</th><th>Verdict</th><th>Model</th><th>Turns</th><th>Wall</th><th>List-rate eq</th><th></th></tr>
+    <tr>
+    <td class="num muted">Aug 30 19:00</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #8B93A766; color:#8B93A7; font-size:10.5px; font-weight:500;">incremental</span></td><td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed e524ba6 (incr from 6834bbb) · 1 inline / 1 summary</span></td>
+    <td class="mono muted">sonnet</td><td class="num">13</td><td class="num">1m 54s</td><td class="num muted">$1.085</td>
+    <td style="text-align:right; font-size:11px;"><a>round</a> · <a>run &#8599;</a> · <a>summary &#8599;</a></td></tr>
+    <tr>
+    <td class="num muted">Aug 30 18:55</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #8B93A766; color:#8B93A7; font-size:10.5px; font-weight:500;">incremental</span></td><td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed 6834bbb (incr from 4f85108) · 3 inline / 1 summary</span></td>
+    <td class="mono muted">sonnet</td><td class="num">24</td><td class="num">5m 38s</td><td class="num muted">$2.641</td>
+    <td style="text-align:right; font-size:11px;"><a>round</a> · <a>run &#8599;</a> · <a>summary &#8599;</a></td></tr>
+    </table>
+    <div style="padding:8px 10px 2px; font-size:11px; color:#5A6377;">PR total, list-rate equivalent: <span class="num" style="color:#8B93A7;">$3.73</span> · headline only for metered-key tenants</div></div>
+  </div><div style="display:flex; gap:2px; border-bottom:1px solid #1E2433;">
+    <span style="padding:7px 16px; font-size:12px; color:#8B93A7;">Walkthrough</span><span style="padding:7px 16px; font-size:12px; color:#8B93A7;">Summary</span><span style="padding:7px 16px; font-size:12px; color:#DEE3EE; font-weight:600; border-bottom:2px solid #7A9BEF;">Findings</span>
+    <span style="flex:1;"></span><span style="font-size:10.5px; color:#5A6377; padding:8px 4px;">walkthrough and summary render stored bodies after issue 08; link cards until then</span></div><div style="background:#121623; border:1px solid #1E2433; border-radius:6px; ">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Findings and their fate</div><div style="flex:1;"></div><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #AD873466; color:#AD8734; font-size:10.5px; font-weight:500;">needs review_findings, #47 · gap G8</span></div>
+    <div style="padding:0 0 6px;"><table>
+    <tr><th>Thread</th><th>State</th><th>Fate</th><th>Verify</th><th></th></tr>
+    <tr>
+    <td class="mono" style="font-size:11px;">src/replay/dedupe.ts<span class="faint">:84</span></td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">resolved</span></td><td style="font-size:11.5px; white-space:normal;">fix commit <span class="mono">91acd02</span> touched the flagged file before merge</td><td style="font-size:11px;"><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">still applies: no</span></td>
+    <td style="text-align:right;"><a style="font-size:11px;">thread &#8599;</a></td></tr>
+    <tr>
+    <td class="mono" style="font-size:11px;">src/replay/dedupe.ts<span class="faint">:141</span></td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #AD873466; color:#AD8734; font-size:10.5px; font-weight:500;">open</span></td><td style="font-size:11.5px; white-space:normal;">human replied, pushing back; no code change since</td><td style="font-size:11px;"><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #4E7FE066; color:#4E7FE0; font-size:10.5px; font-weight:500;">human-dismissed</span></td>
+    <td style="text-align:right;"><a style="font-size:11px;">thread &#8599;</a></td></tr>
+    <tr>
+    <td class="mono" style="font-size:11px;">src/queue/consumer.ts<span class="faint">:27</span></td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">resolved</span></td><td style="font-size:11.5px; white-space:normal;">resolved by the lane itself; no commit touched the file</td><td style="font-size:11px;"><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #5A637766; color:#5A6377; font-size:10.5px; font-weight:500;">self-resolved</span></td>
+    <td style="text-align:right;"><a style="font-size:11px;">thread &#8599;</a></td></tr>
+    </table>
+    <div style="display:flex; gap:20px; padding:9px 10px 2px; font-size:11px; color:#5A6377;">
+      <span>addressed rate <span class="num" style="color:#8B93A7;">1/3</span> <span class="faint">(file-level, approximate)</span></span>
+      <span>human-dismissed <span class="num" style="color:#8B93A7;">1/3</span></span>
+      <span>self-resolutions are counted nowhere: the lane agreeing with itself is not quality</span>
+    </div></div>
+  </div></div>
+      <div style="flex:1; display:flex; flex-direction:column; gap:12px; min-width:0;"><div style="background:#121623; border:1px solid #1E2433; border-radius:6px; ">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Head ladder</div></div>
+    <div style="padding:8px 14px;"><table style="font-size:11.5px;">
+    <tr><td class="mono" style="border:none; padding:3px 8px 3px 0;">e524ba6</td><td style="border:none;"><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed</span></td></tr>
+    <tr><td class="mono" style="border:none; padding:3px 8px 3px 0;">6834bbb</td><td style="border:none;"><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed</span></td></tr>
+    <tr><td class="mono faint" style="border:none; padding:3px 8px 3px 0;">4f85108</td><td style="border:none;"><span style="font-size:10.5px; color:#5A6377;">base of first incremental</span></td></tr>
+    </table></div>
+  </div><div style="background:#121623; border:1px solid #1E2433; border-radius:6px; ">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Config in effect</div></div>
+    <div style="padding:8px 14px;"><table style="font-size:11px;">
+    <tr><td class="faint" style="border:none; padding:2px 8px 2px 0;">model</td><td style="border:none;" class="mono">sonnet · default</td></tr>
+    <tr><td class="faint" style="border:none; padding:2px 8px 2px 0;">auto-pause</td><td style="border:none;">2 of 3 used</td></tr>
+    <tr><td class="faint" style="border:none; padding:2px 8px 2px 0;">path filter</td><td style="border:none;">no match</td></tr>
+    <tr><td class="faint" style="border:none; padding:2px 8px 2px 0;">skip author</td><td style="border:none;">not skipped</td></tr>
+    </table><div style="padding-top:6px; font-size:10px; color:#5A6377;">each names its layer after issue 02 · <a>repo config</a></div></div>
+  </div><div style="background:#121623; border:1px solid #1E2433; border-radius:6px; ">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">PR totals</div></div>
+    <div style="padding:8px 14px;"><div style="display:flex; flex-direction:column; gap:5px; font-size:11.5px; color:#8B93A7;">
+    <span>rounds <span class="num" style="color:#DEE3EE;">2</span> (2 incremental)</span>
+    <span>wall clock <span class="num" style="color:#DEE3EE;">7m 32s</span></span>
+    <span>list-rate eq <span class="num" style="color:#DEE3EE;">$3.73</span> <span class="faint">across 2 rounds</span></span>
+    </div></div>
+  </div></div>
+    </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

@@ -1,0 +1,145 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    html,body{margin:0;padding:0;background:#f6f5f2}
+    body{font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;color:#1c1a16;-webkit-font-smoothing:antialiased;font-size:14px}
+    a{color:#8f6400;text-decoration:none}a:hover{color:#6e4d00;text-decoration:underline}
+    .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+    .shell{display:flex;width:1280px;background:#f6f5f2;align-items:stretch}
+    .side{width:212px;flex-shrink:0;background:#181510;color:#cfc8ba;display:flex;flex-direction:column;padding:18px 0 14px}
+    .logo{display:flex;align-items:center;gap:9px;padding:2px 20px 16px}
+    .wordmark{font-weight:600;font-size:15px;color:#f4efe3;letter-spacing:.3px}
+    .orgsel{margin:0 12px 16px;padding:7px 10px;border:1px solid #322c21;border-radius:6px;font-size:12.5px;color:#efe9dc;display:flex;justify-content:space-between;align-items:center;background:#221d15}
+    .nav{display:flex;flex-direction:column;gap:1px;padding:0 10px}
+    .nav a{display:block;padding:7px 10px;border-radius:6px;font-size:13px;color:#a89f8d;text-decoration:none}
+    .nav a.on{background:#2c2415;color:#f2c96b;font-weight:500}
+    .sidefoot{margin-top:auto;padding:14px 20px 0;border-top:1px solid #2a251c;font-size:11.5px;color:#7d7666;line-height:1.7}
+    .main{flex:1;min-width:0;padding:22px 28px 28px;display:flex;flex-direction:column;gap:14px}
+    .crumb{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#98928a}
+    h1{font-size:17px;font-weight:600;margin:0}
+    .sub{font-size:12.5px;color:#6f6a5e;margin-top:4px}
+    .card{background:#fff;border:1px solid #e6e2d8;border-radius:8px}
+    .cardpad{padding:16px 18px}
+    .chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:500;padding:1px 8px;border-radius:999px;border:1px solid;line-height:1.7;white-space:nowrap}
+    .c-ok{color:#006300;background:#ecf6ec;border-color:#c2e0c2}
+    .c-warn{color:#8a5a00;background:#fdf3d7;border-color:#eddaa1}
+    .c-neut{color:#6f6a5e;background:#f1efe9;border-color:#ddd8cc}
+    .dot{width:7px;height:7px;border-radius:99px;display:inline-block;flex-shrink:0}
+    .tabs{display:flex;gap:2px;border-bottom:1px solid #e6e2d8}
+    .tabs span{padding:7px 14px;font-size:12.5px;color:#6f6a5e;border-bottom:2px solid transparent}
+    .tabs .on{color:#1c1a16;font-weight:500;border-bottom-color:#8f6400}
+    .round{display:flex;gap:14px}
+    .rline{display:flex;flex-direction:column;align-items:center;flex-shrink:0;width:22px}
+    .rdot{width:10px;height:10px;border-radius:99px;border:2px solid #c3c2b7;background:#fff;flex-shrink:0}
+    .rdot.hot{border-color:#0ca30c;background:#0ca30c}
+    .rstem{width:1.5px;flex:1;background:#e1e0d9;margin-top:4px}
+    .rcard{flex:1;background:#fff;border:1px solid #e6e2d8;border-radius:8px;padding:13px 16px;margin-bottom:12px}
+    .rhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .rtitle{font-size:13px;font-weight:600}
+    .meta{font-size:11.5px;color:#98928a}
+    .verd{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#52514e;line-height:1.6;margin-top:7px;background:#faf9f5;border:1px solid #eee9df;border-radius:6px;padding:8px 10px}
+    .facts{display:flex;gap:16px;margin-top:8px;font-size:11.5px;color:#52514e;flex-wrap:wrap;font-variant-numeric:tabular-nums}
+    .note{font-size:11.5px;color:#98928a}
+  </style>
+</helmet>
+<div class="shell">
+  <div class="side">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1.5 18 16.5H2Z" stroke="#f2c96b" stroke-width="1.6" stroke-linejoin="round"></path><circle cx="10" cy="12.2" r="2.1" fill="#f2c96b"></circle></svg>
+      <span class="wordmark">Assayer</span>
+    </div>
+    <div class="orgsel"><span>prismalens</span><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#8d8574" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></div>
+    <nav class="nav">
+      <a href="#">Overview</a>
+      <a href="#">Repos</a>
+      <a class="on" href="#">Rounds</a>
+      <a href="#">Findings</a>
+      <a href="#">Keys</a>
+      <a href="#">Agents</a>
+      <a href="#">Config</a>
+      <a href="#">Settings</a>
+    </nav>
+    <div class="sidefoot">Marcus Hale · member<br>write on prismalens/prismalens</div>
+  </div>
+  <div class="main">
+    <div>
+      <div class="crumb">/o/prismalens/pr/prismalens/482</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-top:2px">
+        <div>
+          <h1>#482 Refactor auth module into identity service</h1>
+          <div class="sub">by <span class="mono">marcus-h</span> · <span class="mono">prismalens/prismalens</span> · head <span class="mono">9c3d1e2</span> · <a href="#">open on GitHub</a></div>
+        </div>
+        <span class="chip c-ok" style="font-size:12px;padding:4px 12px"><span class="dot" style="background:#0ca30c"></span>Head reviewed: yes</span>
+      </div>
+    </div>
+
+    <div class="card cardpad" style="display:flex;flex-direction:column;gap:6px">
+      <div class="note" style="font-weight:500;color:#52514e">Latest verdict, verbatim from the liveness comment</div>
+      <div class="mono" style="font-size:11.5px;color:#1c1a16;line-height:1.6">reviewed 9c3d1e2 (incremental from 4f2c91a) and posted 1 inline / 1 summary comment(s)</div>
+      <div class="note">Only <span class="mono">reviewed ...</span> verdicts mean the head was read. The other six verdict kinds render here as a plain no.</div>
+    </div>
+
+    <div class="tabs"><span class="on">Rounds (3)</span><span>Findings</span><span>Report</span><span>Config in effect</span></div>
+
+    <div class="round">
+      <div class="rline"><div class="rdot hot"></div><div class="rstem"></div></div>
+      <div class="rcard">
+        <div class="rhead">
+          <span class="rtitle">Round 3 · incremental</span>
+          <span class="chip c-neut">claude-lane</span>
+          <span class="chip c-warn">sonnet-5 · default (changed-files fetch failed)</span>
+          <span class="meta" style="margin-left:auto">Aug 31 09:12 · <a href="#">run</a> · <a href="#">summary comment</a></span>
+        </div>
+        <div class="verd">reviewed 9c3d1e2 (incremental from 4f2c91a) and posted 1 inline / 1 summary comment(s)</div>
+        <div class="facts"><span>4m 02s</span><span>41 turns</span><span>0 denials</span><span>cache read 81%</span><span>$2.31 list-rate eq</span><span>2 commits · 41 files · 3,804 diff lines</span></div>
+        <div class="note" style="margin-top:7px">Path escalation to opus did not fire: the changed-files fetch failed, and that
+        fallback is deliberately silent. The org glob <span class="mono">src/auth/**</span> also no longer matches the moved
+        files &#8594; <a href="#">open config</a></div>
+      </div>
+    </div>
+    <div class="round">
+      <div class="rline"><div class="rdot"></div><div class="rstem"></div></div>
+      <div class="rcard">
+        <div class="rhead">
+          <span class="rtitle">Round 2 · verify</span>
+          <span class="chip c-neut">claude-lane</span>
+          <span class="chip c-neut">sonnet-5 · default</span>
+          <span class="meta" style="margin-left:auto">Aug 30 18:40 · <a href="#">run</a></span>
+        </div>
+        <div class="verd">re-checked open threads at 4f2c91a: 3 resolved / 1 left open</div>
+        <div class="facts"><span>1m 12s</span><span>11 turns</span><span>0 denials</span><span>cache read 88%</span><span>$0.41 list-rate eq</span></div>
+      </div>
+    </div>
+    <div class="round">
+      <div class="rline"><div class="rdot"></div></div>
+      <div class="rcard">
+        <div class="rhead">
+          <span class="rtitle">Round 1 · review</span>
+          <span class="chip c-neut">claude-lane</span>
+          <span class="chip c-neut">opus-5 · escalated by path match</span>
+          <span class="meta" style="margin-left:auto">Aug 29 15:02 · <a href="#">run</a> · <a href="#">summary comment</a></span>
+        </div>
+        <div class="verd">reviewed 4f2c91a and posted 4 inline / 1 summary comment(s)</div>
+        <div class="facts"><span>7m 58s</span><span>57 turns</span><span>1 denial</span><span>cache read 70%</span><span>$5.87 list-rate eq</span></div>
+      </div>
+    </div>
+
+    <div class="card cardpad" style="display:flex;flex-direction:column;gap:6px">
+      <div class="note" style="font-weight:500;color:#52514e">Findings</div>
+      <div class="note">Findings tracking is not enabled for this org yet. It ships with the daily sweep
+      (<a href="#">gh-workflows#47</a>): each claude[bot] thread, its state, whether a human replied, and the
+      commit that followed. Until then, thread fates live on GitHub only.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

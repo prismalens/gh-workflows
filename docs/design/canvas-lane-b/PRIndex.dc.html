@@ -1,0 +1,131 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body{margin:0;background:#f4f3ef;color:#0b0b0b;font:13px/1.45 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;}
+    a{color:#1c5cab;text-decoration:none} a:hover{color:#104281}
+    .mono{font-family:"IBM Plex Mono","SFMono-Regular",ui-monospace,monospace}
+    .card{background:#fcfcfb;border:1px solid rgba(11,11,11,0.10);border-radius:6px}
+    .chip{display:inline-flex;align-items:center;gap:6px;padding:1px 9px;border-radius:999px;font-size:11.5px;font-weight:600;border:1px solid;white-space:nowrap}
+    .dot{width:7px;height:7px;border-radius:50%;flex:none}
+    .c-rev{color:#006300;border-color:rgba(0,99,0,.28);background:#eef6ea}
+    .c-thr{color:#1c5cab;border-color:rgba(28,92,171,.28);background:#eaf1fa}
+    .c-not{color:#8a5600;border-color:rgba(138,86,0,.30);background:#faf2df}
+    .c-blk{color:#a12e2e;border-color:rgba(160,46,46,.30);background:#f9ecec}
+    .c-gry{color:#52514e;border-color:rgba(11,11,11,.16);background:#f1f0ec}
+    .navi{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:6px;color:#52514e;font-weight:500}
+    .navi.on{background:#eaf1fa;color:#1c5cab}
+    th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600;text-align:left;padding:8px 10px;border-bottom:1px solid #e1e0d9}
+    td{padding:9px 10px;border-bottom:1px solid #efeee9;vertical-align:middle}
+    .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600}
+    .filt{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;border:1px solid rgba(11,11,11,.14);background:#fcfcfb;font-size:12px;color:#52514e}
+    .filt.on{border-color:rgba(28,92,171,.4);background:#eaf1fa;color:#1c5cab;font-weight:600}
+  </style>
+</helmet>
+
+<div style="width:1440px;height:940px;display:flex;background:#f4f3ef;overflow:hidden">
+
+  <div style="width:208px;flex:none;border-right:1px solid rgba(11,11,11,.08);background:#faf9f6;display:flex;flex-direction:column;padding:16px 12px;gap:2px">
+    <div style="display:flex;align-items:center;gap:9px;padding:4px 12px 18px 12px">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="1.5" y="1.5" width="17" height="17" rx="4" stroke="#0b0b0b" stroke-width="1.6"/><path d="M6 10.5l2.6 2.6L14 7.5" stroke="#2a78d6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div style="font-weight:700;font-size:14px;letter-spacing:-.01em">Review lane</div>
+    </div>
+    <div class="navi">Overview</div>
+    <div class="navi on">Pull requests</div>
+    <div class="navi">Findings</div>
+    <div class="navi">Repos</div>
+    <div class="navi">Health</div>
+    <div class="navi">Settings</div>
+    <div style="margin-top:auto;padding:10px 12px;color:#898781;font-size:11.5px">prismalens org · Access: sumit@</div>
+  </div>
+
+  <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+    <div style="height:52px;flex:none;display:flex;align-items:center;gap:10px;padding:0 24px;border-bottom:1px solid rgba(11,11,11,.08);background:#faf9f6">
+      <span style="font-weight:600">Pull requests</span>
+      <span class="mono" style="color:#898781;font-size:12px">/prs?state=open&sort=attention</span>
+    </div>
+
+    <div style="padding:18px 24px;display:flex;flex-direction:column;gap:14px">
+
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="filt on">state: open ×</span>
+        <span class="filt">repo: all ▾</span>
+        <span class="filt">head status: all ▾</span>
+        <span class="filt">needs attention</span>
+        <span style="margin-left:auto;color:#898781;font-size:12px">9 pull requests · sorted by attention, then last round</span>
+      </div>
+
+      <div class="card">
+        <table style="width:100%;border-collapse:collapse">
+          <tr><th style="width:34%">Pull request</th><th>Author</th><th>Head status</th><th>Rounds</th><th>Open findings</th><th>Last round</th><th>Model</th><th></th></tr>
+          <tr>
+            <td><a href="#">prismalens/claude-kit#85</a> Split unslop skill triggers</td><td>sumit</td>
+            <td><span class="chip c-blk"><span class="dot" style="background:#d03b3b"></span>blocked · no token</span></td>
+            <td class="mono" style="font-size:12px">0</td><td>—</td><td style="color:#898781">never</td><td class="mono" style="font-size:12px">—</td>
+            <td><a href="#">GitHub ↗</a></td>
+          </tr>
+          <tr>
+            <td><a href="#">prismalens/prismalens#309</a> Migrate session store to D1</td><td>sumit</td>
+            <td><span class="chip c-not"><span class="dot" style="background:#fab219"></span>not reviewed · auto-paused</span></td>
+            <td class="mono" style="font-size:12px">3F</td><td>2</td><td style="color:#898781">1d · full</td><td class="mono" style="font-size:12px">sonnet-5</td>
+            <td><a href="#">GitHub ↗</a></td>
+          </tr>
+          <tr>
+            <td><a href="#">prismalens/gh-workflows#66</a> Store liveness verdict with each ingest row</td><td>sumit</td>
+            <td><span class="chip c-thr"><span class="dot" style="background:#2a78d6"></span>threads only</span></td>
+            <td class="mono" style="font-size:12px">1F/1V</td><td>1</td><td style="color:#898781">5h · verify</td><td class="mono" style="font-size:12px">sonnet-5</td>
+            <td><a href="#">GitHub ↗</a></td>
+          </tr>
+          <tr style="background:#faf9f6">
+            <td><a href="#">prismalens/prismalens#312</a> Bound webhook retries and dead-letter them</td><td>sumit</td>
+            <td><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>reviewed · incremental</span></td>
+            <td class="mono" style="font-size:12px">1F/1I/1V</td><td>1</td><td style="color:#898781">2h · verify</td><td class="mono" style="font-size:12px">opus-5</td>
+            <td><a href="#">GitHub ↗</a></td>
+          </tr>
+          <tr>
+            <td><a href="#">prismalens/claude-kit#87</a> pr-watch: arm the monitor before seeding</td><td>sumit</td>
+            <td><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>reviewed · full</span></td>
+            <td class="mono" style="font-size:12px">1F</td><td>0</td><td style="color:#898781">6h · full</td><td class="mono" style="font-size:12px">sonnet-5</td>
+            <td><a href="#">GitHub ↗</a></td>
+          </tr>
+          <tr>
+            <td><a href="#">prismalens/claude-kit#84</a> Graduate mage procedure notes on read-count</td><td>sumit</td>
+            <td><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>reviewed · incremental</span></td>
+            <td class="mono" style="font-size:12px">1F/2I</td><td>0</td><td style="color:#898781">2d · incremental</td><td class="mono" style="font-size:12px">sonnet-5</td>
+            <td><a href="#">GitHub ↗</a></td>
+          </tr>
+          <tr>
+            <td><a href="#">prismalens/gh-workflows#64</a> Bound every job's runtime <span class="chip c-gry" style="font-weight:500">merged</span></td><td>sumit</td>
+            <td><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>reviewed · full</span></td>
+            <td class="mono" style="font-size:12px">2F</td><td>0</td><td style="color:#898781">3d · full (forced)</td><td class="mono" style="font-size:12px">sonnet-5</td>
+            <td><a href="#">GitHub ↗</a></td>
+          </tr>
+          <tr>
+            <td><a href="#">prismalens/prismalens#307</a> Rate-limit the ingest route <span class="chip c-gry" style="font-weight:500">merged</span></td><td>sumit</td>
+            <td><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>reviewed · full</span></td>
+            <td class="mono" style="font-size:12px">1F/1I</td><td>0</td><td style="color:#898781">4d · incremental</td><td class="mono" style="font-size:12px">sonnet-5</td>
+            <td><a href="#">GitHub ↗</a></td>
+          </tr>
+          <tr>
+            <td style="border-bottom:none"><a href="#">prismalens/gh-workflows#65</a> Read API behind Access <span class="chip c-gry" style="font-weight:500">merged</span></td><td style="border-bottom:none">sumit</td>
+            <td style="border-bottom:none"><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>reviewed · full</span></td>
+            <td class="mono" style="font-size:12px;border-bottom:none">1F</td><td style="border-bottom:none">0</td><td style="color:#898781;border-bottom:none">5d · full</td><td class="mono" style="font-size:12px;border-bottom:none">sonnet-5</td>
+            <td style="border-bottom:none"><a href="#">GitHub ↗</a></td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="color:#898781;font-size:12px">Head status decodes the liveness verdict; hover any chip for the raw string. Sort order: blocked, then not reviewed, then threads-only, then reviewed.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

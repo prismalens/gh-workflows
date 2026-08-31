@@ -1,0 +1,144 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body{margin:0;background:#f4f3ef;color:#0b0b0b;font:13px/1.45 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;}
+    a{color:#1c5cab;text-decoration:none} a:hover{color:#104281}
+    .mono{font-family:"IBM Plex Mono","SFMono-Regular",ui-monospace,monospace}
+    .card{background:#fcfcfb;border:1px solid rgba(11,11,11,0.10);border-radius:6px}
+    .chip{display:inline-flex;align-items:center;gap:6px;padding:1px 9px;border-radius:999px;font-size:11.5px;font-weight:600;border:1px solid;white-space:nowrap}
+    .dot{width:7px;height:7px;border-radius:50%;flex:none}
+    .c-rev{color:#006300;border-color:rgba(0,99,0,.28);background:#eef6ea}
+    .c-gry{color:#52514e;border-color:rgba(11,11,11,.16);background:#f1f0ec}
+    th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600;text-align:left;padding:8px 10px;border-bottom:1px solid #e1e0d9}
+    td{padding:8px 10px;border-bottom:1px solid #efeee9;vertical-align:top}
+    .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600}
+  </style>
+</helmet>
+
+<div style="width:1440px;height:1620px;display:flex;flex-direction:column;background:#f4f3ef;overflow:hidden">
+
+  <div style="height:52px;flex:none;display:flex;align-items:center;gap:10px;padding:0 24px;border-bottom:1px solid rgba(11,11,11,.08);background:#faf9f6">
+    <span style="color:#898781">Pull requests</span><span style="color:#c3c2b7">/</span>
+    <span style="color:#898781">prismalens/prismalens</span><span style="color:#c3c2b7">/</span>
+    <span style="font-weight:600">#312</span>
+    <span style="color:#c3c2b7">·</span>
+    <span style="color:#52514e">Walkthrough tab + round telemetry drawer (same route, <span class="mono">?round=2</span>)</span>
+  </div>
+
+  <div style="padding:22px 24px;display:flex;gap:20px;align-items:flex-start">
+
+    <!-- LEFT: walkthrough rendered as content -->
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:16px">
+      <div class="card">
+        <div style="display:flex;gap:2px;padding:10px 14px 0 14px;border-bottom:1px solid #e1e0d9">
+          <div style="padding:8px 14px;color:#52514e">Findings <span style="background:#f1f0ec;border-radius:999px;padding:0 7px;margin-left:2px">5</span></div>
+          <div style="padding:8px 14px;font-weight:600;border-bottom:2px solid #2a78d6;color:#1c5cab">Walkthrough</div>
+          <div style="padding:8px 14px;color:#52514e">Summary</div>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:8px;padding-right:6px;color:#52514e;font-size:12px">
+            <span>round</span>
+            <span class="chip c-gry">‹</span><span style="font-weight:600">2 of 3</span><span class="chip c-gry">›</span>
+          </div>
+        </div>
+
+        <div style="padding:20px 24px">
+          <div style="display:flex;align-items:baseline;gap:12px">
+            <div style="font-size:16px;font-weight:700">Code review — incremental (<span class="mono" style="font-size:14px">89d0c07..d41f2c8</span>)</div>
+            <a href="#" style="font-size:12px">view comment on GitHub</a>
+          </div>
+          <div style="color:#8a5600;font-size:12px;margin-top:4px">This walkthrough covers only the incremental range, not the whole PR. Round 1 covers the full diff.</div>
+
+          <p style="margin:14px 0 8px 0;color:#0b0b0b">The delta hardens the retry path added in round 1: the backoff gains a cap, failed deliveries
+          now dead-letter into <span class="mono">delivery_dlq</span>, and the sweep endpoint pages through the queue. Two of the five round-1
+          findings are addressed in this range.</p>
+
+          <table style="width:100%;border-collapse:collapse;margin-top:10px">
+            <tr><th style="width:36%">File</th><th>Change</th></tr>
+            <tr><td class="mono" style="font-size:12px">worker/index.js</td><td>Backoff cap, DLQ insert with error propagation, retry counter moved to Durable-Object-less KV hack</td></tr>
+            <tr><td class="mono" style="font-size:12px">worker/schema.sql</td><td>New <span class="mono">delivery_dlq</span> table; sweep index deferred</td></tr>
+            <tr><td class="mono" style="font-size:12px">worker/test/retries.test.js</td><td>Cap + DLQ paths covered; no test for the redeploy reset</td></tr>
+          </table>
+
+          <div class="lbl" style="margin:18px 0 8px 0">Sequence · retry with dead-letter</div>
+          <svg width="640" height="200" viewBox="0 0 640 200" style="background:#faf9f6;border:1px solid #e1e0d9;border-radius:6px">
+            <g font-family="IBM Plex Sans,system-ui" font-size="11.5" fill="#0b0b0b">
+              <rect x="24" y="12" width="88" height="24" rx="4" fill="#fcfcfb" stroke="#c3c2b7"/><text x="68" y="28" text-anchor="middle">Webhook</text>
+              <rect x="216" y="12" width="88" height="24" rx="4" fill="#fcfcfb" stroke="#c3c2b7"/><text x="260" y="28" text-anchor="middle">Worker</text>
+              <rect x="408" y="12" width="88" height="24" rx="4" fill="#fcfcfb" stroke="#c3c2b7"/><text x="452" y="28" text-anchor="middle">Origin</text>
+              <rect x="540" y="12" width="76" height="24" rx="4" fill="#fcfcfb" stroke="#c3c2b7"/><text x="578" y="28" text-anchor="middle">D1 dlq</text>
+            </g>
+            <g stroke="#e1e0d9"><line x1="68" y1="36" x2="68" y2="192"/><line x1="260" y1="36" x2="260" y2="192"/><line x1="452" y1="36" x2="452" y2="192"/><line x1="578" y1="36" x2="578" y2="192"/></g>
+            <g stroke="#52514e" fill="#52514e" font-family="IBM Plex Sans,system-ui" font-size="10.5">
+              <line x1="68" y1="58" x2="256" y2="58"/><path d="M256 58l-6-3v6z"/><text x="110" y="52" stroke="none">deliver(payload)</text>
+              <line x1="260" y1="82" x2="448" y2="82"/><path d="M448 82l-6-3v6z"/><text x="300" y="76" stroke="none">POST (attempt 1..5)</text>
+              <line x1="452" y1="106" x2="264" y2="106" stroke-dasharray="4 3"/><path d="M264 106l6-3v6z"/><text x="300" y="100" stroke="none">5xx</text>
+              <line x1="260" y1="130" x2="448" y2="130"/><path d="M448 130l-6-3v6z"/><text x="286" y="124" stroke="none">retry · capped backoff + jitter</text>
+              <line x1="260" y1="162" x2="574" y2="162"/><path d="M574 162l-6-3v6z"/><text x="330" y="156" stroke="none">exhausted → INSERT delivery_dlq</text>
+            </g>
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: round drawer -->
+    <div style="width:472px;flex:none;display:flex;flex-direction:column;gap:16px">
+      <div class="card" style="padding:16px 18px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+          <span class="chip c-rev">incremental</span>
+          <span style="font-weight:700">Round 2 telemetry</span>
+          <a href="#" style="margin-left:auto;font-size:12px">run 33279810</a>
+        </div>
+        <div style="color:#898781;font-size:12px;margin-bottom:14px">6m 12s wall · 4m 41s API · 87 turns · 1 permission denial · n=1 round</div>
+
+        <div class="lbl" style="margin-bottom:8px">Prompt composition · 898.3k tokens</div>
+        <div style="display:flex;height:22px;border-radius:4px;overflow:hidden;gap:2px;background:#fcfcfb">
+          <div style="width:2.7%;background:#2a78d6"></div>
+          <div style="width:6.9%;background:#eb6834"></div>
+          <div style="flex:1;background:#1baf7a"></div>
+        </div>
+        <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#52514e;flex-wrap:wrap">
+          <span style="display:inline-flex;align-items:center;gap:6px"><span class="dot" style="background:#2a78d6"></span>base input 24.1k</span>
+          <span style="display:inline-flex;align-items:center;gap:6px"><span class="dot" style="background:#eb6834"></span>cache creation 61.8k</span>
+          <span style="display:inline-flex;align-items:center;gap:6px"><span class="dot" style="background:#1baf7a"></span>cache read 812.4k</span>
+        </div>
+        <div style="display:flex;gap:18px;margin-top:12px;font-size:12.5px">
+          <span><span style="color:#52514e">caching multiplier</span> <b>9.6×</b> <span style="color:#898781">(arithmetic identity)</span></span>
+          <span><span style="color:#52514e">output</span> <b>11.2k</b></span>
+          <span><span style="color:#52514e">list-rate eq</span> <b>$1.84</b></span>
+        </div>
+      </div>
+
+      <div class="card" style="padding:16px 18px">
+        <div class="lbl" style="margin-bottom:6px">Per-model usage · per_model_usage</div>
+        <table style="width:100%;border-collapse:collapse">
+          <tr><th>Model</th><th style="text-align:right">In</th><th style="text-align:right">Out</th><th style="text-align:right">Cache rd</th><th style="text-align:right">List-rate eq</th></tr>
+          <tr><td class="mono" style="font-size:12px">claude-opus-5</td><td style="text-align:right">18.2k</td><td style="text-align:right">8.1k</td><td style="text-align:right">644.0k</td><td style="text-align:right">$1.58</td></tr>
+          <tr><td class="mono" style="font-size:12px">claude-sonnet-5</td><td style="text-align:right">5.9k</td><td style="text-align:right">3.1k</td><td style="text-align:right">168.4k</td><td style="text-align:right">$0.26</td></tr>
+        </table>
+      </div>
+
+      <div class="card" style="padding:16px 18px">
+        <div class="lbl" style="margin-bottom:6px">Review fan-out · subagent_stats</div>
+        <div style="color:#52514e;font-size:12px;margin-bottom:8px">One review round fans out to four parallel reviewers; their stats come back in the same record. Flat table by design, not a trace.</div>
+        <table style="width:100%;border-collapse:collapse">
+          <tr><th>Agent</th><th style="text-align:right">Turns</th><th style="text-align:right">Tokens</th><th style="text-align:right">Wall</th><th style="text-align:right">Found</th></tr>
+          <tr><td>correctness</td><td style="text-align:right">31</td><td style="text-align:right">402k</td><td style="text-align:right">4m 50s</td><td style="text-align:right">2</td></tr>
+          <tr><td>security</td><td style="text-align:right">19</td><td style="text-align:right">217k</td><td style="text-align:right">3m 12s</td><td style="text-align:right">0</td></tr>
+          <tr><td>simplification</td><td style="text-align:right">17</td><td style="text-align:right">154k</td><td style="text-align:right">2m 58s</td><td style="text-align:right">0</td></tr>
+          <tr><td>tests</td><td style="text-align:right">20</td><td style="text-align:right">125k</td><td style="text-align:right">3m 05s</td><td style="text-align:right">0</td></tr>
+        </table>
+        <div style="color:#898781;font-size:12px;margin-top:8px">"Found" counts inline comments the adjudicator kept, not raw candidates.</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

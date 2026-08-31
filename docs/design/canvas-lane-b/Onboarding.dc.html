@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body{margin:0;background:#f4f3ef;color:#0b0b0b;font:13px/1.45 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;}
+    a{color:#1c5cab;text-decoration:none} a:hover{color:#104281}
+    .mono{font-family:"IBM Plex Mono","SFMono-Regular",ui-monospace,monospace}
+    .card{background:#fcfcfb;border:1px solid rgba(11,11,11,0.10);border-radius:6px}
+    .chip{display:inline-flex;align-items:center;gap:6px;padding:1px 9px;border-radius:999px;font-size:11.5px;font-weight:600;border:1px solid;white-space:nowrap}
+    .c-rev{color:#006300;border-color:rgba(0,99,0,.28);background:#eef6ea}
+    .c-gry{color:#52514e;border-color:rgba(11,11,11,.16);background:#f1f0ec}
+    .btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 14px;border-radius:6px;border:1px solid rgba(11,11,11,.14);background:#fcfcfb;font-weight:600;font-size:12.5px;color:#0b0b0b}
+    .btnp{background:#1c5cab;border-color:#1c5cab;color:#fcfcfb}
+    .step{display:flex;align-items:center;gap:8px;color:#898781;font-size:12.5px}
+    .stepn{width:22px;height:22px;border-radius:50%;border:1.5px solid #c3c2b7;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:12px}
+  </style>
+</helmet>
+
+<div style="width:1440px;height:920px;display:flex;flex-direction:column;background:#f4f3ef;overflow:hidden">
+
+  <div style="height:52px;flex:none;display:flex;align-items:center;gap:10px;padding:0 24px;border-bottom:1px solid rgba(11,11,11,.08);background:#faf9f6">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="1.5" y="1.5" width="17" height="17" rx="4" stroke="#0b0b0b" stroke-width="1.6"/><path d="M6 10.5l2.6 2.6L14 7.5" stroke="#2a78d6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span style="font-weight:600">Add repository</span>
+    <span class="mono" style="color:#898781;font-size:12px">/onboard?step=2&repo=prismalens/assayer-web</span>
+    <a href="#" style="margin-left:auto;font-size:12.5px">exit wizard</a>
+  </div>
+
+  <div style="flex:1;display:flex;justify-content:center;padding:36px 24px">
+    <div style="width:760px;display:flex;flex-direction:column;gap:20px">
+
+      <!-- stepper -->
+      <div style="display:flex;gap:22px">
+        <div class="step" style="color:#006300"><span class="stepn" style="border-color:#0ca30c;background:#eef6ea"><svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2 5.8l2.4 2.4L9 3.4" stroke="#006300" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>Repo</div>
+        <div class="step" style="color:#1c5cab;font-weight:600"><span class="stepn" style="border-color:#2a78d6;color:#1c5cab">2</span>Key</div>
+        <div class="step"><span class="stepn">3</span>Agent</div>
+        <div class="step"><span class="stepn">4</span>Caller + config PR</div>
+        <div class="step"><span class="stepn">5</span>First round</div>
+      </div>
+
+      <div>
+        <div style="font-size:19px;font-weight:700;letter-spacing:-.01em">How will prismalens/assayer-web pay for reviews?</div>
+        <div style="color:#52514e;margin-top:4px">The key stays in your repo's secrets. This dashboard never stores it and only ever checks that the secret name exists.</div>
+      </div>
+
+      <!-- option A selected -->
+      <div class="card" style="padding:16px 18px;border:2px solid #2a78d6">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="width:16px;height:16px;border-radius:50%;border:5px solid #2a78d6;background:#fcfcfb;flex:none"></span>
+          <span style="font-weight:700">Anthropic subscription token</span>
+          <span class="chip c-rev">today's lane</span>
+        </div>
+        <div style="color:#52514e;margin:8px 0 0 26px">
+          Flat seat. Cost renders as a <b>list-rate equivalent</b> column only, never a headline; the honesty rules assume
+          this mode. Set the secret, then verify:
+        </div>
+        <div class="mono" style="font-size:12px;background:#faf9f6;border:1px solid #e1e0d9;border-radius:6px;padding:10px 12px;margin:10px 0 0 26px">gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo prismalens/assayer-web</div>
+        <div style="margin:10px 0 0 26px;display:flex;align-items:center;gap:10px">
+          <span class="btn">Verify secret exists</span>
+          <span style="color:#006300;font-size:12.5px;display:inline-flex;align-items:center;gap:6px"><svg width="12" height="12" viewBox="0 0 11 11" fill="none"><path d="M2 5.8l2.4 2.4L9 3.4" stroke="#006300" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>found CLAUDE_CODE_OAUTH_TOKEN (name only; value never read)</span>
+        </div>
+      </div>
+
+      <!-- option B -->
+      <div class="card" style="padding:16px 18px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="width:16px;height:16px;border-radius:50%;border:1.5px solid #c3c2b7;background:#fcfcfb;flex:none"></span>
+          <span style="font-weight:700">Metered API key</span>
+          <span class="chip c-gry">Anthropic · OpenAI-compatible · Vertex ▾</span>
+          <span class="chip c-gry">vision</span>
+        </div>
+        <div style="color:#52514e;margin:8px 0 0 26px">
+          Pay the provider at list price. Real spend becomes measurable, so the health page gains a true
+          <b>spend</b> tile and a monthly alert threshold. Alerts only; reviews never stop on a cap.
+        </div>
+      </div>
+
+      <!-- option C -->
+      <div class="card" style="padding:16px 18px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="width:16px;height:16px;border-radius:50%;border:1.5px solid #c3c2b7;background:#fcfcfb;flex:none"></span>
+          <span style="font-weight:700">Org-level key, inherited</span>
+          <span class="chip c-gry">vision</span>
+        </div>
+        <div style="color:#52514e;margin:8px 0 0 26px">One key registered under Settings → Keys covers every repo that opts in; a per-repo key overrides it, same precedence spirit as config.</div>
+      </div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <span class="btn">Back</span>
+        <span class="btn btnp">Continue to agent →</span>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

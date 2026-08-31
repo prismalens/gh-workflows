@@ -1,0 +1,192 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap">
+  <style>
+  body { margin:0; background:#0C0F16; color:#DEE3EE; font-family:'IBM Plex Sans', system-ui, sans-serif; font-size:13px; -webkit-font-smoothing:antialiased; }
+  a { color:#7A9BEF; text-decoration:none; } a:hover { color:#9CB6F5; }
+  table { border-collapse:collapse; width:100%; }
+  th { text-align:left; font-size:10.5px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:#5A6377; padding:7px 10px; border-bottom:1px solid #1E2433; white-space:nowrap; }
+  td { padding:7px 10px; border-bottom:1px solid #1E2433; vertical-align:middle; white-space:nowrap; }
+  .num { font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:12px; font-variant-numeric:tabular-nums; }
+  .mono { font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:11.5px; }
+  .muted { color:#8B93A7; } .faint { color:#5A6377; }
+</style>
+</helmet>
+<div style="display:flex; height:100%; min-height:100vh; align-items:stretch;">
+  <div style="width:196px; flex-shrink:0; border-right:1px solid #1E2433; display:flex; flex-direction:column; padding:14px 10px; gap:2px;">
+    <div style="display:flex; align-items:center; gap:8px; padding:2px 12px 14px;">
+      <svg width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="1" width="16" height="16" rx="3" fill="none" stroke="#7A9BEF" stroke-width="1.5"/><path d="M5 11 8 6l2.5 3.5L12.5 7" stroke="#7A9BEF" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><div style="font-weight:600; font-size:13px;">Lane console</div><div style="font-size:10px; color:#5A6377;">prismalens review lane</div></div>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 13h3V7H2zM6.5 13h3V3h-3zM11 13h3V9h-3z"/></svg>Overview</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 4h12M2 8h12M2 12h12"/></svg>Rounds</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; background:#151A2A; color:#DEE3EE; font-weight:600; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#7A9BEF" stroke-width="1.5"><path d="M8 2 14 13H2z M8 6v3.5 M8 11.2v.6"/></svg>Failures</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M8 2v12 M3 5h3.5 M3 8h3.5 M3 11h3.5 M9.5 5H13 M9.5 8H13 M9.5 11H13"/></svg>Compare</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><circle cx="4.5" cy="4" r="2"/><circle cx="4.5" cy="12" r="2"/><circle cx="11.5" cy="12" r="2"/><path d="M4.5 6v4 M11.5 10V7.5A2.5 2.5 0 0 0 9 5H8"/></svg>PRs</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 8h3l1.5 3 2-6 1.5 3h4 M2 12.5h12"/></svg>Findings</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M3 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5H4.5A1.5 1.5 0 0 1 3 12z M3 11h10"/></svg>Repos</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><circle cx="5" cy="8" r="3"/><path d="M8 8h6 M11 8v2.5 M13.5 8v2"/></svg>Keys</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><rect x="2.5" y="5" width="5" height="6" rx="1"/><rect x="9.5" y="5" width="4" height="6" rx="1"/><path d="M7.5 8h2"/></svg>Agents</div>
+    <div style="flex:1;"></div>
+    <div style="padding:10px 12px; border-top:1px solid #1E2433; display:flex; flex-direction:column; gap:6px; font-size:10.5px; color:#5A6377;">
+      <div style="display:flex; gap:5px; align-items:center;"><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">j</span><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">k</span> rows &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">enter</span> open</div>
+      <div style="display:flex; gap:5px; align-items:center;"><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">o</span> run &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">p</span> PR &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">cmd+k</span> jump</div>
+    </div>
+  </div>
+  <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+    <div style="height:52px; flex-shrink:0; border-bottom:1px solid #1E2433; display:flex; align-items:center; gap:14px; padding:0 20px;">
+    <div style="font-size:14px; font-weight:600;">Failure surface</div>
+    <div style="flex:1;"></div>
+    <div style="display:flex; align-items:center; gap:7px; border:1px solid #1E2433; border-radius:4px; padding:4px 10px; font-size:11.5px; color:#8B93A7;">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M3 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5H4.5A1.5 1.5 0 0 1 3 12z"/></svg>
+      All repos <span style="color:#5A6377;">&#9662;</span></div>
+    <div style="display:flex; gap:4px;"><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">Last 50 rounds / 7d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">30d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">90d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #7A9BEF88; background:#7A9BEF1a; color:#7A9BEF; font-weight:600; border-radius:4px;">All time</span></div>
+  </div>
+    <div style="flex:1; padding:18px 20px; display:flex; flex-direction:column; gap:14px; min-width:0;">
+    <div style="background:#121623; border:1px solid #1E2433; border-radius:6px; ">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Liveness verdicts, all eight</div><div style="flex:1;"></div><span class="num" style="font-size:11px; color:#5A6377;">range: all time · n=51</span></div>
+    <div style="padding:0 0 6px;"><table>
+    <tr><th>State</th><th>Verdict string</th><th>Count</th><th>Last seen</th><th>8 weeks</th><th></th></tr>
+    <tr>
+    <td style="width:118px;"><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed</span></td>
+    <td class="mono" style="font-size:11px; color:#8B93A7; max-width:520px; white-space:normal;">reviewed &lt;sha&gt; and posted N inline / M summary comment(s)</td>
+    <td class="num" style="color:#DEE3EE;">27</td>
+    <td class="num muted">Aug 31 08:14</td>
+    <td><svg width="96" height="20" viewBox="0 0 96 20"><path d="M6,9.6 L18,6.799999999999999 L30,12.399999999999999 L42,4 L54,6.799999999999999 L66,9.6 L78,6.799999999999999 L90,12.399999999999999" fill="none" stroke="#3AA368" stroke-width="1.5" stroke-linecap="round"/></svg></td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td style="width:118px;"><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed</span></td>
+    <td class="mono" style="font-size:11px; color:#8B93A7; max-width:520px; white-space:normal;">reviewed &lt;sha&gt; (incremental from &lt;base&gt;) and posted N inline / M summary comment(s)</td>
+    <td class="num" style="color:#DEE3EE;">14</td>
+    <td class="num muted">Aug 30 19:00</td>
+    <td><svg width="96" height="20" viewBox="0 0 96 20"><path d="M6,13.333333333333334 L18,8.666666666666668 L30,8.666666666666668 L42,13.333333333333334 L54,4 L66,8.666666666666668 L78,8.666666666666668 L90,13.333333333333334" fill="none" stroke="#3AA368" stroke-width="1.5" stroke-linecap="round"/></svg></td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td style="width:118px;"><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#DB4A781f; border:1px solid #DB4A7855; color:#DB4A78; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#DB4A78"/></svg>silent</span></td>
+    <td class="mono" style="font-size:11px; color:#8B93A7; max-width:520px; white-space:normal;">finished on &lt;sha&gt; (job result: X) but posted <b>nothing</b></td>
+    <td class="num" style="color:#DEE3EE;">1</td>
+    <td class="num muted">Aug 18 11:32</td>
+    <td><svg width="96" height="20" viewBox="0 0 96 20"><path d="M6,18 L18,18 L30,4 L42,18 L54,18 L66,18 L78,18 L90,18" fill="none" stroke="#DB4A78" stroke-width="1.5" stroke-linecap="round"/></svg></td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td style="width:118px;"><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#4E7FE01f; border:1px solid #4E7FE055; color:#4E7FE0; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#4E7FE0"/></svg>threads-only</span></td>
+    <td class="mono" style="font-size:11px; color:#8B93A7; max-width:520px; white-space:normal;">re-checked open threads at &lt;sha&gt;: N resolved / M left open</td>
+    <td class="num" style="color:#DEE3EE;">4</td>
+    <td class="num muted">Aug 31 07:02</td>
+    <td><svg width="96" height="20" viewBox="0 0 96 20"><path d="M6,18 L18,4 L30,18 L42,4 L54,18 L66,4 L78,18 L90,4" fill="none" stroke="#4E7FE0" stroke-width="1.5" stroke-linecap="round"/></svg></td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td style="width:118px;"><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#DB4A781f; border:1px solid #DB4A7855; color:#DB4A78; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#DB4A78"/></svg>silent</span></td>
+    <td class="mono" style="font-size:11px; color:#8B93A7; max-width:520px; white-space:normal;">ran a verification round on &lt;sha&gt; (mutate result: X) but posted <b>nothing</b></td>
+    <td class="num" style="color:#DEE3EE;">1</td>
+    <td class="num muted">Aug 30 16:20</td>
+    <td><svg width="96" height="20" viewBox="0 0 96 20"><path d="M6,18 L18,18 L30,18 L42,18 L54,18 L66,18 L78,18 L90,4" fill="none" stroke="#DB4A78" stroke-width="1.5" stroke-linecap="round"/></svg></td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td style="width:118px;"><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#AD87341f; border:1px solid #AD873455; color:#AD8734; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#AD8734"/></svg>did-not-run</span></td>
+    <td class="mono" style="font-size:11px; color:#8B93A7; max-width:520px; white-space:normal;">auto-paused after N automatic rounds at &lt;sha&gt;</td>
+    <td class="num" style="color:#DEE3EE;">2</td>
+    <td class="num muted">Aug 28 21:05</td>
+    <td><svg width="96" height="20" viewBox="0 0 96 20"><path d="M6,18 L18,18 L30,4 L42,18 L54,18 L66,18 L78,18 L90,4" fill="none" stroke="#AD8734" stroke-width="1.5" stroke-linecap="round"/></svg></td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td style="width:118px;"><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#AD87341f; border:1px solid #AD873455; color:#AD8734; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#AD8734"/></svg>did-not-run</span></td>
+    <td class="mono" style="font-size:11px; color:#8B93A7; max-width:520px; white-space:normal;">did not run at &lt;sha&gt;: no CLAUDE_CODE_OAUTH_TOKEN reached this lane</td>
+    <td class="num" style="color:#DEE3EE;">1</td>
+    <td class="num muted">Aug 12 09:01</td>
+    <td><svg width="96" height="20" viewBox="0 0 96 20"><path d="M6,4 L18,18 L30,18 L42,18 L54,18 L66,18 L78,18 L90,18" fill="none" stroke="#AD8734" stroke-width="1.5" stroke-linecap="round"/></svg></td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td style="width:118px;"><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#AD87341f; border:1px solid #AD873455; color:#AD8734; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#AD8734"/></svg>did-not-run</span></td>
+    <td class="mono" style="font-size:11px; color:#8B93A7; max-width:520px; white-space:normal;">no new commits since &lt;sha&gt; was last reviewed; nothing to re-review</td>
+    <td class="num" style="color:#DEE3EE;">1</td>
+    <td class="num muted">Aug 27 15:44</td>
+    <td><svg width="96" height="20" viewBox="0 0 96 20"><path d="M6,18 L18,18 L30,18 L42,18 L54,18 L66,4 L78,18 L90,18" fill="none" stroke="#AD8734" stroke-width="1.5" stroke-linecap="round"/></svg></td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    </table>
+    <div style="padding:8px 10px 2px; font-size:10.5px; color:#5A6377;">only the two green rows mean the head was read · counts need the verdict recorded per round <span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #AD873466; color:#AD8734; font-size:10.5px; font-weight:500;">gap G1</span></div></div>
+  </div>
+    <div style="display:flex; gap:12px;"><div style="background:#121623; border:1px solid #1E2433; border-radius:6px; ">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Incremental fallbacks (each forces a full review)</div><div style="flex:1;"></div><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #AD873466; color:#AD8734; font-size:10.5px; font-weight:500;">gap G2</span></div>
+    <div style="padding:0 0 6px;"><table>
+    <tr><th>Reason</th><th>Count</th><th>Last seen</th><th>What it means</th><th></th></tr>
+    <tr>
+    <td class="mono" style="font-size:11.5px;">no-baseline</td><td class="num" style="color:#DEE3EE;">3</td>
+    <td class="num muted">Aug 26</td><td class="faint" style="font-size:11px; white-space:normal;">first round on the PR; nothing to diff against</td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td class="mono" style="font-size:11.5px;">identical-summon</td><td class="num" style="color:#5A6377;">0</td>
+    <td class="num muted">-</td><td class="faint" style="font-size:11px; white-space:normal;">summon repeated on an already-reviewed head</td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td class="mono" style="font-size:11.5px;">baseline-gone</td><td class="num" style="color:#DEE3EE;">2</td>
+    <td class="num muted">Aug 30</td><td class="faint" style="font-size:11px; white-space:normal;">compare 404 after a force-push</td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td class="mono" style="font-size:11.5px;">diverged</td><td class="num" style="color:#DEE3EE;">1</td>
+    <td class="num muted">Aug 22</td><td class="faint" style="font-size:11px; white-space:normal;">base moved; covers behind</td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td class="mono" style="font-size:11.5px;">range-too-large</td><td class="num" style="color:#DEE3EE;">1</td>
+    <td class="num muted">Aug 19</td><td class="faint" style="font-size:11px; white-space:normal;">&gt;= 300 files in range</td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    <tr>
+    <td class="mono" style="font-size:11.5px;">unexpected-status-*</td><td class="num" style="color:#5A6377;">0</td>
+    <td class="num muted">-</td><td class="faint" style="font-size:11px; white-space:normal;">GitHub compare returned an unmodeled status</td>
+    <td><a style="font-size:11px;">rounds &#8599;</a></td></tr>
+    </table></div>
+  </div></div>
+    <div style="display:flex; gap:12px;"><div style="background:#121623; border:1px solid #1E2433; border-radius:6px; flex:1; min-width:0;">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Model resolution</div></div>
+    <div style="padding:0 0 6px;"><table>
+    <tr><th>Reason</th><th>Count</th></tr>
+    <tr><td class="mono" style="font-size:11.5px; ">default</td><td class="num">44</td></tr><tr><td class="mono" style="font-size:11.5px; ">summon override</td><td class="num">3</td></tr><tr><td class="mono" style="font-size:11.5px; ">escalated by path match</td><td class="num">2</td></tr><tr><td class="mono" style="font-size:11.5px; color:#AD8734;">default (changed-files fetch failed)</td><td class="num">2</td></tr>
+    </table>
+    <div style="padding:8px 10px 2px; font-size:10.5px; color:#5A6377;">the amber row is a silent quality drop: escalation never evaluated <span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #AD873466; color:#AD8734; font-size:10.5px; font-weight:500;">gap G3</span></div></div>
+  </div><div style="background:#121623; border:1px solid #1E2433; border-radius:6px; flex:1; min-width:0;">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Permission denials by tool</div></div>
+    <div style="padding:0 0 6px;"><table>
+    <tr><th>Tool</th><th>Denials</th></tr>
+    <tr><td class="mono" style="font-size:11.5px; ">Bash</td><td class="num">4</td></tr><tr><td class="mono" style="font-size:11.5px; ">WebFetch</td><td class="num">1</td></tr>
+    </table>
+    <div style="padding:8px 10px 2px; font-size:10.5px; color:#5A6377;">from raw_result.denial_tools · names only, never inputs</div></div>
+  </div><div style="background:#121623; border:1px solid #1E2433; border-radius:6px; flex:1; min-width:0;">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Config parse outcomes, current</div></div>
+    <div style="padding:0 0 6px;"><table>
+    <tr><th>Repo</th><th>Org layer</th><th>Repo layer</th></tr>
+    <tr><td class="muted">prismalens/prismalens</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #5A637766; color:#5A6377; font-size:10.5px; font-weight:500;">absent</span></td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">valid: 5 keys</span></td></tr>
+    <tr><td class="muted">prismalens/gh-workflows</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #5A637766; color:#5A6377; font-size:10.5px; font-weight:500;">absent</span></td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #DB4A7866; color:#DB4A78; font-size:10.5px; font-weight:500;">malformed: dropped</span></td></tr>
+    <tr><td class="muted">prismalens/assayer</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #5A637766; color:#5A6377; font-size:10.5px; font-weight:500;">absent</span></td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #5A637766; color:#5A6377; font-size:10.5px; font-weight:500;">absent</span></td></tr>
+    </table>
+    <div style="padding:8px 10px 2px; font-size:10.5px; color:#5A6377;">a malformed layer drops whole; the lane never dies for it <span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #AD873466; color:#AD8734; font-size:10.5px; font-weight:500;">gap G4</span></div></div>
+  </div></div>
+    <div style="background:#121623; border:1px solid #1E2433; border-radius:6px; ">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Rounds that never happened</div></div>
+    <div style="padding:10px 14px;">
+    <div style="display:flex; gap:12px; align-items:center; padding:2px 0;">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#DB4A78" stroke-width="1.5"><circle cx="8" cy="8" r="6.5"/><path d="M4 12 12 4"/></svg>
+      <div style="font-size:12px; color:#8B93A7; max-width:960px;">Skips are not recorded. A repo whose lane died silently (token gone, auto-pause stuck, fork-only traffic) looks identical to a quiet repo. Until skip events are ingested (gap G7) this section is a stated blind spot, on purpose: showing the hole beats faking a zero.</div>
+    </div></div>
+  </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body{margin:0;background:#f4f3ef;color:#0b0b0b;font:13px/1.45 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;}
+    a{color:#1c5cab;text-decoration:none} a:hover{color:#104281}
+    .mono{font-family:"IBM Plex Mono","SFMono-Regular",ui-monospace,monospace}
+    .card{background:#fcfcfb;border:1px solid rgba(11,11,11,0.10);border-radius:6px}
+    .chip{display:inline-flex;align-items:center;gap:6px;padding:1px 9px;border-radius:999px;font-size:11.5px;font-weight:600;border:1px solid;white-space:nowrap}
+    .dot{width:7px;height:7px;border-radius:50%;flex:none}
+    .c-rev{color:#006300;border-color:rgba(0,99,0,.28);background:#eef6ea}
+    .c-not{color:#8a5600;border-color:rgba(138,86,0,.30);background:#faf2df}
+    .c-blk{color:#a12e2e;border-color:rgba(160,46,46,.30);background:#f9ecec}
+    .navi{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:6px;color:#52514e;font-weight:500}
+    .navi.on{background:#eaf1fa;color:#1c5cab}
+    th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#898781;font-weight:600;text-align:left;padding:8px 10px;border-bottom:1px solid #e1e0d9}
+    td{padding:10px;border-bottom:1px solid #efeee9;vertical-align:middle}
+    .btn{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:6px;border:1px solid rgba(11,11,11,.14);background:#fcfcfb;font-weight:600;font-size:12.5px;color:#0b0b0b}
+  </style>
+</helmet>
+
+<div style="width:1440px;height:640px;display:flex;background:#f4f3ef;overflow:hidden">
+
+  <div style="width:208px;flex:none;border-right:1px solid rgba(11,11,11,.08);background:#faf9f6;display:flex;flex-direction:column;padding:16px 12px;gap:2px">
+    <div style="display:flex;align-items:center;gap:9px;padding:4px 12px 18px 12px">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="1.5" y="1.5" width="17" height="17" rx="4" stroke="#0b0b0b" stroke-width="1.6"/><path d="M6 10.5l2.6 2.6L14 7.5" stroke="#2a78d6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div style="font-weight:700;font-size:14px;letter-spacing:-.01em">Review lane</div>
+    </div>
+    <div class="navi">Overview</div>
+    <div class="navi">Pull requests</div>
+    <div class="navi">Findings</div>
+    <div class="navi on">Repos</div>
+    <div class="navi">Health</div>
+    <div class="navi">Settings</div>
+    <div style="margin-top:auto;padding:10px 12px;color:#898781;font-size:11.5px">prismalens org · Access: sumit@</div>
+  </div>
+
+  <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+    <div style="height:52px;flex:none;display:flex;align-items:center;gap:10px;padding:0 24px;border-bottom:1px solid rgba(11,11,11,.08);background:#faf9f6">
+      <span style="font-weight:600">Repos</span>
+      <div style="margin-left:auto"><span class="btn">+ Add repository</span></div>
+    </div>
+
+    <div style="padding:18px 24px;display:flex;flex-direction:column;gap:14px">
+      <div class="card">
+        <table style="width:100%;border-collapse:collapse">
+          <tr><th style="width:26%">Repository</th><th>Lane state</th><th>Last round</th><th style="text-align:right">Rounds / 7d</th><th style="text-align:right">Open findings</th><th>Config layers</th><th>Agent</th><th></th></tr>
+          <tr>
+            <td style="font-weight:600">prismalens/prismalens</td>
+            <td><span class="chip c-rev"><span class="dot" style="background:#0ca30c"></span>live</span></td>
+            <td style="color:#52514e">2h ago · verify on <a href="#">#312</a></td>
+            <td style="text-align:right">23</td><td style="text-align:right">4</td>
+            <td style="color:#52514e">org + repo (both valid)</td>
+            <td class="mono" style="font-size:12px">claude-code-review@v1</td>
+            <td><a href="#">open →</a></td>
+          </tr>
+          <tr>
+            <td style="font-weight:600">prismalens/claude-kit</td>
+            <td><span class="chip c-blk"><span class="dot" style="background:#d03b3b"></span>token missing</span></td>
+            <td style="color:#52514e">6h ago · full on <a href="#">#87</a></td>
+            <td style="text-align:right">11</td><td style="text-align:right">1</td>
+            <td style="color:#52514e">org only</td>
+            <td class="mono" style="font-size:12px">claude-code-review@v1</td>
+            <td><a href="#">open →</a></td>
+          </tr>
+          <tr>
+            <td style="font-weight:600;border-bottom:none">prismalens/gh-workflows</td>
+            <td style="border-bottom:none"><span class="chip c-not"><span class="dot" style="background:#fab219"></span>org layer malformed</span></td>
+            <td style="color:#52514e;border-bottom:none">1d ago · full on <a href="#">#66</a></td>
+            <td style="text-align:right;border-bottom:none">7</td><td style="text-align:right;border-bottom:none">1</td>
+            <td style="color:#52514e;border-bottom:none">org <span style="color:#8a5600">(dropped: parse error line 12)</span></td>
+            <td class="mono" style="font-size:12px;border-bottom:none">claude-code-review@v1</td>
+            <td style="border-bottom:none"><a href="#">open →</a></td>
+          </tr>
+        </table>
+      </div>
+      <div style="color:#898781;font-size:12px">Lane state is decoded from the newest liveness verdict per repo plus config parse results. A malformed layer never kills the lane; it drops whole with a warning.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

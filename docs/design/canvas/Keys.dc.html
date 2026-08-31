@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap">
+  <style>
+  body { margin:0; background:#0C0F16; color:#DEE3EE; font-family:'IBM Plex Sans', system-ui, sans-serif; font-size:13px; -webkit-font-smoothing:antialiased; }
+  a { color:#7A9BEF; text-decoration:none; } a:hover { color:#9CB6F5; }
+  table { border-collapse:collapse; width:100%; }
+  th { text-align:left; font-size:10.5px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:#5A6377; padding:7px 10px; border-bottom:1px solid #1E2433; white-space:nowrap; }
+  td { padding:7px 10px; border-bottom:1px solid #1E2433; vertical-align:middle; white-space:nowrap; }
+  .num { font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:12px; font-variant-numeric:tabular-nums; }
+  .mono { font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:11.5px; }
+  .muted { color:#8B93A7; } .faint { color:#5A6377; }
+</style>
+</helmet>
+<div style="display:flex; height:100%; min-height:100vh; align-items:stretch;">
+  <div style="width:196px; flex-shrink:0; border-right:1px solid #1E2433; display:flex; flex-direction:column; padding:14px 10px; gap:2px;">
+    <div style="display:flex; align-items:center; gap:8px; padding:2px 12px 14px;">
+      <svg width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="1" width="16" height="16" rx="3" fill="none" stroke="#7A9BEF" stroke-width="1.5"/><path d="M5 11 8 6l2.5 3.5L12.5 7" stroke="#7A9BEF" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><div style="font-weight:600; font-size:13px;">Lane console</div><div style="font-size:10px; color:#5A6377;">prismalens review lane</div></div>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 13h3V7H2zM6.5 13h3V3h-3zM11 13h3V9h-3z"/></svg>Overview</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 4h12M2 8h12M2 12h12"/></svg>Rounds</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M8 2 14 13H2z M8 6v3.5 M8 11.2v.6"/></svg>Failures</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M8 2v12 M3 5h3.5 M3 8h3.5 M3 11h3.5 M9.5 5H13 M9.5 8H13 M9.5 11H13"/></svg>Compare</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><circle cx="4.5" cy="4" r="2"/><circle cx="4.5" cy="12" r="2"/><circle cx="11.5" cy="12" r="2"/><path d="M4.5 6v4 M11.5 10V7.5A2.5 2.5 0 0 0 9 5H8"/></svg>PRs</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 8h3l1.5 3 2-6 1.5 3h4 M2 12.5h12"/></svg>Findings</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M3 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5H4.5A1.5 1.5 0 0 1 3 12z M3 11h10"/></svg>Repos</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; background:#151A2A; color:#DEE3EE; font-weight:600; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#7A9BEF" stroke-width="1.5"><circle cx="5" cy="8" r="3"/><path d="M8 8h6 M11 8v2.5 M13.5 8v2"/></svg>Keys</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><rect x="2.5" y="5" width="5" height="6" rx="1"/><rect x="9.5" y="5" width="4" height="6" rx="1"/><path d="M7.5 8h2"/></svg>Agents</div>
+    <div style="flex:1;"></div>
+    <div style="padding:10px 12px; border-top:1px solid #1E2433; display:flex; flex-direction:column; gap:6px; font-size:10.5px; color:#5A6377;">
+      <div style="display:flex; gap:5px; align-items:center;"><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">j</span><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">k</span> rows &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">enter</span> open</div>
+      <div style="display:flex; gap:5px; align-items:center;"><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">o</span> run &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">p</span> PR &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">cmd+k</span> jump</div>
+    </div>
+  </div>
+  <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+    <div style="height:52px; flex-shrink:0; border-bottom:1px solid #1E2433; display:flex; align-items:center; gap:14px; padding:0 20px;">
+    <div style="font-size:14px; font-weight:600;">Keys</div>
+    <div style="flex:1;"></div>
+    <div style="display:flex; align-items:center; gap:7px; border:1px solid #1E2433; border-radius:4px; padding:4px 10px; font-size:11.5px; color:#8B93A7;">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M3 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5H4.5A1.5 1.5 0 0 1 3 12z"/></svg>
+      All repos <span style="color:#5A6377;">&#9662;</span></div>
+    <div style="display:flex; gap:4px;"><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">Last 50 rounds / 7d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">30d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">90d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #7A9BEF88; background:#7A9BEF1a; color:#7A9BEF; font-weight:600; border-radius:4px;">All time</span></div>
+  </div>
+    <div style="flex:1; padding:18px 20px; display:flex; flex-direction:column; gap:14px; min-width:0;">
+    
+    <div style="font-size:11.5px; color:#8B93A7; padding:2px 2px;">Assayer stores metadata about your keys, never key material. Keys live in GitHub Actions secrets; the lane reports a fingerprint per run, and health is driven by observed rounds, not pings.</div>
+    <div style="background:#121623; border:1px solid #1E2433; border-radius:6px; ">
+    
+    <div style="padding:0 0 6px;"><table><tr><th>Credential</th><th>Type</th><th>Billing</th><th>Scope / secret</th><th>Health</th><th>Last seen</th><th>MTD spend</th><th></th></tr>
+      <tr>
+    <td style="font-weight:500;">anthropic-seat-1</td><td class="muted" style="font-size:11.5px;">subscription OAuth</td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #8B93A766; color:#8B93A7; font-size:10.5px; font-weight:500;">seat</span></td><td class="mono faint" style="font-size:11px;">org · CLAUDE_CODE_OAUTH_TOKEN</td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">verified</span></td><td class="num muted">Aug 31 08:14</td><td class="num">-</td>
+    <td style="text-align:right;"><a style="font-size:11px;">detail</a></td></tr>
+      <tr>
+    <td style="font-weight:500;">anthropic-ci-metered</td><td class="muted" style="font-size:11.5px;">metered API key</td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #4E7FE066; color:#4E7FE0; font-size:10.5px; font-weight:500;">metered</span></td><td class="mono faint" style="font-size:11px;">repo:assayer · ANTHROPIC_API_KEY</td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">verified</span></td><td class="num muted">Aug 30 11:02</td><td class="num">$14.20 / $60 alert</td>
+    <td style="text-align:right;"><a style="font-size:11px;">detail</a></td></tr>
+      <tr>
+    <td style="font-weight:500;">seat-0-retired</td><td class="muted" style="font-size:11.5px;">subscription OAuth</td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #8B93A766; color:#8B93A7; font-size:10.5px; font-weight:500;">seat</span></td><td class="mono faint" style="font-size:11px;">org · (rotated out)</td>
+    <td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #AD873466; color:#AD8734; font-size:10.5px; font-weight:500;">stale 21d</span></td><td class="num muted">Aug 10</td><td class="num">-</td>
+    <td style="text-align:right;"><a style="font-size:11px;">detail</a></td></tr>
+      </table></div>
+  </div>
+    <div style="display:flex; gap:12px;">
+      <div style="background:#121623; border:1px solid #1E2433; border-radius:6px; flex:1; min-width:0;">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Rotation, as a checklist</div></div>
+    <div style="padding:12px 14px;"><div style="font-size:11.5px; color:#8B93A7; line-height:1.7;">
+        1. <span class="mono" style="font-size:10.5px;">gh secret set CLAUDE_CODE_OAUTH_TOKEN --org prismalens</span><br>
+        2. Mark rotated here.<br>
+        3. The next round's fingerprint change confirms it and lands in named changes.<br>
+        <span class="faint">No confirmation within 5 rounds shows "rotation not observed".</span></div></div>
+  </div>
+      <div style="background:#121623; border:1px solid #1E2433; border-radius:6px; flex:1; min-width:0;">
+    <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid #1E2433;"><div style="font-size:12px; font-weight:600;">Billing mode changes the dashboard</div></div>
+    <div style="padding:12px 14px;"><div style="font-size:11.5px; color:#8B93A7; line-height:1.7;">
+        Seat keys: cost stays the demoted list-rate column, never a tile.<br>
+        Metered keys: spend is the bill; the overview gains a month-to-date tile scoped to metered rounds ("excludes 41 rounds on seats").<br>
+        <span class="faint">Alert, never block: only the provider's dashboard can enforce a cap, so we link there. Modes are never summed together.</span></div></div>
+  </div>
+    </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

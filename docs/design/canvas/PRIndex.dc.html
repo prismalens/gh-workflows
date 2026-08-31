@@ -1,0 +1,126 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap">
+  <style>
+  body { margin:0; background:#0C0F16; color:#DEE3EE; font-family:'IBM Plex Sans', system-ui, sans-serif; font-size:13px; -webkit-font-smoothing:antialiased; }
+  a { color:#7A9BEF; text-decoration:none; } a:hover { color:#9CB6F5; }
+  table { border-collapse:collapse; width:100%; }
+  th { text-align:left; font-size:10.5px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:#5A6377; padding:7px 10px; border-bottom:1px solid #1E2433; white-space:nowrap; }
+  td { padding:7px 10px; border-bottom:1px solid #1E2433; vertical-align:middle; white-space:nowrap; }
+  .num { font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:12px; font-variant-numeric:tabular-nums; }
+  .mono { font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:11.5px; }
+  .muted { color:#8B93A7; } .faint { color:#5A6377; }
+</style>
+</helmet>
+<div style="display:flex; height:100%; min-height:100vh; align-items:stretch;">
+  <div style="width:196px; flex-shrink:0; border-right:1px solid #1E2433; display:flex; flex-direction:column; padding:14px 10px; gap:2px;">
+    <div style="display:flex; align-items:center; gap:8px; padding:2px 12px 14px;">
+      <svg width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="1" width="16" height="16" rx="3" fill="none" stroke="#7A9BEF" stroke-width="1.5"/><path d="M5 11 8 6l2.5 3.5L12.5 7" stroke="#7A9BEF" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><div style="font-weight:600; font-size:13px;">Lane console</div><div style="font-size:10px; color:#5A6377;">prismalens review lane</div></div>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 13h3V7H2zM6.5 13h3V3h-3zM11 13h3V9h-3z"/></svg>Overview</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 4h12M2 8h12M2 12h12"/></svg>Rounds</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M8 2 14 13H2z M8 6v3.5 M8 11.2v.6"/></svg>Failures</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M8 2v12 M3 5h3.5 M3 8h3.5 M3 11h3.5 M9.5 5H13 M9.5 8H13 M9.5 11H13"/></svg>Compare</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; background:#151A2A; color:#DEE3EE; font-weight:600; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#7A9BEF" stroke-width="1.5"><circle cx="4.5" cy="4" r="2"/><circle cx="4.5" cy="12" r="2"/><circle cx="11.5" cy="12" r="2"/><path d="M4.5 6v4 M11.5 10V7.5A2.5 2.5 0 0 0 9 5H8"/></svg>PRs</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M2 8h3l1.5 3 2-6 1.5 3h4 M2 12.5h12"/></svg>Findings</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M3 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5H4.5A1.5 1.5 0 0 1 3 12z M3 11h10"/></svg>Repos</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><circle cx="5" cy="8" r="3"/><path d="M8 8h6 M11 8v2.5 M13.5 8v2"/></svg>Keys</div><div style="display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:5px; color:#8B93A7; font-weight:400; font-size:12.5px;">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><rect x="2.5" y="5" width="5" height="6" rx="1"/><rect x="9.5" y="5" width="4" height="6" rx="1"/><path d="M7.5 8h2"/></svg>Agents</div>
+    <div style="flex:1;"></div>
+    <div style="padding:10px 12px; border-top:1px solid #1E2433; display:flex; flex-direction:column; gap:6px; font-size:10.5px; color:#5A6377;">
+      <div style="display:flex; gap:5px; align-items:center;"><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">j</span><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">k</span> rows &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">enter</span> open</div>
+      <div style="display:flex; gap:5px; align-items:center;"><span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">o</span> run &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">p</span> PR &nbsp;<span style="font-family:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace; font-size:10px; color:#8B93A7; border:1px solid #1E2433; border-radius:3px; padding:1px 5px; background:#121623;">cmd+k</span> jump</div>
+    </div>
+  </div>
+  <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+    <div style="height:52px; flex-shrink:0; border-bottom:1px solid #1E2433; display:flex; align-items:center; gap:14px; padding:0 20px;">
+    <div style="font-size:14px; font-weight:600;">Pull requests</div>
+    <div style="flex:1;"></div>
+    <div style="display:flex; align-items:center; gap:7px; border:1px solid #1E2433; border-radius:4px; padding:4px 10px; font-size:11.5px; color:#8B93A7;">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#5A6377" stroke-width="1.5"><path d="M3 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5H4.5A1.5 1.5 0 0 1 3 12z"/></svg>
+      All repos <span style="color:#5A6377;">&#9662;</span></div>
+    <div style="display:flex; gap:4px;"><span style="padding:4px 10px; font-size:11px; border:1px solid #7A9BEF88; background:#7A9BEF1a; color:#7A9BEF; font-weight:600; border-radius:4px;">Last 50 rounds / 7d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">30d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">90d</span><span style="padding:4px 10px; font-size:11px; border:1px solid #1E2433; color:#8B93A7; border-radius:4px;">All time</span></div>
+  </div>
+    <div style="flex:1; padding:18px 20px; display:flex; flex-direction:column; gap:14px; min-width:0;">
+    
+    <div style="display:flex; gap:8px; align-items:center;">
+      <span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #8B93A766; color:#8B93A7; font-size:10.5px; font-weight:500;">repo: all</span> <span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #8B93A766; color:#8B93A7; font-size:10.5px; font-weight:500;">state: open</span> <span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #8B93A766; color:#8B93A7; font-size:10.5px; font-weight:500;">needs: attention first</span>
+      <span style="font-size:10.5px; color:#5A6377;">sort: failed &gt; did-not-run &gt; threads-only &gt; reviewed</span>
+      <span style="flex:1;"></span><span class="num" style="font-size:11px; color:#5A6377;">7 open PRs</span></div>
+    <div style="background:#121623; border:1px solid #1E2433; border-radius:6px; ">
+    
+    <div style="padding:0 0 6px;"><table><tr><th>PR</th><th>Author</th><th>State</th><th>Head status</th><th>Rounds</th><th>Open findings</th><th>Last round</th><th>Model</th><th></th></tr>
+      <tr>
+    <td><a class="num">gh-workflows#63</a> <span style="font-size:12px;">verify loop on runtime bounds</span></td>
+    <td class="muted" style="font-size:11.5px;">sumit</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">open</span></td>
+    <td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#DB4A781f; border:1px solid #DB4A7855; color:#DB4A78; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#DB4A78"/></svg>failed: posted nothing</span></td><td class="mono muted">1F/0I/2V</td>
+    <td class="num" style="color:#5A6377;"></td>
+    <td class="num muted">20h ago</td><td class="mono faint">sonnet</td>
+    <td style="text-align:right;"><a style="font-size:11px;">gh &#8599;</a></td></tr>
+      <tr>
+    <td><a class="num">prismalens#511</a> <span style="font-size:12px;">queue backpressure rework</span></td>
+    <td class="muted" style="font-size:11.5px;">sumit</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">open</span></td>
+    <td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#AD87341f; border:1px solid #AD873455; color:#AD8734; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#AD8734"/></svg>auto-paused (3/3)</span></td><td class="mono muted">3F/0I/0V</td>
+    <td class="num" style="color:#AD8734;">2</td>
+    <td class="num muted">3d ago</td><td class="mono faint">sonnet</td>
+    <td style="text-align:right;"><a style="font-size:11px;">gh &#8599;</a></td></tr>
+      <tr>
+    <td><a class="num">prismalens#517</a> <span style="font-size:12px;">retry budget on webhooks</span></td>
+    <td class="muted" style="font-size:11.5px;">renovate</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">open</span></td>
+    <td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#4E7FE01f; border:1px solid #4E7FE055; color:#4E7FE0; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#4E7FE0"/></svg>threads-only</span></td><td class="mono muted">1F/0I/1V</td>
+    <td class="num" style="color:#AD8734;">1</td>
+    <td class="num muted">6h ago</td><td class="mono faint">sonnet</td>
+    <td style="text-align:right;"><a style="font-size:11px;">gh &#8599;</a></td></tr>
+      <tr>
+    <td><a class="num">prismalens#516</a> <span style="font-size:12px;">engine: dedupe correlation replay</span></td>
+    <td class="muted" style="font-size:11.5px;">sumit</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">open</span></td>
+    <td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed</span></td><td class="mono muted">0F/2I/0V</td>
+    <td class="num" style="color:#AD8734;">3</td>
+    <td class="num muted">18h ago</td><td class="mono faint">sonnet</td>
+    <td style="text-align:right;"><a style="font-size:11px;">gh &#8599;</a></td></tr>
+      <tr>
+    <td><a class="num">prismalens#515</a> <span style="font-size:12px;">parser: tolerate BOM in configs</span></td>
+    <td class="muted" style="font-size:11.5px;">sumit</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">open</span></td>
+    <td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed</span></td><td class="mono muted">2F/0I/0V</td>
+    <td class="num" style="color:#AD8734;">1</td>
+    <td class="num muted">18h ago</td><td class="mono faint">sonnet</td>
+    <td style="text-align:right;"><a style="font-size:11px;">gh &#8599;</a></td></tr>
+      <tr>
+    <td><a class="num">gh-workflows#66</a> <span style="font-size:12px;">telemetry: verdict fields</span></td>
+    <td class="muted" style="font-size:11.5px;">sumit</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #3AA36866; color:#3AA368; font-size:10.5px; font-weight:500;">open</span></td>
+    <td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed</span></td><td class="mono muted">0F/1I/0V</td>
+    <td class="num" style="color:#5A6377;"></td>
+    <td class="num muted">5h ago</td><td class="mono faint">sonnet</td>
+    <td style="text-align:right;"><a style="font-size:11px;">gh &#8599;</a></td></tr>
+      <tr>
+    <td><a class="num">prismalens#514</a> <span style="font-size:12px;">engine refactor: split resolver</span></td>
+    <td class="muted" style="font-size:11.5px;">sumit</td><td><span style="display:inline-block; padding:1.5px 7px; border-radius:3px; border:1px solid #5A637766; color:#5A6377; font-size:10.5px; font-weight:500;">merged</span></td>
+    <td><span style="display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:3px; background:#3AA3681f; border:1px solid #3AA36855; color:#3AA368; font-size:11px; font-weight:600;">
+    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3AA368"/></svg>reviewed</span></td><td class="mono muted">1F/0I/0V</td>
+    <td class="num" style="color:#5A6377;"></td>
+    <td class="num muted">23h ago</td><td class="mono faint">opus</td>
+    <td style="text-align:right;"><a style="font-size:11px;">gh &#8599;</a></td></tr>
+      </table></div>
+  </div>
+    <div style="font-size:10.5px; color:#5A6377;">rounds column is by type: F full · I incremental · V verify (reads no code) · titles arrive with issue 04, findings counts with issue 08</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

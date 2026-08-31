@@ -1,0 +1,140 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+  <style>
+    html,body{margin:0;padding:0;background:#f6f5f2}
+    body{font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;color:#1c1a16;-webkit-font-smoothing:antialiased;font-size:14px}
+    a{color:#8f6400;text-decoration:none}a:hover{color:#6e4d00;text-decoration:underline}
+    .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+    .shell{display:flex;width:1280px;background:#f6f5f2;align-items:stretch}
+    .side{width:212px;flex-shrink:0;background:#181510;color:#cfc8ba;display:flex;flex-direction:column;padding:18px 0 14px}
+    .logo{display:flex;align-items:center;gap:9px;padding:2px 20px 16px}
+    .wordmark{font-weight:600;font-size:15px;color:#f4efe3;letter-spacing:.3px}
+    .orgsel{margin:0 12px 16px;padding:7px 10px;border:1px solid #322c21;border-radius:6px;font-size:12.5px;color:#efe9dc;display:flex;justify-content:space-between;align-items:center;background:#221d15}
+    .nav{display:flex;flex-direction:column;gap:1px;padding:0 10px}
+    .nav a{display:block;padding:7px 10px;border-radius:6px;font-size:13px;color:#a89f8d;text-decoration:none}
+    .nav a.on{background:#2c2415;color:#f2c96b;font-weight:500}
+    .sidefoot{margin-top:auto;padding:14px 20px 0;border-top:1px solid #2a251c;font-size:11.5px;color:#7d7666;line-height:1.7}
+    .main{flex:1;min-width:0;padding:22px 28px 28px;display:flex;flex-direction:column;gap:16px}
+    .crumb{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#98928a}
+    h1{font-size:19px;font-weight:600;margin:0}
+    .sub{font-size:12.5px;color:#6f6a5e;margin-top:4px}
+    .chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:500;padding:1px 8px;border-radius:999px;border:1px solid;line-height:1.7;white-space:nowrap}
+    .c-ok{color:#006300;background:#ecf6ec;border-color:#c2e0c2}
+    .c-warn{color:#8a5a00;background:#fdf3d7;border-color:#eddaa1}
+    .c-bad{color:#a32222;background:#fbeaea;border-color:#eec3c3}
+    .c-neut{color:#6f6a5e;background:#f1efe9;border-color:#ddd8cc}
+    .dot{width:7px;height:7px;border-radius:99px;display:inline-block;flex-shrink:0}
+    .item{background:#fff;border:1px solid #e6e2d8;border-radius:8px;padding:14px 18px;display:flex;gap:14px;align-items:flex-start}
+    .mark{width:22px;height:22px;border-radius:99px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+    .m-ok{background:#ecf6ec;border:1px solid #c2e0c2}
+    .m-bad{background:#fbeaea;border:1px solid #eec3c3}
+    .m-off{background:#f6f5f2;border:1px solid #ddd8cc}
+    .ititle{font-size:13.5px;font-weight:600}
+    .idesc{font-size:12.5px;color:#52514e;line-height:1.6;margin-top:3px}
+    .code{font-family:'IBM Plex Mono',monospace;font-size:11.5px;background:#faf9f5;border:1px solid #eee9df;border-radius:6px;padding:10px 12px;line-height:1.7;margin-top:8px;white-space:pre;overflow-x:auto;color:#1c1a16}
+    .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid #d8d2c4;background:#fff;border-radius:6px;padding:6px 12px;font-size:12.5px;font-weight:500;color:#1c1a16;margin-top:8px}
+    .note{font-size:11.5px;color:#98928a}
+    .failbox{background:#fdeeee;border:1px solid #eec3c3;border-radius:6px;padding:10px 12px;margin-top:8px;font-size:12.5px;line-height:1.6;color:#6b1d1d}
+  </style>
+</helmet>
+<div class="shell">
+  <div class="side">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1.5 18 16.5H2Z" stroke="#f2c96b" stroke-width="1.6" stroke-linejoin="round"></path><circle cx="10" cy="12.2" r="2.1" fill="#f2c96b"></circle></svg>
+      <span class="wordmark">Assayer</span>
+    </div>
+    <div class="orgsel"><span>prismalens</span><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5" stroke="#8d8574" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg></div>
+    <nav class="nav">
+      <a href="#">Overview</a>
+      <a class="on" href="#">Repos</a>
+      <a href="#">Rounds</a>
+      <a href="#">Findings</a>
+      <a href="#">Keys</a>
+      <a href="#">Agents</a>
+      <a href="#">Config</a>
+      <a href="#">Settings</a>
+    </nav>
+    <div class="sidefoot">Priya Nair · org admin<br>v0.4.2 · latest</div>
+  </div>
+  <div class="main">
+    <div>
+      <div class="crumb">/o/prismalens/repos/prismalens/setup</div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:2px">
+        <h1 class="mono" style="font-size:17px">prismalens/prismalens</h1>
+        <span class="chip c-bad"><span class="dot" style="background:#d03b3b"></span>key missing</span>
+      </div>
+      <div class="sub">Onboarding checklist. Every item is verified by what actually happened, never by registration alone.</div>
+    </div>
+
+    <div class="item">
+      <div class="mark m-ok"><svg width="11" height="11" viewBox="0 0 11 11"><path d="M2 5.8 4.4 8.2 9 3.2" stroke="#006300" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg></div>
+      <div style="flex:1">
+        <div class="ititle">Caller workflow present</div>
+        <div class="idesc"><span class="mono">.github/workflows/claude-code-review.yml</span> calls the reusable lane.
+        Added by <a href="#">PR #12</a>, merged Aug 8. Branch pinning and the concurrency fallback verified.</div>
+      </div>
+      <span class="chip c-ok">verified</span>
+    </div>
+
+    <div class="item" style="border-color:#eec3c3">
+      <div class="mark m-bad"><svg width="11" height="11" viewBox="0 0 11 11"><path d="M2.5 2.5l6 6M8.5 2.5l-6 6" stroke="#a32222" stroke-width="1.6" stroke-linecap="round"></path></svg></div>
+      <div style="flex:1">
+        <div class="ititle">Credential reaches the lane</div>
+        <div class="idesc">The last run ended with:</div>
+        <div class="failbox mono" style="font-size:11.5px">did not run at 4f2c91a: no CLAUDE_CODE_OAUTH_TOKEN reached this lane</div>
+        <div class="idesc" style="margin-top:8px">The key <span class="mono">anthropic-seat-1</span> is registered at org scope and the
+        org secret exists, but the caller stub maps secrets explicitly and the mapping line is
+        missing. <span class="mono">secrets: inherit</span> does not cross repository owners. Add:</div>
+        <div class="code">    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}</div>
+        <a class="btn" href="#">Open a PR adding the mapping</a>
+      </div>
+      <span class="chip c-bad">failed Aug 29</span>
+    </div>
+
+    <div class="item">
+      <div class="mark m-ok"><svg width="11" height="11" viewBox="0 0 11 11"><path d="M2 5.8 4.4 8.2 9 3.2" stroke="#006300" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg></div>
+      <div style="flex:1">
+        <div class="ititle">Ingest token set</div>
+        <div class="idesc">Org secret <span class="mono">ASSAYER_INGEST_TOKEN</span> exists. Assayer sees secret names,
+        never values.</div>
+      </div>
+      <span class="chip c-ok">verified</span>
+    </div>
+
+    <div class="item">
+      <div class="mark m-off"></div>
+      <div style="flex:1">
+        <div class="ititle">Repo config file <span class="note" style="font-weight:400">optional</span></div>
+        <div class="idesc">No <span class="mono">.github/claude-review.yml</span>. Org defaults and workflow defaults
+        apply, key by key.</div>
+        <a class="btn" href="#">Start from the org template</a>
+      </div>
+      <span class="chip c-neut">not set</span>
+    </div>
+
+    <div class="item">
+      <div class="mark m-ok"><svg width="11" height="11" viewBox="0 0 11 11"><path d="M2 5.8 4.4 8.2 9 3.2" stroke="#006300" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg></div>
+      <div style="flex:1">
+        <div class="ititle">Agent assigned</div>
+        <div class="idesc"><span class="mono">claude-lane</span> · contract <span class="mono">assayer/v1</span> · the built-in
+        reviewer. Change it in <a href="#">repo config</a>.</div>
+      </div>
+      <span class="chip c-ok">claude-lane</span>
+    </div>
+
+    <div class="note">3 of 5 verified. This page flips items only on observed evidence: a merged PR, a seen
+    secret, a posted round. When all five are green the checklist collapses to a strip on the repo card.</div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
