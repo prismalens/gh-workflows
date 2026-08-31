@@ -20,7 +20,6 @@ import { formatCount, formatTimestamp } from "@/lib/format";
 import {
   getFieldDegradedState,
   LANE_TOO_OLD_COPY,
-  NOT_RECORDED_COPY,
   summariseConfigs,
 } from "./failures";
 
@@ -92,11 +91,7 @@ export function ConfigSection({ blobRows, range, repository }: ConfigSectionProp
         )}
         {degraded === "not-recorded" && (
           <div className="p-4 pb-0">
-            <Degraded
-              what="Config parse outcomes"
-              reason="lane-did-not-send"
-              detail={NOT_RECORDED_COPY}
-            />
+            <Degraded what="Config parse outcomes" reason="lane-sent-nothing" />
           </div>
         )}
 

@@ -19,7 +19,6 @@ import { formatCount, formatTimestamp } from "@/lib/format";
 import {
   getFieldDegradedState,
   LANE_TOO_OLD_COPY,
-  NOT_RECORDED_COPY,
   summariseModelResolutions,
 } from "./failures";
 import { Sparkline } from "./Sparkline";
@@ -70,11 +69,7 @@ export function ModelResolutionSection({
         )}
         {degraded === "not-recorded" && (
           <div className="p-4 pb-0">
-            <Degraded
-              what="Model resolution reasons"
-              reason="lane-did-not-send"
-              detail={NOT_RECORDED_COPY}
-            />
+            <Degraded what="Model resolution reasons" reason="lane-sent-nothing" />
           </div>
         )}
 

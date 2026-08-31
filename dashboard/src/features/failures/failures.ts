@@ -10,8 +10,6 @@ export type Wave2DegradedState = "empty" | "lane-too-old" | "not-recorded" | "re
 
 export const LANE_TOO_OLD_COPY =
   "The recording lane predates the field, which an adopter fixes by updating their lane.";
-export const NOT_RECORDED_COPY =
-  "The lane is version 2 or above but did not record this field; the lane could have sent it and did not, which is a real signal about that round.";
 
 export function isLaneVersionAtLeast2(version: string | null | undefined): boolean {
   if (!version) return false;

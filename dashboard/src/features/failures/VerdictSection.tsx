@@ -19,7 +19,6 @@ import { formatCount, formatTimestamp } from "@/lib/format";
 import {
   getFieldDegradedState,
   LANE_TOO_OLD_COPY,
-  NOT_RECORDED_COPY,
   summariseVerdicts,
 } from "./failures";
 import { Sparkline } from "./Sparkline";
@@ -86,11 +85,7 @@ export function VerdictSection({ rows, now, range, repository }: VerdictSectionP
         )}
         {degraded === "not-recorded" && (
           <div className="p-4 pb-0">
-            <Degraded
-              what="Liveness verdicts"
-              reason="lane-did-not-send"
-              detail={NOT_RECORDED_COPY}
-            />
+            <Degraded what="Liveness verdicts" reason="lane-sent-nothing" />
           </div>
         )}
 

@@ -1,15 +1,11 @@
 import type { RoundRow } from "@/api/types";
 
 /**
- * The store holds no verdict column. What the lane posted (reviewed, threads-only,
- * did-not-run, silent) arrives with issue 02, and for any lane older than the
- * Worker it never arrives at all, so this two-state decoding is a permanent state
- * rather than a phase (#46).
- *
- * `reviewed` is claimed only from `round_type`, which is recorded: a round type
- * naming a code-reading review is enough to say the head was read. Everything
- * else says `unknown` rather than guessing, including a verify round, which reads
- * no code, and a round the lane recorded without a type.
+ * Decodes a round into the four states the lane records, plus `unknown`.
+ * `verdict_kind` is the only field that names a state outright. Without it,
+ * `reviewed` may be claimed only from a `round_type` naming a code-reading
+ * review, and everything else stays `unknown` rather than guessing: a verify
+ * round reads no code, and a round recorded without a type says nothing (#46).
  */
 export type FourStateVerdict = "reviewed" | "threads-only" | "did-not-run" | "silent";
 export type VerdictState = FourStateVerdict | "unknown";

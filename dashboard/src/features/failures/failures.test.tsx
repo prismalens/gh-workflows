@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { LaneEventRow, RoundRow } from "@/api/types";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
+import { REASON_COPY } from "@/honesty/Degraded";
 import { RANGE_KEYS } from "@/honesty/range";
 import { renderRoute } from "@/test/renderRoute";
 import {
@@ -20,7 +21,6 @@ import {
   LANE_EVENT_REASONS,
   LANE_TOO_OLD_COPY,
   MODEL_SOURCES,
-  NOT_RECORDED_COPY,
   summariseConfigs,
   summariseFallbacks,
   summariseLaneEvents,
@@ -29,6 +29,9 @@ import {
 } from "./failures";
 
 const now = new Date("2026-08-31T12:00:00.000Z");
+
+const NOT_RECORDED_EXPLAIN = REASON_COPY["lane-sent-nothing"].explain;
+const LANE_TOO_OLD_EXPLAIN = REASON_COPY["lane-did-not-send"].explain;
 
 function createPreWave2Rows(count = 10): RoundRow[] {
   return makeRounds({ count, now }).map((row) => ({
@@ -148,7 +151,7 @@ describe("/failures - Acceptance Criteria & Degraded States", () => {
     // Section 1: Verdicts
     const verdictSection = await screen.findByTestId("section-verdicts");
     expect(within(verdictSection).getAllByText("not recorded").length).toBeGreaterThan(0);
-    expect(within(verdictSection).getByText(new RegExp(NOT_RECORDED_COPY))).toBeInTheDocument();
+    expect(within(verdictSection).getByText(new RegExp(NOT_RECORDED_EXPLAIN))).toBeInTheDocument();
     expect(within(verdictSection).queryByText(LANE_TOO_OLD_COPY)).not.toBeInTheDocument();
     expect(within(verdictSection).queryByText("lane predates field")).not.toBeInTheDocument();
     expect(within(verdictSection).queryByText(/^0$/)).not.toBeInTheDocument();
@@ -156,19 +159,19 @@ describe("/failures - Acceptance Criteria & Degraded States", () => {
     // Section 2: Fallbacks
     const fallbackSection = screen.getByTestId("section-fallbacks");
     expect(within(fallbackSection).getAllByText("not recorded").length).toBeGreaterThan(0);
-    expect(within(fallbackSection).getByText(new RegExp(NOT_RECORDED_COPY))).toBeInTheDocument();
+    expect(within(fallbackSection).getByText(new RegExp(NOT_RECORDED_EXPLAIN))).toBeInTheDocument();
     expect(within(fallbackSection).queryByText(LANE_TOO_OLD_COPY)).not.toBeInTheDocument();
     expect(within(fallbackSection).queryByText("lane predates field")).not.toBeInTheDocument();
 
     // Section 3: Config parse outcomes
     const configSection = screen.getByTestId("section-configs");
-    expect(within(configSection).getByText(new RegExp(NOT_RECORDED_COPY))).toBeInTheDocument();
+    expect(within(configSection).getByText(new RegExp(NOT_RECORDED_EXPLAIN))).toBeInTheDocument();
     expect(within(configSection).queryByText(LANE_TOO_OLD_COPY)).not.toBeInTheDocument();
 
     // Section 4: Model resolution reasons
     const modelSection = screen.getByTestId("section-model-resolution");
     expect(within(modelSection).getAllByText("not recorded").length).toBeGreaterThan(0);
-    expect(within(modelSection).getByText(new RegExp(NOT_RECORDED_COPY))).toBeInTheDocument();
+    expect(within(modelSection).getByText(new RegExp(NOT_RECORDED_EXPLAIN))).toBeInTheDocument();
     expect(within(modelSection).queryByText(LANE_TOO_OLD_COPY)).not.toBeInTheDocument();
     expect(within(modelSection).queryByText("lane predates field")).not.toBeInTheDocument();
   });
@@ -369,5 +372,71 @@ describe("failures unit aggregators and helpers", () => {
     const forkHead = laneSummaries.find((l) => l.reason === "fork-head");
     expect(forkHead?.count).toBe(0);
     expect(forkHead?.footnote).toBe(FORK_HEAD_FOOTNOTE);
+  });
+});
+
+const FAILURE_SECTION_IDS = [
+  "section-verdicts",
+  "section-fallbacks",
+  "section-configs",
+  "section-model-resolution",
+] as const;
+
+function createOldLaneRows(version: string | null, count = 12): RoundRow[] {
+  return makeRounds({ count, now }).map((row) => ({
+    ...row,
+    lane_version: version,
+    verdict_kind: null,
+    fallback_reason: null,
+    model_source: null,
+    config_resolution: null,
+  }));
+}
+
+/** The banner each section renders above its table, not the per-row cells. */
+function bannerIn(sectionId: string): HTMLElement {
+  const banners = within(screen.getByTestId(sectionId)).getAllByTestId("degraded");
+  expect(banners).toHaveLength(1);
+  return banners[0];
+}
+
+describe("/failures - the section banner separates a capable lane from an old one", () => {
+  it("lane_version 2 or above with the field null: every banner says the lane sent nothing", async () => {
+    const api = makeFixtureApi(createWave2NullRows(15), []);
+    renderRoute({ path: "/failures", api });
+    await screen.findByTestId("section-verdicts");
+
+    for (const sectionId of FAILURE_SECTION_IDS) {
+      const banner = bannerIn(sectionId);
+      expect(banner).toHaveAttribute("data-reason", "lane-sent-nothing");
+      expect(banner).toHaveTextContent(NOT_RECORDED_EXPLAIN);
+      expect(banner.textContent ?? "").not.toContain("predates");
+      expect(banner.textContent ?? "").not.toContain(LANE_TOO_OLD_EXPLAIN);
+    }
+  });
+
+  it("lane_version null: every banner says the lane predates the field", async () => {
+    const api = makeFixtureApi(createOldLaneRows(null, 15), []);
+    renderRoute({ path: "/failures", api });
+    await screen.findByTestId("section-verdicts");
+
+    for (const sectionId of FAILURE_SECTION_IDS) {
+      const banner = bannerIn(sectionId);
+      expect(banner).toHaveAttribute("data-reason", "lane-did-not-send");
+      expect(banner).toHaveTextContent(LANE_TOO_OLD_EXPLAIN);
+      expect(banner.textContent ?? "").toContain("predates");
+    }
+  });
+
+  it("lane_version below 2: every banner says the lane predates the field", async () => {
+    const api = makeFixtureApi(createOldLaneRows("v1.9.3", 15), []);
+    renderRoute({ path: "/failures", api });
+    await screen.findByTestId("section-verdicts");
+
+    for (const sectionId of FAILURE_SECTION_IDS) {
+      const banner = bannerIn(sectionId);
+      expect(banner).toHaveAttribute("data-reason", "lane-did-not-send");
+      expect(banner).toHaveTextContent(LANE_TOO_OLD_EXPLAIN);
+    }
   });
 });

@@ -17,7 +17,6 @@ import { formatCount, formatTimestamp } from "@/lib/format";
 import {
   getFieldDegradedState,
   LANE_TOO_OLD_COPY,
-  NOT_RECORDED_COPY,
   summariseFallbacks,
 } from "./failures";
 import { Sparkline } from "./Sparkline";
@@ -58,11 +57,7 @@ export function FallbacksSection({ rows, now, range, repository }: FallbacksSect
         )}
         {degraded === "not-recorded" && (
           <div className="p-4 pb-0">
-            <Degraded
-              what="Incremental fallbacks"
-              reason="lane-did-not-send"
-              detail={NOT_RECORDED_COPY}
-            />
+            <Degraded what="Incremental fallbacks" reason="lane-sent-nothing" />
           </div>
         )}
 
