@@ -19,6 +19,21 @@ Reusable workflow callees live in `.github/workflows/` and are invoked by consum
 - `.github/workflows/dependabot-auto-merge.yml`
 - `.github/workflows/dependabot-auto-merge-caller.yml` — this repository's own caller stub for the auto-merge callee
 
+### This Repository's Own CI
+
+`.github/workflows/tests.yml` is the only self-triggering workflow here. The callees above run in
+consumer repositories, so without it nothing verifies them before they ship. It runs on every
+pull request and on pushes to `main`, in two independent jobs:
+
+- `test` extracts the real shell and Python out of the callees and runs it, then runs `actionlint`
+  at a pinned version.
+- `dashboard` builds the SPA in `dashboard/`: `npm ci`, then `npm test` for the honesty rules, the
+  read-route contract and both routes, then `npm run build`, which typechecks and bundles.
+  `dashboard/dist` is gitignored, so this job is the only thing that catches a broken build.
+
+Neither job is a required check. Nothing in this repository is enforced by branch protection or a
+ruleset; see [AGENTS.md](AGENTS.md).
+
 ### Worked-Example Consumer Stub (Mention Lane)
 
 The mention lane answers bare `@claude` comments. It must stand down on the
@@ -189,6 +204,15 @@ Dependabot (`.github/dependabot.yml`) checks for updates to pinned GitHub Action
 Minor and patch updates are grouped into a single PR (`github-actions`). Major updates are excluded from grouping and open as individual PRs for manual human review.
 
 Consumer repositories can invoke `.github/workflows/dependabot-auto-merge.yml` to automatically merge grouped minor and patch action bumps once required status checks pass.
+
+---
+
+## Review telemetry
+
+`worker/` is the Cloudflare Worker that ingests one record per review round into D1 and serves the
+read routes behind Cloudflare Access. `dashboard/` is the SPA that reads them, served by that same
+Worker from its `[assets]` binding. `dashboard/dist` is gitignored, so a deploy builds it first;
+`dashboard/README.md` has the commands and the one deploy consequence worth knowing.
 
 ---
 

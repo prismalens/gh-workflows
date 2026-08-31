@@ -605,6 +605,19 @@ export default {
       return handleRuns(url, env);
     }
 
+    // run_worker_first routes GET / here so POST / keeps reaching the ingest
+    // handler, so the SPA shell has to be served from the Worker (#46). Assets
+    // answer GET and HEAD only; the API and ingest paths stay 404 rather than
+    // returning HTML to a caller that asked for JSON.
+    const wantsAsset =
+      (method === "GET" || method === "HEAD") &&
+      pathname !== "/ingest" &&
+      pathname !== "/api" &&
+      !pathname.startsWith("/api/");
+    if (wantsAsset && env?.ASSETS) {
+      return env.ASSETS.fetch(request);
+    }
+
     return new Response(null, { status: 404 });
   },
 };
