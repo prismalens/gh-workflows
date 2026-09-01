@@ -759,6 +759,26 @@ describe("/compare route integration", () => {
       expect(input.getAttribute("type")).not.toBe("date");
     }
   });
+
+  it("refuses the comparison rather than compute it from a truncated page (#104 finding 2)", async () => {
+    const base = makeFixtureApi(makeRounds({ count: 30, now }), [], sampleChanges);
+    const truncatedApi = {
+      ...base,
+      fetchRuns: async (query: Parameters<typeof base.fetchRuns>[0]) => {
+        const page = await base.fetchRuns(query);
+        return { ...page, next_cursor: "2026-08-01T00:00:00.000Z|fake" };
+      },
+    };
+
+    renderRoute({ path: "/compare", api: truncatedApi });
+
+    expect(await screen.findByText("Comparison refused")).toBeInTheDocument();
+    expect(screen.getByTestId("compare-truncated-refusal")).toHaveTextContent(
+      /more than 1000 rounds/,
+    );
+    expect(screen.queryByTestId("metric-delta")).not.toBeInTheDocument();
+    expect(screen.queryByText("0% change")).not.toBeInTheDocument();
+  });
 });
 
 describe("/ overview: change markers on the trend charts", () => {

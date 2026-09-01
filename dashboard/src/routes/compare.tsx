@@ -3,6 +3,7 @@ import { createRoute } from "@tanstack/react-router";
 import { z } from "zod";
 
 import { useChangesQuery, useRoundsQuery, useSummaryQuery } from "@/api/queries";
+import { MAX_LIMIT } from "@/api/client";
 import { FilterChips } from "@/components/FilterChips";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -70,6 +71,7 @@ function ComparePage() {
   }
 
   const fetchedRows = roundsQuery.data?.rows ?? [];
+  const truncated = roundsQuery.data?.next_cursor != null;
   const { beforeRows, afterRows } = splitRoundsByChange(fetchedRows, selectedChange, selectedRepo);
   const roundTypeResults = compareRoundTypes(beforeRows, afterRows);
 
@@ -99,7 +101,18 @@ function ComparePage() {
       {roundsQuery.isPending && <LoadingRows label="Loading review rounds for comparison" />}
       {roundsQuery.isError && <QueryError error={roundsQuery.error} title="Could not load review rounds" />}
 
-      {roundsQuery.isSuccess && (
+      {roundsQuery.isSuccess && truncated && (
+        <Alert variant="muted" data-testid="compare-truncated-refusal">
+          <AlertTitle>Comparison refused</AlertTitle>
+          <AlertDescription>
+            The read route returned more than {MAX_LIMIT} rounds for this window, so a comparison
+            here would be computed from an incomplete page rather than the whole window. Narrow the
+            repository filter and retry.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {roundsQuery.isSuccess && !truncated && (
         <>
           <WindowSummaryStrip
             beforeCount={beforeRows.length}
