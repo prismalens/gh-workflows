@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 
+import { Timestamp } from "@/components/Timestamp";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -11,7 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Degraded } from "@/honesty/Degraded";
-import { formatDuration, formatTimestamp, orDash } from "@/lib/format";
+import { formatDuration, orDash } from "@/lib/format";
 import { ATTENTION_KIND_COPY, type AttentionCard, type AttentionKind } from "./attention";
 
 const KIND_VARIANT: Record<AttentionKind, "destructive" | "warning" | "outline"> = {
@@ -75,7 +76,7 @@ export function AttentionFeed({ cards, scanned, windowLabel }: AttentionFeedProp
                     search={{ at: card.row.recorded_at }}
                     className="tabular whitespace-nowrap underline-offset-4 hover:underline"
                   >
-                    {formatTimestamp(card.row.recorded_at)}
+                    <Timestamp iso={card.row.recorded_at} />
                   </Link>
                 </TableCell>
                 <TableCell className="whitespace-nowrap">{card.row.repository}</TableCell>

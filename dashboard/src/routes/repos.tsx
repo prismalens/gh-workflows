@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { useRoundsQuery, useSummaryQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
+import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -20,7 +21,7 @@ import { RangeControl } from "@/honesty/RangeControl";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
 import { CountTile } from "@/honesty/Tile";
 import { VERDICT_COPY } from "@/honesty/verdict";
-import { formatCount, formatTimestamp, orDash } from "@/lib/format";
+import { formatCount, orDash } from "@/lib/format";
 import { rootRoute } from "./root";
 
 const reposSearchSchema = z.object({
@@ -136,7 +137,7 @@ function ReposPage() {
                             search={{ at: repo.lastRound.recorded_at }}
                             className="underline-offset-4 hover:underline"
                           >
-                            {formatTimestamp(repo.lastRound.recorded_at)}
+                            <Timestamp iso={repo.lastRound.recorded_at} />
                           </Link>
                         ) : (
                           <span className="text-muted-foreground">

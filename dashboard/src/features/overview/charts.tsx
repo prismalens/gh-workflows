@@ -14,7 +14,7 @@ import {
 
 import type { ChangeRow } from "@/api/types";
 import { Card, CardContent } from "@/components/ui/card";
-import { formatDuration, formatTokens } from "@/lib/format";
+import { formatDuration, formatTimestamp, formatTokens, localDay, localZoneName } from "@/lib/format";
 import type { DayBucket, ScatterPoint, TokenDayBucket } from "./activity";
 
 /**
@@ -69,9 +69,7 @@ function durationValue(value: unknown): ReactNode {
 }
 
 function stampLabel(label: ReactNode): ReactNode {
-  return typeof label === "number"
-    ? new Date(label).toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z")
-    : label;
+  return typeof label === "number" ? formatTimestamp(new Date(label).toISOString()) : label;
 }
 
 /** Aug 31, from a YYYY-MM-DD bucket key, without dragging in a date library. */
@@ -141,7 +139,7 @@ export function RoundsPerDayChart({
           {type} <span className="tabular text-foreground">{countByType[type] ?? 0}</span>
         </Swatch>
       ))}
-      note="A day with no bar recorded no round. Verify rounds read no code."
+      note={`Days are ${localZoneName()} calendar days. A day with no bar recorded no round. Verify rounds read no code.`}
     >
       <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 500, height: 300 }}>
         <BarChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
@@ -161,7 +159,7 @@ export function RoundsPerDayChart({
             return (
               <ReferenceLine
                 key={`${change.id}-${selectedMarkerId}`}
-                x={change.at.slice(0, 10)}
+                x={localDay(change.at)}
                 stroke={isSelected ? "var(--foreground)" : "var(--muted-foreground)"}
                 strokeWidth={isSelected ? 2 : 1}
                 strokeDasharray={isSelected ? undefined : "3 3"}
@@ -228,7 +226,7 @@ export function TokenCompositionChart({
           <span className="tabular text-foreground">{formatTokens(totals[series.key])}</span>
         </Swatch>
       ))}
-      note="Input tokens only. A round that recorded no counts contributes nothing rather than a zero."
+      note={`Days are ${localZoneName()} calendar days. Input tokens only. A round that recorded no counts contributes nothing rather than a zero.`}
     >
       <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 500, height: 300 }}>
         <BarChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: -10 }}>
@@ -255,7 +253,7 @@ export function TokenCompositionChart({
             return (
               <ReferenceLine
                 key={`${change.id}-${selectedMarkerId}`}
-                x={change.at.slice(0, 10)}
+                x={localDay(change.at)}
                 stroke={isSelected ? "var(--foreground)" : "var(--muted-foreground)"}
                 strokeWidth={isSelected ? 2 : 1}
                 strokeDasharray={isSelected ? undefined : "3 3"}
@@ -343,7 +341,7 @@ export function WallClockScatterChart({
             type="number"
             dataKey="at"
             domain={domain}
-            tickFormatter={(at: number) => shortDay(new Date(at).toISOString().slice(0, 10))}
+            tickFormatter={(at: number) => shortDay(localDay(new Date(at).toISOString()))}
             {...AXIS}
           />
           <YAxis

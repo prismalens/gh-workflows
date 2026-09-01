@@ -3,6 +3,7 @@ import { ExternalLink } from "lucide-react";
 
 import { humanizeKey, parsePerModelUsage, parseRawResult, parseSubagentStats } from "@/api/blobs";
 import type { RoundRow } from "@/api/types";
+import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -23,7 +24,6 @@ import {
   formatCount,
   formatDuration,
   formatPercent,
-  formatTimestamp,
   formatTokens,
   formatUsd,
   orDash,
@@ -83,7 +83,9 @@ export function ResolutionPanel({ row }: { row: RoundRow }) {
     >
       <Facts>
         <Fact label="Repository">{row.repository}</Fact>
-        <Fact label="Recorded">{formatTimestamp(row.recorded_at)}</Fact>
+        <Fact label="Recorded">
+          <Timestamp iso={row.recorded_at} />
+        </Fact>
         <Fact label="Round type">{orDash(row.round_type)}</Fact>
         <Fact label="Model">{orDash(row.model)}</Fact>
         <Fact label="Head SHA">

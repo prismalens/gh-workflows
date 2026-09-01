@@ -12,8 +12,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Timestamp } from "@/components/Timestamp";
 import { linkableRange, type RangeKey } from "@/honesty/range";
-import { formatCount, formatTimestamp } from "@/lib/format";
+import { formatCount } from "@/lib/format";
 import { summariseLaneEvents } from "./failures";
 import { Sparkline } from "./Sparkline";
 
@@ -80,7 +81,7 @@ export function LaneEventsSection({ events, now, range, repository }: LaneEvents
                 </TableCell>
                 <TableCell className="tabular text-xs whitespace-nowrap">
                   {item.lastSeen ? (
-                    formatTimestamp(item.lastSeen)
+                    <Timestamp iso={item.lastSeen} />
                   ) : (
                     <span className="text-muted-foreground">—</span>
                   )}

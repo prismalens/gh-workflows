@@ -1,10 +1,11 @@
 import type { ChangeRow } from "@/api/types";
+import { Timestamp } from "@/components/Timestamp";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { RoundsTable } from "@/features/rounds/RoundsTable";
-import { formatCount, formatDuration, formatMultiplier, formatPercent, formatTimestamp } from "@/lib/format";
+import { formatCount, formatDuration, formatMultiplier, formatPercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { MetricComparison, RoundTypeComparisonResult } from "./compare";
 
@@ -77,7 +78,8 @@ export function ChangeSelector({
             )}
           </div>
           <p className="text-xs text-muted-foreground">
-            Landed at <span className="font-mono text-foreground">{formatTimestamp(selectedChange.at)}</span> (recorded {formatTimestamp(selectedChange.created_at)})
+            Landed at <Timestamp className="font-mono text-foreground" iso={selectedChange.at} /> (recorded{" "}
+            <Timestamp iso={selectedChange.created_at} />)
           </p>
         </div>
       </div>
@@ -123,7 +125,8 @@ export function WindowSummaryStrip({
             </span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Rounds recorded strictly before <span className="font-mono text-foreground">{formatTimestamp(change.at)}</span>
+            Rounds recorded strictly before{" "}
+            <Timestamp className="font-mono text-foreground" iso={change.at} />
           </p>
         </Card>
 
@@ -135,7 +138,8 @@ export function WindowSummaryStrip({
             </span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Rounds recorded at or after <span className="font-mono text-foreground">{formatTimestamp(change.at)}</span>
+            Rounds recorded at or after{" "}
+            <Timestamp className="font-mono text-foreground" iso={change.at} />
           </p>
         </Card>
       </div>
@@ -144,7 +148,8 @@ export function WindowSummaryStrip({
         <Alert variant="muted" data-testid="empty-before-alert">
           <AlertTitle>No rounds recorded before this change</AlertTitle>
           <AlertDescription>
-            No telemetry rounds exist before {formatTimestamp(change.at)}. Before-and-after deltas cannot be computed for an empty before window.
+            No telemetry rounds exist before <Timestamp iso={change.at} />. Before-and-after deltas
+            cannot be computed for an empty before window.
           </AlertDescription>
         </Alert>
       )}
@@ -153,7 +158,8 @@ export function WindowSummaryStrip({
         <Alert variant="muted" data-testid="empty-after-alert">
           <AlertTitle>No rounds recorded after this change</AlertTitle>
           <AlertDescription>
-            No telemetry rounds have been recorded at or after {formatTimestamp(change.at)}. Before-and-after deltas cannot be computed for an empty after window.
+            No telemetry rounds have been recorded at or after <Timestamp iso={change.at} />.
+            Before-and-after deltas cannot be computed for an empty after window.
           </AlertDescription>
         </Alert>
       )}

@@ -1,14 +1,10 @@
 import type { ChangeRow, RoundRow } from "@/api/types";
+import { localDay } from "@/lib/format";
 import { parseMarkerRange, type RangeKey } from "@/honesty/range";
 import { ROLLING_DAYS, ROLLING_ROUNDS } from "@/honesty/thresholds";
 import { decodeVerdict, type VerdictState } from "@/honesty/verdict";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** The UTC calendar day a round landed on. Buckets are UTC, like recorded_at. */
-export function utcDay(iso: string): string {
-  return iso.slice(0, 10);
-}
 
 export interface TypeCount {
   type: string;
@@ -45,7 +41,7 @@ export function activityBand(rows: RoundRow[]): ActivityBand {
 
   for (const row of rows) {
     repos.add(row.repository);
-    days.add(utcDay(row.recorded_at));
+    days.add(localDay(row.recorded_at));
     if (row.round_type === null) {
       untypedRounds++;
     } else {
@@ -87,7 +83,7 @@ export function roundsPerDay(
   if (rows.length === 0 && changes.length === 0) return [];
   const counts = new Map<string, Map<string, number>>();
   for (const row of rows) {
-    const day = utcDay(row.recorded_at);
+    const day = localDay(row.recorded_at);
     const type = row.round_type ?? "untyped";
     const bucket = counts.get(day) ?? new Map<string, number>();
     bucket.set(type, (bucket.get(type) ?? 0) + 1);
@@ -120,7 +116,7 @@ export function tokensPerDay(
   if (rows.length === 0 && changes.length === 0) return [];
   const buckets = new Map<string, TokenDayBucket>();
   for (const row of rows) {
-    const day = utcDay(row.recorded_at);
+    const day = localDay(row.recorded_at);
     const bucket = buckets.get(day) ?? { day, input: 0, cacheCreation: 0, cacheRead: 0 };
     bucket.input += row.input_tokens ?? 0;
     bucket.cacheCreation += row.cache_creation_input_tokens ?? 0;
@@ -160,17 +156,25 @@ export function roundTypesPresent(band: ActivityBand): string[] {
   return band.untypedRounds > 0 ? [...types, "untyped"] : types;
 }
 
+/**
+ * Walks local calendar days from the earliest instant to the latest via
+ * setDate/getDate, so a DST transition in the viewer's zone neither skips nor
+ * repeats a day the way stepping by a fixed 24h would (#97).
+ */
 function eachDay(rows: RoundRow[], changes: ChangeRow[] = []): string[] {
   const stamps = [
-    ...rows.map((row) => Date.parse(utcDay(row.recorded_at))),
-    ...changes.map((c) => Date.parse(utcDay(c.at))),
+    ...rows.map((row) => Date.parse(row.recorded_at)),
+    ...changes.map((c) => Date.parse(c.at)),
   ].filter((n) => !Number.isNaN(n));
   if (stamps.length === 0) return [];
-  const first = Math.min(...stamps);
-  const last = Math.max(...stamps);
+
+  const cursor = new Date(Math.min(...stamps));
+  const lastDay = localDay(new Date(Math.max(...stamps)).toISOString());
   const days: string[] = [];
-  for (let t = first; t <= last; t += DAY_MS) {
-    days.push(new Date(t).toISOString().slice(0, 10));
+  for (let day = localDay(cursor.toISOString()); day <= lastDay; ) {
+    days.push(day);
+    cursor.setDate(cursor.getDate() + 1);
+    day = localDay(cursor.toISOString());
   }
   return days;
 }

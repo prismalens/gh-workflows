@@ -12,6 +12,7 @@ import {
 } from "@tanstack/react-table";
 import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
+import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,7 +28,6 @@ import { LIST_RATE_EQUIVALENT } from "@/honesty/thresholds";
 import {
   formatCount,
   formatDuration,
-  formatTimestamp,
   formatTokens,
   formatUsd,
   orDash,
@@ -77,7 +77,7 @@ const columns = helper.columns([
         search={{ at: row.original.recorded_at }}
         className="tabular whitespace-nowrap underline-offset-4 hover:underline"
       >
-        {formatTimestamp(row.original.recorded_at)}
+        <Timestamp iso={row.original.recorded_at} />
       </Link>
     ),
   }),

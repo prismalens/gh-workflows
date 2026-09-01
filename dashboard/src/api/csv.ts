@@ -41,6 +41,7 @@ export function roundsToCsv(rows: RoundRow[]): string {
   return [header, ...body].join("\r\n");
 }
 
+/** UTC on purpose (#97): this joins against recorded_at, which is UTC. Do not localise it. */
 export function csvFilename(now: Date = new Date()): string {
   return `assayer-rounds-${now.toISOString().slice(0, 10)}.csv`;
 }
