@@ -12,11 +12,11 @@ import { LaneEventsSection } from "@/features/failures/LaneEventsSection";
 import { ModelResolutionSection } from "@/features/failures/ModelResolutionSection";
 import { VerdictSection } from "@/features/failures/VerdictSection";
 import { RangeControl } from "@/honesty/RangeControl";
-import { applyRange, DEFAULT_RANGE, RANGE_KEYS } from "@/honesty/range";
+import { applyRange, rangeSchema } from "@/honesty/range";
 import { rootRoute } from "./root";
 
 const failuresSearchSchema = z.object({
-  range: z.enum(RANGE_KEYS).default(DEFAULT_RANGE).catch(DEFAULT_RANGE),
+  range: rangeSchema,
   repository: z.string().min(1).optional().catch(undefined),
 });
 

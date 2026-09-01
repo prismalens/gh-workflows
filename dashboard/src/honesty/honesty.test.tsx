@@ -5,11 +5,11 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 import { makeRounds } from "@/fixtures/rounds";
 import { formatCount, formatDuration } from "@/lib/format";
-import type { RoundRow } from "@/api/types";
+import type { ChangeRow, RoundRow } from "@/api/types";
 import { aggregateRounds, cacheHitRate, cachingMultiplier, tokenSums } from "./aggregate";
 import { Degraded } from "./Degraded";
 import { meanMetric, medianMetric, p95Metric, derivedMetric } from "./metrics";
-import { applyRange, RANGE_KEYS, rangeSince } from "./range";
+import { applyRange, isRangeKey, parseMarkerRange, RANGE_KEYS, rangeSince } from "./range";
 import { RangeControl } from "./RangeControl";
 import { aggregateMode, TileStrip } from "./TileStrip";
 import { isMoneyLabel, Tile } from "./Tile";
@@ -138,6 +138,53 @@ describe("the range control", () => {
     expect(rangeSince("all", now)).toBeUndefined();
     expect(rangeSince("30d", now)).toBe("2026-08-01T00:00:00.000Z");
     expect(rangeSince("90d", now)).toBe("2026-06-02T00:00:00.000Z");
+    expect(rangeSince("marker:a..b", now)).toBeUndefined();
+  });
+
+  it("parses and validates marker:<a>..<b> ranges", () => {
+    expect(isRangeKey("marker:c1..c2")).toBe(true);
+    expect(isRangeKey("marker:f47ac10b..58cc-4372")).toBe(true);
+    expect(isRangeKey("marker:c1")).toBe(false);
+    expect(isRangeKey("marker:..c2")).toBe(false);
+    expect(isRangeKey("marker:c1..")).toBe(false);
+    expect(isRangeKey("invalid-key")).toBe(false);
+    expect(parseMarkerRange("marker:change-1..change-2")).toEqual({
+      fromId: "change-1",
+      toId: "change-2",
+    });
+  });
+
+  it("resolves marker ranges across changes", () => {
+    const now = new Date("2026-08-31T00:00:00.000Z");
+    const changes: ChangeRow[] = [
+      {
+        id: "c1",
+        name: "Change 1",
+        at: "2026-08-10T00:00:00.000Z",
+        source_url: null,
+        scope: "fleet",
+        repository: null,
+        created_at: "2026-08-10T00:00:00.000Z",
+      },
+      {
+        id: "c2",
+        name: "Change 2",
+        at: "2026-08-20T00:00:00.000Z",
+        source_url: null,
+        scope: "fleet",
+        repository: null,
+        created_at: "2026-08-20T00:00:00.000Z",
+      },
+    ];
+    const rows = [
+      { ...makeRounds({ count: 1 })[0], recorded_at: "2026-08-05T00:00:00.000Z" },
+      { ...makeRounds({ count: 1 })[0], recorded_at: "2026-08-15T00:00:00.000Z" },
+      { ...makeRounds({ count: 1 })[0], recorded_at: "2026-08-25T00:00:00.000Z" },
+    ];
+    const resolved = applyRange(rows, "marker:c1..c2", now, false, changes);
+    expect(resolved.rows).toHaveLength(1);
+    expect(resolved.rows[0].recorded_at).toBe("2026-08-15T00:00:00.000Z");
+    expect(resolved.label).toBe('between "Change 1" and "Change 2"');
   });
 });
 

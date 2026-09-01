@@ -1,4 +1,6 @@
-import type { RoundRow } from "@/api/types";
+import { z } from "zod";
+
+import type { ChangeRow, RoundRow } from "@/api/types";
 import { ROLLING_DAYS, ROLLING_ROUNDS } from "./thresholds";
 
 /**
@@ -6,19 +8,39 @@ import { ROLLING_DAYS, ROLLING_ROUNDS } from "./thresholds";
  * day it mostly manufactures empty ranges (#46).
  */
 export const RANGE_KEYS = ["rolling", "30d", "90d", "all"] as const;
-export type RangeKey = (typeof RANGE_KEYS)[number];
+export type StandardRangeKey = (typeof RANGE_KEYS)[number];
+export type MarkerRangeKey = `marker:${string}..${string}`;
+export type RangeKey = StandardRangeKey | MarkerRangeKey;
 
 export const DEFAULT_RANGE: RangeKey = "rolling";
 
-export const RANGE_BUTTON_LABELS: Record<RangeKey, string> = {
+export const rangeSchema = z
+  .string()
+  .refine(isRangeKey)
+  .transform((val): RangeKey => val as RangeKey)
+  .default(DEFAULT_RANGE)
+  .catch(DEFAULT_RANGE);
+
+export const RANGE_BUTTON_LABELS: Record<StandardRangeKey, string> = {
   rolling: "Rolling",
   "30d": "30 days",
   "90d": "90 days",
   all: "All time",
 };
 
+export const MARKER_RANGE_PREFIX = "marker:";
+
+export function parseMarkerRange(range: string): { fromId: string; toId: string } | null {
+  if (!range.startsWith(MARKER_RANGE_PREFIX)) return null;
+  const parts = range.slice(MARKER_RANGE_PREFIX.length).split("..");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  return { fromId: parts[0], toId: parts[1] };
+}
+
 export function isRangeKey(value: unknown): value is RangeKey {
-  return typeof value === "string" && (RANGE_KEYS as readonly string[]).includes(value);
+  if (typeof value !== "string") return false;
+  if ((RANGE_KEYS as readonly string[]).includes(value)) return true;
+  return parseMarkerRange(value) !== null;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -47,14 +69,44 @@ export interface ResolvedRange {
  *
  * `truncated` says the read route had more rows than one page, in which case the
  * all-time range is not all time and must not claim to be.
+ *
+ * `changes` allows resolving marker:<a>..<b> across named changes.
  */
 export function applyRange(
   rows: RoundRow[],
   range: RangeKey,
   now: Date,
   truncated = false,
+  changes?: ChangeRow[],
 ): ResolvedRange {
   const sorted = [...rows].sort((a, b) => b.recorded_at.localeCompare(a.recorded_at));
+
+  const marker = parseMarkerRange(range);
+  if (marker) {
+    if (!changes) {
+      return {
+        rows: sorted,
+        label: `marker range ${marker.fromId}..${marker.toId}`,
+      };
+    }
+    const fromChange = changes.find((c) => c.id === marker.fromId);
+    const toChange = changes.find((c) => c.id === marker.toId);
+    if (!fromChange || !toChange) {
+      return {
+        rows: [],
+        label: `marker range (unresolved change)`,
+      };
+    }
+    const [early, late] =
+      fromChange.at <= toChange.at ? [fromChange, toChange] : [toChange, fromChange];
+    const filtered = sorted.filter(
+      (row) => row.recorded_at >= early.at && row.recorded_at <= late.at,
+    );
+    return {
+      rows: filtered,
+      label: `between "${fromChange.name}" and "${toChange.name}"`,
+    };
+  }
 
   if (range === "all") {
     return {

@@ -17,14 +17,14 @@ import {
 import { summariseRepos } from "@/features/repos/repos";
 import { Degraded } from "@/honesty/Degraded";
 import { RangeControl } from "@/honesty/RangeControl";
-import { applyRange, DEFAULT_RANGE, RANGE_KEYS } from "@/honesty/range";
+import { applyRange, rangeSchema } from "@/honesty/range";
 import { CountTile } from "@/honesty/Tile";
 import { VERDICT_COPY } from "@/honesty/verdict";
 import { formatCount, formatTimestamp, orDash } from "@/lib/format";
 import { rootRoute } from "./root";
 
 const reposSearchSchema = z.object({
-  range: z.enum(RANGE_KEYS).default(DEFAULT_RANGE).catch(DEFAULT_RANGE),
+  range: rangeSchema,
 });
 
 export const reposRoute = createRoute({

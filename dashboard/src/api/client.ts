@@ -1,4 +1,12 @@
-import type { LaneEventRow, LaneEventsResponse, RoundRow, RunsResponse, SummaryResponse } from "./types";
+import type {
+  ChangeRow,
+  ChangesResponse,
+  LaneEventRow,
+  LaneEventsResponse,
+  RoundRow,
+  RunsResponse,
+  SummaryResponse,
+} from "./types";
 
 /**
  * Access sends an HTML login redirect rather than a 401 when the session is gone,
@@ -36,6 +44,11 @@ export interface LaneEventsQuery {
   cursor?: string;
 }
 
+export interface ChangesQuery {
+  limit?: number;
+  cursor?: string;
+}
+
 /** The Worker caps limit at 1000, and at 50 once include=blobs is set. */
 export const MAX_LIMIT = 1000;
 export const MAX_LIMIT_WITH_BLOBS = 50;
@@ -60,6 +73,17 @@ export function laneEventsUrl(query: LaneEventsQuery = {}): string {
   }
   const qs = params.toString();
   return qs ? `/api/lane-events?${qs}` : "/api/lane-events";
+}
+
+export function changesUrl(query: ChangesQuery = {}): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  const qs = params.toString();
+  return qs ? `/api/changes?${qs}` : "/api/changes";
 }
 
 async function getJson<T>(path: string, validate: (value: unknown) => value is T): Promise<T> {
@@ -249,10 +273,46 @@ export function isLaneEventsResponse(value: unknown): value is LaneEventsRespons
   );
 }
 
+export const REQUIRED_CHANGE_KEYS = [
+  "id",
+  "name",
+  "at",
+  "source_url",
+  "scope",
+  "repository",
+  "created_at",
+] as const;
+
+export function isChangeRow(row: unknown): row is ChangeRow {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  return (
+    REQUIRED_CHANGE_KEYS.every((key) => key in r) &&
+    typeof r.id === "string" &&
+    typeof r.name === "string" &&
+    typeof r.at === "string" &&
+    (r.source_url === null || typeof r.source_url === "string") &&
+    (r.scope === "repo" || r.scope === "fleet") &&
+    (r.repository === null || typeof r.repository === "string") &&
+    typeof r.created_at === "string"
+  );
+}
+
+export function isChangesResponse(value: unknown): value is ChangesResponse {
+  if (!value || typeof value !== "object") return false;
+  const { rows, next_cursor } = value as { rows?: unknown; next_cursor?: unknown };
+  return (
+    Array.isArray(rows) &&
+    rows.every(isChangeRow) &&
+    (next_cursor === null || next_cursor === undefined || typeof next_cursor === "string")
+  );
+}
+
 export interface TelemetryApi {
   fetchRuns(query?: RunsQuery): Promise<RunsResponse>;
   fetchSummary(): Promise<SummaryResponse>;
   fetchLaneEvents(query?: LaneEventsQuery): Promise<LaneEventsResponse>;
+  fetchChanges(query?: ChangesQuery): Promise<ChangesResponse>;
   /** Set only by the fixture table, so the UI can say the rounds are invented. */
   readonly fixtures?: boolean;
 }
@@ -261,6 +321,7 @@ export const httpApi: TelemetryApi = {
   fetchRuns: (query = {}) => getJson(runsUrl(query), isRunsResponse),
   fetchSummary: () => getJson("/api/summary", isSummaryResponse),
   fetchLaneEvents: (query = {}) => getJson(laneEventsUrl(query), isLaneEventsResponse),
+  fetchChanges: (query = {}) => getJson(changesUrl(query), isChangesResponse),
 };
 
 /**

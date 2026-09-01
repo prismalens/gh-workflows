@@ -106,3 +106,12 @@ export function useLaneEventsQuery(filters: LaneEventsFilters, now: Date) {
     staleTime: 30_000,
   });
 }
+
+export function useChangesQuery() {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["changes"],
+    queryFn: () => api.fetchChanges(),
+    staleTime: 30_000,
+  });
+}

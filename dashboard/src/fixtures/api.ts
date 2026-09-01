@@ -1,6 +1,8 @@
-import type { LaneEventsQuery, RunsQuery, TelemetryApi } from "@/api/client";
+import type { ChangesQuery, LaneEventsQuery, RunsQuery, TelemetryApi } from "@/api/client";
 import { MAX_LIMIT_WITH_BLOBS } from "@/api/client";
 import type {
+  ChangeRow,
+  ChangesResponse,
   LaneEventRow,
   LaneEventsResponse,
   RoundRow,
@@ -19,14 +21,15 @@ const BLOB_COLUMNS = [
 ] as const;
 
 /**
- * Reimplements handleRuns and handleSummary from worker/index.js against an
- * in-memory table, so the routes can be exercised without Access. Filter,
- * ordering, limit and cursor semantics have to match the Worker exactly, or a
+ * Reimplements handleRuns, handleSummary, handleLaneEvents and handleChanges from
+ * worker/index.js against an in-memory table, so the routes can be exercised without Access.
+ * Filter, ordering, limit and cursor semantics have to match the Worker exactly, or a
  * green test proves nothing about the deployed contract.
  */
 export function makeFixtureApi(
   rows: RoundRow[] = FIXTURE_ROUNDS,
   laneEvents: LaneEventRow[] = [],
+  changes: ChangeRow[] = [],
 ): TelemetryApi {
   const sorted = [...rows].sort((a, b) => {
     const byTime = b.recorded_at.localeCompare(a.recorded_at);
@@ -36,6 +39,11 @@ export function makeFixtureApi(
   const sortedEvents = [...laneEvents].sort((a, b) =>
     b.recorded_at.localeCompare(a.recorded_at),
   );
+
+  const sortedChanges = [...changes].sort((a, b) => {
+    const byTime = b.at.localeCompare(a.at);
+    return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
+  });
 
   return {
     fixtures: true,
@@ -148,6 +156,26 @@ export function makeFixtureApi(
         rows: page,
         next_cursor:
           page.length === limit && last ? `${last.recorded_at}|${last.run_id}` : null,
+      };
+    },
+
+    async fetchChanges(query: ChangesQuery = {}): Promise<ChangesResponse> {
+      let filtered = sortedChanges;
+      if (query.cursor) {
+        const pipe = query.cursor.indexOf("|");
+        const cursorAt = query.cursor.slice(0, pipe);
+        const cursorId = query.cursor.slice(pipe + 1);
+        filtered = filtered.filter(
+          (c) => c.at < cursorAt || (c.at === cursorAt && c.id < cursorId),
+        );
+      }
+      const limit = query.limit ?? 100;
+      const page = filtered.slice(0, limit);
+      const last = page[page.length - 1];
+      return {
+        rows: page,
+        next_cursor:
+          page.length === limit && last ? `${last.at}|${last.id}` : null,
       };
     },
   };

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, httpApi, laneEventsUrl, lookupRound, MAX_LIMIT_WITH_BLOBS, runsUrl } from "./client";
+import { ApiError, changesUrl, httpApi, laneEventsUrl, lookupRound, MAX_LIMIT_WITH_BLOBS, runsUrl } from "./client";
 import { CSV_COLUMNS, roundsToCsv } from "./csv";
 import { parsePerModelUsage, parseRawResult, parseSubagentStats } from "./blobs";
 import { makeFixtureApi } from "@/fixtures/api";
@@ -21,6 +21,11 @@ describe("the read route is called only in the shapes worker/index.js accepts", 
       "/api/lane-events?limit=500&repository=a%2Fb&since=2026-08-01",
     );
     expect(laneEventsUrl()).toBe("/api/lane-events");
+
+    expect(changesUrl({ limit: 100, cursor: "2026-08-31|c1" })).toBe(
+      "/api/changes?limit=100&cursor=2026-08-31%7Cc1",
+    );
+    expect(changesUrl()).toBe("/api/changes");
   });
 });
 
@@ -260,6 +265,19 @@ describe("a 200 of the wrong shape is malformed, not a TypeError", () => {
     await expect(httpApi.fetchLaneEvents()).rejects.toMatchObject({ kind: "malformed" });
   });
 
+  it("rejects a changes payload whose rows are missing required fields", async () => {
+    jsonBody({
+      rows: [
+        {
+          id: "c1",
+          // Missing name, at, scope, etc.
+        },
+      ],
+      next_cursor: null,
+    });
+    await expect(httpApi.fetchChanges()).rejects.toMatchObject({ kind: "malformed" });
+  });
+
   it("accepts the shapes the Worker actually returns", async () => {
     jsonBody({ rows: [], next_cursor: null });
     await expect(httpApi.fetchRuns()).resolves.toMatchObject({ rows: [] });
@@ -281,6 +299,8 @@ describe("a 200 of the wrong shape is malformed, not a TypeError", () => {
     await expect(httpApi.fetchSummary()).resolves.toMatchObject({ rows: 0, canary_last_seen_at: null });
     jsonBody({ rows: [], next_cursor: null });
     await expect(httpApi.fetchLaneEvents()).resolves.toMatchObject({ rows: [] });
+    jsonBody({ rows: [], next_cursor: null });
+    await expect(httpApi.fetchChanges()).resolves.toMatchObject({ rows: [] });
   });
 });
 

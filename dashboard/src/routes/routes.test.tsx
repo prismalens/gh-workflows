@@ -487,3 +487,250 @@ describe("/failures route integration", () => {
     expect(container.querySelector('input[type="date"]')).toBeNull();
   });
 });
+
+describe("/compare route integration", () => {
+  const sampleChanges = [
+    {
+      id: "c-sonnet-37",
+      name: "Upgrade reviewer to Claude 3.7 Sonnet",
+      at: "2026-08-15T12:00:00.000Z",
+      source_url: "https://github.com/prismalens/gh-workflows/pull/73",
+      scope: "fleet" as const,
+      repository: null,
+      created_at: "2026-08-15T12:05:00.000Z",
+    },
+  ];
+
+  it("with no changes registered, the page says so and renders no tiles and no zeros", async () => {
+    // API with rounds but 0 changes in registry
+    const noChangesApi = makeFixtureApi(makeRounds({ count: 20, now }), [], []);
+    renderRoute({ path: "/compare", api: noChangesApi });
+
+    expect(
+      await screen.findByText("No changes registered, therefore nothing to compare"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Register a change via curl/)).toBeInTheDocument();
+    expect(screen.getByText(/curl -X POST/)).toBeInTheDocument();
+
+    // Renders no tiles, no zeros, and no placeholder deltas
+    expect(screen.queryByTestId("tile-strip")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tile-n")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("metric-delta")).not.toBeInTheDocument();
+    expect(screen.queryByText("0% change")).not.toBeInTheDocument();
+  });
+
+  it("with a change registered but no rounds on one side, that side says so in words", async () => {
+    // All rounds recorded after change.at (so before window is empty)
+    const afterOnlyRounds = Array.from({ length: 15 }, (_, i) => ({
+      ...makeRounds({ count: 1 })[0],
+      session_id: `after-${i}`,
+      round_type: "review",
+      recorded_at: `2026-08-2${i % 9}T00:00:00.000Z`,
+      duration_ms: 5000,
+    }));
+    const afterOnlyApi = makeFixtureApi(afterOnlyRounds, [], sampleChanges);
+
+    renderRoute({ path: "/compare", api: afterOnlyApi });
+
+    expect(await screen.findByText("No rounds recorded before this change")).toBeInTheDocument();
+    expect(screen.getByTestId("before-window-n")).toHaveTextContent("n = 0");
+    expect(screen.getByTestId("after-window-n")).toHaveTextContent("n = 15");
+    expect(screen.queryByText("0% change")).not.toBeInTheDocument();
+
+    cleanup();
+
+    // All rounds recorded before change.at (so after window is empty)
+    const beforeOnlyRounds = Array.from({ length: 15 }, (_, i) => ({
+      ...makeRounds({ count: 1 })[0],
+      session_id: `before-${i}`,
+      round_type: "review",
+      recorded_at: `2026-08-0${(i % 9) + 1}T00:00:00.000Z`,
+      duration_ms: 5000,
+    }));
+    const beforeOnlyApi = makeFixtureApi(beforeOnlyRounds, [], sampleChanges);
+
+    renderRoute({ path: "/compare", api: beforeOnlyApi });
+
+    expect(await screen.findByText("No rounds recorded after this change")).toBeInTheDocument();
+    expect(screen.getByTestId("before-window-n")).toHaveTextContent("n = 15");
+    expect(screen.getByTestId("after-window-n")).toHaveTextContent("n = 0");
+    expect(screen.queryByText("0% change")).not.toBeInTheDocument();
+  });
+
+  it("deltas are uncoloured when either side has n below 10, and coloured when both clear it", async () => {
+    // Before: 5 rounds (low n < 10), After: 15 rounds (>= 10)
+    const mixedRounds = [
+      ...Array.from({ length: 5 }, (_, i) => ({
+        ...makeRounds({ count: 1 })[0],
+        session_id: `b-${i}`,
+        round_type: "review",
+        recorded_at: `2026-08-0${i + 1}T00:00:00.000Z`,
+        duration_ms: 6000,
+        permission_denials: 0,
+        input_tokens: 1000,
+        cache_read_input_tokens: 500,
+        cache_creation_input_tokens: 500,
+      })),
+      ...Array.from({ length: 15 }, (_, i) => ({
+        ...makeRounds({ count: 1 })[0],
+        session_id: `a-${i}`,
+        round_type: "review",
+        recorded_at: `2026-08-2${i % 9}T00:00:00.000Z`,
+        duration_ms: 3000,
+        permission_denials: 0,
+        input_tokens: 1000,
+        cache_read_input_tokens: 800,
+        cache_creation_input_tokens: 200,
+      })),
+    ];
+    const lowNApi = makeFixtureApi(mixedRounds, [], sampleChanges);
+
+    renderRoute({ path: "/compare", api: lowNApi });
+    await screen.findByTestId("compare-page");
+
+    // Low n badge is visible
+    expect(screen.getAllByTestId("low-n-badge").length).toBeGreaterThan(0);
+    // Delta element is uncoloured (font-normal, no emerald/destructive color class)
+    const deltas = screen.getAllByTestId("metric-delta");
+    expect(deltas[0].className).toContain("font-normal");
+    expect(deltas[0].className).not.toContain("text-emerald");
+    expect(deltas[0].className).not.toContain("text-destructive");
+
+    cleanup();
+
+    // High n: Before: 12 rounds (>= 10), After: 15 rounds (>= 10)
+    const highNRounds = [
+      ...Array.from({ length: 12 }, (_, i) => ({
+        ...makeRounds({ count: 1 })[0],
+        session_id: `b-${i}`,
+        round_type: "review",
+        recorded_at: `2026-08-0${(i % 9) + 1}T00:00:00.000Z`,
+        duration_ms: 6000,
+        permission_denials: 0,
+        input_tokens: 1000,
+        cache_read_input_tokens: 500,
+        cache_creation_input_tokens: 500,
+      })),
+      ...Array.from({ length: 15 }, (_, i) => ({
+        ...makeRounds({ count: 1 })[0],
+        session_id: `a-${i}`,
+        round_type: "review",
+        recorded_at: `2026-08-2${i % 9}T00:00:00.000Z`,
+        duration_ms: 3000,
+        permission_denials: 0,
+        input_tokens: 1000,
+        cache_read_input_tokens: 800,
+        cache_creation_input_tokens: 200,
+      })),
+    ];
+    const highNApi = makeFixtureApi(highNRounds, [], sampleChanges);
+
+    renderRoute({ path: "/compare", api: highNApi });
+    await screen.findByTestId("compare-page");
+
+    // Low n badge is NOT present
+    expect(screen.queryByTestId("low-n-badge")).not.toBeInTheDocument();
+    // Delta elements have colored classes (emerald for improvement since duration dropped from 6s to 3s)
+    const coloredDeltas = screen.getAllByTestId("metric-delta");
+    expect(coloredDeltas[0].className).toContain("text-emerald");
+  });
+
+  it("a comparison needing p95 with either side under n=20 is refused, and the refusal names the short side and its n", async () => {
+    // Before: 14 rounds (< 20), After: 22 rounds (>= 20)
+    const p95UnderRounds = [
+      ...Array.from({ length: 14 }, (_, i) => ({
+        ...makeRounds({ count: 1 })[0],
+        session_id: `b-${i}`,
+        round_type: "review",
+        recorded_at: `2026-08-0${(i % 9) + 1}T00:00:00.000Z`,
+        duration_ms: 5000,
+      })),
+      ...Array.from({ length: 22 }, (_, i) => ({
+        ...makeRounds({ count: 1 })[0],
+        session_id: `a-${i}`,
+        round_type: "review",
+        recorded_at: `2026-08-2${i % 9}T00:00:00.000Z`,
+        duration_ms: 4000,
+      })),
+    ];
+    const p95Api = makeFixtureApi(p95UnderRounds, [], sampleChanges);
+
+    renderRoute({ path: "/compare", api: p95Api });
+    await screen.findByTestId("compare-page");
+
+    // Check refusal copy in the rendered card
+    const refusal = await screen.findByTestId("refusal-reason");
+    expect(refusal.textContent).toBe(
+      "p95 comparison refused: before window has n = 14 (requires n ≥ 20)",
+    );
+  });
+
+  it("round types are never pooled, and a type present on only one side is reported rather than compared", async () => {
+    const splitTypeRounds = [
+      ...Array.from({ length: 15 }, (_, i) => ({
+        ...makeRounds({ count: 1 })[0],
+        session_id: `b-rev-${i}`,
+        round_type: "review",
+        recorded_at: `2026-08-0${(i % 9) + 1}T00:00:00.000Z`,
+        duration_ms: 6000,
+      })),
+      ...Array.from({ length: 5 }, (_, i) => ({
+        ...makeRounds({ count: 1 })[0],
+        session_id: `b-leg-${i}`,
+        round_type: "legacy",
+        recorded_at: `2026-08-0${(i % 9) + 1}T00:00:00.000Z`,
+        duration_ms: 9000,
+      })),
+      ...Array.from({ length: 15 }, (_, i) => ({
+        ...makeRounds({ count: 1 })[0],
+        session_id: `a-rev-${i}`,
+        round_type: "review",
+        recorded_at: `2026-08-2${i % 9}T00:00:00.000Z`,
+        duration_ms: 4000,
+      })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        ...makeRounds({ count: 1 })[0],
+        session_id: `a-inc-${i}`,
+        round_type: "incremental",
+        recorded_at: `2026-08-2${i % 9}T00:00:00.000Z`,
+        duration_ms: 2000,
+      })),
+    ];
+    const splitApi = makeFixtureApi(splitTypeRounds, [], sampleChanges);
+
+    renderRoute({ path: "/compare", api: splitApi });
+    await screen.findByTestId("compare-page");
+
+    // Sections for review, legacy, incremental exist separately
+    expect(screen.getByTestId("round-type-section-review")).toBeInTheDocument();
+    expect(screen.getByTestId("round-type-section-legacy")).toBeInTheDocument();
+    expect(screen.getByTestId("round-type-section-incremental")).toBeInTheDocument();
+
+    // Single-sided alerts report presence and absence in words
+    const legacySection = screen.getByTestId("round-type-section-legacy");
+    expect(
+      within(legacySection).getByTestId("round-type-single-side-alert").textContent,
+    ).toContain("Present before change (n = 5), absent after change (n = 0)");
+
+    const incSection = screen.getByTestId("round-type-section-incremental");
+    expect(
+      within(incSection).getByTestId("round-type-single-side-alert").textContent,
+    ).toContain("Present after change (n = 10), absent before change (n = 0)");
+
+    // No pooled "All round types" section exists
+    expect(screen.queryByTestId("round-type-section-all")).not.toBeInTheDocument();
+  });
+
+  it("the page has no date input anywhere", async () => {
+    const api = makeFixtureApi(makeRounds({ count: 30, now }), [], sampleChanges);
+    const { container } = renderRoute({ path: "/compare", api });
+    await screen.findByTestId("compare-page");
+
+    expect(container.querySelector('input[type="date"]')).toBeNull();
+    const inputs = container.querySelectorAll("input");
+    for (const input of inputs) {
+      expect(input.getAttribute("type")).not.toBe("date");
+    }
+  });
+});
+

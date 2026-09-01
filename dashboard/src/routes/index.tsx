@@ -28,7 +28,7 @@ import { aggregateRounds, tokenSums } from "@/honesty/aggregate";
 import { Degraded } from "@/honesty/Degraded";
 import { meanMetric } from "@/honesty/metrics";
 import { RangeControl } from "@/honesty/RangeControl";
-import { applyRange, DEFAULT_RANGE, RANGE_KEYS } from "@/honesty/range";
+import { applyRange, rangeSchema } from "@/honesty/range";
 import { CountTile, Tile } from "@/honesty/Tile";
 import { aggregateMode, TileStrip } from "@/honesty/TileStrip";
 import { PER_DAY_RATE_MIN_ROUNDS } from "@/honesty/thresholds";
@@ -43,7 +43,7 @@ import {
 import { rootRoute } from "./root";
 
 const overviewSearchSchema = z.object({
-  range: z.enum(RANGE_KEYS).default(DEFAULT_RANGE).catch(DEFAULT_RANGE),
+  range: rangeSchema,
   repository: z.string().min(1).optional().catch(undefined),
 });
 
