@@ -1,0 +1,115 @@
+name: Telemetry canary
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  reachability:
+    name: Reachability check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify edge reachability and worker routing
+        env:
+          INGEST_URL: ${{ vars.TELEMETRY_CANARY_URL || 'https://assayer.sfun.cloud/ingest' }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          headers="$(mktemp)"
+          body="$(mktemp)"
+          trap 'rm -f "$headers" "$body"' EXIT
+
+          # POST with an invalid token to verify the Worker handler answers (401).
+          # Any other status (like 403) indicates an edge block before reaching the Worker.
+          code=$(curl -sS -m 15 -D "$headers" -o "$body" -w '%{http_code}' \
+            --proto '=https' \
+            -X POST "$INGEST_URL" \
+            -H "Authorization: Bearer invalid-canary-token" \
+            -H "Content-Type: application/json" \
+            -d '{"ping":"reachability"}' || echo "000")
+
+          if [ "$code" = "401" ]; then
+            echo "Reachability verified: endpoint returned expected HTTP 401 for invalid token."
+            exit 0
+          fi
+
+          echo "Reachability check failed: received HTTP $code (expected 401)."
+          echo "=== Response Headers ==="
+          cat "$headers"
+          echo "=== Response Body (first 500 bytes) ==="
+          head -c 500 "$body" || true
+          echo ""
+
+          # The scheduled run is the loud signal; a zone-level edge block that nobody
+          # can fix from a PR must not turn every PR red. Diagnostic mode on PR emits a warning.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "::warning::Reachability check failed (HTTP $code). Likely causes: Cloudflare bot/WAF mitigation challenging curl from an Azure IP, or a Cloudflare Access policy widened to cover the ingest path."
+            exit 0
+          fi
+
+          echo "::error::Reachability check failed (HTTP $code). Likely causes: Cloudflare bot/WAF mitigation challenging curl from an Azure IP, or a Cloudflare Access policy widened to cover the ingest path."
+          exit 1
+
+  ingest:
+    name: Ingest canary
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post canary telemetry record
+        env:
+          INGEST_URL: ${{ vars.TELEMETRY_CANARY_URL || 'https://assayer.sfun.cloud/ingest' }}
+          REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # REVIEW_TELEMETRY_TOKEN is required to verify the ingest path end-to-end (#87).
+          # Failing loudly prevents an unverified pipeline from appearing healthy when
+          # secrets are missing or misconfigured.
+          if [ -z "${REVIEW_TELEMETRY_TOKEN:-}" ]; then
+            echo "::error::REVIEW_TELEMETRY_TOKEN is not set. Until this secret is configured, nothing verifies that telemetry ingest works (#87)."
+            exit 1
+          fi
+
+          hdr="$(mktemp)"
+          headers="$(mktemp)"
+          body="$(mktemp)"
+          trap 'rm -f "$hdr" "$headers" "$body"' EXIT
+          umask 077
+          printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$REVIEW_TELEMETRY_TOKEN" > "$hdr"
+
+          payload=$(jq -nc \
+            --arg run_url "$RUN_URL" \
+            '{
+              event_kind: "canary",
+              recorded_at: (now | todateiso8601),
+              run_url: $run_url,
+              lane_version: "2"
+            }')
+
+          code=$(printf '%s' "$payload" | curl -sS -m 15 -D "$headers" -o "$body" -w '%{http_code}' \
+            --proto '=https' \
+            -X POST "$INGEST_URL" \
+            -H "@$hdr" \
+            --data-binary @- || echo "000")
+
+          if [ "$code" = "204" ]; then
+            echo "Canary ingest verified: endpoint returned HTTP 204."
+            exit 0
+          fi
+
+          echo "Canary ingest failed: received HTTP $code (expected 204)."
+          echo "=== Response Headers ==="
+          cat "$headers"
+          echo "=== Response Body (first 500 bytes) ==="
+          head -c 500 "$body" || true
+          echo ""
+          echo "::error::Telemetry canary ingest failed (HTTP $code). Likely causes: Cloudflare bot/WAF mitigation challenging curl from an Azure IP, or a Cloudflare Access policy widened to cover the ingest path."
+          exit 1

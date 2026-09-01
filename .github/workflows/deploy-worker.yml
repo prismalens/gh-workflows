@@ -107,7 +107,7 @@ jobs:
           if output="$(./node_modules/.bin/wrangler d1 migrations list review-telemetry --remote 2>&1)"; then
             echo "${output}"
             if echo "${output}" | grep -q "Migrations to be applied:"; then
-              echo "::warning::Pending D1 migrations detected on remote database review-telemetry. The deploy workflow does not auto-apply migrations. Apply them manually with: cd worker && ./node_modules/.bin/wrangler d1 migrations apply review-telemetry --remote"
+              echo "::error::Pending D1 migrations detected on remote database review-telemetry. The deploy workflow does not auto-apply migrations. Apply them manually with: cd worker && ./node_modules/.bin/wrangler d1 migrations apply review-telemetry --remote"
               {
                 echo "## ⚠️ Pending D1 Migrations"
                 echo
@@ -118,6 +118,9 @@ jobs:
                 echo "cd worker && ./node_modules/.bin/wrangler d1 migrations apply review-telemetry --remote"
                 echo "\`\`\`"
               } >> "${GITHUB_STEP_SUMMARY}"
+              # Deploying code ahead of schema migrations breaks ingest with 500s (#87).
+              # Fail closed so migrations precede code deployment.
+              exit 1
             fi
           else
             status=$?

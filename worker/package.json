@@ -9,7 +9,8 @@
     "migrate:local": "wrangler d1 migrations apply review-telemetry --local",
     "migrate:remote": "wrangler d1 migrations apply review-telemetry --remote",
     "migrate:list:local": "wrangler d1 migrations list review-telemetry --local",
-    "migrate:list:remote": "wrangler d1 migrations list review-telemetry --remote"
+    "migrate:list:remote": "wrangler d1 migrations list review-telemetry --remote",
+    "test": "node --test"
   },
   "devDependencies": {
     "wrangler": "4.127.1"
