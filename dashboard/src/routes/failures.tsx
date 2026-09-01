@@ -51,8 +51,8 @@ function FailuresPage() {
   const events = laneEvents.data?.rows ?? EMPTY_ROWS;
   const blobRows = attention.data?.rows ?? EMPTY_ROWS;
 
-  const isLoading = rounds.isPending || laneEvents.isPending;
-  const error = rounds.error ?? laneEvents.error;
+  const isLoading = rounds.isPending || laneEvents.isPending || attention.isPending;
+  const error = rounds.error ?? laneEvents.error ?? attention.error;
 
   const totalItems = windowed.rows.length + events.length;
 

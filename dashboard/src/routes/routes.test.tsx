@@ -513,6 +513,23 @@ describe("/failures route integration", () => {
       "true",
     );
   });
+
+  it("surfaces a failed attention query instead of rendering config's empty state (#104 finding 5)", async () => {
+    const base = makeFixtureApi(makeRounds({ count: 64, now }));
+    const brokenAttention = {
+      ...base,
+      fetchRuns: (query: Parameters<typeof base.fetchRuns>[0]) => {
+        if (query?.include === "blobs") throw new Error("attention route is down");
+        return base.fetchRuns(query);
+      },
+    };
+
+    renderRoute({ path: "/failures", api: brokenAttention });
+    expect(await screen.findByText("Could not load failure surface telemetry")).toBeInTheDocument();
+    expect(
+      screen.queryByText("No configuration resolution records found in the loaded window."),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("/compare route integration", () => {
