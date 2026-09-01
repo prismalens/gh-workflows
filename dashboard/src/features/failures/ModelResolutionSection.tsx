@@ -171,8 +171,9 @@ export function ModelResolutionSection({
             <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Permission denials by tool
             </h4>
+            {/* totalDenials is windowed by range; denialTools below is not (#104 finding 6). */}
             <span className="tabular text-xs text-muted-foreground">
-              Total denials in range: {formatCount(totalDenials)}
+              Total denials, windowed rounds: {formatCount(totalDenials)}
             </span>
           </div>
 

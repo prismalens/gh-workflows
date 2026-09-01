@@ -440,3 +440,26 @@ describe("/failures - the section banner separates a capable lane from an old on
     }
   });
 });
+
+describe("the model resolution total names its own population (#104 finding 6)", () => {
+  it("does not say 'in range' when denialTools is a different, unwindowed population", async () => {
+    // Present but empty: the blob population reported no denial tools, even
+    // though the windowed total below sums a nonzero permission_denials.
+    const rows = createWave2CompleteRows().map((row) => ({
+      ...row,
+      permission_denials: 3,
+      raw_result: JSON.stringify({ denial_tools: [] }),
+    }));
+    const api = makeFixtureApi(rows, []);
+    renderRoute({ path: "/failures", api });
+
+    const modelSection = await screen.findByTestId("section-model-resolution");
+    expect(within(modelSection).queryByText(/Total denials in range/)).not.toBeInTheDocument();
+    expect(
+      within(modelSection).getByText(/Total denials, windowed rounds: \d/),
+    ).toBeInTheDocument();
+    expect(
+      within(modelSection).getByText("No permission denials recorded in the loaded blob rounds."),
+    ).toBeInTheDocument();
+  });
+});
