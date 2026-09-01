@@ -15,7 +15,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Degraded } from "@/honesty/Degraded";
-import type { RangeKey } from "@/honesty/range";
+import { linkableRange, type RangeKey } from "@/honesty/range";
 import { formatCount, formatTimestamp } from "@/lib/format";
 import {
   getFieldDegradedState,
@@ -124,7 +124,7 @@ export function ConfigSection({ blobRows, range, repository }: ConfigSectionProp
                     <TableCell className="font-mono text-xs font-medium">
                       <Link
                         to="/rounds"
-                        search={{ range, repository: item.repository }}
+                        search={{ range: linkableRange(range), repository: item.repository }}
                         className="underline-offset-4 hover:underline"
                       >
                         {item.repository}

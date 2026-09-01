@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Degraded } from "@/honesty/Degraded";
-import type { RangeKey } from "@/honesty/range";
+import { linkableRange, type RangeKey } from "@/honesty/range";
 import type { FourStateVerdict } from "@/honesty/verdict";
 import { formatCount, formatTimestamp } from "@/lib/format";
 import {
@@ -143,7 +143,7 @@ export function VerdictSection({ rows, now, range, repository }: VerdictSectionP
                     <Link
                       to="/rounds"
                       search={{
-                        range,
+                        range: linkableRange(range),
                         ...(repository ? { repository } : {}),
                       }}
                       className="text-xs text-primary underline-offset-4 hover:underline"
