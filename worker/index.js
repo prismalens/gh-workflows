@@ -225,31 +225,28 @@ async function getSigningKeys(teamDomain, force = false) {
   return cachedCerts;
 }
 
+// Three stable codes so the client can tell the causes apart instead of reading
+// the same body for each. Status codes are unchanged. Story: #96.
+function accessError(code, status) {
+  return new Response(JSON.stringify({ error: code }), { status, headers: READ_HEADERS });
+}
+
 // Origin requests bypass Access; validate JWT directly to keep read routes closed (#46).
 async function verifyAccess(request, env) {
   const teamDomain = env?.ACCESS_TEAM_DOMAIN;
   const expectedAud = env?.ACCESS_AUD;
   if (!teamDomain || !expectedAud) {
-    return new Response(JSON.stringify({ error: "read API not configured" }), {
-      status: 503,
-      headers: READ_HEADERS,
-    });
+    return accessError("access_unconfigured", 503);
   }
 
   const token = request.headers.get("Cf-Access-Jwt-Assertion");
   if (!token) {
-    return new Response(JSON.stringify({ error: "forbidden" }), {
-      status: 403,
-      headers: READ_HEADERS,
-    });
+    return accessError("access_denied", 403);
   }
 
   const parts = token.split(".");
   if (parts.length !== 3) {
-    return new Response(JSON.stringify({ error: "forbidden" }), {
-      status: 403,
-      headers: READ_HEADERS,
-    });
+    return accessError("access_denied", 403);
   }
 
   let header, payload;
@@ -257,27 +254,18 @@ async function verifyAccess(request, env) {
     header = parseJwtPart(parts[0]);
     payload = parseJwtPart(parts[1]);
   } catch {
-    return new Response(JSON.stringify({ error: "forbidden" }), {
-      status: 403,
-      headers: READ_HEADERS,
-    });
+    return accessError("access_denied", 403);
   }
 
   if (header?.alg !== "RS256" || !header?.kid) {
-    return new Response(JSON.stringify({ error: "forbidden" }), {
-      status: 403,
-      headers: READ_HEADERS,
-    });
+    return accessError("access_denied", 403);
   }
 
   let keys;
   try {
     keys = await getSigningKeys(teamDomain);
   } catch {
-    return new Response(JSON.stringify({ error: "failed to fetch signing keys" }), {
-      status: 503,
-      headers: READ_HEADERS,
-    });
+    return accessError("access_keys_unavailable", 503);
   }
 
   let matchingKey = keys.find((k) => k.kid === header.kid);
@@ -286,18 +274,12 @@ async function verifyAccess(request, env) {
       keys = await getSigningKeys(teamDomain, true);
       matchingKey = keys.find((k) => k.kid === header.kid);
     } catch {
-      return new Response(JSON.stringify({ error: "failed to fetch signing keys" }), {
-        status: 503,
-        headers: READ_HEADERS,
-      });
+      return accessError("access_keys_unavailable", 503);
     }
   }
 
   if (!matchingKey) {
-    return new Response(JSON.stringify({ error: "forbidden" }), {
-      status: 403,
-      headers: READ_HEADERS,
-    });
+    return accessError("access_denied", 403);
   }
 
   try {
@@ -317,40 +299,25 @@ async function verifyAccess(request, env) {
       signedData
     );
     if (!isValid) {
-      return new Response(JSON.stringify({ error: "forbidden" }), {
-        status: 403,
-        headers: READ_HEADERS,
-      });
+      return accessError("access_denied", 403);
     }
   } catch {
-    return new Response(JSON.stringify({ error: "forbidden" }), {
-      status: 403,
-      headers: READ_HEADERS,
-    });
+    return accessError("access_denied", 403);
   }
 
   const aud = payload?.aud;
   const hasAud = Array.isArray(aud) ? aud.includes(expectedAud) : aud === expectedAud;
   if (!hasAud) {
-    return new Response(JSON.stringify({ error: "forbidden" }), {
-      status: 403,
-      headers: READ_HEADERS,
-    });
+    return accessError("access_denied", 403);
   }
 
   const now = Math.floor(Date.now() / 1000);
   if (typeof payload?.exp !== "number" || payload.exp <= now) {
-    return new Response(JSON.stringify({ error: "forbidden" }), {
-      status: 403,
-      headers: READ_HEADERS,
-    });
+    return accessError("access_denied", 403);
   }
 
   if (payload?.iss !== `https://${teamDomain}`) {
-    return new Response(JSON.stringify({ error: "forbidden" }), {
-      status: 403,
-      headers: READ_HEADERS,
-    });
+    return accessError("access_denied", 403);
   }
 
   return null;

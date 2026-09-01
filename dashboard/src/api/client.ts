@@ -11,18 +11,24 @@ import type {
 /**
  * Access sends an HTML login redirect rather than a 401 when the session is gone,
  * so a non-JSON body on a GET is the signal to send the operator back to the IdP.
+ * 503 joins 401/403 here too: verifyAccess (worker/index.js) answers "not
+ * configured" or "signing keys unavailable" with 503, and both need the same
+ * recovery affordance as a denied JWT. Story: #96.
  */
 export type ApiErrorKind = "unauthenticated" | "http" | "network" | "malformed";
 
 export class ApiError extends Error {
   status: number;
   kind: ApiErrorKind;
+  /** The Worker's machine-readable `error` body field, when one was sent. */
+  code?: string;
 
-  constructor(message: string, status: number, kind: ApiErrorKind) {
+  constructor(message: string, status: number, kind: ApiErrorKind, code?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.kind = kind;
+    this.code = code;
   }
 }
 
@@ -110,9 +116,23 @@ async function getJson<T>(path: string, validate: (value: unknown) => value is T
   }
 
   // Status is read before content-type, or a 404 or an edge 502 with an HTML body
-  // would tell the operator to sign in again.
-  if (res.status === 401 || res.status === 403) {
-    throw new ApiError("Cloudflare Access refused this request", res.status, "unauthenticated");
+  // would tell the operator to sign in again. 503 is included because verifyAccess
+  // answers with it when it could not even run the check (#96), not just when it
+  // denied one; both are auth-recovery states from the UI's point of view.
+  if (res.status === 401 || res.status === 403 || res.status === 503) {
+    let code: string | undefined;
+    try {
+      const body = (await res.json()) as { error?: string };
+      code = body?.error;
+    } catch {
+      code = undefined;
+    }
+    throw new ApiError(
+      code ? `Cloudflare Access refused this request: ${code}` : "Cloudflare Access refused this request",
+      res.status,
+      "unauthenticated",
+      code,
+    );
   }
 
   if (!res.ok) {

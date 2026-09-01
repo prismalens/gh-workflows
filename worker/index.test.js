@@ -938,6 +938,53 @@ describe("Worker telemetry read API", () => {
     }
   });
 
+  // Placed before any test that lets getSigningKeys succeed, since a successful
+  // fetch populates the module-level cert cache other tests then hit. Story: #96.
+  describe("verifyAccess error codes (#96)", () => {
+    it("returns access_unconfigured when Access env vars are missing", async () => {
+      const db = createFakeDb();
+      const env = { DB: db };
+      const req = makeRequest("/api/runs", { method: "GET" });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 503);
+      const body = await res.json();
+      assert.equal(body.error, "access_unconfigured");
+    });
+
+    it("returns access_denied when the JWT is missing", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb();
+      const env = { ...helper.env, DB: db };
+      const req = makeRequest("/api/runs", { method: "GET" });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 403);
+      const body = await res.json();
+      assert.equal(body.error, "access_denied");
+    });
+
+    it("returns access_keys_unavailable when the certs fetch fails", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb();
+      const env = { ...helper.env, DB: db };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        if (typeof url === "string" && url.includes("/cdn-cgi/access/certs")) {
+          throw new Error("network down");
+        }
+        return originalFetch(url, init);
+      };
+      try {
+        const req = makeAuthenticatedRequest("/api/runs", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 503);
+        const body = await res.json();
+        assert.equal(body.error, "access_keys_unavailable");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+
   describe("GET /api/runs (Wave 2 columns & blobs)", () => {
     it("selects all new default columns in default response and excludes blob fields", async () => {
       const helper = await getAccessHelper();
