@@ -1,0 +1,72 @@
+name: Bug report
+description: Something in gh-workflows' reusable workflows, the review lane, or the telemetry Worker behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please do **not** paste real
+        secrets, tokens, API keys, or connection strings — issues are public.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: A workflow run, the review lane, or the telemetry Worker did ... and I expected ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact actions or commands, in order — which workflow, which trigger, which run.
+      placeholder: |
+        1. ...
+        2. ...
+        3. see error
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: The release, or the git commit SHA of gh-workflows you are consuming.
+      placeholder: commit abc1234
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: The consumer repo, runner OS, and how the workflow is invoked (reusable workflow call, direct dispatch, etc.).
+      placeholder: prismalens/prismalens, ubuntu-latest runner, reusable workflow call
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Workflow run logs, error messages, or telemetry output. Redact anything sensitive first.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: docs-impact
+    attributes:
+      label: Docs impact (optional)
+      description: If fixing this also requires a docs correction, note which surface.
+    validations:
+      required: false
+  - type: textarea
+    id: metric
+    attributes:
+      label: Which metric this fix earns
+      description: >
+        Name the metric this fix will move, and how you'll know it moved
+        (e.g. a telemetry field, a lane-eviction count, a CI check that stops
+        flaking). "none, because ..." is a valid answer — the "because" must
+        be filled in. The point is a named answer, not a metric that must
+        exist.
+      placeholder: "none, because this is a doc-only typo fix with no measurable effect"
+    validations:
+      required: true
