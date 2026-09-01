@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for taking the time to file a bug. Please do **not** paste real
-        secrets, tokens, API keys, or connection strings — issues are public.
+        secrets, tokens, API keys, or connection strings. Issues are public.
   - type: textarea
     id: what-happened
     attributes:
@@ -19,7 +19,7 @@ body:
     id: repro
     attributes:
       label: Steps to reproduce
-      description: The exact actions or commands, in order — which workflow, which trigger, which run.
+      description: The exact actions or commands, in order. Name the workflow, the trigger, and the run.
       placeholder: |
         1. ...
         2. ...
@@ -64,9 +64,9 @@ body:
       description: >
         Name the metric this fix will move, and how you'll know it moved
         (e.g. a telemetry field, a lane-eviction count, a CI check that stops
-        flaking). "none, because ..." is a valid answer — the "because" must
-        be filled in. The point is a named answer, not a metric that must
-        exist.
+        flaking). "none, because ..." is a valid answer, as long as the
+        "because" is filled in. The point is a named answer, not a metric
+        that must exist.
       placeholder: "none, because this is a doc-only typo fix with no measurable effect"
     validations:
       required: true
