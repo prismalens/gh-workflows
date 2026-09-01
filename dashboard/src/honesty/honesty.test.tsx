@@ -9,7 +9,14 @@ import type { ChangeRow, RoundRow } from "@/api/types";
 import { aggregateRounds, cacheHitRate, cachingMultiplier, tokenSums } from "./aggregate";
 import { Degraded } from "./Degraded";
 import { meanMetric, medianMetric, p95Metric, derivedMetric } from "./metrics";
-import { applyRange, isRangeKey, parseMarkerRange, RANGE_KEYS, rangeSince } from "./range";
+import {
+  applyRange,
+  isRangeKey,
+  linkableRange,
+  parseMarkerRange,
+  RANGE_KEYS,
+  rangeSince,
+} from "./range";
 import { RangeControl } from "./RangeControl";
 import { aggregateMode, TileStrip } from "./TileStrip";
 import { isMoneyLabel, Tile } from "./Tile";
@@ -185,6 +192,25 @@ describe("the range control", () => {
     expect(resolved.rows).toHaveLength(1);
     expect(resolved.rows[0].recorded_at).toBe("2026-08-15T00:00:00.000Z");
     expect(resolved.label).toBe('between "Change 1" and "Change 2"');
+  });
+
+  it("never returns the unfiltered set for a marker range it cannot resolve", () => {
+    // #104 finding 1: a marker range arriving with no changes to resolve it
+    // against used to fall through to the entire unfiltered `sorted` set.
+    const now = new Date("2026-08-31T00:00:00.000Z");
+    const rows = makeRounds({ count: 5 });
+    const withoutChanges = applyRange(rows, "marker:c1..c2", now);
+    expect(withoutChanges.rows).toEqual([]);
+    expect(withoutChanges.label).toContain("marker range c1..c2");
+
+    const withUnresolvedChanges = applyRange(rows, "marker:c1..c2", now, false, []);
+    expect(withUnresolvedChanges.rows).toEqual([]);
+  });
+
+  it("drops a marker range before it reaches a /rounds link (#104 finding 1)", () => {
+    expect(linkableRange("marker:c1..c2")).toBe("rolling");
+    expect(linkableRange("30d")).toBe("30d");
+    expect(linkableRange("all")).toBe("all");
   });
 });
 

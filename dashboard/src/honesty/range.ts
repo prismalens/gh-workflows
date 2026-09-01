@@ -21,6 +21,17 @@ export const rangeSchema = z
   .default(DEFAULT_RANGE)
   .catch(DEFAULT_RANGE);
 
+/**
+ * Rejects a marker range. Only the overview fetches `changes` to resolve one;
+ * everywhere else falls back to DEFAULT_RANGE rather than an empty page.
+ */
+export const standardRangeSchema = z
+  .string()
+  .refine((val): val is StandardRangeKey => (RANGE_KEYS as readonly string[]).includes(val))
+  .transform((val): RangeKey => val as RangeKey)
+  .default(DEFAULT_RANGE)
+  .catch(DEFAULT_RANGE);
+
 export const RANGE_BUTTON_LABELS: Record<StandardRangeKey, string> = {
   rolling: "Rolling",
   "30d": "30 days",
@@ -41,6 +52,11 @@ export function isRangeKey(value: unknown): value is RangeKey {
   if (typeof value !== "string") return false;
   if ((RANGE_KEYS as readonly string[]).includes(value)) return true;
   return parseMarkerRange(value) !== null;
+}
+
+/** For a link to a route whose search schema rejects marker ranges (#104 finding 1). */
+export function linkableRange(range: RangeKey): StandardRangeKey {
+  return parseMarkerRange(range) ? (DEFAULT_RANGE as StandardRangeKey) : (range as StandardRangeKey);
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -84,9 +100,10 @@ export function applyRange(
   const marker = parseMarkerRange(range);
   if (marker) {
     if (!changes) {
+      // No changes to resolve against: never fall back to the unfiltered set.
       return {
-        rows: sorted,
-        label: `marker range ${marker.fromId}..${marker.toId}`,
+        rows: [],
+        label: `marker range ${marker.fromId}..${marker.toId} (could not be resolved here)`,
       };
     }
     const fromChange = changes.find((c) => c.id === marker.fromId);

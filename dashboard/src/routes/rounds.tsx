@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { RoundsTable } from "@/features/rounds/RoundsTable";
 import { aggregateRounds } from "@/honesty/aggregate";
 import { RangeControl } from "@/honesty/RangeControl";
-import { applyRange, rangeSchema } from "@/honesty/range";
+import { applyRange, standardRangeSchema } from "@/honesty/range";
 import { Tile } from "@/honesty/Tile";
 import { TileStrip } from "@/honesty/TileStrip";
 import {
@@ -26,7 +26,7 @@ import {
 import { rootRoute } from "./root";
 
 const roundsSearchSchema = z.object({
-  range: rangeSchema,
+  range: standardRangeSchema,
   repository: z.string().min(1).optional().catch(undefined),
   round_type: z.string().min(1).optional().catch(undefined),
   sort: z.string().min(1).optional().catch(undefined),

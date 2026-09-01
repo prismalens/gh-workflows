@@ -218,6 +218,15 @@ describe("/repos", () => {
       .find((node) => node.textContent?.includes("Lane, key mode and config"));
     expect(degraded).toHaveAttribute("data-reason", "unbuilt");
   });
+
+  it("falls back to the default range on a marker range it cannot resolve (#104 finding 1)", async () => {
+    renderRoute({ path: "/repos?range=marker:c1..c2", api: fullApi });
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rolling" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
 });
 
 describe("a fixtures build says the rounds are invented", () => {
@@ -277,6 +286,15 @@ describe("/rounds", () => {
 
   it("falls back to the default range when the URL carries a bad one", async () => {
     renderRoute({ path: "/rounds?range=last-tuesday", api: fullApi });
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rolling" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("falls back to the default range on a marker range it cannot resolve (#104 finding 1)", async () => {
+    renderRoute({ path: "/rounds?range=marker:c1..c2", api: fullApi });
     expect(await screen.findByRole("table")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rolling" })).toHaveAttribute(
       "aria-pressed",
@@ -485,6 +503,15 @@ describe("/failures route integration", () => {
     const group = await screen.findByRole("group", { name: "Range" });
     expect(within(group).getAllByRole("button")).toHaveLength(4);
     expect(container.querySelector('input[type="date"]')).toBeNull();
+  });
+
+  it("falls back to the default range on a marker range it cannot resolve (#104 finding 1)", async () => {
+    renderRoute({ path: "/failures?range=marker:c1..c2", api: fullApi });
+    const group = await screen.findByRole("group", { name: "Range" });
+    expect(within(group).getByRole("button", { name: "Rolling" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 });
 

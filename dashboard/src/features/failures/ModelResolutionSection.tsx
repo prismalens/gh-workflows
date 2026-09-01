@@ -14,7 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Degraded } from "@/honesty/Degraded";
-import type { RangeKey } from "@/honesty/range";
+import { linkableRange, type RangeKey } from "@/honesty/range";
 import { formatCount, formatTimestamp } from "@/lib/format";
 import {
   getFieldDegradedState,
@@ -151,7 +151,7 @@ export function ModelResolutionSection({
                     <Link
                       to="/rounds"
                       search={{
-                        range,
+                        range: linkableRange(range),
                         ...(repository ? { repository } : {}),
                       }}
                       className="text-xs text-primary underline-offset-4 hover:underline"
