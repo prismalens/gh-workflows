@@ -336,6 +336,24 @@ describe("chart rendering and marker interactions", () => {
     fireEvent.click(label);
     expect(onMarkerClick).toHaveBeenCalledWith("c-sonnet");
   });
+
+  it("WallClockScatterChart counts every verdict state, not only reviewed and unknown (#104 finding 3)", () => {
+    const at = new Date("2026-08-30T10:00:00.000Z").getTime();
+    const points = (
+      ["reviewed", "threads-only", "did-not-run", "silent", "unknown"] as const
+    ).map((state, i) => ({
+      at,
+      durationMs: 5000,
+      sessionId: `s${i}`,
+      repository: "prismalens/sreforge",
+      state,
+    }));
+    render(<WallClockScatterChart points={points} />);
+    // One reviewed dot; the other four states all land in "not reviewed",
+    // so nothing is dropped from either the legend or the plotted dots.
+    expect(screen.getByText("reviewed")).toHaveTextContent("reviewed 1");
+    expect(screen.getByText("not reviewed")).toHaveTextContent("not reviewed 4");
+  });
 });
 
 

@@ -287,7 +287,9 @@ export function WallClockScatterChart({
   onMarkerClick,
 }: WallClockScatterChartProps) {
   const reviewed = points.filter((point) => point.state === "reviewed");
-  const unknown = points.filter((point) => point.state === "unknown");
+  // Every non-reviewed verdict, not only "unknown": a dropped state here is a
+  // dropped dot, so the two counts below must always sum to points.length.
+  const notReviewed = points.filter((point) => point.state !== "reviewed");
 
   const minPointsAt = points.length > 0 ? Math.min(...points.map((p) => p.at)) : Infinity;
   const maxPointsAt = points.length > 0 ? Math.max(...points.map((p) => p.at)) : -Infinity;
@@ -309,7 +311,7 @@ export function WallClockScatterChart({
             reviewed <span className="tabular text-foreground">{reviewed.length}</span>
           </Swatch>
           <Swatch color="var(--muted-foreground)">
-            unknown <span className="tabular text-foreground">{unknown.length}</span>
+            not reviewed <span className="tabular text-foreground">{notReviewed.length}</span>
           </Swatch>
         </>
       }
@@ -339,7 +341,7 @@ export function WallClockScatterChart({
             labelFormatter={stampLabel}
           />
           <Scatter name="reviewed" data={reviewed} fill="var(--chart-1)" />
-          <Scatter name="unknown" data={unknown} fill="var(--muted-foreground)" />
+          <Scatter name="not reviewed" data={notReviewed} fill="var(--muted-foreground)" />
           {changes?.map((change) => {
             const isSelected = selectedMarkerId === change.id;
             const atMs = new Date(change.at).getTime();
