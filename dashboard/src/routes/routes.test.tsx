@@ -348,11 +348,13 @@ describe("/rounds/$sessionId", () => {
     expect(perAgent).toHaveAttribute("data-reason", "unbuilt");
   });
 
-  it("separates a field the lane never sent from one that is not built yet", async () => {
+  it("separates a field this lane left empty from one that is not built yet (#100)", async () => {
+    // The fixture's verify rounds carry lane_version v2.0.0 and a null
+    // subagent_stats, so the gap is "sent nothing", not "predates the field".
     renderRoute({ path: detailPath(verify.session_id, verify.recorded_at), api });
     const degraded = await screen.findAllByTestId("degraded");
     const reasons = new Set(degraded.map((node) => node.getAttribute("data-reason")));
-    expect(reasons).toContain("lane-did-not-send");
+    expect(reasons).toContain("lane-sent-nothing");
     expect(reasons).toContain("unbuilt");
     expect(
       degraded.some((node) => node.textContent?.includes("Subagent lifecycle counts")),
