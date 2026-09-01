@@ -10,6 +10,20 @@ let lastRefetchTime = 0;
 const D1_MAX_ROW_BYTES = 2_000_000;
 const MAX_INGEST_BYTES = D1_MAX_ROW_BYTES / 2;
 
+// The zone-level WAF rule (wrangler.toml) is what protects the free-plan request
+// quota, since by the time this runs the request is already counted. This binding
+// is the second line: it bounds D1 write load and token-guessing per IP even if
+// the zone rule is ever loosened or removed. Story: #60.
+async function isIngestRateLimited(request, env) {
+  const limiter = env?.INGEST_RATE_LIMITER;
+  if (!limiter) {
+    return false;
+  }
+  const key = request.headers.get("cf-connecting-ip") ?? "unknown";
+  const { success } = await limiter.limit({ key });
+  return !success;
+}
+
 const READ_HEADERS = {
   "content-type": "application/json",
   "cache-control": "no-store",
@@ -735,6 +749,10 @@ async function handleLaneEvents(url, env) {
 }
 
 async function handleIngest(request, env) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+
   // Reject missing or empty secret to prevent open access (#41).
   const token = env?.REVIEW_TELEMETRY_TOKEN;
   const authHeader = request.headers.get("authorization");
