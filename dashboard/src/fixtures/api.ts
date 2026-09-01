@@ -36,9 +36,10 @@ export function makeFixtureApi(
     return byTime !== 0 ? byTime : b.session_id.localeCompare(a.session_id);
   });
 
-  const sortedEvents = [...laneEvents].sort((a, b) =>
-    b.recorded_at.localeCompare(a.recorded_at),
-  );
+  const sortedEvents = [...laneEvents].sort((a, b) => {
+    const byTime = b.recorded_at.localeCompare(a.recorded_at);
+    return byTime !== 0 ? byTime : b.run_id - a.run_id;
+  });
 
   const sortedChanges = [...changes].sort((a, b) => {
     const byTime = b.at.localeCompare(a.at);
@@ -149,6 +150,14 @@ export function makeFixtureApi(
       if (query.repository) filtered = filtered.filter((r) => r.repository === query.repository);
       if (query.since) filtered = filtered.filter((r) => r.recorded_at >= query.since!);
       if (query.until) filtered = filtered.filter((r) => r.recorded_at <= query.until!);
+      if (query.cursor) {
+        const pipe = query.cursor.indexOf("|");
+        const cursorAt = query.cursor.slice(0, pipe);
+        const cursorId = Number(query.cursor.slice(pipe + 1));
+        filtered = filtered.filter(
+          (r) => r.recorded_at < cursorAt || (r.recorded_at === cursorAt && r.run_id < cursorId),
+        );
+      }
       const limit = query.limit ?? 100;
       const page = filtered.slice(0, limit);
       const last = page[page.length - 1];

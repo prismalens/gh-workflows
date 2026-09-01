@@ -5,6 +5,7 @@ import { CSV_COLUMNS, roundsToCsv } from "./csv";
 import { parsePerModelUsage, parseRawResult, parseSubagentStats } from "./blobs";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
+import type { LaneEventRow } from "./types";
 
 const rows = makeRounds({ count: 64 });
 const api = makeFixtureApi(rows);
@@ -78,6 +79,30 @@ describe("the fixture table matches the Worker's paging contract", () => {
     const first = await api.fetchRuns({ limit: 20 });
     const second = await api.fetchRuns({ limit: 20, cursor: first.next_cursor! });
     const ids = new Set([...first.rows, ...second.rows].map((r) => r.session_id));
+    expect(ids.size).toBe(40);
+  });
+
+  it("pages lane events by cursor instead of returning page one twice (#104 finding 4)", async () => {
+    const laneEvents: LaneEventRow[] = Array.from({ length: 40 }, (_, i) => ({
+      run_id: i + 1,
+      run_attempt: 1,
+      recorded_at: `2026-08-${String((i % 28) + 1).padStart(2, "0")}T00:00:00.000Z`,
+      repository: "prismalens/gh-workflows",
+      reason: "no-token",
+      pr_number: null,
+      head_sha: null,
+      run_url: null,
+      rounds_used: null,
+      lane_version: "v2.0.0",
+    }));
+    const laneApi = makeFixtureApi([], laneEvents);
+
+    const first = await laneApi.fetchLaneEvents({ limit: 20 });
+    expect(first.next_cursor).toMatch(/\|/);
+    const second = await laneApi.fetchLaneEvents({ limit: 20, cursor: first.next_cursor! });
+
+    expect(second.rows).not.toEqual(first.rows);
+    const ids = new Set([...first.rows, ...second.rows].map((r) => r.run_id));
     expect(ids.size).toBe(40);
   });
 });
