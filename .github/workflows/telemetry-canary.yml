@@ -111,5 +111,16 @@ jobs:
           echo "=== Response Body (first 500 bytes) ==="
           head -c 500 "$body" || true
           echo ""
-          echo "::error::Telemetry canary ingest failed (HTTP $code). Likely causes: Cloudflare bot/WAF mitigation challenging curl from an Azure IP, or a Cloudflare Access policy widened to cover the ingest path."
+
+          # A flat "probably WAF" on every status sent a session hunting Cloudflare for
+          # a 400 that meant the deployed Worker predated the canary branch. Story: #87.
+          case "$code" in
+            400) cause="The Worker rejected the payload. Most likely the deployed Worker is behind main and does not know the canary event_kind: check that Deploy Worker succeeded on the current head." ;;
+            401) cause="The Worker rejected the token. REVIEW_TELEMETRY_TOKEN here and the Worker's own secret have diverged; rotate both together." ;;
+            403) cause="Blocked before the Worker: Cloudflare bot/WAF mitigation challenging curl from an Azure IP, or an Access policy widened to cover the ingest path." ;;
+            5*)  cause="The Worker answered but failed, most likely the D1 write. Check for a pending migration on review-telemetry." ;;
+            000) cause="No HTTP response at all: DNS, TLS or the 15s timeout." ;;
+            *)   cause="Unexpected status. The response headers and body above are the evidence." ;;
+          esac
+          echo "::error::Telemetry canary ingest failed (HTTP $code, expected 204). ${cause}"
           exit 1

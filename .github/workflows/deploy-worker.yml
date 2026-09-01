@@ -13,6 +13,9 @@ on:
       - worker/**
       - dashboard/**
       - .github/workflows/deploy-worker.yml
+  # Without this a failed deploy can only be retried through the failed run, so a
+  # deploy blocked by a pending migration cannot be redriven once it is applied.
+  workflow_dispatch:
 
 permissions:
   contents: read
