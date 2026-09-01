@@ -1,4 +1,6 @@
-import type { RoundRow } from "@/api/types";
+import type { ChangeRow, RoundRow } from "@/api/types";
+import { parseMarkerRange, type RangeKey } from "@/honesty/range";
+import { ROLLING_DAYS, ROLLING_ROUNDS } from "@/honesty/thresholds";
 import { decodeVerdict, type VerdictState } from "@/honesty/verdict";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -74,11 +76,15 @@ export interface DayBucket {
 }
 
 /**
- * One bucket per calendar day from the first round to the last, gaps included.
+ * One bucket per calendar day from the first round/change to the last, gaps included.
  * Dropping the empty days would draw a denser lane than ran.
  */
-export function roundsPerDay(rows: RoundRow[], types: string[]): DayBucket[] {
-  if (rows.length === 0) return [];
+export function roundsPerDay(
+  rows: RoundRow[],
+  types: string[],
+  changes: ChangeRow[] = [],
+): DayBucket[] {
+  if (rows.length === 0 && changes.length === 0) return [];
   const counts = new Map<string, Map<string, number>>();
   for (const row of rows) {
     const day = utcDay(row.recorded_at);
@@ -87,7 +93,7 @@ export function roundsPerDay(rows: RoundRow[], types: string[]): DayBucket[] {
     bucket.set(type, (bucket.get(type) ?? 0) + 1);
     counts.set(day, bucket);
   }
-  return eachDay(rows).map((day) => {
+  return eachDay(rows, changes).map((day) => {
     const bucket = counts.get(day) ?? new Map<string, number>();
     const out: DayBucket = { day, total: 0 };
     for (const type of types) {
@@ -107,8 +113,11 @@ export interface TokenDayBucket {
 }
 
 /** Same day buckets, summing the three input token columns the store holds. */
-export function tokensPerDay(rows: RoundRow[]): TokenDayBucket[] {
-  if (rows.length === 0) return [];
+export function tokensPerDay(
+  rows: RoundRow[],
+  changes: ChangeRow[] = [],
+): TokenDayBucket[] {
+  if (rows.length === 0 && changes.length === 0) return [];
   const buckets = new Map<string, TokenDayBucket>();
   for (const row of rows) {
     const day = utcDay(row.recorded_at);
@@ -118,7 +127,7 @@ export function tokensPerDay(rows: RoundRow[]): TokenDayBucket[] {
     bucket.cacheRead += row.cache_read_input_tokens ?? 0;
     buckets.set(day, bucket);
   }
-  return eachDay(rows).map(
+  return eachDay(rows, changes).map(
     (day) => buckets.get(day) ?? { day, input: 0, cacheCreation: 0, cacheRead: 0 },
   );
 }
@@ -151,8 +160,12 @@ export function roundTypesPresent(band: ActivityBand): string[] {
   return band.untypedRounds > 0 ? [...types, "untyped"] : types;
 }
 
-function eachDay(rows: RoundRow[]): string[] {
-  const stamps = rows.map((row) => Date.parse(utcDay(row.recorded_at)));
+function eachDay(rows: RoundRow[], changes: ChangeRow[] = []): string[] {
+  const stamps = [
+    ...rows.map((row) => Date.parse(utcDay(row.recorded_at))),
+    ...changes.map((c) => Date.parse(utcDay(c.at))),
+  ].filter((n) => !Number.isNaN(n));
+  if (stamps.length === 0) return [];
   const first = Math.min(...stamps);
   const last = Math.max(...stamps);
   const days: string[] = [];
@@ -160,4 +173,66 @@ function eachDay(rows: RoundRow[]): string[] {
     days.push(new Date(t).toISOString().slice(0, 10));
   }
   return days;
+}
+
+/**
+ * Filter changes from the registry whose `at` falls inside the chart's current window,
+ * and whose scope matches the chart's repository filter.
+ * A `repo`-scoped change only draws on charts showing that repository;
+ * a `fleet`-scoped change always draws.
+ */
+export function changesInWindow(
+  changes: ChangeRow[],
+  range: RangeKey,
+  now: Date,
+  rows: RoundRow[],
+  repository?: string,
+): ChangeRow[] {
+  const applicable = changes.filter((c) => {
+    if (c.scope === "fleet") return true;
+    if (c.scope === "repo") return repository !== undefined && c.repository === repository;
+    return false;
+  });
+
+  if (applicable.length === 0) return [];
+
+  const nowIso = now.toISOString();
+
+  const marker = parseMarkerRange(range);
+  if (marker) {
+    const fromChange = changes.find((c) => c.id === marker.fromId);
+    const toChange = changes.find((c) => c.id === marker.toId);
+    if (!fromChange || !toChange) return [];
+    const [early, late] =
+      fromChange.at <= toChange.at ? [fromChange, toChange] : [toChange, fromChange];
+    return applicable.filter((c) => c.at >= early.at && c.at <= late.at);
+  }
+
+  if (range === "30d" || range === "90d") {
+    const days = range === "30d" ? 30 : 90;
+    const cutoff = new Date(now.getTime() - days * DAY_MS).toISOString();
+    return applicable.filter((c) => c.at >= cutoff && c.at <= nowIso);
+  }
+
+  if (range === "all") {
+    if (rows.length === 0) return [];
+    const earliestRound = rows.reduce(
+      (min, r) => (r.recorded_at < min ? r.recorded_at : min),
+      rows[0].recorded_at,
+    );
+    return applicable.filter((c) => c.at >= earliestRound && c.at <= nowIso);
+  }
+
+  // rolling: the last 50 rounds or 7 days, whichever holds more rounds
+  const cutoff = new Date(now.getTime() - ROLLING_DAYS * DAY_MS).toISOString();
+  const byDays = rows.filter((r) => r.recorded_at >= cutoff);
+  const byCount = rows.slice(0, ROLLING_ROUNDS);
+
+  if (byDays.length >= byCount.length) {
+    return applicable.filter((c) => c.at >= cutoff && c.at <= nowIso);
+  } else {
+    if (rows.length === 0) return [];
+    const earliest = rows[rows.length - 1].recorded_at;
+    return applicable.filter((c) => c.at >= earliest && c.at <= nowIso);
+  }
 }

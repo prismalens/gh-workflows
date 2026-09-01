@@ -1,4 +1,4 @@
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { makeFixtureApi } from "@/fixtures/api";
@@ -733,4 +733,204 @@ describe("/compare route integration", () => {
     }
   });
 });
+
+describe("/ overview: change markers on the trend charts", () => {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const t0 = now.getTime();
+
+  const changeFleetIn = {
+    id: "c-fleet-in",
+    name: "Upgrade reviewer to Claude 3.7 Sonnet",
+    at: new Date(t0 - 3 * dayMs).toISOString(),
+    source_url: null,
+    scope: "fleet" as const,
+    repository: null,
+    created_at: new Date(t0 - 3 * dayMs).toISOString(),
+  };
+
+  const changeFleetOut = {
+    id: "c-fleet-out",
+    name: "Ancient fleet change",
+    at: new Date(t0 - 45 * dayMs).toISOString(),
+    source_url: null,
+    scope: "fleet" as const,
+    repository: null,
+    created_at: new Date(t0 - 45 * dayMs).toISOString(),
+  };
+
+  const changeRepoSreforge = {
+    id: "c-repo-sreforge",
+    name: "Sreforge review rule update",
+    at: new Date(t0 - 4 * dayMs).toISOString(),
+    source_url: null,
+    scope: "repo" as const,
+    repository: "prismalens/sreforge",
+    created_at: new Date(t0 - 4 * dayMs).toISOString(),
+  };
+
+  const changeRepoOther = {
+    id: "c-repo-other",
+    name: "Mage memory model switch",
+    at: new Date(t0 - 4 * dayMs).toISOString(),
+    source_url: null,
+    scope: "repo" as const,
+    repository: "Sumit1993/mage-memory",
+    created_at: new Date(t0 - 4 * dayMs).toISOString(),
+  };
+
+  const changeAlpha = {
+    id: "c-alpha",
+    name: "Alpha deployment",
+    at: new Date(t0 - 5 * dayMs).toISOString(),
+    source_url: null,
+    scope: "fleet" as const,
+    repository: null,
+    created_at: new Date(t0 - 5 * dayMs).toISOString(),
+  };
+
+  const changeBeta = {
+    id: "c-beta",
+    name: "Beta deployment",
+    at: new Date(t0 - 2 * dayMs).toISOString(),
+    source_url: null,
+    scope: "fleet" as const,
+    repository: null,
+    created_at: new Date(t0 - 2 * dayMs).toISOString(),
+  };
+
+  it("with no changes registered, the charts render as before and nothing marker-related appears", async () => {
+    const api = makeFixtureApi(makeRounds({ count: 20, now }), [], []);
+    renderRoute({ path: "/", api });
+
+    await screen.findByTestId("activity-band");
+    expect(screen.getByText("Rounds per day, by type")).toBeInTheDocument();
+    expect(screen.getByText("Token composition by day")).toBeInTheDocument();
+    expect(screen.getByText("Wall clock, every round")).toBeInTheDocument();
+
+    expect(screen.queryByTestId("marker-selection-banner")).not.toBeInTheDocument();
+    expect(screen.queryByTestId(/^marker-/)).toBeNull();
+    const rangeGroup = screen.getByRole("group", { name: "Range" });
+    expect(within(rangeGroup).getAllByRole("button")).toHaveLength(4);
+  });
+
+  it("a fleet change inside the window draws a labelled marker; one outside the window does not", async () => {
+    const api = makeFixtureApi(makeRounds({ count: 20, now }), [], [changeFleetIn, changeFleetOut]);
+    renderRoute({ path: "/?range=30d", api });
+
+    await screen.findByTestId("activity-band");
+    const markers = await screen.findAllByText("Upgrade reviewer to Claude 3.7 Sonnet");
+    expect(markers.length).toBeGreaterThan(0);
+    expect(screen.queryByText("Ancient fleet change")).not.toBeInTheDocument();
+  });
+
+  it("a repo change draws only on a chart for that repository", async () => {
+    const api = makeFixtureApi(
+      makeRounds({ count: 20, now }),
+      [],
+      [changeFleetIn, changeRepoSreforge, changeRepoOther],
+    );
+
+    // On all-repos overview chart, repo-scoped changes do not draw
+    renderRoute({ path: "/?range=30d", api });
+    await screen.findByTestId("activity-band");
+    expect(screen.getAllByText("Upgrade reviewer to Claude 3.7 Sonnet").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Sreforge review rule update")).not.toBeInTheDocument();
+    expect(screen.queryByText("Mage memory model switch")).not.toBeInTheDocument();
+
+    cleanup();
+
+    // On sreforge chart, only sreforge and fleet changes draw
+    renderRoute({ path: "/?range=30d&repository=prismalens%2Fsreforge", api });
+    await screen.findByTestId("activity-band");
+    expect(screen.getAllByText("Upgrade reviewer to Claude 3.7 Sonnet").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Sreforge review rule update").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Mage memory model switch")).not.toBeInTheDocument();
+  });
+
+  it("a change with no rounds after it still draws", async () => {
+    // Rounds recorded between 10 days ago and 6 days ago
+    const olderRounds = Array.from({ length: 15 }, (_, i) => ({
+      ...makeRounds({ count: 1 })[0],
+      session_id: `old-${i}`,
+      round_type: "review",
+      recorded_at: new Date(t0 - (10 - (i % 4)) * dayMs).toISOString(),
+      duration_ms: 5000,
+    }));
+    // Change recorded 2 days ago (no rounds recorded after it)
+    const lateChange = {
+      id: "c-late",
+      name: "Recent unmeasured change",
+      at: new Date(t0 - 2 * dayMs).toISOString(),
+      source_url: null,
+      scope: "fleet" as const,
+      repository: null,
+      created_at: new Date(t0 - 2 * dayMs).toISOString(),
+    };
+    const api = makeFixtureApi(olderRounds, [], [lateChange]);
+
+    renderRoute({ path: "/?range=30d", api });
+    await screen.findByTestId("activity-band");
+    const markerLabels = await screen.findAllByText("Recent unmeasured change");
+    expect(markerLabels.length).toBeGreaterThan(0);
+  });
+
+  it("clicking one marker shows a visible selection; clicking a second sets marker:<a>..<b>; clicking the selected marker again clears it", async () => {
+    const api = makeFixtureApi(makeRounds({ count: 20, now }), [], [changeAlpha, changeBeta]);
+    renderRoute({ path: "/", api });
+
+    await screen.findByTestId("activity-band");
+    expect(screen.queryByTestId("marker-selection-banner")).not.toBeInTheDocument();
+
+    // 1. Click changeAlpha -> shows visible selection banner and aria-selected
+    fireEvent.click(screen.getAllByTestId("marker-c-alpha")[0]);
+    await waitFor(() => {
+      expect(screen.getByTestId("marker-selection-banner")).toHaveTextContent(
+        /Selected marker:.*Alpha deployment/,
+      );
+      expect(screen.getAllByTestId("marker-c-alpha")[0]).toHaveAttribute("data-selected", "true");
+    });
+
+    // 2. Click changeAlpha again -> clears selection
+    fireEvent.click(screen.getAllByTestId("marker-c-alpha")[0]);
+    await waitFor(() => {
+      expect(screen.queryByTestId("marker-selection-banner")).not.toBeInTheDocument();
+      expect(screen.getAllByTestId("marker-c-alpha")[0]).toHaveAttribute("data-selected", "false");
+    });
+
+    // 3. Click changeAlpha again, then click changeBeta -> sets range to marker:c-alpha..c-beta
+    fireEvent.click(screen.getAllByTestId("marker-c-alpha")[0]);
+    await waitFor(() => {
+      expect(screen.getByTestId("marker-selection-banner")).toBeInTheDocument();
+      expect(screen.getAllByTestId("marker-c-alpha")[0]).toHaveAttribute("data-selected", "true");
+    });
+
+    await waitFor(() => {
+      fireEvent.click(screen.getAllByTestId("marker-c-beta")[0]);
+      expect(screen.queryByTestId("marker-selection-banner")).not.toBeInTheDocument();
+    });
+
+    // Windowed label displays between
+    const betweenLabels = await screen.findAllByText(
+      /between "Alpha deployment" and "Beta deployment"/,
+    );
+    expect(betweenLabels.length).toBeGreaterThan(0);
+  });
+
+  it("the range control still offers exactly four buttons and no date input", async () => {
+    const api = makeFixtureApi(makeRounds({ count: 20, now }), [], [changeAlpha, changeBeta]);
+    const { container } = renderRoute({ path: "/?range=marker:c-alpha..c-beta", api });
+
+    await screen.findByTestId("activity-band");
+    const group = screen.getByRole("group", { name: "Range" });
+    const buttons = within(group).getAllByRole("button");
+    expect(buttons).toHaveLength(4);
+    for (const button of buttons) {
+      expect(button).toHaveAttribute("aria-pressed", "false");
+    }
+
+    expect(container.querySelector('input[type="date"]')).toBeNull();
+    expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
+  });
+});
+
 

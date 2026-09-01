@@ -3,6 +3,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  ReferenceLine,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -11,6 +12,7 @@ import {
   YAxis,
 } from "recharts";
 
+import type { ChangeRow } from "@/api/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatDuration, formatTokens } from "@/lib/format";
 import type { DayBucket, ScatterPoint, TokenDayBucket } from "./activity";
@@ -107,9 +109,19 @@ export interface RoundsPerDayChartProps {
   data: DayBucket[];
   types: string[];
   countByType: Record<string, number>;
+  changes?: ChangeRow[];
+  selectedMarkerId?: string | null;
+  onMarkerClick?: (changeId: string) => void;
 }
 
-export function RoundsPerDayChart({ data, types, countByType }: RoundsPerDayChartProps) {
+export function RoundsPerDayChart({
+  data,
+  types,
+  countByType,
+  changes,
+  selectedMarkerId,
+  onMarkerClick,
+}: RoundsPerDayChartProps) {
   return (
     <ChartCard
       title="Rounds per day, by type"
@@ -120,7 +132,7 @@ export function RoundsPerDayChart({ data, types, countByType }: RoundsPerDayChar
       ))}
       note="A day with no bar recorded no round. Verify rounds read no code."
     >
-      <ResponsiveContainer width="100%" height="100%">
+      <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 500, height: 300 }}>
         <BarChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
           <CartesianGrid stroke="var(--border)" vertical={false} />
           <XAxis dataKey="day" tickFormatter={shortDay} {...AXIS} />
@@ -133,6 +145,38 @@ export function RoundsPerDayChart({ data, types, countByType }: RoundsPerDayChar
           {types.map((type, index) => (
             <Bar key={type} dataKey={type} stackId="rounds" fill={seriesColor(type, index)} />
           ))}
+          {changes?.map((change) => {
+            const isSelected = selectedMarkerId === change.id;
+            return (
+              <ReferenceLine
+                key={`${change.id}-${selectedMarkerId}`}
+                x={change.at.slice(0, 10)}
+                stroke={isSelected ? "var(--foreground)" : "var(--muted-foreground)"}
+                strokeWidth={isSelected ? 2 : 1}
+                strokeDasharray={isSelected ? undefined : "3 3"}
+                className="cursor-pointer"
+                onClick={() => onMarkerClick?.(change.id)}
+                shape={(props) => (
+                  <line
+                    {...props}
+                    data-testid={`marker-${change.id}`}
+                    data-selected={isSelected ? "true" : "false"}
+                    aria-selected={isSelected}
+                    className="cursor-pointer"
+                    onClick={() => onMarkerClick?.(change.id)}
+                  />
+                )}
+                label={{
+                  value: change.name,
+                  position: "insideTop",
+                  fill: isSelected ? "var(--foreground)" : "var(--muted-foreground)",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  onClick: () => onMarkerClick?.(change.id),
+                }}
+              />
+            );
+          })}
         </BarChart>
       </ResponsiveContainer>
     </ChartCard>
@@ -142,6 +186,9 @@ export function RoundsPerDayChart({ data, types, countByType }: RoundsPerDayChar
 export interface TokenCompositionChartProps {
   data: TokenDayBucket[];
   totals: { input: number; cacheCreation: number; cacheRead: number };
+  changes?: ChangeRow[];
+  selectedMarkerId?: string | null;
+  onMarkerClick?: (changeId: string) => void;
 }
 
 const TOKEN_SERIES = [
@@ -150,7 +197,13 @@ const TOKEN_SERIES = [
   { key: "cacheRead", label: "cache read", color: "var(--chart-2)" },
 ] as const;
 
-export function TokenCompositionChart({ data, totals }: TokenCompositionChartProps) {
+export function TokenCompositionChart({
+  data,
+  totals,
+  changes,
+  selectedMarkerId,
+  onMarkerClick,
+}: TokenCompositionChartProps) {
   return (
     <ChartCard
       title="Token composition by day"
@@ -162,7 +215,7 @@ export function TokenCompositionChart({ data, totals }: TokenCompositionChartPro
       ))}
       note="Input tokens only. A round that recorded no counts contributes nothing rather than a zero."
     >
-      <ResponsiveContainer width="100%" height="100%">
+      <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 500, height: 300 }}>
         <BarChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: -10 }}>
           <CartesianGrid stroke="var(--border)" vertical={false} />
           <XAxis dataKey="day" tickFormatter={shortDay} {...AXIS} />
@@ -182,15 +235,70 @@ export function TokenCompositionChart({ data, totals }: TokenCompositionChartPro
               name={series.label}
             />
           ))}
+          {changes?.map((change) => {
+            const isSelected = selectedMarkerId === change.id;
+            return (
+              <ReferenceLine
+                key={`${change.id}-${selectedMarkerId}`}
+                x={change.at.slice(0, 10)}
+                stroke={isSelected ? "var(--foreground)" : "var(--muted-foreground)"}
+                strokeWidth={isSelected ? 2 : 1}
+                strokeDasharray={isSelected ? undefined : "3 3"}
+                className="cursor-pointer"
+                onClick={() => onMarkerClick?.(change.id)}
+                shape={(props) => (
+                  <line
+                    {...props}
+                    data-testid={`marker-${change.id}`}
+                    data-selected={isSelected ? "true" : "false"}
+                    aria-selected={isSelected}
+                    className="cursor-pointer"
+                    onClick={() => onMarkerClick?.(change.id)}
+                  />
+                )}
+                label={{
+                  value: change.name,
+                  position: "insideTop",
+                  fill: isSelected ? "var(--foreground)" : "var(--muted-foreground)",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  onClick: () => onMarkerClick?.(change.id),
+                }}
+              />
+            );
+          })}
         </BarChart>
       </ResponsiveContainer>
     </ChartCard>
   );
 }
 
-export function WallClockScatterChart({ points }: { points: ScatterPoint[] }) {
+export interface WallClockScatterChartProps {
+  points: ScatterPoint[];
+  changes?: ChangeRow[];
+  selectedMarkerId?: string | null;
+  onMarkerClick?: (changeId: string) => void;
+}
+
+export function WallClockScatterChart({
+  points,
+  changes,
+  selectedMarkerId,
+  onMarkerClick,
+}: WallClockScatterChartProps) {
   const reviewed = points.filter((point) => point.state === "reviewed");
   const unknown = points.filter((point) => point.state === "unknown");
+
+  const minPointsAt = points.length > 0 ? Math.min(...points.map((p) => p.at)) : Infinity;
+  const maxPointsAt = points.length > 0 ? Math.max(...points.map((p) => p.at)) : -Infinity;
+  const changeStamps = (changes ?? []).map((c) => new Date(c.at).getTime());
+  const minChangeAt = changeStamps.length > 0 ? Math.min(...changeStamps) : Infinity;
+  const maxChangeAt = changeStamps.length > 0 ? Math.max(...changeStamps) : -Infinity;
+
+  const minAt = Math.min(minPointsAt, minChangeAt);
+  const maxAt = Math.max(maxPointsAt, maxChangeAt);
+  const domain =
+    Number.isFinite(minAt) && Number.isFinite(maxAt) ? [minAt, maxAt] : ["dataMin", "dataMax"];
 
   return (
     <ChartCard
@@ -207,13 +315,13 @@ export function WallClockScatterChart({ points }: { points: ScatterPoint[] }) {
       }
       note="One dot per round, so the tail stays visible. No p95 is claimed per dot."
     >
-      <ResponsiveContainer width="100%" height="100%">
+      <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 500, height: 300 }}>
         <ScatterChart margin={{ top: 4, right: 8, bottom: 0, left: 4 }}>
           <CartesianGrid stroke="var(--border)" />
           <XAxis
             type="number"
             dataKey="at"
-            domain={["dataMin", "dataMax"]}
+            domain={domain}
             tickFormatter={(at: number) => shortDay(new Date(at).toISOString().slice(0, 10))}
             {...AXIS}
           />
@@ -232,6 +340,39 @@ export function WallClockScatterChart({ points }: { points: ScatterPoint[] }) {
           />
           <Scatter name="reviewed" data={reviewed} fill="var(--chart-1)" />
           <Scatter name="unknown" data={unknown} fill="var(--muted-foreground)" />
+          {changes?.map((change) => {
+            const isSelected = selectedMarkerId === change.id;
+            const atMs = new Date(change.at).getTime();
+            return (
+              <ReferenceLine
+                key={`${change.id}-${selectedMarkerId}`}
+                x={atMs}
+                stroke={isSelected ? "var(--foreground)" : "var(--muted-foreground)"}
+                strokeWidth={isSelected ? 2 : 1}
+                strokeDasharray={isSelected ? undefined : "3 3"}
+                className="cursor-pointer"
+                onClick={() => onMarkerClick?.(change.id)}
+                shape={(props) => (
+                  <line
+                    {...props}
+                    data-testid={`marker-${change.id}`}
+                    data-selected={isSelected ? "true" : "false"}
+                    aria-selected={isSelected}
+                    className="cursor-pointer"
+                    onClick={() => onMarkerClick?.(change.id)}
+                  />
+                )}
+                label={{
+                  value: change.name,
+                  position: "insideTop",
+                  fill: isSelected ? "var(--foreground)" : "var(--muted-foreground)",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  onClick: () => onMarkerClick?.(change.id),
+                }}
+              />
+            );
+          })}
         </ScatterChart>
       </ResponsiveContainer>
     </ChartCard>
@@ -244,3 +385,4 @@ const TOOLTIP_STYLE = {
   borderRadius: "var(--radius-md)",
   fontSize: 12,
 } as const;
+

@@ -1,12 +1,23 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
-import type { RoundRow } from "@/api/types";
+import type { ChangeRow, RoundRow } from "@/api/types";
 import { CountTile } from "@/honesty/Tile";
 import { decodeVerdict, verdictMix } from "@/honesty/verdict";
 import { makeRounds } from "@/fixtures/rounds";
-import { activityBand, roundsPerDay, tokensPerDay, wallClockPoints } from "./activity";
+import {
+  activityBand,
+  changesInWindow,
+  roundsPerDay,
+  tokensPerDay,
+  wallClockPoints,
+} from "./activity";
 import { attentionCards } from "./attention";
+import {
+  RoundsPerDayChart,
+  TokenCompositionChart,
+  WallClockScatterChart,
+} from "./charts";
 
 const BASE = makeRounds({ count: 1 })[0];
 
@@ -161,3 +172,170 @@ describe("a count tile is not an aggregate tile", () => {
     expect(() => render(<CountTile label="Billable tokens" count={4} />)).not.toThrow();
   });
 });
+
+describe("changesInWindow filtering logic", () => {
+  const testNow = new Date("2026-08-31T12:00:00.000Z");
+  const testRows = [
+    round({ recorded_at: "2026-08-25T00:00:00.000Z", repository: "prismalens/sreforge" }),
+    round({ recorded_at: "2026-08-20T00:00:00.000Z", repository: "prismalens/sreforge" }),
+  ];
+
+  const fleetInside: ChangeRow = {
+    id: "c-fleet-in",
+    name: "Fleet Change In",
+    at: "2026-08-22T00:00:00.000Z",
+    scope: "fleet",
+    repository: null,
+    source_url: null,
+    created_at: "2026-08-22T00:00:00.000Z",
+  };
+
+  const fleetOutside: ChangeRow = {
+    id: "c-fleet-out",
+    name: "Fleet Change Out",
+    at: "2026-06-01T00:00:00.000Z",
+    scope: "fleet",
+    repository: null,
+    source_url: null,
+    created_at: "2026-06-01T00:00:00.000Z",
+  };
+
+  const repoSreforge: ChangeRow = {
+    id: "c-repo-sre",
+    name: "Sreforge Change",
+    at: "2026-08-24T00:00:00.000Z",
+    scope: "repo",
+    repository: "prismalens/sreforge",
+    source_url: null,
+    created_at: "2026-08-24T00:00:00.000Z",
+  };
+
+  const repoOther: ChangeRow = {
+    id: "c-repo-other",
+    name: "Other Repo Change",
+    at: "2026-08-24T00:00:00.000Z",
+    scope: "repo",
+    repository: "prismalens/other",
+    source_url: null,
+    created_at: "2026-08-24T00:00:00.000Z",
+  };
+
+  it("filters out changes outside the window and includes fleet inside", () => {
+    const result = changesInWindow(
+      [fleetInside, fleetOutside],
+      "30d",
+      testNow,
+      testRows,
+    );
+    expect(result.map((c) => c.id)).toEqual(["c-fleet-in"]);
+  });
+
+  it("only includes repo changes matching the active repository filter", () => {
+    // When no repository filter is active, repo-scoped changes do not draw
+    const allRepos = changesInWindow(
+      [fleetInside, repoSreforge, repoOther],
+      "30d",
+      testNow,
+      testRows,
+      undefined,
+    );
+    expect(allRepos.map((c) => c.id)).toEqual(["c-fleet-in"]);
+
+    // When repository filter matches sreforge
+    const sreforgeFiltered = changesInWindow(
+      [fleetInside, repoSreforge, repoOther],
+      "30d",
+      testNow,
+      testRows,
+      "prismalens/sreforge",
+    );
+    expect(sreforgeFiltered.map((c) => c.id)).toEqual(["c-fleet-in", "c-repo-sre"]);
+  });
+
+  it("includes a change with no rounds after it in the window", () => {
+    const changeAfterRounds: ChangeRow = {
+      id: "c-after",
+      name: "Change after all rounds",
+      at: "2026-08-29T00:00:00.000Z", // later than latest round 2026-08-25
+      scope: "fleet",
+      repository: null,
+      source_url: null,
+      created_at: "2026-08-29T00:00:00.000Z",
+    };
+    const result = changesInWindow([changeAfterRounds], "30d", testNow, testRows);
+    expect(result.map((c) => c.id)).toEqual(["c-after"]);
+  });
+});
+
+describe("chart rendering and marker interactions", () => {
+  const sampleChanges: ChangeRow[] = [
+    {
+      id: "c-sonnet",
+      name: "Claude 3.7 Sonnet",
+      at: "2026-08-30T12:00:00.000Z",
+      scope: "fleet",
+      repository: null,
+      source_url: null,
+      created_at: "2026-08-30T12:00:00.000Z",
+    },
+  ];
+
+  it("RoundsPerDayChart renders marker and invokes onMarkerClick on click", () => {
+    const onMarkerClick = vi.fn();
+    render(
+      <RoundsPerDayChart
+        data={[{ day: "2026-08-30", total: 1, full: 1 }]}
+        types={["full"]}
+        countByType={{ full: 1 }}
+        changes={sampleChanges}
+        selectedMarkerId={null}
+        onMarkerClick={onMarkerClick}
+      />,
+    );
+    const marker = screen.getByTestId("marker-c-sonnet");
+    expect(marker).toBeInTheDocument();
+    fireEvent.click(marker);
+    expect(onMarkerClick).toHaveBeenCalledWith("c-sonnet");
+  });
+
+  it("TokenCompositionChart renders marker and reflects selected state", () => {
+    render(
+      <TokenCompositionChart
+        data={[{ day: "2026-08-30", input: 100, cacheCreation: 0, cacheRead: 0 }]}
+        totals={{ input: 100, cacheCreation: 0, cacheRead: 0 }}
+        changes={sampleChanges}
+        selectedMarkerId="c-sonnet"
+      />,
+    );
+    expect(screen.getByText("Claude 3.7 Sonnet")).toBeInTheDocument();
+    const marker = screen.getByTestId("marker-c-sonnet");
+    expect(marker).toHaveAttribute("data-selected", "true");
+    expect(marker).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("WallClockScatterChart renders marker with number x-axis and responds to clicks", () => {
+    const onMarkerClick = vi.fn();
+    render(
+      <WallClockScatterChart
+        points={[
+          {
+            at: new Date("2026-08-30T10:00:00.000Z").getTime(),
+            durationMs: 5000,
+            sessionId: "s1",
+            repository: "prismalens/sreforge",
+            state: "reviewed",
+          },
+        ]}
+        changes={sampleChanges}
+        selectedMarkerId={null}
+        onMarkerClick={onMarkerClick}
+      />,
+    );
+    const label = screen.getByText("Claude 3.7 Sonnet");
+    expect(label).toBeInTheDocument();
+    fireEvent.click(label);
+    expect(onMarkerClick).toHaveBeenCalledWith("c-sonnet");
+  });
+});
+
+
