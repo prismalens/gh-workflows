@@ -353,12 +353,12 @@ describe("/rounds/$sessionId", () => {
     // subagent_stats, so the gap is "sent nothing", not "predates the field".
     renderRoute({ path: detailPath(verify.session_id, verify.recorded_at), api });
     const degraded = await screen.findAllByTestId("degraded");
-    const reasons = new Set(degraded.map((node) => node.getAttribute("data-reason")));
-    expect(reasons).toContain("lane-sent-nothing");
-    expect(reasons).toContain("unbuilt");
-    expect(
-      degraded.some((node) => node.textContent?.includes("Subagent lifecycle counts")),
-    ).toBe(true);
+    const subagentLifecycle = degraded.find((node) =>
+      node.textContent?.includes("Subagent lifecycle counts"),
+    );
+    expect(subagentLifecycle).toHaveAttribute("data-reason", "lane-sent-nothing");
+    const perAgent = degraded.find((node) => node.textContent?.includes("Per-agent breakdown"));
+    expect(perAgent).toHaveAttribute("data-reason", "unbuilt");
   });
 
   it("reads a fan-out round's summed API time as parallelism, never negative overhead", async () => {
