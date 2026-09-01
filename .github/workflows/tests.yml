@@ -57,6 +57,18 @@ jobs:
       - name: Telemetry canary behaviour
         run: python3 tests/test-telemetry-canary.py
 
+      # Compares migration-defined schema against INSERT/SELECT in worker/index.js. Story: #99.
+      - name: Schema-to-code drift check
+        run: python3 tests/test-schema-drift.py
+
+      # Extracts and runs the real smoke test step out of deploy-worker.yml. Story: #84.
+      - name: Deploy Worker post-deploy smoke test behaviour
+        run: python3 tests/test-deploy-worker-smoke.py
+
+      # Extracts and runs the forward-only migration guard from this workflow.
+      - name: Forward-only migration guard behaviour
+        run: python3 tests/test-migration-forward-only.py
+
       # Version pinned: an actionlint release must not turn a green branch red on its own.
       - name: actionlint
         run: |
@@ -121,3 +133,88 @@ jobs:
 
       - name: Worker tests
         run: npm test
+
+  # ── Local D1 migration check ───────────────────────────────
+  #
+  # Applies every migration to a fresh local D1 and verifies none
+  # are left pending.  No Cloudflare credential is needed: wrangler
+  # creates a local sqlite file under .wrangler/state.
+  migrations:
+    name: Migrations
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Apply all migrations locally
+        run: npm run migrate:local
+
+      - name: Verify no migrations are pending
+        run: |
+          set -euo pipefail
+          output="$(npm run migrate:list:local 2>&1)"
+          echo "${output}"
+          if echo "${output}" | grep -q "Migrations to be applied:"; then
+            echo "::error::Migrations are still pending after migrate:local. This means a migration failed to apply."
+            exit 1
+          fi
+
+  # ── Forward-only migration guard (PR only) ──────────────────
+  #
+  # Diffs worker/migrations/ against the merge base and fails if any
+  # existing file was modified or deleted.  Only additions are allowed.
+  # Uses explicit fetch of the base ref rather than relying on shallow
+  # checkout depth.
+  migration-guard:
+    name: Migration guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          # Fetch enough history to compute merge-base against the PR target.
+          fetch-depth: 0
+
+      - name: Forward-only migration guard
+        run: |
+          set -euo pipefail
+          base="${GITHUB_BASE_REF}"
+          # Explicit fetch: the checkout action fetches all history (depth 0)
+          # but the base ref may not be a local branch, so we fetch it by name.
+          git fetch origin "${base}" --quiet
+          merge_base="$(git merge-base HEAD "origin/${base}")"
+          echo "Merge base: ${merge_base}"
+
+          violations=""
+          while IFS=$'\t' read -r status file; do
+            [ -z "${status}" ] && continue
+            case "${file}" in
+              worker/migrations/*) ;;
+              *) continue ;;
+            esac
+            if [ "${status}" != "A" ]; then
+              echo "::error::${file} was ${status} (only additions are allowed in worker/migrations/)"
+              violations="${violations}  ${status} ${file}\n"
+            fi
+          done < <(git diff --name-status "${merge_base}" HEAD)
+
+          if [ -n "${violations}" ]; then
+            printf "Forbidden changes to existing migrations:\n%b" "${violations}"
+            echo "::error::Existing migrations must not be modified or deleted. Only new migration files are allowed."
+            exit 1
+          fi
+          echo "Migration guard passed: only additions detected."
