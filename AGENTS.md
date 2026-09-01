@@ -19,9 +19,15 @@ of the CodeRabbit review, and never describe one as a review of this repository.
 ### Batch work into fewer, larger pull requests
 
 CodeRabbit reviews once per pull request, because `auto_pause_after_reviewed_commits: 1` pauses the
-lane after the first reviewed commit. Review slots come from an org-wide counter of roughly one
-review per 40 minutes, shared across every repository, session and subagent. One review covering
-four changes is worth four times a review covering one.
+lane after the first reviewed commit. Review slots come from an org-wide counter shared across every
+repository, session and subagent. One review covering four changes is worth four times a review
+covering one.
+
+How long that counter takes to reset is **not settled**. The figure "roughly 40 minutes" circulates
+with no recorded measurement behind it, observation since suggests nearer an hour, and
+`watch-coderabbit.sh` waits 60 minutes before retrying. Budget an hour and confirm acceptance rather
+than trusting any of those numbers. A session recently built a confident, wrong conclusion by doing
+arithmetic on the 40-minute figure and presenting it as a measurement; do not repeat that.
 
 `auto_review` is enabled here and there is no separate summon step, so **opening a pull request
 spends a slot, and so does a push to an open one while the lane is unpaused**. Batching means
@@ -47,11 +53,27 @@ CodeRabbit withdraws findings it accepts are wrong. Do not resolve a thread befo
 
 ## Nothing here is enforced by the platform
 
-This repository has no branch protection and no rulesets, verified 2026-08-31 against
-`repos/prismalens/gh-workflows/rulesets` (empty) and `branches/main/protection` (404). No required
-check blocks a merge, and no gate stops a pull request with unresolved review threads. Holding a
-pull request for the operator is the only gate there is, so treat it as one: never merge and never
-enable auto-merge unless the operator says so on that pull request.
+This repository is unprotected, verified 2026-08-31 by two probes that cover different mechanisms.
+Both are needed, because GitHub protects a branch in two unrelated ways and each endpoint is blind
+to the other:
+
+- `repos/prismalens/gh-workflows/rulesets` returns `[]`, both bare and with
+  `includes_parents=true` set explicitly. That parameter is what pulls in inherited organization
+  rulesets, so the empty array rules those out too.
+- `repos/prismalens/gh-workflows/branches/main/protection` returns 404 with the body
+  `{"message": "Branch not protected"}`, which rules out classic branch protection.
+
+So no required check blocks a merge, and no gate stops a pull request with unresolved review
+threads. Holding a pull request for the operator is the only gate there is, so treat it as one:
+never merge and never enable auto-merge unless the operator says so on that pull request.
+
+**Neither probe is sufficient alone, which is what the earlier wording got wrong in both
+directions.** Every consumer repo returns 404 on the classic endpoint while being protected by
+rulesets, so citing the 404 by itself proves nothing. An empty `rulesets` by itself proves nothing
+either, for the mirror-image reason. Run both, and quote both.
+
+A reviewer whose token lacks admin scope gets HTTP 403 rather than 404 from the protection
+endpoint and cannot reproduce this. A 403 is "not allowed to look", never "nothing is there".
 
 ## Pull request titles
 
