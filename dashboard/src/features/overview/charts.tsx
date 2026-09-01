@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import {
   Bar,
   BarChart,
@@ -33,6 +33,17 @@ const SPARE_SERIES = ["var(--chart-4)", "var(--chart-5)"];
 
 export function seriesColor(key: string, index: number): string {
   return NAMED_SERIES[key] ?? SPARE_SERIES[index % SPARE_SERIES.length];
+}
+
+/** Enter and Space activate a marker line the same way a click does (#104 finding 7). */
+function markerKeyDown(
+  event: KeyboardEvent<SVGLineElement>,
+  onMarkerClick: ((changeId: string) => void) | undefined,
+  changeId: string,
+) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  onMarkerClick?.(changeId);
 }
 
 const AXIS = {
@@ -162,8 +173,12 @@ export function RoundsPerDayChart({
                     data-testid={`marker-${change.id}`}
                     data-selected={isSelected ? "true" : "false"}
                     aria-selected={isSelected}
-                    className="cursor-pointer"
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Select marker ${change.name}`}
+                    className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                     onClick={() => onMarkerClick?.(change.id)}
+                    onKeyDown={(event) => markerKeyDown(event, onMarkerClick, change.id)}
                   />
                 )}
                 label={{
@@ -252,8 +267,12 @@ export function TokenCompositionChart({
                     data-testid={`marker-${change.id}`}
                     data-selected={isSelected ? "true" : "false"}
                     aria-selected={isSelected}
-                    className="cursor-pointer"
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Select marker ${change.name}`}
+                    className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                     onClick={() => onMarkerClick?.(change.id)}
+                    onKeyDown={(event) => markerKeyDown(event, onMarkerClick, change.id)}
                   />
                 )}
                 label={{
@@ -360,8 +379,12 @@ export function WallClockScatterChart({
                     data-testid={`marker-${change.id}`}
                     data-selected={isSelected ? "true" : "false"}
                     aria-selected={isSelected}
-                    className="cursor-pointer"
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Select marker ${change.name}`}
+                    className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                     onClick={() => onMarkerClick?.(change.id)}
+                    onKeyDown={(event) => markerKeyDown(event, onMarkerClick, change.id)}
                   />
                 )}
                 label={{

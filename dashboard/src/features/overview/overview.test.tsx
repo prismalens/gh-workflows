@@ -298,6 +298,32 @@ describe("chart rendering and marker interactions", () => {
     expect(onMarkerClick).toHaveBeenCalledWith("c-sonnet");
   });
 
+  it("RoundsPerDayChart's marker is focusable and answers Enter and Space (#104 finding 7)", () => {
+    const onMarkerClick = vi.fn();
+    render(
+      <RoundsPerDayChart
+        data={[{ day: "2026-08-30", total: 1, full: 1 }]}
+        types={["full"]}
+        countByType={{ full: 1 }}
+        changes={sampleChanges}
+        selectedMarkerId={null}
+        onMarkerClick={onMarkerClick}
+      />,
+    );
+    const marker = screen.getByTestId("marker-c-sonnet");
+    expect(marker).toHaveAttribute("tabindex", "0");
+    expect(marker).toHaveAttribute("role", "button");
+
+    fireEvent.keyDown(marker, { key: "Enter" });
+    expect(onMarkerClick).toHaveBeenCalledWith("c-sonnet");
+
+    fireEvent.keyDown(marker, { key: " " });
+    expect(onMarkerClick).toHaveBeenCalledTimes(2);
+
+    fireEvent.keyDown(marker, { key: "a" });
+    expect(onMarkerClick).toHaveBeenCalledTimes(2);
+  });
+
   it("TokenCompositionChart renders marker and reflects selected state", () => {
     render(
       <TokenCompositionChart
