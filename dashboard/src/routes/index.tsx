@@ -1,15 +1,21 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { createRoute, Link } from "@tanstack/react-router";
 import type { SortingState } from "@tanstack/react-table";
 import { z } from "zod";
 
-import { useAttentionQuery, useRoundsQuery, useSummaryQuery } from "@/api/queries";
+import {
+  useAttentionQuery,
+  useChangesQuery,
+  useRoundsQuery,
+  useSummaryQuery,
+} from "@/api/queries";
 import { MAX_LIMIT } from "@/api/client";
 import { FilterChips } from "@/components/FilterChips";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   activityBand,
+  changesInWindow,
   roundsPerDay,
   roundTypesPresent,
   tokensPerDay,
@@ -28,7 +34,7 @@ import { aggregateRounds, tokenSums } from "@/honesty/aggregate";
 import { Degraded } from "@/honesty/Degraded";
 import { meanMetric } from "@/honesty/metrics";
 import { RangeControl } from "@/honesty/RangeControl";
-import { applyRange, DEFAULT_RANGE, RANGE_KEYS } from "@/honesty/range";
+import { applyRange, rangeSchema, type RangeKey } from "@/honesty/range";
 import { CountTile, Tile } from "@/honesty/Tile";
 import { aggregateMode, TileStrip } from "@/honesty/TileStrip";
 import { PER_DAY_RATE_MIN_ROUNDS } from "@/honesty/thresholds";
@@ -43,7 +49,7 @@ import {
 import { rootRoute } from "./root";
 
 const overviewSearchSchema = z.object({
-  range: z.enum(RANGE_KEYS).default(DEFAULT_RANGE).catch(DEFAULT_RANGE),
+  range: rangeSchema,
   repository: z.string().min(1).optional().catch(undefined),
 });
 
@@ -71,6 +77,9 @@ function OverviewPage() {
   // Only the thin-window round table sorts, and only here, so this is local state
   // rather than a search param the rest of the overview has no use for.
   const [sorting, setSorting] = useState<SortingState>([]);
+  const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
+  const selectedMarkerIdRef = useRef<string | null>(null);
+  selectedMarkerIdRef.current = selectedMarkerId;
 
   // Pinned per render pass, so the window boundary cannot drift between the band
   // and the charts on the same screen.
@@ -80,18 +89,31 @@ function OverviewPage() {
   const summary = useSummaryQuery();
   const rounds = useRoundsQuery(filters, now);
   const attention = useAttentionQuery(filters, now);
+  const changes = useChangesQuery();
 
   const fetched = rounds.data?.rows ?? EMPTY_ROWS;
+  const fetchedChanges = useMemo(() => changes.data?.rows ?? EMPTY_ROWS, [changes.data?.rows]);
   const truncated = rounds.data?.next_cursor != null;
   const windowed = useMemo(
-    () => applyRange(fetched, search.range, now, truncated),
-    [fetched, search.range, now, truncated],
+    () => applyRange(fetched, search.range, now, truncated, fetchedChanges),
+    [fetched, search.range, now, truncated, fetchedChanges],
+  );
+
+  const windowChanges = useMemo(
+    () => changesInWindow(fetchedChanges, search.range, now, windowed.rows, search.repository),
+    [fetchedChanges, search.range, now, windowed.rows, search.repository],
   );
 
   const band = useMemo(() => activityBand(windowed.rows), [windowed.rows]);
   const types = useMemo(() => roundTypesPresent(band), [band]);
-  const perDay = useMemo(() => roundsPerDay(windowed.rows, types), [windowed.rows, types]);
-  const tokenDays = useMemo(() => tokensPerDay(windowed.rows), [windowed.rows]);
+  const perDay = useMemo(
+    () => roundsPerDay(windowed.rows, types, windowChanges),
+    [windowed.rows, types, windowChanges],
+  );
+  const tokenDays = useMemo(
+    () => tokensPerDay(windowed.rows, windowChanges),
+    [windowed.rows, windowChanges],
+  );
   const scatter = useMemo(() => wallClockPoints(windowed.rows), [windowed.rows]);
   const mix = useMemo(() => verdictMix(windowed.rows), [windowed.rows]);
   const stats = useMemo(() => aggregateRounds(windowed.rows), [windowed.rows]);
@@ -106,6 +128,22 @@ function OverviewPage() {
         ),
       ),
     [windowed.rows],
+  );
+
+  const handleMarkerClick = useCallback(
+    (changeId: string) => {
+      const current = selectedMarkerIdRef.current;
+      if (current === null) {
+        setSelectedMarkerId(changeId);
+      } else if (current === changeId) {
+        setSelectedMarkerId(null);
+      } else {
+        const nextRange: RangeKey = `marker:${current}..${changeId}`;
+        setSelectedMarkerId(null);
+        void navigate({ search: (prev) => ({ ...prev, range: nextRange }) });
+      }
+    },
+    [navigate],
   );
 
   const countByType = Object.fromEntries(band.byType.map((entry) => [entry.type, entry.rounds]));
@@ -128,15 +166,31 @@ function OverviewPage() {
         <h1 className="text-base font-semibold tracking-tight">Overview</h1>
         <RangeControl
           value={search.range}
-          onChange={(range) => void navigate({ search: (prev) => ({ ...prev, range }) })}
+          onChange={(range) => {
+            setSelectedMarkerId(null);
+            void navigate({ search: (prev) => ({ ...prev, range }) });
+          }}
         />
         <FilterChips
           label="Repository"
           options={summary.data?.repositories ?? []}
           value={search.repository}
-          onChange={(repository) => void navigate({ search: (prev) => ({ ...prev, repository }) })}
+          onChange={(repository) => {
+            setSelectedMarkerId(null);
+            void navigate({ search: (prev) => ({ ...prev, repository }) });
+          }}
         />
       </div>
+
+      {selectedMarkerId && (
+        <div data-testid="marker-selection-banner" className="text-xs text-muted-foreground">
+          Selected marker:{" "}
+          <span className="font-medium text-foreground">
+            {fetchedChanges.find((c) => c.id === selectedMarkerId)?.name ?? selectedMarkerId}
+          </span>
+          . Click a second marker to set a range, or click again to deselect.
+        </div>
+      )}
 
       {band.rounds === 0 ? (
         <Alert variant="muted">
@@ -202,7 +256,14 @@ function OverviewPage() {
               }
               support="not of the repositories configured: no fleet registry exists to give that denominator"
             />
-            <RoundsPerDayChart data={perDay} types={types} countByType={countByType} />
+            <RoundsPerDayChart
+              data={perDay}
+              types={types}
+              countByType={countByType}
+              changes={windowChanges}
+              selectedMarkerId={selectedMarkerId}
+              onMarkerClick={handleMarkerClick}
+            />
           </section>
 
           {/* Directly under the band: what makes those counts trustworthy. */}
@@ -283,8 +344,16 @@ function OverviewPage() {
                   cacheCreation: tokens.create,
                   cacheRead: tokens.read,
                 }}
+                changes={windowChanges}
+                selectedMarkerId={selectedMarkerId}
+                onMarkerClick={handleMarkerClick}
               />
-              <WallClockScatterChart points={scatter} />
+              <WallClockScatterChart
+                points={scatter}
+                changes={windowChanges}
+                selectedMarkerId={selectedMarkerId}
+                onMarkerClick={handleMarkerClick}
+              />
             </div>
           </section>
 

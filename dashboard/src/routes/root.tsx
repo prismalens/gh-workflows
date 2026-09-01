@@ -31,7 +31,9 @@ function FixtureBanner() {
 const NAV = [
   { to: "/", label: "Overview" },
   { to: "/rounds", label: "Rounds" },
+  { to: "/failures", label: "Failures" },
   { to: "/repos", label: "Repos" },
+  { to: "/compare", label: "Compare" },
 ] as const;
 
 function RootLayout() {
@@ -52,7 +54,7 @@ function RootLayout() {
               <Link
                 key={item.to}
                 to={item.to}
-                search={{ range: DEFAULT_RANGE }}
+                search={item.to === "/compare" ? {} : { range: DEFAULT_RANGE }}
                 className="hover:text-foreground"
                 activeProps={{ className: "text-foreground" }}
                 activeOptions={{ exact: item.to === "/" }}
@@ -78,8 +80,7 @@ function NotFound() {
     <Alert variant="muted">
       <AlertTitle>No such page</AlertTitle>
       <AlertDescription>
-        This build ships the overview, the rounds table, the round detail and the repos list. The
-        failures page, compare and every PR view each land with their own issue.{" "}
+        This build ships the overview, the rounds table, the round detail, the failures page, the repos list and the compare page. Every PR view lands with its own issue.{" "}
         <Link to="/" search={{ range: DEFAULT_RANGE }} className="underline underline-offset-4">
           Go to the overview
         </Link>

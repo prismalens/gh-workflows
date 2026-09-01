@@ -1,20 +1,49 @@
-import type { RunsQuery, TelemetryApi } from "@/api/client";
+import type { ChangesQuery, LaneEventsQuery, RunsQuery, TelemetryApi } from "@/api/client";
 import { MAX_LIMIT_WITH_BLOBS } from "@/api/client";
-import type { RoundRow, RunsResponse, SummaryResponse } from "@/api/types";
+import type {
+  ChangeRow,
+  ChangesResponse,
+  LaneEventRow,
+  LaneEventsResponse,
+  RoundRow,
+  RunsResponse,
+  SummaryResponse,
+} from "@/api/types";
 import { FIXTURE_ROUNDS } from "./rounds";
 
-const BLOB_COLUMNS = ["per_model_usage", "subagent_stats", "raw_result"] as const;
+const BLOB_COLUMNS = [
+  "per_model_usage",
+  "subagent_stats",
+  "raw_result",
+  "verdict_text",
+  "comment_node_ids",
+  "config_resolution",
+] as const;
 
 /**
- * Reimplements handleRuns and handleSummary from worker/index.js against an
- * in-memory table, so the routes can be exercised without Access. Filter,
- * ordering, limit and cursor semantics have to match the Worker exactly, or a
+ * Reimplements handleRuns, handleSummary, handleLaneEvents and handleChanges from
+ * worker/index.js against an in-memory table, so the routes can be exercised without Access.
+ * Filter, ordering, limit and cursor semantics have to match the Worker exactly, or a
  * green test proves nothing about the deployed contract.
  */
-export function makeFixtureApi(rows: RoundRow[] = FIXTURE_ROUNDS): TelemetryApi {
+export function makeFixtureApi(
+  rows: RoundRow[] = FIXTURE_ROUNDS,
+  laneEvents: LaneEventRow[] = [],
+  changes: ChangeRow[] = [],
+): TelemetryApi {
   const sorted = [...rows].sort((a, b) => {
     const byTime = b.recorded_at.localeCompare(a.recorded_at);
     return byTime !== 0 ? byTime : b.session_id.localeCompare(a.session_id);
+  });
+
+  const sortedEvents = [...laneEvents].sort((a, b) => {
+    const byTime = b.recorded_at.localeCompare(a.recorded_at);
+    return byTime !== 0 ? byTime : b.run_id - a.run_id;
+  });
+
+  const sortedChanges = [...changes].sort((a, b) => {
+    const byTime = b.at.localeCompare(a.at);
+    return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
   });
 
   return {
@@ -67,6 +96,10 @@ export function makeFixtureApi(rows: RoundRow[] = FIXTURE_ROUNDS): TelemetryApi 
           total_cost_usd: null,
           first_recorded_at: null,
           last_recorded_at: null,
+          verdict_kinds: {},
+          fallback_reasons: {},
+          model_sources: {},
+          canary_last_seen_at: null,
         };
       }
       const durations = sorted
@@ -80,6 +113,15 @@ export function makeFixtureApi(rows: RoundRow[] = FIXTURE_ROUNDS): TelemetryApi 
       const create = sum((r) => r.cache_creation_input_tokens);
       const total = input + read + create;
       const billed = input + 1.25 * create + 0.1 * read;
+
+      const verdict_kinds: Record<string, number> = {};
+      const fallback_reasons: Record<string, number> = {};
+      const model_sources: Record<string, number> = {};
+      for (const r of sorted) {
+        if (r.verdict_kind) verdict_kinds[r.verdict_kind] = (verdict_kinds[r.verdict_kind] ?? 0) + 1;
+        if (r.fallback_reason) fallback_reasons[r.fallback_reason] = (fallback_reasons[r.fallback_reason] ?? 0) + 1;
+        if (r.model_source) model_sources[r.model_source] = (model_sources[r.model_source] ?? 0) + 1;
+      }
 
       return {
         rows: sorted.length,
@@ -96,6 +138,53 @@ export function makeFixtureApi(rows: RoundRow[] = FIXTURE_ROUNDS): TelemetryApi 
         total_cost_usd: sum((r) => r.total_cost_usd),
         first_recorded_at: sorted[sorted.length - 1].recorded_at,
         last_recorded_at: sorted[0].recorded_at,
+        verdict_kinds,
+        fallback_reasons,
+        model_sources,
+        canary_last_seen_at: null,
+      };
+    },
+
+    async fetchLaneEvents(query: LaneEventsQuery = {}): Promise<LaneEventsResponse> {
+      let filtered = sortedEvents;
+      if (query.repository) filtered = filtered.filter((r) => r.repository === query.repository);
+      if (query.since) filtered = filtered.filter((r) => r.recorded_at >= query.since!);
+      if (query.until) filtered = filtered.filter((r) => r.recorded_at <= query.until!);
+      if (query.cursor) {
+        const pipe = query.cursor.indexOf("|");
+        const cursorAt = query.cursor.slice(0, pipe);
+        const cursorId = Number(query.cursor.slice(pipe + 1));
+        filtered = filtered.filter(
+          (r) => r.recorded_at < cursorAt || (r.recorded_at === cursorAt && r.run_id < cursorId),
+        );
+      }
+      const limit = query.limit ?? 100;
+      const page = filtered.slice(0, limit);
+      const last = page[page.length - 1];
+      return {
+        rows: page,
+        next_cursor:
+          page.length === limit && last ? `${last.recorded_at}|${last.run_id}` : null,
+      };
+    },
+
+    async fetchChanges(query: ChangesQuery = {}): Promise<ChangesResponse> {
+      let filtered = sortedChanges;
+      if (query.cursor) {
+        const pipe = query.cursor.indexOf("|");
+        const cursorAt = query.cursor.slice(0, pipe);
+        const cursorId = query.cursor.slice(pipe + 1);
+        filtered = filtered.filter(
+          (c) => c.at < cursorAt || (c.at === cursorAt && c.id < cursorId),
+        );
+      }
+      const limit = query.limit ?? 100;
+      const page = filtered.slice(0, limit);
+      const last = page[page.length - 1];
+      return {
+        rows: page,
+        next_cursor:
+          page.length === limit && last ? `${last.at}|${last.id}` : null,
       };
     },
   };

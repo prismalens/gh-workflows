@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, httpApi, lookupRound, MAX_LIMIT_WITH_BLOBS, runsUrl } from "./client";
+import { ApiError, changesUrl, httpApi, laneEventsUrl, lookupRound, MAX_LIMIT_WITH_BLOBS, runsUrl } from "./client";
 import { CSV_COLUMNS, roundsToCsv } from "./csv";
 import { parsePerModelUsage, parseRawResult, parseSubagentStats } from "./blobs";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
+import type { LaneEventRow } from "./types";
 
 const rows = makeRounds({ count: 64 });
 const api = makeFixtureApi(rows);
@@ -16,6 +17,16 @@ describe("the read route is called only in the shapes worker/index.js accepts", 
       "/api/runs?limit=50&include=blobs&repository=a%2Fb",
     );
     expect(runsUrl()).toBe("/api/runs");
+
+    expect(laneEventsUrl({ limit: 500, repository: "a/b", since: "2026-08-01" })).toBe(
+      "/api/lane-events?limit=500&repository=a%2Fb&since=2026-08-01",
+    );
+    expect(laneEventsUrl()).toBe("/api/lane-events");
+
+    expect(changesUrl({ limit: 100, cursor: "2026-08-31|c1" })).toBe(
+      "/api/changes?limit=100&cursor=2026-08-31%7Cc1",
+    );
+    expect(changesUrl()).toBe("/api/changes");
   });
 });
 
@@ -68,6 +79,30 @@ describe("the fixture table matches the Worker's paging contract", () => {
     const first = await api.fetchRuns({ limit: 20 });
     const second = await api.fetchRuns({ limit: 20, cursor: first.next_cursor! });
     const ids = new Set([...first.rows, ...second.rows].map((r) => r.session_id));
+    expect(ids.size).toBe(40);
+  });
+
+  it("pages lane events by cursor instead of returning page one twice (#104 finding 4)", async () => {
+    const laneEvents: LaneEventRow[] = Array.from({ length: 40 }, (_, i) => ({
+      run_id: i + 1,
+      run_attempt: 1,
+      recorded_at: `2026-08-${String((i % 28) + 1).padStart(2, "0")}T00:00:00.000Z`,
+      repository: "prismalens/gh-workflows",
+      reason: "no-token",
+      pr_number: null,
+      head_sha: null,
+      run_url: null,
+      rounds_used: null,
+      lane_version: "v2.0.0",
+    }));
+    const laneApi = makeFixtureApi([], laneEvents);
+
+    const first = await laneApi.fetchLaneEvents({ limit: 20 });
+    expect(first.next_cursor).toMatch(/\|/);
+    const second = await laneApi.fetchLaneEvents({ limit: 20, cursor: first.next_cursor! });
+
+    expect(second.rows).not.toEqual(first.rows);
+    const ids = new Set([...first.rows, ...second.rows].map((r) => r.run_id));
     expect(ids.size).toBe(40);
   });
 });
@@ -176,16 +211,121 @@ describe("a 200 of the wrong shape is malformed, not a TypeError", () => {
     await expect(httpApi.fetchRuns()).rejects.toMatchObject({ kind: "malformed" });
   });
 
+  it("rejects a runs payload whose rows are missing specifically lane_version", async () => {
+    // Row has all required fields except lane_version
+    const row = {
+      session_id: "s-1",
+      recorded_at: "2026-08-31T00:00:00Z",
+      repository: "prismalens/gh-workflows",
+      pr_number: 1,
+      pr_url: null,
+      head_sha: "abc",
+      run_id: 1,
+      run_attempt: 1,
+      run_url: null,
+      round_type: "full",
+      model: "claude-3-7-sonnet",
+      input_tokens: 100,
+      output_tokens: 50,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      total_cost_usd: 0.01,
+      duration_ms: 1000,
+      duration_api_ms: 900,
+      num_turns: 1,
+      permission_denials: 0,
+      changed_files: 1,
+      diff_lines: 10,
+      // lane_version omitted
+      verdict_kind: "clean",
+      inline_count: 0,
+      summary_count: 0,
+      round_ordinal: 1,
+      fallback_reason: null,
+      range_base: null,
+      range_head: null,
+      model_source: null,
+      job_conclusion: "success",
+      pr_title: "Title",
+      pr_author: "author",
+      pr_state: "open",
+      pr_base_ref: "main",
+      pr_head_ref: "feat",
+    };
+    jsonBody({ rows: [row], next_cursor: null });
+    await expect(httpApi.fetchRuns()).rejects.toMatchObject({ kind: "malformed" });
+  });
+
   it("rejects a summary payload with no row count", async () => {
     jsonBody({ repositories: [] });
     await expect(httpApi.fetchSummary()).rejects.toMatchObject({ kind: "malformed" });
   });
 
+  it("rejects a summary payload missing wave 2 breakdown fields or canary_last_seen_at", async () => {
+    jsonBody({
+      rows: 0,
+      repositories: [],
+      wall_clock_ms: { mean: null, p95: null },
+      denials_per_run: null,
+      cache_hit_rate: null,
+      caching_multiplier: null,
+      total_cost_usd: null,
+      first_recorded_at: null,
+      last_recorded_at: null,
+      // Missing verdict_kinds, fallback_reasons, model_sources, canary_last_seen_at
+    });
+    await expect(httpApi.fetchSummary()).rejects.toMatchObject({ kind: "malformed" });
+  });
+
+  it("rejects a lane-events payload whose rows are missing required fields", async () => {
+    jsonBody({
+      rows: [
+        {
+          run_id: 1,
+          // Missing reason, repository, etc.
+        },
+      ],
+      next_cursor: null,
+    });
+    await expect(httpApi.fetchLaneEvents()).rejects.toMatchObject({ kind: "malformed" });
+  });
+
+  it("rejects a changes payload whose rows are missing required fields", async () => {
+    jsonBody({
+      rows: [
+        {
+          id: "c1",
+          // Missing name, at, scope, etc.
+        },
+      ],
+      next_cursor: null,
+    });
+    await expect(httpApi.fetchChanges()).rejects.toMatchObject({ kind: "malformed" });
+  });
+
   it("accepts the shapes the Worker actually returns", async () => {
     jsonBody({ rows: [], next_cursor: null });
     await expect(httpApi.fetchRuns()).resolves.toMatchObject({ rows: [] });
-    jsonBody({ rows: 0, repositories: [] });
-    await expect(httpApi.fetchSummary()).resolves.toMatchObject({ rows: 0 });
+    jsonBody({
+      rows: 0,
+      repositories: [],
+      wall_clock_ms: { mean: null, p95: null },
+      denials_per_run: null,
+      cache_hit_rate: null,
+      caching_multiplier: null,
+      total_cost_usd: null,
+      first_recorded_at: null,
+      last_recorded_at: null,
+      verdict_kinds: {},
+      fallback_reasons: {},
+      model_sources: {},
+      canary_last_seen_at: null,
+    });
+    await expect(httpApi.fetchSummary()).resolves.toMatchObject({ rows: 0, canary_last_seen_at: null });
+    jsonBody({ rows: [], next_cursor: null });
+    await expect(httpApi.fetchLaneEvents()).resolves.toMatchObject({ rows: [] });
+    jsonBody({ rows: [], next_cursor: null });
+    await expect(httpApi.fetchChanges()).resolves.toMatchObject({ rows: [] });
   });
 });
 
@@ -200,6 +340,9 @@ describe("CSV export", () => {
     expect(CSV_COLUMNS).not.toContain("raw_result");
     expect(CSV_COLUMNS).not.toContain("subagent_stats");
     expect(CSV_COLUMNS).not.toContain("per_model_usage");
+    expect(CSV_COLUMNS).not.toContain("verdict_text");
+    expect(CSV_COLUMNS).not.toContain("comment_node_ids");
+    expect(CSV_COLUMNS).not.toContain("config_resolution");
   });
 
   it("neutralises a cell a spreadsheet would run as a formula", () => {
@@ -274,7 +417,21 @@ describe("an error names the failure it actually was", () => {
   it("requests without following redirects", async () => {
     respond({
       status: 200,
-      body: JSON.stringify({ rows: 0, repositories: [] }),
+      body: JSON.stringify({
+        rows: 0,
+        repositories: [],
+        wall_clock_ms: { mean: null, p95: null },
+        denials_per_run: null,
+        cache_hit_rate: null,
+        caching_multiplier: null,
+        total_cost_usd: null,
+        first_recorded_at: null,
+        last_recorded_at: null,
+        verdict_kinds: {},
+        fallback_reasons: {},
+        model_sources: {},
+        canary_last_seen_at: null,
+      }),
       headers: { "content-type": "application/json" },
     });
     await httpApi.fetchSummary();

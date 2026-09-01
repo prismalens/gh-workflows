@@ -4,12 +4,17 @@ import { cn } from "@/lib/utils";
 /**
  * A missing field is a permanent, labelled state, not a spinner and not a
  * placeholder for a backend arriving later. The reason is part of the state
- * because "the feature is unbuilt" and "this lane is older than the Worker" are
- * different facts and lead to different actions (#46).
+ * because an unbuilt column, a lane too old to send the field, and a lane that
+ * could have sent it and did not are different facts and lead to different
+ * actions (#46).
  */
-export type DegradedReason = "unbuilt" | "lane-did-not-send" | "unobservable";
+export type DegradedReason =
+  | "unbuilt"
+  | "lane-did-not-send"
+  | "lane-sent-nothing"
+  | "unobservable";
 
-const REASON_COPY: Record<DegradedReason, { badge: string; explain: string }> = {
+export const REASON_COPY: Record<DegradedReason, { badge: string; explain: string }> = {
   unbuilt: {
     badge: "not collected yet",
     explain:
@@ -19,6 +24,11 @@ const REASON_COPY: Record<DegradedReason, { badge: string; explain: string }> = 
     badge: "not sent by this lane",
     explain:
       "The store has the column and this round left it empty. The review lane that produced it predates the field, so this round will never carry it. Newer rounds from an upgraded lane will.",
+  },
+  "lane-sent-nothing": {
+    badge: "not recorded for this round",
+    explain:
+      "The store has the column and this round left it empty. The lane that recorded it was new enough to send the field and did not, so the gap is a fact about this round rather than about the lane version.",
   },
   unobservable: {
     badge: "not observable",
