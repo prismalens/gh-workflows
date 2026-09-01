@@ -13,6 +13,9 @@ on:
       - worker/**
       - dashboard/**
       - .github/workflows/deploy-worker.yml
+  # Without this a failed deploy can only be retried through the failed run, so a
+  # deploy blocked by a pending migration cannot be redriven once it is applied.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -147,6 +150,38 @@ jobs:
         run: |
           set -euo pipefail
           ./node_modules/.bin/wrangler deploy
+
+      # Reuses the canary's reachability probe: invalid token → 401 proves the
+      # Worker handler answered rather than an edge rule. Story: #84.
+      - name: Verify deployed Worker is reachable
+        env:
+          INGEST_URL: ${{ vars.TELEMETRY_CANARY_URL || 'https://assayer.sfun.cloud/ingest' }}
+        run: |
+          set -euo pipefail
+          max_attempts=5
+          wait_seconds=3
+          for attempt in $(seq 1 "$max_attempts"); do
+            # An unbounded curl blocks the retry loop, and `|| echo 000` would append
+            # to the 000 curl already wrote through -w, giving 000000.
+            if ! code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              --connect-timeout 5 --max-time 15 \
+              -X POST "$INGEST_URL" \
+              -H "Authorization: Bearer invalid-smoke-test-token" \
+              -H "Content-Type: application/json" \
+              -d '{"ping":"smoke"}'); then
+              code=000
+            fi
+            if [ "$code" = "401" ]; then
+              echo "Smoke test passed: deployed Worker returned HTTP 401 (attempt ${attempt}/${max_attempts})."
+              exit 0
+            fi
+            echo "Attempt ${attempt}/${max_attempts}: HTTP ${code} (expected 401)."
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              sleep "$wait_seconds"
+            fi
+          done
+          echo "::error::Deploy reported success but the deployed Worker is not answering. ${max_attempts} POST requests to ${INGEST_URL} returned HTTP ${code} instead of the expected 401. The Worker may still be propagating, or the deploy silently broke routing."
+          exit 1
 
       # A deploy that fails quietly recreates the gap this workflow closes, so the
       # run says plainly that main and the running Worker have diverged.

@@ -1,0 +1,27 @@
+name: PR Title
+
+# pull_request_target, not pull_request: a pull_request run takes both the workflow and
+# ./actions/pr-title from the PR head, so a PR could edit the validator and pass itself.
+# pull_request_target runs the base copy. Nothing here checks out PR code.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  lint:
+    name: PR title
+    runs-on: ubuntu-latest
+    steps:
+      # No `ref:` — pull_request_target defaults to the base revision, which is the
+      # trusted copy of the action this job runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate PR title
+        uses: ./actions/pr-title

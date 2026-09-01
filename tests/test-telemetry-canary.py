@@ -440,6 +440,28 @@ def main():
         print("  ok    ingest: stub answering 403 exits non-zero")
 
     # -------------------------------------------------------------
+    # 9b. Ingest: the diagnosis is status-specific, not "probably WAF" every time.
+    # A flat edge-block message sent a session hunting Cloudflare for a 400 that
+    # meant the deployed Worker was behind main. Story: #87.
+    # -------------------------------------------------------------
+    distinct = {}
+    for status, must_contain in (("400", "behind main"), ("401", "token"), ("403", "Cloudflare")):
+        _, stdout, stderr, _, _ = run_ingest_step(ingest_script, token=secret_token, curl_code=status)
+        combined = stdout + "\n" + stderr
+        error_line = next((line for line in combined.splitlines() if "::error::" in line), "")
+        distinct[status] = error_line
+        if must_contain not in error_line:
+            fails.append(f"ingest {status}: error line does not name its cause ({must_contain!r})")
+            print(f"  FAIL  ingest {status}: cause not named")
+            break
+    else:
+        if len(set(distinct.values())) != 3:
+            fails.append("ingest: 400, 401 and 403 do not produce distinct diagnoses")
+            print("  FAIL  ingest: diagnoses not distinct")
+        else:
+            print("  ok    ingest: 400, 401 and 403 each name their own distinct cause")
+
+    # -------------------------------------------------------------
     # 10. Ingest: empty REVIEW_TELEMETRY_TOKEN fails loudly and names secret
     # -------------------------------------------------------------
     code, stdout, stderr, raw_payload, auth = run_ingest_step(ingest_script, token="")

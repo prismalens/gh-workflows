@@ -28,12 +28,16 @@ jobs:
 
           # POST with an invalid token to verify the Worker handler answers (401).
           # Any other status (like 403) indicates an edge block before reaching the Worker.
-          code=$(curl -sS -m 15 -D "$headers" -o "$body" -w '%{http_code}' \
+          # `|| echo 000` would append to the 000 curl already wrote through -w,
+          # giving 000000 and a status no branch below matches.
+          if ! code=$(curl -sS -m 15 -D "$headers" -o "$body" -w '%{http_code}' \
             --proto '=https' \
             -X POST "$INGEST_URL" \
             -H "Authorization: Bearer invalid-canary-token" \
             -H "Content-Type: application/json" \
-            -d '{"ping":"reachability"}' || echo "000")
+            -d '{"ping":"reachability"}'); then
+            code=000
+          fi
 
           if [ "$code" = "401" ]; then
             echo "Reachability verified: endpoint returned expected HTTP 401 for invalid token."
@@ -94,11 +98,13 @@ jobs:
               lane_version: "2"
             }')
 
-          code=$(printf '%s' "$payload" | curl -sS -m 15 -D "$headers" -o "$body" -w '%{http_code}' \
+          if ! code=$(printf '%s' "$payload" | curl -sS -m 15 -D "$headers" -o "$body" -w '%{http_code}' \
             --proto '=https' \
             -X POST "$INGEST_URL" \
             -H "@$hdr" \
-            --data-binary @- || echo "000")
+            --data-binary @-); then
+            code=000
+          fi
 
           if [ "$code" = "204" ]; then
             echo "Canary ingest verified: endpoint returned HTTP 204."
@@ -111,5 +117,16 @@ jobs:
           echo "=== Response Body (first 500 bytes) ==="
           head -c 500 "$body" || true
           echo ""
-          echo "::error::Telemetry canary ingest failed (HTTP $code). Likely causes: Cloudflare bot/WAF mitigation challenging curl from an Azure IP, or a Cloudflare Access policy widened to cover the ingest path."
+
+          # A flat "probably WAF" on every status sent a session hunting Cloudflare for
+          # a 400 that meant the deployed Worker predated the canary branch. Story: #87.
+          case "$code" in
+            400) cause="The Worker rejected the payload. Most likely the deployed Worker is behind main and does not know the canary event_kind: check that Deploy Worker succeeded on the current head." ;;
+            401) cause="The Worker rejected the token. REVIEW_TELEMETRY_TOKEN here and the Worker's own secret have diverged; rotate both together." ;;
+            403) cause="Blocked before the Worker: Cloudflare bot/WAF mitigation challenging curl from an Azure IP, or an Access policy widened to cover the ingest path." ;;
+            5*)  cause="The Worker answered but failed, most likely the D1 write. Check for a pending migration on review-telemetry." ;;
+            000) cause="No HTTP response at all: DNS, TLS or the 15s timeout." ;;
+            *)   cause="Unexpected status. The response headers and body above are the evidence." ;;
+          esac
+          echo "::error::Telemetry canary ingest failed (HTTP $code, expected 204). ${cause}"
           exit 1
