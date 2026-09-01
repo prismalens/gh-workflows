@@ -147,6 +147,9 @@ def parse_index_js():
                     if col.upper() != "*":
                         cols.add(col.lower())
                 continue
+            # `SELECT DISTINCT repository` arrives as one part, so strip the leading
+            # DISTINCT or the column behind it is read as the keyword and dropped.
+            part = re.sub(r"^DISTINCT\s+", "", part, flags=re.IGNORECASE)
             # Plain column reference
             col_match = re.match(r"(\w+)", part)
             if col_match:

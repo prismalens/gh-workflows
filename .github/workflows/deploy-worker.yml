@@ -161,11 +161,16 @@ jobs:
           max_attempts=5
           wait_seconds=3
           for attempt in $(seq 1 "$max_attempts"); do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            # An unbounded curl blocks the retry loop, and `|| echo 000` would append
+            # to the 000 curl already wrote through -w, giving 000000.
+            if ! code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              --connect-timeout 5 --max-time 15 \
               -X POST "$INGEST_URL" \
               -H "Authorization: Bearer invalid-smoke-test-token" \
               -H "Content-Type: application/json" \
-              -d '{"ping":"smoke"}' || echo "000")
+              -d '{"ping":"smoke"}'); then
+              code=000
+            fi
             if [ "$code" = "401" ]; then
               echo "Smoke test passed: deployed Worker returned HTTP 401 (attempt ${attempt}/${max_attempts})."
               exit 0

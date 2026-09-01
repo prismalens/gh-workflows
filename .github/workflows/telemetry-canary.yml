@@ -28,12 +28,16 @@ jobs:
 
           # POST with an invalid token to verify the Worker handler answers (401).
           # Any other status (like 403) indicates an edge block before reaching the Worker.
-          code=$(curl -sS -m 15 -D "$headers" -o "$body" -w '%{http_code}' \
+          # `|| echo 000` would append to the 000 curl already wrote through -w,
+          # giving 000000 and a status no branch below matches.
+          if ! code=$(curl -sS -m 15 -D "$headers" -o "$body" -w '%{http_code}' \
             --proto '=https' \
             -X POST "$INGEST_URL" \
             -H "Authorization: Bearer invalid-canary-token" \
             -H "Content-Type: application/json" \
-            -d '{"ping":"reachability"}' || echo "000")
+            -d '{"ping":"reachability"}'); then
+            code=000
+          fi
 
           if [ "$code" = "401" ]; then
             echo "Reachability verified: endpoint returned expected HTTP 401 for invalid token."
@@ -94,11 +98,13 @@ jobs:
               lane_version: "2"
             }')
 
-          code=$(printf '%s' "$payload" | curl -sS -m 15 -D "$headers" -o "$body" -w '%{http_code}' \
+          if ! code=$(printf '%s' "$payload" | curl -sS -m 15 -D "$headers" -o "$body" -w '%{http_code}' \
             --proto '=https' \
             -X POST "$INGEST_URL" \
             -H "@$hdr" \
-            --data-binary @- || echo "000")
+            --data-binary @-); then
+            code=000
+          fi
 
           if [ "$code" = "204" ]; then
             echo "Canary ingest verified: endpoint returned HTTP 204."

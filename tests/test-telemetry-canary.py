@@ -448,7 +448,7 @@ def main():
     for status, must_contain in (("400", "behind main"), ("401", "token"), ("403", "Cloudflare")):
         _, stdout, stderr, _, _ = run_ingest_step(ingest_script, token=secret_token, curl_code=status)
         combined = stdout + "\n" + stderr
-        error_line = next((l for l in combined.splitlines() if "::error::" in l), "")
+        error_line = next((line for line in combined.splitlines() if "::error::" in line), "")
         distinct[status] = error_line
         if must_contain not in error_line:
             fails.append(f"ingest {status}: error line does not name its cause ({must_contain!r})")
