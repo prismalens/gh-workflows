@@ -9,23 +9,38 @@ afterEach(() => {
 describe("formatTimestamp reads the viewer's zone (#97)", () => {
   it("converts the stored UTC instant into the viewer's zone", () => {
     vi.stubEnv("TZ", "Asia/Kolkata");
-    // 19:10Z is 00:40 the next day in IST. The browser picks the wording; this pins the instant.
-    const rendered = formatTimestamp("2026-08-31T19:10:00.000Z");
-    expect(rendered).toContain("2026");
-    expect(rendered).toMatch(/12:40|00:40/);
+    // The browser picks locale, digits and padding, so asserting on those tests the locale
+    // rather than the conversion. Pin the instant instead: same locale, explicit zone (#97).
+    const iso = "2026-08-31T19:10:00.000Z";
+    const expected = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: "Asia/Kolkata",
+    }).format(new Date(iso));
+    expect(formatTimestamp(iso)).toBe(expected);
   });
 
   it("lands the same instant on the previous day for a viewer behind UTC", () => {
     vi.stubEnv("TZ", "America/New_York");
-    // The browser picks the clock, so a 24-hour locale renders this as 15:10 (#97).
-    const rendered = formatTimestamp("2026-08-31T19:10:00.000Z");
-    expect(rendered).toMatch(/(^|\D)(3:10|15:10)(\D|$)/);
-    expect(rendered).toContain("31");
+    const iso = "2026-08-31T19:10:00.000Z";
+    const expected = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: "America/New_York",
+    }).format(new Date(iso));
+    expect(formatTimestamp(iso)).toBe(expected);
   });
 
   it("renders the same instant in UTC, proving the zone is read rather than hardcoded", () => {
     vi.stubEnv("TZ", "UTC");
-    expect(formatTimestamp("2026-08-31T19:10:00.000Z")).toMatch(/7:10|19:10/);
+    const iso = "2026-08-31T19:10:00.000Z";
+    expect(formatTimestamp(iso)).toBe(
+      new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: "UTC",
+      }).format(new Date(iso)),
+    );
   });
 
   it("still returns a dash for a missing timestamp regardless of zone", () => {

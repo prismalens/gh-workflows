@@ -2141,7 +2141,8 @@ jobs:
             verdict_kind="skipped-trivial"
           elif [ "$SKIP_REASON" = "superseded" ]; then
             verdict="did not run at \`$short\`: the head moved during the debounce window, so this round \
-          would have reviewed a stale diff. The round for the newer head reports separately."
+          would have reviewed a stale diff. **This head has no machine review on record.** Whether the newer \
+          head gets one depends on its own run, which this round cannot see."
             verdict_kind="superseded"
           elif [ "$SKIP_REASON" = "no-token" ]; then
             verdict="did not run at \`$short\`: no CLAUDE_CODE_OAUTH_TOKEN reached this lane. \
