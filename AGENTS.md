@@ -8,6 +8,10 @@ CodeRabbit reviews this repository and nothing else does. The Claude review lane
 `auto_review` is on in `.coderabbit.yaml` here and off in the consumer repos, where the Claude lane
 covers every pull request and CodeRabbit is the escalation.
 
+The `claude-code-action` pin in that workflow file is duplicated at two `uses:` lines (the review
+job and the verify job); a version bump must move both together. `uses:` cannot take a `${{ }}`
+expression, so the pin cannot be centralized into a single input or env value.
+
 ### Do not dispatch a model review pass as a substitute
 
 Not Opus, not a subagent, not `/code-review`. The `path_instructions` in `.coderabbit.yaml` are the
@@ -23,11 +27,10 @@ lane after the first reviewed commit. Review slots come from an org-wide counter
 repository, session and subagent. One review covering four changes is worth four times a review
 covering one.
 
-How long that counter takes to reset is **not settled**. The figure "roughly 40 minutes" circulates
-with no recorded measurement behind it, observation since suggests nearer an hour, and
-`watch-coderabbit.sh` waits 60 minutes before retrying. Budget an hour and confirm acceptance rather
-than trusting any of those numbers. A session recently built a confident, wrong conclusion by doing
-arithmetic on the 40-minute figure and presenting it as a measurement; do not repeat that.
+CodeRabbit's rate-limit notice states the wait, and that figure is accurate to within 15 seconds
+(measured 2026-09-01). Obey it rather than a fixed floor. An earlier session built a confident,
+wrong conclusion by doing arithmetic on a circulated 40-minute figure and presenting it as a
+measurement; do not repeat that.
 
 `auto_review` is enabled here and there is no separate summon step, so **opening a pull request
 spends a slot, and so does a push to an open one while the lane is unpaused**. Batching means
