@@ -703,15 +703,9 @@ jobs:
             exit 0
           }
 
-          # A missing secret must be loud, not a silent no-op: that trap class is #410.
-          if [ "$HAS_TOKEN" != "true" ]; then
-            echo "::warning::No CLAUDE_CODE_OAUTH_TOKEN reached this lane, so nothing was reviewed." \
-                 "Map the secret explicitly in the caller stub — 'inherit' does not cross owners."
-            emit skip no-token
-            exit 0
-          fi
-
-          # Skip authors check for automatic pull_request events
+          # Skip authors check for automatic pull_request events — evaluated before the
+          # token guard so that a dependabot PR reports the honest reason (skipped-author)
+          # rather than no-token when both apply. Story: #121.
           if [ "$EVENT_NAME" = "pull_request" ] && [ -n "${PR_AUTHOR:-}" ]; then
             IFS=',' read -ra skip_list <<< "${SKIP_AUTHORS:-}"
             for skip_login in "${skip_list[@]}"; do
@@ -723,6 +717,14 @@ jobs:
                 exit 0
               fi
             done
+          fi
+
+          # A missing secret must be loud, not a silent no-op: that trap class is #410.
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::warning::No CLAUDE_CODE_OAUTH_TOKEN reached this lane, so nothing was reviewed." \
+                 "Map the secret explicitly in the caller stub — 'inherit' does not cross owners."
+            emit skip no-token
+            exit 0
           fi
 
           # Auto-pause reads the round counter off our own liveness comment. Summons are
