@@ -169,6 +169,22 @@ CASES = [
      dict(skip_authors="dependabot[bot], renovate[bot] ", pr_author="renovate[bot]"),
      "skip", "", "skipped-author", False),
 
+    ("pull_request, dependabot author skipped by default skip_authors (#115)",
+     dict(pr_author="dependabot[bot]"),
+     "skip", "", "skipped-author", False),
+
+    ("issue_comment summon on dependabot author bypasses skip_authors (#115)",
+     dict(event="issue_comment", summon="incremental", pr_author="dependabot[bot]",
+          fake_threads="[]",
+          fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + NEW + " -->", head_sha=NEW),
+     "review", "identical-summon", "", False),
+
+    ("pull_request, graphql author login app/dependabot does not match skip_authors (#115)",
+     dict(skip_authors="dependabot[bot]", pr_author="app/dependabot",
+          fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + OLD + " -->",
+          fake_compare_json=json.dumps({"status": "ahead", "files": [{}]})),
+     "incremental", "", "", True),
+
     ("summon full",
      dict(event="issue_comment", summon="full"),
      "review-full", "", "", False),
