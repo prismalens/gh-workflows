@@ -58,15 +58,14 @@ body:
     validations:
       required: false
   - type: textarea
-    id: metric
+    id: dashboard-surface
     attributes:
-      label: Which metric this fix earns
+      label: Which dashboard surface this change affects
       description: >
-        Name the metric this fix will move, and how you'll know it moved
-        (e.g. a telemetry field, a lane-eviction count, a CI check that stops
-        flaking). "none, because ..." is a valid answer, as long as the
-        "because" is filled in. The point is a named answer, not a metric
-        that must exist.
-      placeholder: "none, because this is a doc-only typo fix with no measurable effect"
+        Name the dashboard surface this change affects. Describe what has to
+        change there. "none, because ..." is a valid answer as long as the
+        because is filled in. The point is a named answer, not a surface that
+        must exist.
+      placeholder: "none, because this change does not affect any dashboard surface"
     validations:
       required: true
