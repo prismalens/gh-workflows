@@ -745,11 +745,26 @@ jobs:
             exit 0
           fi
 
+          # `type: number` reaches the shell as the caller wrote it, so `5` and `5.0` both
+          # arrive and `[ 5.0 -gt 0 ]` is a fatal error under `set -e`. Truncate to an
+          # integer, and treat anything else as unset rather than failing the round.
+          as_int() {
+            local raw="${1:-0}"
+            raw="${raw%%.*}"
+            case "$raw" in
+              ''|*[!0-9]*) echo 0 ;;
+              *) echo "$raw" ;;
+            esac
+          }
+          min_diff_lines="$(as_int "${MIN_DIFF_LINES:-0}")"
+          debounce_minutes="$(as_int "${DEBOUNCE_MINUTES:-0}")"
+          diff_lines_int="$(as_int "${DIFF_LINES:-0}")"
+
           # Diff-size floor (#114). Automatic rounds only: a summon is a person asking, and
           # a person asking for a review on a one-line change gets one.
-          if [ "$EVENT_NAME" = "pull_request" ] && [ "${MIN_DIFF_LINES:-0}" -gt 0 ] \
-             && [ -n "${DIFF_LINES:-}" ] && [ "$DIFF_LINES" -lt "$MIN_DIFF_LINES" ]; then
-            echo "skipping review: diff is $DIFF_LINES lines, below the floor of $MIN_DIFF_LINES"
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$min_diff_lines" -gt 0 ] \
+             && [ -n "${DIFF_LINES:-}" ] && [ "$diff_lines_int" -lt "$min_diff_lines" ]; then
+            echo "skipping review: diff is $diff_lines_int lines, below the floor of $min_diff_lines"
             emit skip trivial
             exit 0
           fi
@@ -757,10 +772,17 @@ jobs:
           # Debounce (#113). Sleep, then re-read the head. A push during the sleep cancels
           # this run through the caller's concurrency group, so the usual outcome is that
           # this run never wakes. `superseded` covers the race where it wakes anyway.
-          if [ "$EVENT_NAME" = "pull_request" ] && [ "${DEBOUNCE_MINUTES:-0}" -gt 0 ]; then
-            echo "debouncing for ${DEBOUNCE_MINUTES}m before reading the head again"
-            sleep "$(( DEBOUNCE_MINUTES * 60 ))"
-            current_head="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>/dev/null || echo "")"
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$debounce_minutes" -gt 0 ]; then
+            echo "debouncing for ${debounce_minutes}m before reading the head again"
+            sleep "$(( debounce_minutes * 60 ))"
+            # A failed lookup must not pass for "the head did not move": that would review a
+            # diff a push has already replaced, silently. Loud, and reviewing the head we
+            # were given, which is exactly what a disabled debounce does. Story: #113.
+            if ! current_head="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>&1)"; then
+              echo "::warning::debounce could not re-read the head of PR $PR after sleeping:" \
+                   "${current_head}. Reviewing $HEAD_SHA, which may already be superseded."
+              current_head=""
+            fi
             if [ -n "$current_head" ] && [ "$current_head" != "$HEAD_SHA" ]; then
               echo "skipping review: head moved from $HEAD_SHA to $current_head during the debounce"
               emit skip superseded

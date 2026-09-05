@@ -17,8 +17,9 @@ describe("formatTimestamp reads the viewer's zone (#97)", () => {
 
   it("lands the same instant on the previous day for a viewer behind UTC", () => {
     vi.stubEnv("TZ", "America/New_York");
+    // The browser picks the clock, so a 24-hour locale renders this as 15:10 (#97).
     const rendered = formatTimestamp("2026-08-31T19:10:00.000Z");
-    expect(rendered).toMatch(/3:10/);
+    expect(rendered).toMatch(/(^|\D)(3:10|15:10)(\D|$)/);
     expect(rendered).toContain("31");
   });
 

@@ -45,10 +45,11 @@ Run this command in your terminal:
 
 ```bash
 NEW_TOKEN="$(openssl rand -hex 32)"
-echo "$NEW_TOKEN"
 ```
 
-Keep this token ready for the next steps.
+Do not echo it. The value stays in the shell variable and goes into each secret from
+there. A token printed to a terminal is in scrollback, and this one opens the ingest
+route for four repositories.
 
 ## Step 2: Update repository secrets
 
@@ -103,16 +104,46 @@ gh run list --repo prismalens/gh-workflows --workflow claude-code-review.yml --l
 gh run list --repo Sumit1993/mage-memory --workflow claude-code-review.yml --limit 5
 ```
 
-Inspect the `review / telemetry` job log for the latest run in each repository:
+Inspect the telemetry job's log for the latest run in each repository. The ingest step runs
+in the `telemetry` job, not `review`, and `--job` takes a numeric id rather than a name, so
+resolve the id first:
 
 ```bash
-gh run view <RUN_ID> --repo <REPO> --log --job review
+RUN_ID=<run id from the list above>
+REPO=<owner/name>
+TELEMETRY_JOB_ID="$(gh run view "$RUN_ID" --repo "$REPO" --json jobs \
+  --jq '.jobs[] | select(.name == "telemetry") | .databaseId')"
+gh run view "$RUN_ID" --repo "$REPO" --job "$TELEMETRY_JOB_ID" --log
 ```
 
-Confirm that the telemetry step exits cleanly with exit code 0.
-Confirm that no warning annotation containing `HTTP 401` appears in the run.
-You can also check the D1 database directly to confirm new telemetry rows are recorded:
+## Step 5: Prove it, per repository
+
+A clean exit proves nothing. The telemetry step also exits 0 when the URL or token is
+absent, when the URL is not https, when the POST never completes, and when the endpoint
+answers with a non-2xx status. Each of those paths writes a warning and returns 0 by
+design, so that a telemetry failure never fails a review.
+
+The only proof is a row. Query the store for one row per repository written after the
+rotation:
 
 ```bash
-npx wrangler d1 execute review-telemetry --remote --command "SELECT repo, created_at FROM usage_records ORDER BY created_at DESC LIMIT 10;"
+cd worker && npx wrangler d1 execute review-telemetry --remote --json --command \
+  "SELECT repository, COUNT(*) AS n, MAX(recorded_at) AS last
+   FROM usage_records
+   WHERE recorded_at > '<rotation timestamp, ISO 8601 UTC>'
+   GROUP BY repository"
 ```
+
+The columns are `repository` and `recorded_at`. There is no `repo` or `created_at` column
+on `usage_records`; an earlier draft of this runbook used those names and the query would
+have errored rather than verified anything.
+
+The rotation is proven when **every repository that runs the lane appears in that result**.
+A repository missing from it has not written since the rotation, and there are two reasons
+for that which look identical here: its secret is wrong, or it has had no reviewable round.
+Separate them by checking whether the repository has had a non-dependabot round at all in
+the window. A dependabot pull request receives no secrets on `pull_request`, so its runs
+can never write a row and can never confirm anything.
+
+Do not treat the absence of an `HTTP 401` annotation as proof. A repository whose secret is
+missing entirely never reaches the request, so it produces no 401 either.
