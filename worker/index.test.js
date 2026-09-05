@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import worker from "./index.js";
+import worker, { computeVariantKey } from "./index.js";
 
 function createFakeDb(options = {}) {
   const queries = [];
@@ -269,7 +269,7 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 43);
+      assert.equal(query.args.length, 48);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
@@ -298,10 +298,17 @@ describe("Worker telemetry ingest", () => {
       assert.equal(query.args[23], null);
       assert.equal(query.args[24], "OK");
 
-      // Verify every new column (index 25 to 42) is null
-      for (let i = 25; i < 43; i++) {
+      // Verify every wave 2 and variant identity column (index 25 to 46) is null: this
+      // payload sets none of them.
+      for (let i = 25; i < 47; i++) {
         assert.equal(query.args[i], null, `Expected index ${i} to be null, got ${query.args[i]}`);
       }
+
+      // variant_key (index 47) is still computed from the fields v1 DOES carry
+      // (model, round_type), never left null just because the four new fields are absent.
+      const expectedVariantKey = await computeVariantKey(null, "claude-3-7-sonnet", null, null, "review");
+      assert.equal(query.args[47], expectedVariantKey);
+      assert.match(query.args[47], /^[0-9a-f]{64}$/);
     });
 
     it("inserts a full v2 payload and binds every new column with given values", async () => {
@@ -353,6 +360,11 @@ describe("Worker telemetry ingest", () => {
         pr_state: "open",
         pr_base_ref: "main",
         pr_head_ref: "feat/wave2",
+        // Variant identity additions (#47)
+        prompt_hash: "aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44",
+        action_version: "a874e9ecd7bb36efdad65429c6b35815f5a08f10",
+        config_hash: "11223344556677889900aabbccddeeff11223344556677889900aabbccddee",
+        variant: "canary-prompt-v2",
       };
 
       const req = makeRequest("/ingest", {
@@ -382,6 +394,19 @@ describe("Worker telemetry ingest", () => {
       assert.equal(query.args[40], "open");
       assert.equal(query.args[41], "main");
       assert.equal(query.args[42], "feat/wave2");
+      assert.equal(query.args[43], v2Payload.prompt_hash);
+      assert.equal(query.args[44], v2Payload.action_version);
+      assert.equal(query.args[45], v2Payload.config_hash);
+      assert.equal(query.args[46], v2Payload.variant);
+
+      const expectedVariantKey = await computeVariantKey(
+        v2Payload.prompt_hash,
+        v2Payload.model,
+        v2Payload.action_version,
+        v2Payload.config_hash,
+        v2Payload.round_type
+      );
+      assert.equal(query.args[47], expectedVariantKey);
     });
 
     it("works when posting to root path '/' as alias to /ingest", async () => {
@@ -816,6 +841,57 @@ describe("Worker telemetry ingest", () => {
       const res = await worker.fetch(req, env);
       assert.equal(res.status, 404);
     });
+  });
+});
+
+describe("computeVariantKey (#47)", () => {
+  it("is stable for the same components across repeated calls", async () => {
+    const a = await computeVariantKey("prompt-hash-1", "claude-sonnet-5", "action-sha-1", "config-hash-1", "review");
+    const b = await computeVariantKey("prompt-hash-1", "claude-sonnet-5", "action-sha-1", "config-hash-1", "review");
+    assert.equal(a, b);
+    assert.match(a, /^[0-9a-f]{64}$/);
+  });
+
+  it("differs when any single component differs", async () => {
+    const base = ["prompt-hash-1", "claude-sonnet-5", "action-sha-1", "config-hash-1", "review"];
+    const baseline = await computeVariantKey(...base);
+
+    const variedPromptHash = await computeVariantKey("prompt-hash-2", ...base.slice(1));
+    const variedModel = await computeVariantKey(base[0], "claude-opus-5", ...base.slice(2));
+    const variedActionVersion = await computeVariantKey(base[0], base[1], "action-sha-2", ...base.slice(3));
+    const variedConfigHash = await computeVariantKey(base[0], base[1], base[2], "config-hash-2", base[4]);
+    const variedRoundType = await computeVariantKey(base[0], base[1], base[2], base[3], "incremental");
+
+    for (const [name, variant] of [
+      ["prompt_hash", variedPromptHash],
+      ["model", variedModel],
+      ["action_version", variedActionVersion],
+      ["config_hash", variedConfigHash],
+      ["round_type", variedRoundType],
+    ]) {
+      assert.notEqual(variant, baseline, `changing ${name} alone should change variant_key`);
+    }
+  });
+
+  it("treats a null component distinctly from an empty-string component", async () => {
+    const withNull = await computeVariantKey(null, "claude-sonnet-5", "action-sha-1", "config-hash-1", "review");
+    const withEmptyString = await computeVariantKey("", "claude-sonnet-5", "action-sha-1", "config-hash-1", "review");
+    assert.notEqual(
+      withNull,
+      withEmptyString,
+      "a missing prompt_hash and an empty-string prompt_hash must not collide"
+    );
+  });
+
+  it("treats undefined the same as null (both mean the field was never sent)", async () => {
+    const withNull = await computeVariantKey(null, "claude-sonnet-5", "action-sha-1", "config-hash-1", "review");
+    const withUndefined = await computeVariantKey(undefined, "claude-sonnet-5", "action-sha-1", "config-hash-1", "review");
+    assert.equal(withNull, withUndefined);
+  });
+
+  it("still computes a real key when every component is null", async () => {
+    const allNull = await computeVariantKey(null, null, null, null, null);
+    assert.match(allNull, /^[0-9a-f]{64}$/);
   });
 });
 
