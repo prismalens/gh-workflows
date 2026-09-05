@@ -31,3 +31,15 @@ body:
       description: Which doc surfaces will this touch (AGENTS.md, a consumer repo's registry entry, skill docs)? "none" must be justified.
     validations:
       required: true
+  - type: textarea
+    id: dashboard-surface
+    attributes:
+      label: Which dashboard surface this change affects
+      description: >
+        Name the dashboard surface this change affects. Describe what has to
+        change there. "none, because ..." is a valid answer as long as the
+        because is filled in. The point is a named answer, not a surface that
+        must exist.
+      placeholder: "none, because this change does not affect any dashboard surface"
+    validations:
+      required: true
