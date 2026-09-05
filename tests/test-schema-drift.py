@@ -51,6 +51,11 @@ USAGE_RECORDS_READ_ALLOWLIST = {
     "pr_state":         "PR state; not yet surfaced in dashboard read API",
     "pr_base_ref":      "PR base branch; not yet surfaced in dashboard read API",
     "pr_head_ref":      "PR head branch; not yet surfaced in dashboard read API",
+    "prompt_hash":      "Variant identity component (#47); not yet surfaced in dashboard read API",
+    "action_version":   "Variant identity component (#47); not yet surfaced in dashboard read API",
+    "config_hash":      "Variant identity component (#47); not yet surfaced in dashboard read API",
+    "variant":          "Variant identity operator label (#47); not yet surfaced in dashboard read API",
+    "variant_key":      "Variant identity grouping key (#47); not yet surfaced in dashboard read API",
 }
 
 
