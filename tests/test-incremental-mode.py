@@ -41,6 +41,9 @@ case "$args" in
   *graphql*)
     printf '%s\n' "$FAKE_THREADS"
     exit 0 ;;
+  *head.sha*)
+    printf '%s\n' "${FAKE_DEBOUNCED_HEAD:-$HEAD_SHA}"
+    exit 0 ;;
   *compare*)
     if [ "${FAKE_COMPARE_404:-0}" = "1" ]; then
       case "$args" in
@@ -61,13 +64,19 @@ exit 1
 def run_case(script, *, event="pull_request", has_token="true", summon="none",
              max_rounds="5", head_sha=NEW, fake_liveness="", fake_threads="[]",
              fake_compare_json="{}", fake_compare_404="0",
-             skip_authors="dependabot[bot]", pr_author=""):
+             skip_authors="dependabot[bot]", pr_author="",
+             diff_lines="", min_diff_lines="0", debounce_minutes="0",
+             debounced_head=""):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
         binp.mkdir()
         (binp / "gh").write_text(GH_STUB)
         (binp / "gh").chmod(0o755)
+        # The debounce sleeps in whole minutes, so the real sleep is stubbed out. The
+        # code path under test is unchanged; only the waiting is skipped (#113).
+        (binp / "sleep").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (binp / "sleep").chmod(0o755)
         out_file = td / "output.txt"
         out_file.touch()
 
@@ -87,6 +96,10 @@ def run_case(script, *, event="pull_request", has_token="true", summon="none",
             SUMMON=summon,
             MAX_ROUNDS=str(max_rounds),
             HAS_TOKEN=has_token,
+            DIFF_LINES=diff_lines,
+            MIN_DIFF_LINES=min_diff_lines,
+            DEBOUNCE_MINUTES=debounce_minutes,
+            FAKE_DEBOUNCED_HEAD=debounced_head or head_sha,
             SKIP_AUTHORS=str(skip_authors),
             PR_AUTHOR=str(pr_author),
             FAKE_LIVENESS=fake_liveness,
@@ -168,6 +181,77 @@ CASES = [
     ("pull_request, author matches skip_authors with whitespace",
      dict(skip_authors="dependabot[bot], renovate[bot] ", pr_author="renovate[bot]"),
      "skip", "", "skipped-author", False),
+
+    ("pull_request, dependabot author skipped by default skip_authors (#115)",
+     dict(pr_author="dependabot[bot]"),
+     "skip", "", "skipped-author", False),
+
+    ("issue_comment summon on dependabot author bypasses skip_authors (#115)",
+     dict(event="issue_comment", summon="incremental", pr_author="dependabot[bot]",
+          fake_threads="[]",
+          fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + NEW + " -->", head_sha=NEW),
+     "review", "identical-summon", "", False),
+
+    # A dependabot pull_request gets no secrets, so both guards fire. The author reason is
+    # the honest one; reporting no-token sends a reader hunting for broken credentials (#121).
+    ("pull_request, dependabot author with no token reports the author reason (#121)",
+     dict(has_token="false", pr_author="dependabot[bot]"),
+     "skip", "", "skipped-author", False),
+
+    ("pull_request, no token and a non-skipped author still reports no-token (#121)",
+     dict(has_token="false", pr_author="Sumit1993"),
+     "skip", "", "no-token", False),
+
+    # #113: the debounce re-reads the head after waiting.
+    ("head moved during the debounce, so the round is superseded (#113)",
+     dict(debounce_minutes="5", debounced_head="c" * 40),
+     "skip", "", "superseded", False),
+
+    ("head unchanged through the debounce, so the round proceeds (#113)",
+     dict(debounce_minutes="5",
+          fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + OLD + " -->",
+          fake_compare_json=json.dumps({"status": "ahead", "files": [{}]})),
+     "incremental", "", "", True),
+
+    ("a summon is never debounced (#113)",
+     dict(event="issue_comment", summon="incremental", debounce_minutes="5",
+          debounced_head="c" * 40,
+          fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + NEW + " -->", head_sha=NEW),
+     "review", "identical-summon", "", False),
+
+    # #114: the floor applies to automatic rounds only.
+    ("pull_request below the diff floor skips as trivial (#114)",
+     dict(diff_lines="2", min_diff_lines="20"),
+     "skip", "", "trivial", False),
+
+    ("pull_request at the diff floor is reviewed (#114)",
+     dict(diff_lines="20", min_diff_lines="20",
+          fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + OLD + " -->",
+          fake_compare_json=json.dumps({"status": "ahead", "files": [{}]})),
+     "incremental", "", "", True),
+
+    ("a summon is never skipped by the diff floor (#114)",
+     dict(event="issue_comment", summon="incremental", diff_lines="2", min_diff_lines="20",
+          fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + NEW + " -->", head_sha=NEW),
+     "review", "identical-summon", "", False),
+
+    ("min_diff_lines=0 disables the floor (#114)",
+     dict(diff_lines="1", min_diff_lines="0",
+          fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + OLD + " -->",
+          fake_compare_json=json.dumps({"status": "ahead", "files": [{}]})),
+     "incremental", "", "", True),
+
+    ("an absent diff_lines never trips the floor (#114)",
+     dict(diff_lines="", min_diff_lines="20",
+          fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + OLD + " -->",
+          fake_compare_json=json.dumps({"status": "ahead", "files": [{}]})),
+     "incremental", "", "", True),
+
+    ("pull_request, graphql author login app/dependabot does not match skip_authors (#115)",
+     dict(skip_authors="dependabot[bot]", pr_author="app/dependabot",
+          fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + OLD + " -->",
+          fake_compare_json=json.dumps({"status": "ahead", "files": [{}]})),
+     "incremental", "", "", True),
 
     ("summon full",
      dict(event="issue_comment", summon="full"),
