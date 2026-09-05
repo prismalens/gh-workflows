@@ -70,6 +70,10 @@ const STRING_FIELDS = [
   "pr_state",
   "pr_base_ref",
   "pr_head_ref",
+  "prompt_hash",
+  "action_version",
+  "config_hash",
+  "variant",
 ];
 
 const JSON_ARRAY_FIELDS = ["comment_node_ids"];
@@ -155,6 +159,31 @@ function timingSafeEqual(a, b) {
   }
   return acc === 0;
 }
+
+async function sha256Hex(text) {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+const VARIANT_KEY_SEPARATOR = "\x1e";
+// A record separator (\x1e) cannot occur inside any component here, and a null component
+// is represented as \x00 rather than skipped or left blank, so it can never collide with a
+// component that is a genuinely empty string (which contributes zero bytes). #47 amendment.
+const VARIANT_KEY_NULL = "\x00";
+
+async function computeVariantKey(promptHash, model, actionVersion, configHash, roundType) {
+  const components = [promptHash, model, actionVersion, configHash, roundType].map((c) =>
+    c === null || c === undefined ? VARIANT_KEY_NULL : c
+  );
+  return sha256Hex(components.join(VARIANT_KEY_SEPARATOR));
+}
+
+// Exported for direct unit testing (worker/index.test.js); the Workers runtime only ever
+// uses the default export below.
+export { computeVariantKey };
 
 /**
  * Reads the body, stopping at `max` bytes. Returns null once the stream goes
@@ -807,6 +836,16 @@ async function handleIngest(request, env) {
       }
     }
 
+    // Computed here, not in the workflow, so it cannot drift between callers pinned at
+    // @main: one implementation. Story: #47 amendment.
+    const variantKey = await computeVariantKey(
+      payload.prompt_hash ?? null,
+      payload.model ?? null,
+      payload.action_version ?? null,
+      payload.config_hash ?? null,
+      payload.round_type ?? null
+    );
+
     // Name columns literally so unmapped payload fields are dropped (#41).
     // Protect against retried POST requests without re-running (#41).
     try {
@@ -854,13 +893,18 @@ async function handleIngest(request, env) {
           pr_author,
           pr_state,
           pr_base_ref,
-          pr_head_ref
+          pr_head_ref,
+          prompt_hash,
+          action_version,
+          config_hash,
+          variant,
+          variant_key
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
           ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
           ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
-          ?41, ?42, ?43
+          ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48
         )
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
@@ -906,7 +950,12 @@ async function handleIngest(request, env) {
         truncateString(payload.pr_author, 512),
         payload.pr_state ?? null,
         truncateString(payload.pr_base_ref, 512),
-        truncateString(payload.pr_head_ref, 512)
+        truncateString(payload.pr_head_ref, 512),
+        payload.prompt_hash ?? null,
+        payload.action_version ?? null,
+        payload.config_hash ?? null,
+        payload.variant ?? null,
+        variantKey
       ).run();
     } catch {
       return new Response(null, { status: 500 });
