@@ -25,6 +25,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = ROOT / ".github/workflows/claude-code-review.yml"
 CONFIG_STEP = "Read repository review configuration"
 MODEL_STEP = "Resolve review model"
+PATH_INSTRUCTIONS_STEP = "Resolve path instructions"
 
 BASE_SHA = "1234567890abcdef1234567890abcdef12345678"
 
@@ -41,6 +42,9 @@ def extract_step_script(step_name: str) -> str:
 
 GH_STUB = r"""#!/usr/bin/env bash
 args="$*"
+if [ -n "${GH_CALL_LOG:-}" ]; then
+  echo "$args" >> "$GH_CALL_LOG"
+fi
 case "$args" in
   *"repos/${EXPECTED_ORG_REPO}/contents/.github/claude-review-defaults.yml?ref=${EXPECTED_ORG_REF}"*)
     if [ "${FAKE_ORG_CONFIG_404:-0}" = "1" ]; then
@@ -213,6 +217,61 @@ def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude
         return p.returncode, outputs, p.stdout, p.stderr
 
 
+def run_path_instructions_case(script, *, path_instructions=None, mode="review",
+                               changed_files=None, incremental_range_files=None,
+                               repo="prismalens/test-repo", pr="42",
+                               files_fail=False):
+    with tempfile.TemporaryDirectory() as td:
+        tdp = pathlib.Path(td)
+        binp = tdp / "bin"
+        binp.mkdir()
+        (binp / "gh").write_text(GH_STUB)
+        (binp / "gh").chmod(0o755)
+        out_file = tdp / "output.txt"
+        out_file.touch()
+        call_log = tdp / "gh_calls.txt"
+
+        files_json = ""
+        if changed_files is not None:
+            files_json = json.dumps([{"filename": f} for f in changed_files])
+
+        if mode == "incremental" and incremental_range_files is not None:
+            range_data = {"files": [{"filename": f} for f in incremental_range_files]}
+            (tdp / ".claude-incremental-range.json").write_text(json.dumps(range_data), encoding="utf-8")
+
+        env = dict(os.environ)
+        env.update(
+            PATH=f"{binp}:{env['PATH']}",
+            GITHUB_WORKSPACE=str(tdp),
+            GITHUB_OUTPUT=str(out_file),
+            GH_CALL_LOG=str(call_log),
+            GH_TOKEN="x",
+            REPO=repo,
+            PR=str(pr),
+            MODE=mode,
+            PATH_INSTRUCTIONS=json.dumps(path_instructions) if path_instructions is not None else "[]",
+            FAKE_FILES_FAIL="1" if files_fail else "0",
+            FAKE_FILES_JSON=files_json,
+        )
+
+        p = subprocess.run(["bash", "-c", script], env=env, cwd=str(tdp),
+                           capture_output=True, text=True)
+        outputs = {}
+        for line in out_file.read_text().splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                outputs[k] = v
+
+        file_content = None
+        target_file = tdp / ".claude-path-instructions.md"
+        if target_file.exists():
+            file_content = target_file.read_text(encoding="utf-8")
+
+        gh_calls = call_log.read_text().splitlines() if call_log.exists() else []
+
+        return p.returncode, outputs, p.stdout, p.stderr, file_content, gh_calls
+
+
 VALID_CONFIG_FULL = """
 version: 1
 
@@ -257,6 +316,11 @@ version: 1
 review: [invalid
 """
 
+MALFORMED_PATH_INSTRUCTIONS = """
+version: 1
+review:
+  path_instructions: "not-a-list"
+"""
 
 ORG_CONFIG_FULL = """
 version: 1
@@ -276,6 +340,24 @@ version: 1
 review:
   default_model: "claude-sonnet-5"
   auto_pause_rounds: 3
+"""
+
+ORG_WITH_PATH_INSTRUCTIONS = """
+version: 1
+
+review:
+  path_instructions:
+    - path: "org-src/**"
+      instructions: "Org instruction for org-src."
+"""
+
+REPO_WITH_PATH_INSTRUCTIONS = """
+version: 1
+
+review:
+  path_instructions:
+    - path: "repo-src/**"
+      instructions: "Repo instruction for repo-src."
 """
 
 
@@ -386,13 +468,15 @@ def main():
     rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_WITH_UNWIRED_KEYS)
     check("valid config with unwired keys exits 0", rc == 0, f"rc={rc}")
     check("valid config with unwired keys still consumes default_model", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
-    has_warning = "::warning::" in stdout
-    warns_path_instructions = "review.path_instructions" in stdout
-    warns_suppress_below = "findings.suppress_below" in stdout
-    warns_ai_fix = "findings.enable_ai_fix_prompt" in stdout
-    warns_verification = "findings.include_verification_note" in stdout
-    check("valid config warns and names all unconsumed keys",
-          has_warning and warns_path_instructions and warns_suppress_below and warns_ai_fix and warns_verification,
+    warning_lines = [l for l in stdout.splitlines() if "::warning::" in l]
+    warning_text = "\n".join(warning_lines)
+    has_warning = len(warning_lines) > 0
+    warns_path_instructions = "review.path_instructions" in warning_text
+    warns_suppress_below = "findings.suppress_below" in warning_text
+    warns_ai_fix = "findings.enable_ai_fix_prompt" in warning_text
+    warns_verification = "findings.include_verification_note" in warning_text
+    check("valid config warns and names unconsumed keys (losing path_instructions)",
+          has_warning and (not warns_path_instructions) and warns_suppress_below and warns_ai_fix and warns_verification,
           f"stdout={stdout!r}")
 
     # 4b. Missing PyYAML warns and falls back rather than failing the step
@@ -498,13 +582,118 @@ def main():
     check("changed-files fetch failure reports model_source=default (changed-files fetch failed)", out.get("model_source") == "default (changed-files fetch failed)", f"source={out.get('model_source')}")
     check("changed-files fetch failure emits warning naming command and stderr", "::warning::" in stdout and "repos/prismalens/test-repo/pulls/42/files" in stdout and "500 Internal Server Error" in stdout, f"stdout={stdout!r}")
 
+    print("\n=== Testing Path Instructions Configuration (#120) ===")
+
+    # 9. Org-then-repo ordering: org entries concatenate first, repo entries second, tagged with source
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_WITH_PATH_INSTRUCTIONS, config_yaml=REPO_WITH_PATH_INSTRUCTIONS)
+    check("org-then-repo ordering exits 0", rc == 0, f"rc={rc}")
+    instructions = json.loads(out.get("path_instructions", "[]"))
+    check("org-then-repo ordering has 2 entries", len(instructions) == 2, f"got {instructions}")
+    check("org-then-repo ordering: org entry first", len(instructions) == 2 and instructions[0]["path"] == "org-src/**" and instructions[0]["source"] == "org defaults", f"got {instructions}")
+    check("org-then-repo ordering: repo entry second", len(instructions) == 2 and instructions[1]["path"] == "repo-src/**" and instructions[1]["source"] == "repo config", f"got {instructions}")
+
+    # 10. Each layer alone
+    # 10a. Org layer alone
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_WITH_PATH_INSTRUCTIONS, is_404=True)
+    org_alone = json.loads(out.get("path_instructions", "[]"))
+    check("org layer alone exits 0", rc == 0, f"rc={rc}")
+    check("org layer alone carries org entries with org source", len(org_alone) == 1 and org_alone[0]["path"] == "org-src/**" and org_alone[0]["source"] == "org defaults", f"got {org_alone}")
+
+    # 10b. Repo layer alone
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=REPO_WITH_PATH_INSTRUCTIONS, org_is_404=True)
+    repo_alone = json.loads(out.get("path_instructions", "[]"))
+    check("repo layer alone exits 0", rc == 0, f"rc={rc}")
+    check("repo layer alone carries repo entries with repo source", len(repo_alone) == 1 and repo_alone[0]["path"] == "repo-src/**" and repo_alone[0]["source"] == "repo config", f"got {repo_alone}")
+
+    # 10c. Failure path: malformed path_instructions in repo config
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=MALFORMED_PATH_INSTRUCTIONS)
+    check("malformed path_instructions exits 0 and falls back to workflow defaults", rc == 0 and json.loads(out.get("path_instructions", "null")) == [], f"got {out.get('path_instructions')}")
+    check("malformed path_instructions emits warning naming validator error", "::warning::" in stdout and "review.path_instructions" in stdout and "expected list of mappings" in stdout, f"stdout={stdout!r}")
+
+    print("\n=== Testing Path Instructions Resolution (#120) ===")
+    path_instructions_script = extract_step_script(PATH_INSTRUCTIONS_STEP)
+
+    sample_instructions = [
+        {"path": "packages/@prismalens/engine/**", "instructions": "Audit engine invariants strictly.", "source": "org defaults"},
+        {"path": "docs/**", "instructions": "Ensure doc formatting matches style guide.", "source": "repo config"},
+    ]
+
+    # 11. Matched entry appearing in file with the other absent
+    rc, out, stdout, stderr, content, calls = run_path_instructions_case(
+        path_instructions_script,
+        path_instructions=sample_instructions,
+        changed_files=["packages/@prismalens/engine/src/index.ts", "README.md"],
+    )
+    check("matched entry exits 0", rc == 0, f"rc={rc}")
+    check("matched entry sets matched=true", out.get("matched") == "true", f"out={out}")
+    check("matched entry writes file", content is not None, "file was not written")
+    check("matched entry appears in file", content is not None and "Audit engine invariants strictly." in content and "Path: `packages/@prismalens/engine/**`" in content and "source: `org defaults`" in content, f"content={content}")
+    check("unmatched entry is absent from file", content is not None and "Ensure doc formatting matches style guide." not in content and "docs/**" not in content, f"content={content}")
+
+    # 12. No match log line
+    rc, out, stdout, stderr, content, calls = run_path_instructions_case(
+        path_instructions_script,
+        path_instructions=sample_instructions,
+        changed_files=["src/unknown.ts"],
+    )
+    check("no match exits 0", rc == 0, f"rc={rc}")
+    check("no match sets matched=false", out.get("matched") == "false", f"out={out}")
+    check("no match produces no file", content is None, f"content={content}")
+    check("no match log line printed", "path_instructions: 2 configured, 0 matched across 1 changed file(s)" in stdout, f"stdout={stdout}")
+
+    # 13. Empty list makes no gh call
+    rc, out, stdout, stderr, content, calls = run_path_instructions_case(
+        path_instructions_script,
+        path_instructions=[],
+        changed_files=["packages/@prismalens/engine/src/index.ts"],
+    )
+    check("empty list exits 0", rc == 0, f"rc={rc}")
+    check("empty list sets matched=false", out.get("matched") == "false", f"out={out}")
+    check("empty list produces no file", content is None, f"content={content}")
+    check("no gh call when list is empty", len(calls) == 0, f"calls={calls}")
+
+    # 14. Incremental mode matches against range file
+    rc, out, stdout, stderr, content, calls = run_path_instructions_case(
+        path_instructions_script,
+        path_instructions=sample_instructions,
+        mode="incremental",
+        incremental_range_files=["packages/@prismalens/engine/src/core.ts"],
+    )
+    check("incremental mode exits 0", rc == 0, f"rc={rc}")
+    check("incremental mode sets matched=true", out.get("matched") == "true", f"out={out}")
+    check("incremental mode matches against range file", content is not None and "Audit engine invariants strictly." in content, f"content={content}")
+    check("incremental mode makes no gh files call", len(calls) == 0, f"calls={calls}")
+
+    # 15. Changed-files fetch failure warns and continues without a file
+    rc, out, stdout, stderr, content, calls = run_path_instructions_case(
+        path_instructions_script,
+        path_instructions=sample_instructions,
+        files_fail=True,
+    )
+    check("fetch failure exits 0", rc == 0, f"rc={rc}")
+    check("fetch failure sets matched=false", out.get("matched") == "false", f"out={out}")
+    check("fetch failure produces no file", content is None, f"content={content}")
+    check("fetch failure emits warning", "::warning::" in stdout and "500 Internal Server Error" in stdout, f"stdout={stdout}")
+
+    # 16. Incremental mode with missing range file warns and continues without file
+    rc, out, stdout, stderr, content, calls = run_path_instructions_case(
+        path_instructions_script,
+        path_instructions=sample_instructions,
+        mode="incremental",
+        incremental_range_files=None,
+    )
+    check("missing range file exits 0", rc == 0, f"rc={rc}")
+    check("missing range file sets matched=false", out.get("matched") == "false", f"out={out}")
+    check("missing range file produces no file", content is None, f"content={content}")
+    check("missing range file emits warning", "::warning::" in stdout and "Incremental range file not found" in stdout, f"stdout={stdout}")
+
     print()
     if fails:
         print(f"{len(fails)} FAILED")
         for f in fails:
             print("  -", f)
         sys.exit(1)
-    print("all config loading and model escalation tests passed")
+    print("all config loading, model escalation, and path instructions tests passed")
 
 
 if __name__ == "__main__":
