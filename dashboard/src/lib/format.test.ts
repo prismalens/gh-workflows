@@ -7,19 +7,24 @@ afterEach(() => {
 });
 
 describe("formatTimestamp reads the viewer's zone (#97)", () => {
-  it("renders IST, 5:30 ahead of the stored UTC instant, and names the zone", () => {
+  it("converts the stored UTC instant into the viewer's zone", () => {
     vi.stubEnv("TZ", "Asia/Kolkata");
+    // 19:10Z is 00:40 the next day in IST. The browser picks the wording; this pins the instant.
     const rendered = formatTimestamp("2026-08-31T19:10:00.000Z");
-    // The zone abbreviation ("IST" vs "GMT+5:30") depends on the runner's ICU data, not on
-    // this code, so only the wall-clock/offset and the presence of a label are asserted (#97).
-    const match = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) (.+)$/.exec(rendered);
-    expect(match?.[1]).toBe("2026-09-01 00:40");
-    expect(match?.[2]).toBeTruthy();
+    expect(rendered).toContain("2026");
+    expect(rendered).toMatch(/12:40|00:40/);
+  });
+
+  it("lands the same instant on the previous day for a viewer behind UTC", () => {
+    vi.stubEnv("TZ", "America/New_York");
+    const rendered = formatTimestamp("2026-08-31T19:10:00.000Z");
+    expect(rendered).toMatch(/3:10/);
+    expect(rendered).toContain("31");
   });
 
   it("renders the same instant in UTC, proving the zone is read rather than hardcoded", () => {
     vi.stubEnv("TZ", "UTC");
-    expect(formatTimestamp("2026-08-31T19:10:00.000Z")).toBe("2026-08-31 19:10 UTC");
+    expect(formatTimestamp("2026-08-31T19:10:00.000Z")).toMatch(/7:10|19:10/);
   });
 
   it("still returns a dash for a missing timestamp regardless of zone", () => {

@@ -179,6 +179,16 @@ CASES = [
           fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + NEW + " -->", head_sha=NEW),
      "review", "identical-summon", "", False),
 
+    # A dependabot pull_request gets no secrets, so both guards fire. The author reason is
+    # the honest one; reporting no-token sends a reader hunting for broken credentials (#121).
+    ("pull_request, dependabot author with no token reports the author reason (#121)",
+     dict(has_token="false", pr_author="dependabot[bot]"),
+     "skip", "", "skipped-author", False),
+
+    ("pull_request, no token and a non-skipped author still reports no-token (#121)",
+     dict(has_token="false", pr_author="Sumit1993"),
+     "skip", "", "no-token", False),
+
     ("pull_request, graphql author login app/dependabot does not match skip_authors (#115)",
      dict(skip_authors="dependabot[bot]", pr_author="app/dependabot",
           fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + OLD + " -->",
