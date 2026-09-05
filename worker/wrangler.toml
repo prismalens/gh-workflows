@@ -23,3 +23,13 @@ binding = "DB"
 database_name = "review-telemetry"
 database_id = "1e2a6dfd-9d77-4fac-aa21-d55652c164e1"
 migrations_dir = "migrations"
+
+# Second line of defense behind the zone WAF rate limit rule: bounds ingest load
+# and token-guessing per IP from inside the Worker. Story: #60.
+[[ratelimits]]
+name = "INGEST_RATE_LIMITER"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60

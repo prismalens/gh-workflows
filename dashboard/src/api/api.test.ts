@@ -391,10 +391,34 @@ describe("an error names the failure it actually was", () => {
   it("names a 403 from Access as unauthenticated", async () => {
     respond({
       status: 403,
-      body: JSON.stringify({ error: "forbidden" }),
+      body: JSON.stringify({ error: "access_denied" }),
       headers: { "content-type": "application/json" },
     });
-    expect((await kindOf()).kind).toBe("unauthenticated");
+    const error = await kindOf();
+    expect(error.kind).toBe("unauthenticated");
+    expect(error.code).toBe("access_denied");
+  });
+
+  it("names a 503 from verifyAccess as unauthenticated, not a generic http error", async () => {
+    respond({
+      status: 503,
+      body: JSON.stringify({ error: "access_unconfigured" }),
+      headers: { "content-type": "application/json" },
+    });
+    const error = await kindOf();
+    expect(error.kind).toBe("unauthenticated");
+    expect(error.code).toBe("access_unconfigured");
+  });
+
+  it("carries the access_keys_unavailable code through from a 503", async () => {
+    respond({
+      status: 503,
+      body: JSON.stringify({ error: "access_keys_unavailable" }),
+      headers: { "content-type": "application/json" },
+    });
+    const error = await kindOf();
+    expect(error.kind).toBe("unauthenticated");
+    expect(error.code).toBe("access_keys_unavailable");
   });
 
   it("names an Access login page served 200 as unauthenticated", async () => {

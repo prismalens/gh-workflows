@@ -3,6 +3,7 @@ import { ExternalLink } from "lucide-react";
 
 import { humanizeKey, parsePerModelUsage, parseRawResult, parseSubagentStats } from "@/api/blobs";
 import type { RoundRow } from "@/api/types";
+import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -13,6 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { isLaneVersionAtLeast2 } from "@/features/failures/failures";
 import { Approximate, Degraded } from "@/honesty/Degraded";
 import {
   CACHE_CREATION_WEIGHT,
@@ -23,7 +25,6 @@ import {
   formatCount,
   formatDuration,
   formatPercent,
-  formatTimestamp,
   formatTokens,
   formatUsd,
   orDash,
@@ -68,6 +69,11 @@ function formatCounter(key: string, value: number): string {
   return /_ms$/.test(key) ? formatDuration(value) : formatCount(value);
 }
 
+/** #100: a null field is "predates the lane" only below lane_version 2. */
+function emptyFieldReason(row: RoundRow): "lane-did-not-send" | "lane-sent-nothing" {
+  return isLaneVersionAtLeast2(row.lane_version) ? "lane-sent-nothing" : "lane-did-not-send";
+}
+
 export function ResolutionPanel({ row }: { row: RoundRow }) {
   const raw = parseRawResult(row);
   return (
@@ -83,7 +89,9 @@ export function ResolutionPanel({ row }: { row: RoundRow }) {
     >
       <Facts>
         <Fact label="Repository">{row.repository}</Fact>
-        <Fact label="Recorded">{formatTimestamp(row.recorded_at)}</Fact>
+        <Fact label="Recorded">
+          <Timestamp iso={row.recorded_at} />
+        </Fact>
         <Fact label="Round type">{orDash(row.round_type)}</Fact>
         <Fact label="Model">{orDash(row.model)}</Fact>
         <Fact label="Head SHA">
@@ -172,6 +180,7 @@ export function TimingPanel({ row }: { row: RoundRow }) {
 export function FanOutPanel({ row }: { row: RoundRow }) {
   const stats = parseSubagentStats(row);
   const perModel = parsePerModelUsage(row);
+  const reason = emptyFieldReason(row);
 
   return (
     <Panel
@@ -181,13 +190,17 @@ export function FanOutPanel({ row }: { row: RoundRow }) {
       {stats === null ? (
         <Degraded
           what="Subagent lifecycle counts"
-          reason="lane-did-not-send"
-          detail="A single-agent round has no fan-out to report, and a lane predating the field sends nothing."
+          reason={reason}
+          detail={
+            reason === "lane-did-not-send"
+              ? "A single-agent round has no fan-out to report, and a lane predating the field sends nothing either way."
+              : "A single-agent round has no fan-out to report; a lane this new would have sent the field if there were one."
+          }
         />
       ) : stats.unreadable ? (
         <Degraded
           what="Subagent lifecycle counts"
-          reason="lane-did-not-send"
+          reason="unreadable"
           detail="The column held a value with no countable fields in it."
         />
       ) : (
@@ -245,7 +258,7 @@ export function FanOutPanel({ row }: { row: RoundRow }) {
           </Table>
         </div>
       ) : (
-        <Degraded what="Per-model split" reason="lane-did-not-send" />
+        <Degraded what="Per-model split" reason={reason} />
       )}
 
       <Degraded
@@ -302,7 +315,7 @@ export function TokensPanel({ row }: { row: RoundRow }) {
       ) : (
         <Degraded
           what="Token counts"
-          reason="lane-did-not-send"
+          reason={emptyFieldReason(row)}
           detail="The action's result object carried no modelUsage for this round."
         />
       )}
@@ -332,8 +345,12 @@ export function DenialsPanel({ row }: { row: RoundRow }) {
       {tools === null ? (
         <Degraded
           what="Which tools were denied"
-          reason="lane-did-not-send"
-          detail="denial_tools is written into raw_result by the extraction step; a round from an older lane has no such key."
+          reason={emptyFieldReason(row)}
+          detail={
+            isLaneVersionAtLeast2(row.lane_version)
+              ? "denial_tools is written into raw_result by the extraction step; this lane was new enough to write it and left it out."
+              : "denial_tools is written into raw_result by the extraction step; a round from an older lane has no such key."
+          }
         />
       ) : tools.length === 0 ? (
         <p className="text-xs text-muted-foreground">
@@ -376,7 +393,7 @@ export function RawRecordPanel({ row }: { row: RoundRow }) {
       ) : (
         <Degraded
           what="Raw result object"
-          reason="lane-did-not-send"
+          reason={emptyFieldReason(row)}
           detail="raw_result is nullable and this round stored none."
         />
       )}

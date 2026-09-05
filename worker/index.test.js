@@ -132,6 +132,99 @@ describe("Worker telemetry ingest", () => {
       const res = await worker.fetch(req, env);
       assert.equal(res.status, 401);
     });
+
+    it("returns 401 for a wrong token the same length as the real one", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const wrongSameLength = "x".repeat(VALID_TOKEN.length);
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${wrongSameLength}` },
+        body: { session_id: "s-1", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+  });
+
+  describe("Rate limiting (#60)", () => {
+    it("returns 429 when the INGEST_RATE_LIMITER binding refuses the request", async () => {
+      const db = createFakeDb();
+      const limiter = { limit: async () => ({ success: false }) };
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, INGEST_RATE_LIMITER: limiter };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: { session_id: "s-1", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 429);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("keys the limiter on the client IP", async () => {
+      const db = createFakeDb();
+      const seenKeys = [];
+      const limiter = {
+        limit: async ({ key }) => {
+          seenKeys.push(key);
+          return { success: true };
+        },
+      };
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, INGEST_RATE_LIMITER: limiter };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}`, "cf-connecting-ip": "203.0.113.9" },
+        body: { session_id: "s-1", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+      assert.deepEqual(seenKeys, ["203.0.113.9"]);
+    });
+
+    it("proceeds when no rate limiter binding is configured", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: { session_id: "s-1", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+    });
+  });
+
+  describe("Request size limits (#60)", () => {
+    it("returns 413 for a body over the cap announced via content-length", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const oversizedBody = "x".repeat(1_000_001);
+      const req = makeRequest("/ingest", {
+        headers: {
+          authorization: `Bearer ${VALID_TOKEN}`,
+          "content-length": String(oversizedBody.length),
+        },
+        body: oversizedBody,
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 413);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 413 for a body over the cap with no content-length header", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const oversizedBody = JSON.stringify({
+        session_id: "s-1",
+        repository: "prismalens/gh-workflows",
+        raw_result: "x".repeat(1_000_001),
+      });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: oversizedBody,
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 413);
+      assert.equal(db.queries.length, 0);
+    });
   });
 
   describe("Usage record ingest (v1 and v2)", () => {
@@ -843,6 +936,53 @@ describe("Worker telemetry read API", () => {
         assert.equal(res.status, 403);
       });
     }
+  });
+
+  // Placed before any test that lets getSigningKeys succeed, since a successful
+  // fetch populates the module-level cert cache other tests then hit. Story: #96.
+  describe("verifyAccess error codes (#96)", () => {
+    it("returns access_unconfigured when Access env vars are missing", async () => {
+      const db = createFakeDb();
+      const env = { DB: db };
+      const req = makeRequest("/api/runs", { method: "GET" });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 503);
+      const body = await res.json();
+      assert.equal(body.error, "access_unconfigured");
+    });
+
+    it("returns access_denied when the JWT is missing", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb();
+      const env = { ...helper.env, DB: db };
+      const req = makeRequest("/api/runs", { method: "GET" });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 403);
+      const body = await res.json();
+      assert.equal(body.error, "access_denied");
+    });
+
+    it("returns access_keys_unavailable when the certs fetch fails", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb();
+      const env = { ...helper.env, DB: db };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        if (typeof url === "string" && url.includes("/cdn-cgi/access/certs")) {
+          throw new Error("network down");
+        }
+        return originalFetch(url, init);
+      };
+      try {
+        const req = makeAuthenticatedRequest("/api/runs", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 503);
+        const body = await res.json();
+        assert.equal(body.error, "access_keys_unavailable");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
   });
 
   describe("GET /api/runs (Wave 2 columns & blobs)", () => {

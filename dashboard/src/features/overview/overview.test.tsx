@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChangeRow, RoundRow } from "@/api/types";
 import { CountTile } from "@/honesty/Tile";
@@ -97,6 +97,24 @@ describe("the activity band", () => {
   it("leaves a round with no wall clock out of the scatter rather than plotting a zero", () => {
     const withNull = [...rows, round({ session_id: "f", duration_ms: null })];
     expect(wallClockPoints(withNull)).toHaveLength(rows.length);
+  });
+});
+
+describe("day buckets follow the viewer's zone (#97)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("puts a late UTC evening on the next IST calendar day", () => {
+    vi.stubEnv("TZ", "Asia/Kolkata");
+    const rows = [round({ session_id: "late", recorded_at: "2026-08-31T19:10:00.000Z", round_type: "full" })];
+    expect(roundsPerDay(rows, ["full"]).map((b) => b.day)).toEqual(["2026-09-01"]);
+  });
+
+  it("keeps the same instant on its own day under UTC", () => {
+    vi.stubEnv("TZ", "UTC");
+    const rows = [round({ session_id: "late", recorded_at: "2026-08-31T19:10:00.000Z", round_type: "full" })];
+    expect(roundsPerDay(rows, ["full"]).map((b) => b.day)).toEqual(["2026-08-31"]);
   });
 });
 

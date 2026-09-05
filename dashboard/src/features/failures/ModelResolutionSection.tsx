@@ -13,9 +13,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Timestamp } from "@/components/Timestamp";
 import { Degraded } from "@/honesty/Degraded";
 import { linkableRange, type RangeKey } from "@/honesty/range";
-import { formatCount, formatTimestamp } from "@/lib/format";
+import { formatCount } from "@/lib/format";
 import {
   getFieldDegradedState,
   LANE_TOO_OLD_COPY,
@@ -130,7 +131,7 @@ export function ModelResolutionSection({
                   </TableCell>
                   <TableCell className="tabular text-xs whitespace-nowrap">
                     {degraded === "recorded" && item.lastSeen ? (
-                      formatTimestamp(item.lastSeen)
+                      <Timestamp iso={item.lastSeen} />
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}
