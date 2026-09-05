@@ -32,6 +32,21 @@ on:
           read out of the comment. An alias absent here is not selectable. Story: #27.
         type: string
         default: 'opus=claude-opus-5,sonnet=claude-sonnet-5'
+      min_diff_lines:
+        description: >-
+          Skip an automatic `pull_request` round whose diff is smaller than this many
+          changed lines, with skip reason `trivial`. 0 disables the floor. A summon is
+          never skipped: asking for a review is asking for one. Story: #114.
+        type: number
+        default: 0
+      debounce_minutes:
+        description: >-
+          Wait this long before an automatic `pull_request` round starts, then re-read the
+          PR head. If it moved, exit with skip reason `superseded` rather than reviewing a
+          diff that is already stale. 0 disables the wait. Costs a runner minute instead of
+          a billed round, because `cancel-in-progress` cancels the sleeping run. Story: #113.
+        type: number
+        default: 0
       display_report:
         description: >-
           Render the review round's reasoning and token/cost usage into the Actions Step Summary.
@@ -624,6 +639,9 @@ jobs:
           MAX_ROUNDS: ${{ steps.config.outputs.auto_pause_rounds }}
           SKIP_AUTHORS: ${{ steps.config.outputs.skip_authors }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          DIFF_LINES: ${{ needs.resolve.outputs.diff_lines }}
+          MIN_DIFF_LINES: ${{ inputs.min_diff_lines }}
+          DEBOUNCE_MINUTES: ${{ inputs.debounce_minutes }}
           # Presence only — the token value never enters the shell.
           HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
@@ -725,6 +743,29 @@ jobs:
                  "Map the secret explicitly in the caller stub — 'inherit' does not cross owners."
             emit skip no-token
             exit 0
+          fi
+
+          # Diff-size floor (#114). Automatic rounds only: a summon is a person asking, and
+          # a person asking for a review on a one-line change gets one.
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "${MIN_DIFF_LINES:-0}" -gt 0 ] \
+             && [ -n "${DIFF_LINES:-}" ] && [ "$DIFF_LINES" -lt "$MIN_DIFF_LINES" ]; then
+            echo "skipping review: diff is $DIFF_LINES lines, below the floor of $MIN_DIFF_LINES"
+            emit skip trivial
+            exit 0
+          fi
+
+          # Debounce (#113). Sleep, then re-read the head. A push during the sleep cancels
+          # this run through the caller's concurrency group, so the usual outcome is that
+          # this run never wakes. `superseded` covers the race where it wakes anyway.
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "${DEBOUNCE_MINUTES:-0}" -gt 0 ]; then
+            echo "debouncing for ${DEBOUNCE_MINUTES}m before reading the head again"
+            sleep "$(( DEBOUNCE_MINUTES * 60 ))"
+            current_head="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>/dev/null || echo "")"
+            if [ -n "$current_head" ] && [ "$current_head" != "$HEAD_SHA" ]; then
+              echo "skipping review: head moved from $HEAD_SHA to $current_head during the debounce"
+              emit skip superseded
+              exit 0
+            fi
           fi
 
           # Auto-pause reads the round counter off our own liveness comment. Summons are
@@ -2072,6 +2113,14 @@ jobs:
             # never trigger workflows, and this upsert PATCHes rather than creating a comment.
             verdict="auto-paused after ${rounds} automatic rounds at \`$short\` — re-request with \`@claude review\`."
             verdict_kind="auto-paused"
+          elif [ "$SKIP_REASON" = "trivial" ]; then
+            verdict="did not run at \`$short\`: the diff is below this repo's \`min_diff_lines\` floor. \
+          This head has no machine review on record — summon with \`@claude review\` if you want one anyway."
+            verdict_kind="skipped-trivial"
+          elif [ "$SKIP_REASON" = "superseded" ]; then
+            verdict="did not run at \`$short\`: the head moved during the debounce window, so this round \
+          would have reviewed a stale diff. The round for the newer head reports separately."
+            verdict_kind="superseded"
           elif [ "$SKIP_REASON" = "no-token" ]; then
             verdict="did not run at \`$short\`: no CLAUDE_CODE_OAUTH_TOKEN reached this lane. \
           This head has no machine review on record — map the secret explicitly in the caller stub."
@@ -2295,6 +2344,10 @@ jobs:
           elif [ "$SKIP_REASON" = "paused" ]; then
             reason="auto-paused"
             rounds_used="${ROUND_ORDINAL:-}"
+          elif [ "$SKIP_REASON" = "trivial" ]; then
+            reason="skip-trivial"
+          elif [ "$SKIP_REASON" = "superseded" ]; then
+            reason="superseded"
           elif [ "$SKIP_REASON" = "skipped-author" ]; then
             reason="skip-author"
           elif [ "$SKIP_REASON" = "no-token" ]; then
