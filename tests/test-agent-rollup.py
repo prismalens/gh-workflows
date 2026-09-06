@@ -94,6 +94,7 @@ def run_rollup_step(script, *,
         proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
 
         agents = None
+        status = None
         if gh_output.exists():
             for line in gh_output.read_text().splitlines():
                 if line.startswith("agents="):
@@ -101,8 +102,10 @@ def run_rollup_step(script, *,
                         agents = json.loads(line[len("agents="):])
                     except Exception as e:
                         agents = f"MALFORMED_JSON: {e}"
+                elif line.startswith("agents_status="):
+                    status = line[len("agents_status="):]
 
-        return proc.returncode, agents, proc.stdout + proc.stderr
+        return proc.returncode, agents, proc.stdout + proc.stderr + f"\n__AGENTS_STATUS__={status}"
 
 
 def run_telemetry_step(script, *, execution_file_content, agents_json_str):
@@ -455,6 +458,47 @@ def main():
     # -------------------------------------------------------------
     # Summary
     # -------------------------------------------------------------
+    # -----------------------------------------------------------------
+    # 14. agents_status distinguishes a failed rollup from a round with no agents.
+    #     `agents: []` alone cannot, and #89 needs the distinction. Story: #93.
+    # -----------------------------------------------------------------
+    _, _, out_missing = run_rollup_step(
+        script,
+        execution_events=exec_events_1,
+        transcript_files={},
+        create_transcript_dir=False,
+    )
+    _, _, out_skipped = run_rollup_step(
+        script,
+        execution_events=exec_events_1,
+        transcript_files=transcripts_1,
+        env_overrides={"CLAUDE_OUTCOME": "skipped"},
+    )
+    _, agents_ok, out_ok = run_rollup_step(
+        script,
+        execution_events=exec_events_1,
+        transcript_files=transcripts_1,
+    )
+
+    expectations = [
+        ("no-transcript-dir", out_missing, "missing transcript directory"),
+        ("skipped", out_skipped, "skipped review"),
+        ("ok", out_ok, "successful rollup"),
+    ]
+    status_fails = []
+    for expected, out, label in expectations:
+        if f"__AGENTS_STATUS__={expected}" not in out:
+            status_fails.append(f"case 14: {label} expected agents_status={expected}, got: {out.splitlines()[-1] if out else '(no output)'}")
+
+    if status_fails:
+        fails.extend(status_fails)
+        print("  FAIL  agents_status: a failed rollup is indistinguishable from an empty one")
+    elif agents_ok is None or len(agents_ok) == 0:
+        fails.append("case 14: the ok case produced no agents, so the status assertion proves nothing")
+        print("  FAIL  agents_status: ok case had no agents")
+    else:
+        print("  ok    agents_status: names why the array is empty, and reads ok when it is not")
+
     print(f"\n{len(fails)} failure(s)")
     if fails:
         for f in fails:

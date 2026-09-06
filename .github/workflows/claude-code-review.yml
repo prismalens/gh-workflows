@@ -1422,27 +1422,31 @@ jobs:
         run: |
           set -uo pipefail
 
+          # An empty array has two meanings: the rollup failed, or the round genuinely
+          # spawned no agents. Without a status beside it the record cannot tell them
+          # apart, and #89 needs the distinction. Story: #93.
           emit_empty() {
             if [ -n "${GITHUB_OUTPUT:-}" ]; then
               echo "agents=[]" >> "$GITHUB_OUTPUT"
+              echo "agents_status=${1:-unavailable}" >> "$GITHUB_OUTPUT"
             fi
           }
 
           if [ "${CLAUDE_OUTCOME:-skipped}" = "skipped" ]; then
             echo "agent-rollup: no review ran in this round; nothing to roll up."
-            emit_empty
+            emit_empty "skipped"
             exit 0
           fi
 
           if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
             echo "::warning::agent-rollup: execution file is missing (path: '${EXECUTION_FILE:-}'); cannot roll up agents."
-            emit_empty
+            emit_empty "no-execution-file"
             exit 0
           fi
 
           if [ -z "${SESSION_ID:-}" ]; then
             echo "::warning::agent-rollup: session_id is absent; cannot locate transcript directory."
-            emit_empty
+            emit_empty "no-session-id"
             exit 0
           fi
 
@@ -1458,7 +1462,7 @@ jobs:
 
           if [ -z "${TRANSCRIPT_DIR:-}" ] || [ ! -d "$TRANSCRIPT_DIR" ]; then
             echo "::warning::agent-rollup: transcript directory is missing for session '${SESSION_ID}'; cannot roll up agents."
-            emit_empty
+            emit_empty "no-transcript-dir"
             exit 0
           fi
           export TRANSCRIPT_DIR
@@ -1468,13 +1472,14 @@ jobs:
           import os
           import sys
 
-          def emit(val):
+          def emit(val, status="ok"):
               payload = json.dumps(val, separators=(",", ":"))
               out_path = os.environ.get("GITHUB_OUTPUT")
               if out_path:
                   with open(out_path, "a", encoding="utf-8") as f:
                       f.write(f"agents={payload}\n")
-              print(f"agent-rollup: emitted {len(val)} agents")
+                      f.write(f"agents_status={status}\n")
+              print(f"agent-rollup: emitted {len(val)} agents (status: {status})")
 
           try:
               execution_file = os.environ.get("EXECUTION_FILE", "")
@@ -1702,13 +1707,13 @@ jobs:
 
           except Exception as e:
               print(f"::warning::agent-rollup: unexpected failure: {e}")
-              emit([])
+              emit([], "parse-failed")
               sys.exit(0)
           PY
           rc=$?
           if [ $rc -ne 0 ]; then
             echo "::warning::agent-rollup: rollup script failed (rc=$rc); emitting empty agents array."
-            emit_empty
+            emit_empty "script-failed"
             exit 0
           fi
 
@@ -1720,6 +1725,7 @@ jobs:
         env:
           EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
           AGENTS: ${{ steps.agent-rollup.outputs.agents }}
+          AGENTS_STATUS: ${{ steps.agent-rollup.outputs.agents_status }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           SERVER_URL: ${{ github.server_url }}
@@ -1788,6 +1794,7 @@ jobs:
             --arg config_hash "${CONFIG_HASH:-}" \
             --arg variant "${VARIANT:-}" \
             --arg agents "${AGENTS:-[]}" \
+            --arg agents_status "${AGENTS_STATUS:-}" \
             '
             def num(s): if s == "" then null else (s | tonumber? // null) end;
             def denials:
@@ -1834,6 +1841,7 @@ jobs:
               per_model_usage: ((.modelUsage // {}) | tojson),
               subagent_stats: (if .subagent_stats == null then null else (.subagent_stats | tojson) end),
               agents: (if $agents == "" or $agents == "null" then [] else (try ($agents | fromjson) catch []) end),
+              agents_status: (if $agents_status == "" then null else $agents_status end),
               raw_result: (
                 . as $o
                 | ($o | del(.result, .permission_denials)) as $base
