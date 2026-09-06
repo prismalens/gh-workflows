@@ -155,7 +155,7 @@ function ReposPage() {
                             search={{ at: repo.lastRound.recorded_at }}
                             className="underline-offset-4 hover:underline"
                           >
-                            <Timestamp iso={repo.lastRound.recorded_at} />
+                            <Timestamp iso={repo.lastRound.recorded_at} compact />
                           </Link>
                         ) : (
                           <span className="text-muted-foreground">
