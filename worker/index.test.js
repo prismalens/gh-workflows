@@ -279,7 +279,7 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 48);
+      assert.equal(query.args.length, 49);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
