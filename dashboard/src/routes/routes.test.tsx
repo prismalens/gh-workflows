@@ -796,8 +796,8 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     // State 1: failed (silent) -> "failed: posted nothing"
     expect(within(table).getByText("failed: posted nothing")).toBeInTheDocument();
 
-    // State 2: did-not-run -> "auto-paused (3/3)"
-    expect(within(table).getByText("auto-paused (3/3)")).toBeInTheDocument();
+    // State 2: did-not-run -> "auto-paused (round 3)"
+    expect(within(table).getByText("auto-paused (round 3)")).toBeInTheDocument();
 
     // State 3: threads-only -> "threads-only"
     expect(within(table).getByText("threads-only")).toBeInTheDocument();

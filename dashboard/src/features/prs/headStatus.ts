@@ -101,7 +101,11 @@ export function decodeHeadStatus(round: RoundRow | undefined): HeadStatus {
     round.verdict_kind === "no-new-commits"
   ) {
     if (round.verdict_kind === "auto-paused") {
-      const label = round.round_ordinal ? `auto-paused (${round.round_ordinal}/3)` : "auto-paused";
+      // No denominator: `auto_pause_rounds` is per-repo config (default 5) and the row
+      // does not carry it, so any printed limit would be a guess. Story: #75.
+      const label = round.round_ordinal
+        ? `auto-paused (round ${round.round_ordinal})`
+        : "auto-paused";
       return {
         state: "did-not-run",
         label,

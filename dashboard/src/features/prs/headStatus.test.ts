@@ -79,7 +79,7 @@ describe("head-status decode produces the right label for each of the four state
       mockRow({ verdict_kind: "auto-paused", round_ordinal: 3 }),
     );
     expect(autoPaused.state).toBe("did-not-run");
-    expect(autoPaused.label).toBe("auto-paused (3/3)");
+    expect(autoPaused.label).toBe("auto-paused (round 3)");
     expect(autoPaused.headRead).toBe(false);
     expect(autoPaused.sentence).toMatch(/not reviewed/);
     expect(autoPaused.copyableHint).toBe("@claude review");
