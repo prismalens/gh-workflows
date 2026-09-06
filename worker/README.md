@@ -96,7 +96,7 @@ Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_
 #### `lane_event`
 - **Required**:
   - `repository` (TEXT)
-  - `reason` (TEXT, must be exactly one of `no-token`, `auto-paused`, `fork-head`, `skip-author`)
+  - `reason` (TEXT, must be exactly one of `no-token`, `auto-paused`, `paused-by-request`, `fork-head`, `skip-author`)
   - `run_id` (INTEGER, finite number)
   - `run_attempt` (INTEGER, finite number)
 - **Optional**:
@@ -134,12 +134,13 @@ Ingests current pull request facts into the `prs` table, authenticated with `Aut
   - `head_sha` (TEXT, capped to 512): PR head commit SHA.
   - `merged_at` (TEXT, capped to 512): ISO 8601 merge timestamp.
   - `closed_at` (TEXT, capped to 512): ISO 8601 close timestamp.
+  - `updated_at` (TEXT, capped to 512): ISO 8601 event timestamp from GitHub; falls back to receipt time if omitted.
 
 ### Behaviour & Invariants
 
 - **Upsert on `(repository, pr_number)`**: An absent field leaves the stored value alone rather than nulling it. Only what the caller actually knows gets written.
-- **Server-side `updated_at`**: `updated_at` is generated server-side. Caller clocks are never trusted.
-- **Race Protection**: A later write with an older `updated_at` cannot overwrite a newer one.
+- **Monotonic `updated_at`**: `updated_at` records when the event occurred (from GitHub's `pull_request.updated_at`), falling back to receipt time if omitted.
+- **Stale-Write Protection**: A later write with an older `updated_at` cannot overwrite a newer stored row.
 
 ## Read Contract (v2)
 
@@ -280,19 +281,6 @@ Returns paginated pull request state records from `prs`.
 #### Columns
 
 - `repository`, `pr_number`, `state`, `title`, `author`, `base_ref`, `head_ref`, `head_sha`, `merged_at`, `closed_at`, `updated_at`, `source`.
-### `GET /api/accounted-runs`
-
-Programmatic read route for the scheduled telemetry reconciler (#87). Returns the distinct `run_id` values appearing in either `usage_records` or `lane_events` inside the requested window.
-
-#### Authentication
-
-Authenticated via `Authorization: Bearer <REVIEW_TELEMETRY_TOKEN>`, using the same shared secret as telemetry ingest.
-
-#### Query Parameters
-
-- `since` (required): ISO 8601 UTC timestamp lower bound on `recorded_at` (`recorded_at >= ?`).
-- `until` (required): ISO 8601 UTC timestamp upper bound on `recorded_at` (`recorded_at <= ?`).
-- Capped at a maximum window of 30 days.
 
 #### Response Shape
 
@@ -315,6 +303,31 @@ Authenticated via `Authorization: Bearer <REVIEW_TELEMETRY_TOKEN>`, using the sa
     }
   ],
   "next_cursor": "2026-09-06T12:00:00.000Z|prismalens/gh-workflows|136"
+}
+```
+
+---
+
+### `GET /api/accounted-runs`
+
+Programmatic read route for the scheduled telemetry reconciler (#87). Returns the distinct `run_id` values appearing in either `usage_records` or `lane_events` inside the requested window.
+
+#### Authentication
+
+Authenticated via `Authorization: Bearer <REVIEW_TELEMETRY_TOKEN>`, using the same shared secret as telemetry ingest.
+
+#### Query Parameters
+
+- `repository` (required): Filter by exact repository string (`owner/repo`).
+- `since` (required): ISO 8601 UTC timestamp lower bound on `recorded_at` (`recorded_at >= ?`).
+- `until` (required): ISO 8601 UTC timestamp upper bound on `recorded_at` (`recorded_at <= ?`).
+- Capped at a maximum window of 30 days.
+
+#### Response Shape
+
+```json
+{
+  "repository": "prismalens/gh-workflows",
   "since": "2026-08-30T00:00:00Z",
   "until": "2026-08-31T02:00:00Z",
   "run_ids": [1001, 1002, 1003]

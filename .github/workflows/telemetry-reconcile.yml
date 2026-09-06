@@ -1,18 +1,20 @@
 name: Telemetry Reconciler
 
 on:
-  schedule:
-    # 04:23 UTC daily. Off the hour on purpose: GitHub delays cron at peak hours (#44).
-    - cron: '23 4 * * *'
-  workflow_dispatch:
+  workflow_call:
     inputs:
       window_hours:
         description: 'Hours to look back for reconciliation (default 26 to bridge boundaries)'
         required: false
-        default: '26'
-        type: string
+        default: 26
+        type: number
+    secrets:
+      REVIEW_TELEMETRY_TOKEN:
+        description: 'Review telemetry token'
+        required: true
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -25,6 +27,7 @@ jobs:
           ACCOUNTED_RUNS_URL: ${{ vars.TELEMETRY_ACCOUNTED_RUNS_URL || 'https://assayer.sfun.cloud/api/accounted-runs' }}
           REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
           WINDOW_HOURS: ${{ inputs.window_hours || '26' }}
         run: |
           set -euo pipefail
@@ -34,6 +37,12 @@ jobs:
           # secrets are missing or misconfigured.
           if [ -z "${REVIEW_TELEMETRY_TOKEN:-}" ]; then
             echo "::error::REVIEW_TELEMETRY_TOKEN is not set. Until this secret is configured, nothing can reconcile review telemetry (#87)."
+            exit 1
+          fi
+
+          REPO="${REPOSITORY:-${GITHUB_REPOSITORY:-}}"
+          if [ -z "$REPO" ]; then
+            echo "::error::Repository cannot be determined."
             exit 1
           fi
 
@@ -63,6 +72,7 @@ jobs:
             --proto '=https' \
             -G "$ACCOUNTED_URL" \
             -H "@$hdr" \
+            --data-urlencode "repository=$REPO" \
             --data-urlencode "since=$SINCE" \
             --data-urlencode "until=$UNTIL"); then
             code=000
@@ -76,7 +86,7 @@ jobs:
             head -c 500 "$body" 2>/dev/null || true
             echo ""
             case "$code" in
-              400) cause="The Worker rejected the request parameters. Check since and until parameters (#87)." ;;
+              400) cause="The Worker rejected the request parameters. Check repository, since and until parameters (#87)." ;;
               401) cause="The Worker rejected the token. REVIEW_TELEMETRY_TOKEN here and the Worker's own secret have diverged; rotate both together (#87)." ;;
               403) cause="Blocked before the Worker: Cloudflare bot/WAF mitigation challenging curl from an Azure IP, or an Access policy widened to cover the API path (#87)." ;;
               5*)  cause="The Worker answered but failed, most likely the D1 query. Check D1 status on review-telemetry (#87)." ;;
@@ -92,98 +102,75 @@ jobs:
             exit 1
           fi
 
-          # Covered consumer repositories. #92 tracks dynamic repository discovery and is parked.
-          COVERED_REPOS=(
-            "prismalens/prismalens"
-            "prismalens/sreforge"
-            "prismalens/gh-workflows"
-            "Sumit1993/mage-memory"
-          )
-
           declare -a UNACCOUNTED_RUNS=()
           declare -a FILTERED_RUNS=()
-          declare -a SKIPPED_REPOS=()
-          declare -a REPO_STATS=()
 
-          for repo in "${COVERED_REPOS[@]}"; do
-            runs_file="$(mktemp)"
-            # Query review-lane workflow runs via gh api
-            if ! gh api "repos/${repo}/actions/workflows/claude-code-review.yml/runs?per_page=100" > "$runs_file" 2>"$repo_err"; then
-              err_msg="$(cat "$repo_err" 2>/dev/null || echo "API error")"
-              echo "::warning::Skipped ${repo}: repository cannot be read (${err_msg}) (#87)"
-              SKIPPED_REPOS+=("${repo}|${err_msg}")
-              rm -f "$runs_file"
+          runs_file="$(mktemp)"
+          # Query review-lane workflow runs via gh api with pagination and slurp (#87, finding 3944010366)
+          if ! gh api --paginate --slurp "repos/${REPO}/actions/workflows/claude-code-review.yml/runs?per_page=100" > "$runs_file" 2>"$repo_err"; then
+            err_msg="$(cat "$repo_err" 2>/dev/null || echo "API error")"
+            echo "::error::Failed to read workflow runs for ${REPO}: ${err_msg} (#87)"
+            rm -f "$runs_file"
+            exit 1
+          fi
+
+          runs_in_window=$(jq -c --arg since "$SINCE" --arg until "$UNTIL" \
+            '[.[] | .workflow_runs[]? | select(.created_at >= $since and .created_at <= $until)]' "$runs_file")
+          rm -f "$runs_file"
+
+          total_in_window=$(echo "$runs_in_window" | jq 'length')
+          repo_accounted=0
+          repo_unaccounted=0
+
+          while IFS= read -r run_str; do
+            [ -z "$run_str" ] && continue
+            run_id=$(echo "$run_str" | jq -r '.id')
+            run_conclusion=$(echo "$run_str" | jq -r '.conclusion // "in_progress"')
+            run_created_at=$(echo "$run_str" | jq -r '.created_at')
+            run_url=$(echo "$run_str" | jq -r '.html_url')
+
+            # Check if run_id appears in accounted runs
+            if jq -e --argjson id "$run_id" '(.run_ids // .runs // []) | index($id)' "$body" >/dev/null 2>&1; then
+              repo_accounted=$((repo_accounted + 1))
               continue
             fi
 
-            runs_in_window=$(jq -c --arg since "$SINCE" --arg until "$UNTIL" \
-              '[.workflow_runs[]? | select(.created_at >= $since and .created_at <= $until)]' "$runs_file")
-            rm -f "$runs_file"
-
-            total_in_window=$(echo "$runs_in_window" | jq 'length')
-            repo_accounted=0
-            repo_unaccounted=0
-
-            while IFS= read -r run_str; do
-              [ -z "$run_str" ] && continue
-              run_id=$(echo "$run_str" | jq -r '.id')
-              run_conclusion=$(echo "$run_str" | jq -r '.conclusion // "in_progress"')
-              run_created_at=$(echo "$run_str" | jq -r '.created_at')
-              run_url=$(echo "$run_str" | jq -r '.html_url')
-
-              # Check if run_id appears in accounted runs
-              if jq -e --argjson id "$run_id" '(.run_ids // .runs // []) | index($id)' "$body" >/dev/null 2>&1; then
-                repo_accounted=$((repo_accounted + 1))
-                continue
-              fi
-
-              # Filter runs that legitimately produce no row (e.g. cancelled with 0 jobs executed) (#87).
-              if [ "$run_conclusion" = "cancelled" ]; then
-                jobs_file="$(mktemp)"
-                if gh api "repos/${repo}/actions/runs/${run_id}/jobs" > "$jobs_file" 2>/dev/null; then
-                  job_count=$(jq '.total_count // (.jobs | length)' "$jobs_file" 2>/dev/null || echo "-1")
-                  rm -f "$jobs_file"
-                  if [ "$job_count" -eq 0 ]; then
-                    echo "Filtered run ${run_id} on ${repo}: conclusion is cancelled with zero jobs executed (#87)"
-                    FILTERED_RUNS+=("${repo}|${run_id}|cancelled with 0 jobs executed")
-                    continue
-                  fi
-                else
-                  rm -f "$jobs_file"
+            # Filter runs that legitimately produce no row (e.g. cancelled with 0 jobs executed) (#87).
+            if [ "$run_conclusion" = "cancelled" ]; then
+              jobs_file="$(mktemp)"
+              if gh api "repos/${REPO}/actions/runs/${run_id}/jobs" > "$jobs_file" 2>/dev/null; then
+                job_count=$(jq '.total_count // (.jobs | length)' "$jobs_file" 2>/dev/null || echo "-1")
+                rm -f "$jobs_file"
+                if [ "$job_count" -eq 0 ]; then
+                  echo "Filtered run ${run_id} on ${REPO}: conclusion is cancelled with zero jobs executed (#87)"
+                  FILTERED_RUNS+=("${REPO}|${run_id}|cancelled with 0 jobs executed")
+                  continue
                 fi
+              else
+                rm -f "$jobs_file"
               fi
+            fi
 
-              repo_unaccounted=$((repo_unaccounted + 1))
-              UNACCOUNTED_RUNS+=("${repo}|${run_id}|${run_conclusion}|${run_created_at}|${run_url}")
-            done < <(echo "$runs_in_window" | jq -c '.[]')
-
-            REPO_STATS+=("${repo}|${total_in_window}|${repo_accounted}|${repo_unaccounted}")
-          done
+            repo_unaccounted=$((repo_unaccounted + 1))
+            UNACCOUNTED_RUNS+=("${REPO}|${run_id}|${run_conclusion}|${run_created_at}|${run_url}")
+          done < <(echo "$runs_in_window" | jq -c '.[]')
 
           # Write job summary
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
             {
               echo "## Telemetry Reconciliation Report (#87)"
               echo ""
+              echo "- **Repository:** \`${REPO}\`"
               echo "- **Window:** \`${SINCE}\` to \`${UNTIL}\` (${WINDOW_HOURS} hours)"
-              echo ""
-              echo "### Covered Repositories"
               echo ""
               echo "| Repository | Runs in Window | Accounted | Unaccounted | Status |"
               echo "| --- | --- | --- | --- | --- |"
-              for stat in "${REPO_STATS[@]}"; do
-                IFS='|' read -r r_name r_tot r_acc r_unacc <<< "$stat"
-                if [ "$r_unacc" -eq 0 ]; then
-                  r_status="✅ Clean"
-                else
-                  r_status="❌ ${r_unacc} unaccounted"
-                fi
-                echo "| \`${r_name}\` | ${r_tot} | ${r_acc} | ${r_unacc} | ${r_status} |"
-              done
-              for skip in "${SKIPPED_REPOS[@]}"; do
-                IFS='|' read -r s_name s_reason <<< "$skip"
-                echo "| \`${s_name}\` | — | — | — | ⚠️ Skipped: ${s_reason} |"
-              done
+              if [ "$repo_unaccounted" -eq 0 ]; then
+                r_status="✅ Clean"
+              else
+                r_status="❌ ${repo_unaccounted} unaccounted"
+              fi
+              echo "| \`${REPO}\` | ${total_in_window} | ${repo_accounted} | ${repo_unaccounted} | ${r_status} |"
               echo ""
 
               if [ ${#FILTERED_RUNS[@]} -gt 0 ]; then
@@ -230,18 +217,5 @@ jobs:
             exit 1
           fi
 
-          # A repository we could not read is unknown coverage, not clean coverage. Claiming
-          # "all runs accounted for" while some were never fetched reproduces the defect this
-          # reconciler exists to catch: a warning nobody reads behind a green check. Story: #87.
-          if [ ${#SKIPPED_REPOS[@]} -gt 0 ]; then
-            echo ""
-            echo "Reconciler failed: ${#SKIPPED_REPOS[@]} repository/repositories could not be read, so coverage is unknown for them."
-            for skip in "${SKIPPED_REPOS[@]}"; do
-              IFS='|' read -r s_repo s_err <<< "$skip"
-              echo "::error::Coverage unknown for ${s_repo}: ${s_err} (#87)"
-            done
-            exit 1
-          fi
-
-          echo "Reconciliation complete: all runs accounted for across ${#COVERED_REPOS[@]} repositories."
+          echo "Reconciliation complete: all runs accounted for in ${REPO}."
           exit 0

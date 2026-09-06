@@ -85,6 +85,7 @@ const JSON_OBJECT_FIELDS = ["config_resolution"];
 const VALID_LANE_EVENT_REASONS = new Set([
   "no-token",
   "auto-paused",
+  "paused-by-request", // #124, finding 3944010353
   "fork-head",
   "skip-author",
 ]);
@@ -119,6 +120,7 @@ const PR_STRING_FIELDS = [
   "head_sha",
   "merged_at",
   "closed_at",
+  "updated_at", // #136, finding 3944010389
 ];
 
 function truncateString(val, maxLen = 512) {
@@ -850,6 +852,13 @@ async function handlePrs(url, env) {
     }
     const lastPipe = cursor.lastIndexOf("|");
     if (firstPipe === lastPipe) {
+      if (repository === null) {
+        // Two-part cursor requires repository filter to be valid (#136, finding 3944010384).
+        return new Response(JSON.stringify({ error: "invalid cursor" }), {
+          status: 400,
+          headers: READ_HEADERS,
+        });
+      }
       const cursorUpdatedAt = cursor.slice(0, firstPipe);
       const cursorPrNumber = cursor.slice(firstPipe + 1);
       if (!cursorUpdatedAt || !cursorPrNumber || !/^\d+$/.test(cursorPrNumber)) {
@@ -926,6 +935,14 @@ async function handleAccountedRuns(request, url, env) {
     });
   }
 
+  const repository = url.searchParams.get("repository");
+  if (repository === null || repository === "") {
+    return new Response(JSON.stringify({ error: "missing repository" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
   const since = url.searchParams.get("since");
   if (since === null || since === "") {
     return new Response(JSON.stringify({ error: "missing since" }), {
@@ -974,14 +991,18 @@ async function handleAccountedRuns(request, url, env) {
     });
   }
 
-  const query = `SELECT run_id FROM usage_records WHERE recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
+  // Normalize timestamp bounds to canonical ISO string for text comparison in D1 (#87, finding 3944010386).
+  const sinceIso = sinceDate.toISOString();
+  const untilIso = untilDate.toISOString();
+
+  const query = `SELECT run_id FROM usage_records WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
 UNION
-SELECT run_id FROM lane_events WHERE recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
+SELECT run_id FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
 ORDER BY run_id ASC`;
 
   let results;
   try {
-    const res = await env.DB.prepare(query).bind(since, until, since, until).all();
+    const res = await env.DB.prepare(query).bind(repository, sinceIso, untilIso, repository, sinceIso, untilIso).all();
     results = res?.results ?? [];
   } catch {
     return new Response(JSON.stringify({ error: "database error" }), {
@@ -1000,6 +1021,7 @@ ORDER BY run_id ASC`;
 
   return new Response(
     JSON.stringify({
+      repository,
       since,
       until,
       run_ids: runIds,
@@ -1548,7 +1570,19 @@ async function handlePrState(request, env) {
     }
   }
 
-  const updatedAt = new Date().toISOString();
+  // Stale-write protection keys on when event occurred, not Worker receipt time (#136, finding 3944010389).
+  let updatedAt;
+  if (payload.updated_at !== undefined && payload.updated_at !== null) {
+    if (typeof payload.updated_at !== "string" || Number.isNaN(new Date(payload.updated_at).getTime())) {
+      return new Response(JSON.stringify({ error: "invalid updated_at" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    updatedAt = new Date(payload.updated_at).toISOString();
+  } else {
+    updatedAt = new Date().toISOString();
+  }
 
   try {
     const existing = await env.DB.prepare(

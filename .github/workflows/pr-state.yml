@@ -5,7 +5,7 @@ name: PR State
 # nothing out, which is what makes that safe here. That choice is otherwise alarming.
 on:
   pull_request_target:
-    types: [opened, reopened, closed, edited, ready_for_review, converted_to_draft]
+    types: [opened, reopened, synchronize, closed, edited, ready_for_review, converted_to_draft]
   workflow_call:
     secrets:
       REVIEW_TELEMETRY_TOKEN:
@@ -39,6 +39,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
           PR_CLOSED_AT: ${{ github.event.pull_request.closed_at }}
+          PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
         run: |
           set -uo pipefail
 
@@ -74,6 +75,7 @@ jobs:
             --arg head_sha "${PR_HEAD_SHA:-}" \
             --arg merged_at "${PR_MERGED_AT:-}" \
             --arg closed_at "${PR_CLOSED_AT:-}" \
+            --arg updated_at "${PR_UPDATED_AT:-}" \
             '{
               repository: $repo,
               pr_number: $pr_number,
@@ -86,7 +88,8 @@ jobs:
             + (if $head_ref != "" then {head_ref: $head_ref} else {} end)
             + (if $head_sha != "" then {head_sha: $head_sha} else {} end)
             + (if $merged_at != "" and $merged_at != "null" then {merged_at: $merged_at} else {} end)
-            + (if $closed_at != "" and $closed_at != "null" then {closed_at: $closed_at} else {} end)')
+            + (if $closed_at != "" and $closed_at != "null" then {closed_at: $closed_at} else {} end)
+            + (if $updated_at != "" and $updated_at != "null" then {updated_at: $updated_at} else {} end)')
 
           hdr="$(mktemp)"
           trap 'rm -f "$hdr"' EXIT

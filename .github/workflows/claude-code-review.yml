@@ -300,6 +300,7 @@ jobs:
           raw_skip_authors = os.environ.get("INPUT_SKIP_AUTHORS", "dependabot[bot]")
           skip_authors = ",".join(x.strip() for x in raw_skip_authors.split(",") if x.strip())
           path_filters = []
+          escalation_paths = []
           path_instructions = []
           # No workflow input backs this: it is an experiment handle read from the repo
           # config only, and absent means control. Story: #47 amendment.
@@ -309,6 +310,7 @@ jobs:
               "default_model": "workflow default",
               "auto_pause_rounds": "workflow default",
               "skip_authors": "workflow default",
+              "escalation_paths": "workflow default",
               "path_filters": "workflow default",
               "path_instructions": "workflow default",
               "variant": "control",
@@ -322,6 +324,7 @@ jobs:
               "default_model",
               "auto_pause_rounds",
               "skip_authors",
+              "escalation_paths",
               "path_filters",
               "path_instructions",
               "variant",
@@ -392,6 +395,11 @@ jobs:
                           filters = review["path_filters"]
                           if not isinstance(filters, list) or not all(isinstance(x, str) for x in filters):
                               errors.append(f"Invalid value for 'review.path_filters' in {filename}: expected list of strings")
+
+                      if "escalation_paths" in review:
+                          esc = review["escalation_paths"]
+                          if not isinstance(esc, list) or not all(isinstance(x, str) for x in esc):
+                              errors.append(f"Invalid value for 'review.escalation_paths' in {filename}: expected list of strings")
 
                       if "variant" in review:
                           variant_value = review["variant"]
@@ -546,6 +554,10 @@ jobs:
                                   path_filters = review["path_filters"]
                                   sources["path_filters"] = "org defaults"
                                   org_consumed.append(f"review.path_filters={path_filters}")
+                              if "escalation_paths" in review:
+                                  escalation_paths = review["escalation_paths"]
+                                  sources["escalation_paths"] = "org defaults"
+                                  org_consumed.append(f"review.escalation_paths={escalation_paths}")
                               # variant is an experiment handle for THIS repo's own comparison,
                               # never an org-wide default. Story: #47 amendment.
                               if "variant" in review:
@@ -636,6 +648,10 @@ jobs:
                                   path_filters = review["path_filters"]
                                   sources["path_filters"] = "repo config"
                                   consumed.append(f"review.path_filters={path_filters}")
+                              if "escalation_paths" in review:
+                                  escalation_paths = review["escalation_paths"]
+                                  sources["escalation_paths"] = "repo config"
+                                  consumed.append(f"review.escalation_paths={escalation_paths}")
                               if "variant" in review:
                                   variant = review["variant"]
                                   sources["variant"] = "repo config"
@@ -675,6 +691,7 @@ jobs:
           resolved_config = {
               "auto_pause_rounds": auto_pause_rounds,
               "default_model": default_model,
+              "escalation_paths": escalation_paths,
               "path_filters": path_filters,
               "path_instructions": path_instructions,
               "skip_authors": skip_authors,
@@ -687,6 +704,7 @@ jobs:
           print(f"  review.default_model: {default_model} (source: {sources['default_model']})")
           print(f"  review.auto_pause_rounds: {auto_pause_rounds} (source: {sources['auto_pause_rounds']})")
           print(f"  review.skip_authors: {skip_authors} (source: {sources['skip_authors']})")
+          print(f"  review.escalation_paths: {escalation_paths} (source: {sources['escalation_paths']})")
           print(f"  review.path_filters: {path_filters} (source: {sources['path_filters']})")
           print(f"  review.path_instructions: {len(path_instructions)} entries (source: {sources['path_instructions']})")
           print(f"  review.variant: {variant or '(control)'} (source: {sources['variant']})")
@@ -698,6 +716,7 @@ jobs:
                   f.write(f"default_model={default_model}\n")
                   f.write(f"auto_pause_rounds={auto_pause_rounds}\n")
                   f.write(f"skip_authors={skip_authors}\n")
+                  f.write(f"escalation_paths={json.dumps(escalation_paths)}\n")
                   f.write(f"path_filters={json.dumps(path_filters)}\n")
                   f.write(f"path_instructions={json.dumps(path_instructions)}\n")
                   f.write(f"config_resolution={config_resolution}\n")
@@ -935,7 +954,7 @@ jobs:
           resolve_range
 
       # Match --model against allowlisted aliases; ID emitted from list, never read from body.
-      # If no summon override is present, escalate to opus if changed files match review.path_filters.
+      # If no summon override is present, escalate to opus if changed files match review.escalation_paths.
       # Misses fall back to default_model and emit a warning. Stories: #27, #34.
       - name: Resolve review model
         id: model
@@ -946,7 +965,7 @@ jobs:
           BODY: ${{ github.event.comment.body }}
           ALIASES: ${{ inputs.model_aliases }}
           DEFAULT_MODEL: ${{ steps.config.outputs.default_model }}
-          PATH_FILTERS: ${{ steps.config.outputs.path_filters }}
+          ESCALATION_PATHS: ${{ steps.config.outputs.escalation_paths }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -961,7 +980,7 @@ jobs:
           body = os.environ.get("BODY", "")
           aliases_raw = os.environ.get("ALIASES", "")
           default_model = os.environ.get("DEFAULT_MODEL", "claude-sonnet-5")
-          path_filters_raw = os.environ.get("PATH_FILTERS", "[]")
+          escalation_paths_raw = os.environ.get("ESCALATION_PATHS", "[]")
 
           if not aliases_raw.strip():
               print("::error::model_aliases input is empty", file=sys.stderr)
@@ -1007,11 +1026,11 @@ jobs:
           else:
               # 2. No summon override: check path-based escalation against changed files
               try:
-                  path_filters = json.loads(path_filters_raw) if path_filters_raw else []
+                  escalation_paths = json.loads(escalation_paths_raw) if escalation_paths_raw else []
               except Exception:
-                  path_filters = []
+                  escalation_paths = []
 
-              if path_filters and repo and pr:
+              if escalation_paths and repo and pr:
                   cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--jq", ".[].filename"]
                   res = subprocess.run(cmd, capture_output=True, text=True)
                   if res.returncode != 0:
@@ -1036,7 +1055,7 @@ jobs:
                       matched_file = None
                       matched_pattern = None
                       for f in changed_files:
-                          for pat in path_filters:
+                          for pat in escalation_paths:
                               if matches_pattern(f, pat):
                                   matched_file = f
                                   matched_pattern = pat
@@ -1188,13 +1207,19 @@ jobs:
                       print(f"::warning::Failed to read incremental range file: {e}")
           else:
               if repo and pr:
-                  cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate"]
+                  cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--slurp"]
                   res = subprocess.run(cmd, capture_output=True, text=True)
                   if res.returncode == 0 and res.stdout.strip():
                       try:
-                          files_data = json.loads(res.stdout)
+                          pages = json.loads(res.stdout)
+                          files_data = [f for page in pages for f in page]
                       except Exception as e:
                           print(f"::warning::Failed to parse PR files JSON: {e}")
+                          raise SystemExit("Cannot apply path filters without the PR file list")
+                  else:
+                      err = res.stderr.strip() if res.stderr else f"exit code {res.returncode}"
+                      print(f"::error::Failed to list PR files: {err}; path filters were not applied.")
+                      raise SystemExit(1)
 
           if files_data:
               raw_changed_files = len(files_data)

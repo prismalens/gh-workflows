@@ -1,0 +1,29 @@
+# This is a managed caller stub.
+# Logic lives in .github/workflows/telemetry-reconcile.yml.
+# Do not add logic here.
+
+name: Telemetry Reconciler
+
+on:
+  schedule:
+    # 04:23 UTC daily. Off the hour on purpose: GitHub delays cron at peak hours (#44).
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      window_hours:
+        description: 'Hours to look back for reconciliation (default 26 to bridge boundaries)'
+        required: false
+        default: 26
+        type: number
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  reconcile:
+    uses: ./.github/workflows/telemetry-reconcile.yml
+    with:
+      window_hours: ${{ inputs.window_hours || 26 }}
+    secrets:
+      REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}

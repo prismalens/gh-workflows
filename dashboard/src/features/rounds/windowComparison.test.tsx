@@ -101,4 +101,30 @@ describe("WindowComparisonPanel (#94)", () => {
     const scopeBadge = screen.getByTestId("variant-scope");
     expect(scopeBadge).toHaveTextContent("Scope: mixed window");
   });
+
+  it("refuses to characterise when window has >= 10 rows but fewer than 10 valid duration measurements (#94, finding 3944010373)", () => {
+    const row: RoundRow = {
+      ...BASE_ROUNDS[0],
+      duration_ms: 100_000,
+    };
+    // 12 rows, but only 3 have duration_ms (9 are null)
+    const windowRounds: RoundRow[] = [
+      row,
+      { ...BASE_ROUNDS[1], duration_ms: 110_000 },
+      { ...BASE_ROUNDS[2], duration_ms: 120_000 },
+      ...BASE_ROUNDS.slice(3, 12).map((r) => ({ ...r, duration_ms: null })),
+    ];
+    expect(windowRounds.length).toBe(12);
+
+    render(<WindowComparisonPanel row={row} windowRounds={windowRounds} />);
+
+    // Must show n = 12 on badge
+    const badge = screen.getByTestId("window-n");
+    expect(badge).toHaveTextContent("n = 12");
+
+    // But because valid durations < 10, must NOT characterise distribution
+    const notice = screen.getByTestId("low-n-notice");
+    expect(notice).toHaveTextContent("n too small to characterise");
+    expect(screen.queryByTestId("window-distribution")).not.toBeInTheDocument();
+  });
 });

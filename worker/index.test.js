@@ -999,8 +999,8 @@ describe("Worker telemetry ingest", () => {
       ]);
     });
 
-    it("supports all four valid reasons: no-token, auto-paused, fork-head, skip-author", async () => {
-      const reasons = ["no-token", "auto-paused", "fork-head", "skip-author"];
+    it("supports all five valid reasons: no-token, auto-paused, paused-by-request, fork-head, skip-author", async () => {
+      const reasons = ["no-token", "auto-paused", "paused-by-request", "fork-head", "skip-author"];
       for (const reason of reasons) {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
@@ -2558,6 +2558,74 @@ describe("Worker telemetry read API", () => {
         assert.equal(db.queries.length, 1);
         assert.ok(db.queries[0].sql.includes("SELECT updated_at FROM prs"));
       });
+
+      it("rejects invalid updated_at in POST /pr-state (#136, finding 3944010389)", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/pr-state", {
+          method: "POST",
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: {
+            repository: "prismalens/gh-workflows",
+            pr_number: 136,
+            state: "open",
+            source: "hook",
+            updated_at: "invalid-date",
+          },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        const data = await res.json();
+        assert.equal(data.error, "invalid updated_at");
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("respects event updated_at and drops out-of-order writes with older event timestamps (#136, finding 3944010389)", async () => {
+        const db = createFakeDb({
+          handler: (sql, args) => {
+            if (sql.includes("SELECT updated_at FROM prs")) {
+              return { first: { updated_at: "2026-09-06T12:00:00.000Z" } };
+            }
+            return null;
+          },
+        });
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+
+        // Out-of-order write with older updated_at is dropped
+        const olderReq = makeRequest("/pr-state", {
+          method: "POST",
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: {
+            repository: "prismalens/gh-workflows",
+            pr_number: 136,
+            state: "open",
+            source: "hook",
+            updated_at: "2026-09-06T11:00:00.000Z",
+          },
+        });
+        const olderRes = await worker.fetch(olderReq, env);
+        assert.equal(olderRes.status, 204);
+        assert.equal(db.queries.length, 1); // Only the SELECT query ran
+
+        // Newer write succeeds and writes the supplied updated_at
+        const newerReq = makeRequest("/pr-state", {
+          method: "POST",
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: {
+            repository: "prismalens/gh-workflows",
+            pr_number: 136,
+            state: "closed",
+            source: "hook",
+            updated_at: "2026-09-06T13:00:00.000Z",
+          },
+        });
+        const newerRes = await worker.fetch(newerReq, env);
+        assert.equal(newerRes.status, 204);
+        assert.equal(db.queries.length, 3); // SELECT + INSERT
+        const insertQuery = db.queries[2];
+        assert.ok(insertQuery.sql.includes("INSERT INTO prs"));
+        assert.equal(insertQuery.args[10], "2026-09-06T13:00:00.000Z");
+      });
     });
 
     describe("GET /api/prs (Read Route & Pagination)", () => {
@@ -2683,10 +2751,42 @@ describe("Worker telemetry read API", () => {
         assert.equal(query.args[2], "prismalens/gh-workflows");
         assert.equal(query.args[4], 136);
       });
+
+      it("two-part cursor is rejected without repository and accepted with repository (#136, finding 3944010384)", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+
+        // Two-part cursor without repository filter is rejected with 400
+        const noRepoReq = makeAuthenticatedRequest(
+          "/api/prs?cursor=2026-09-06T12:00:00.000Z|136",
+          helper.jwt
+        );
+        const noRepoRes = await worker.fetch(noRepoReq, env);
+        assert.equal(noRepoRes.status, 400);
+        const errBody = await noRepoRes.json();
+        assert.equal(errBody.error, "invalid cursor");
+
+        // Two-part cursor with repository filter is accepted
+        const repoReq = makeAuthenticatedRequest(
+          "/api/prs?repository=prismalens/gh-workflows&cursor=2026-09-06T12:00:00.000Z|136",
+          helper.jwt
+        );
+        const repoRes = await worker.fetch(repoReq, env);
+        assert.equal(repoRes.status, 200);
+
+        const query = db.queries[0];
+        assert.ok(query.sql.includes("(updated_at < ? OR (updated_at = ? AND pr_number < ?))"));
+        assert.equal(query.args[0], "prismalens/gh-workflows");
+        assert.equal(query.args[1], "2026-09-06T12:00:00.000Z");
+        assert.equal(query.args[2], "2026-09-06T12:00:00.000Z");
+        assert.equal(query.args[3], 136);
+      });
     });
   });
 
   describe("GET /api/accounted-runs (#87)", () => {
+    const validRepo = "prismalens/gh-workflows";
     const validSince = "2026-08-30T00:00:00Z";
     const validUntil = "2026-08-31T02:00:00Z";
 
@@ -2694,7 +2794,7 @@ describe("Worker telemetry read API", () => {
       it("returns 401 when authorization header is missing", async () => {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
           method: "GET",
         });
         const res = await worker.fetch(req, env);
@@ -2707,7 +2807,7 @@ describe("Worker telemetry read API", () => {
       it("returns 401 when authorization token is wrong", async () => {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
           method: "GET",
           headers: { authorization: "Bearer wrong-secret-token" },
         });
@@ -2721,7 +2821,7 @@ describe("Worker telemetry read API", () => {
       it("returns 401 when REVIEW_TELEMETRY_TOKEN is not in env", async () => {
         const db = createFakeDb();
         const env = { DB: db };
-        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
           method: "GET",
           headers: { authorization: `Bearer ${VALID_TOKEN}` },
         });
@@ -2734,10 +2834,35 @@ describe("Worker telemetry read API", () => {
     describe("Validation", () => {
       const authHeader = { authorization: `Bearer ${VALID_TOKEN}` };
 
+      it("returns 400 when repository parameter is missing or empty", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        // Missing repository
+        const req1 = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res1 = await worker.fetch(req1, env);
+        assert.equal(res1.status, 400);
+        const body1 = await res1.json();
+        assert.equal(body1.error, "missing repository");
+
+        // Empty repository
+        const req2 = makeRequest(`/api/accounted-runs?repository=&since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res2 = await worker.fetch(req2, env);
+        assert.equal(res2.status, 400);
+        const body2 = await res2.json();
+        assert.equal(body2.error, "missing repository");
+        assert.equal(db.queries.length, 0);
+      });
+
       it("returns 400 when since parameter is missing", async () => {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-        const req = makeRequest(`/api/accounted-runs?until=${validUntil}`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&until=${validUntil}`, {
           method: "GET",
           headers: authHeader,
         });
@@ -2751,7 +2876,7 @@ describe("Worker telemetry read API", () => {
       it("returns 400 when until parameter is missing", async () => {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-        const req = makeRequest(`/api/accounted-runs?since=${validSince}`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${validSince}`, {
           method: "GET",
           headers: authHeader,
         });
@@ -2767,7 +2892,7 @@ describe("Worker telemetry read API", () => {
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
         const invalidValues = ["not-a-date", "2026-08-30", "2026-08-30T12:00:00+05:00", "2026-08-30T12:00:00"];
         for (const badSince of invalidValues) {
-          const req = makeRequest(`/api/accounted-runs?since=${encodeURIComponent(badSince)}&until=${validUntil}`, {
+          const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${encodeURIComponent(badSince)}&until=${validUntil}`, {
             method: "GET",
             headers: authHeader,
           });
@@ -2782,7 +2907,7 @@ describe("Worker telemetry read API", () => {
       it("returns 400 when until is not a valid ISO 8601 UTC timestamp", async () => {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=invalid-until-ts`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${validSince}&until=invalid-until-ts`, {
           method: "GET",
           headers: authHeader,
         });
@@ -2796,7 +2921,7 @@ describe("Worker telemetry read API", () => {
       it("returns 400 when until precedes since", async () => {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-        const req = makeRequest(`/api/accounted-runs?since=${validUntil}&until=${validSince}`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${validUntil}&until=${validSince}`, {
           method: "GET",
           headers: authHeader,
         });
@@ -2811,7 +2936,7 @@ describe("Worker telemetry read API", () => {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
         const over30Days = "2026-09-30T00:00:01Z"; // 31 days + 1 sec
-        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${over30Days}`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${validSince}&until=${over30Days}`, {
           method: "GET",
           headers: authHeader,
         });
@@ -2828,7 +2953,7 @@ describe("Worker telemetry read API", () => {
         });
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
         const exactly30Days = "2026-09-29T00:00:00Z";
-        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${exactly30Days}`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${validSince}&until=${exactly30Days}`, {
           method: "GET",
           headers: authHeader,
         });
@@ -2855,7 +2980,7 @@ describe("Worker telemetry read API", () => {
           },
         });
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
           method: "GET",
           headers: authHeader,
         });
@@ -2863,6 +2988,7 @@ describe("Worker telemetry read API", () => {
         assert.equal(res.status, 200);
         const data = await res.json();
 
+        assert.equal(data.repository, validRepo);
         assert.equal(data.since, validSince);
         assert.equal(data.until, validUntil);
         assert.deepEqual(data.run_ids, [1001, 1002, 1003]);
@@ -2872,13 +2998,40 @@ describe("Worker telemetry read API", () => {
           assert.ok(Number.isInteger(id));
         }
 
-        // Verify query bindings respect the window
+        // Verify query bindings respect the window and repository
         assert.equal(db.queries.length, 1);
         const query = db.queries[0];
         assert.ok(query.sql.includes("FROM usage_records"));
         assert.ok(query.sql.includes("FROM lane_events"));
         assert.ok(query.sql.includes("UNION"));
-        assert.deepEqual(query.args, [validSince, validUntil, validSince, validUntil]);
+        const expectedSince = new Date(validSince).toISOString();
+        const expectedUntil = new Date(validUntil).toISOString();
+        assert.deepEqual(query.args, [validRepo, expectedSince, expectedUntil, validRepo, expectedSince, expectedUntil]);
+      });
+
+      it("normalizes +00:00 timestamp to Z ISO string in bindings (#87, finding 3944010386)", async () => {
+        const db = createFakeDb({
+          handler: () => ({ results: [{ run_id: 2001 }] }),
+        });
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const zeroOffsetSince = "2026-08-30T00:00:00+00:00";
+        const zeroOffsetUntil = "2026-08-31T02:00:00+00:00";
+        const req = makeRequest(
+          `/api/accounted-runs?repository=${validRepo}&since=${encodeURIComponent(zeroOffsetSince)}&until=${encodeURIComponent(zeroOffsetUntil)}`,
+          {
+            method: "GET",
+            headers: authHeader,
+          }
+        );
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data.run_ids, [2001]);
+
+        assert.equal(db.queries.length, 1);
+        const query = db.queries[0];
+        assert.equal(query.args[1], "2026-08-30T00:00:00.000Z");
+        assert.equal(query.args[2], "2026-08-31T02:00:00.000Z");
       });
 
       it("returns empty run_ids array when neither table has matches", async () => {
@@ -2886,13 +3039,14 @@ describe("Worker telemetry read API", () => {
           handler: () => ({ results: [] }),
         });
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
           method: "GET",
           headers: authHeader,
         });
         const res = await worker.fetch(req, env);
         assert.equal(res.status, 200);
         const data = await res.json();
+        assert.equal(data.repository, validRepo);
         assert.equal(data.since, validSince);
         assert.equal(data.until, validUntil);
         assert.deepEqual(data.run_ids, []);
@@ -2901,7 +3055,7 @@ describe("Worker telemetry read API", () => {
       it("returns 500 when database throws an error", async () => {
         const db = createFakeDb({ shouldThrow: true });
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+        const req = makeRequest(`/api/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
           method: "GET",
           headers: authHeader,
         });

@@ -53,7 +53,9 @@ def run_filter_step(script, *,
                     config_resolution=None,
                     resolve_cf="",
                     resolve_dl="",
-                    gh_files_json=None):
+                    gh_files_json=None,
+                    gh_fail=False,
+                    gh_malformed=False):
     cleanup_tmp()
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -63,9 +65,22 @@ def run_filter_step(script, *,
 
             # Stub gh api if needed
             gh_stub = binp / "gh"
-            files_payload = json.dumps(gh_files_json or []) if gh_files_json is not None else "[]"
+            if gh_malformed:
+                files_payload = "not-valid-json{"
+            elif gh_files_json is not None:
+                if gh_files_json and isinstance(gh_files_json[0], list):
+                    files_payload = json.dumps(gh_files_json)
+                else:
+                    files_payload = json.dumps([gh_files_json])
+            else:
+                files_payload = "[]"
+
             gh_stub.write_text(f"""#!/usr/bin/env bash
 args="$*"
+if [ "${{FAKE_GH_FAIL:-0}}" = "1" ]; then
+  echo "gh: API rate limit exceeded" >&2
+  exit 1
+fi
 case "$args" in
   *"pulls/"*"/files"*)
     printf '%s\\n' '{files_payload}'
@@ -97,6 +112,7 @@ exit 1
                 PR="105",
                 RESOLVE_CHANGED_FILES=str(resolve_cf),
                 RESOLVE_DIFF_LINES=str(resolve_dl),
+                FAKE_GH_FAIL="1" if gh_fail else "0",
             )
             if path_filters is not None:
                 env["PATH_FILTERS"] = json.dumps(path_filters) if isinstance(path_filters, list) else str(path_filters)
@@ -365,6 +381,58 @@ def main():
         if record.get("diff_lines_raw") != 68651:
             fails.append(f"case 6: want diff_lines_raw=68651, got {record.get('diff_lines_raw')}")
         print("  ok    telemetry payload carries both filtered and raw counts (diff_lines_raw, changed_files_raw)")
+
+    # -------------------------------------------------------------
+    # 7. Multi-page PR is slurped and aggregated across pages (#140, finding 3944010346)
+    # -------------------------------------------------------------
+    page1 = [
+        {"filename": "package-lock.json", "additions": 100, "deletions": 0},
+    ]
+    page2 = [
+        {"filename": "src/main.ts", "additions": 20, "deletions": 5},
+    ]
+    rc, outs, res, stdout, _ = run_filter_step(
+        filter_script,
+        gh_files_json=[page1, page2],
+    )
+    if rc != 0:
+        fails.append(f"case 7: multi-page slurp failed with rc={rc}")
+    elif not res:
+        fails.append("case 7: no result written")
+    else:
+        if res.get("changed_files") != 1:
+            fails.append(f"case 7: want changed_files=1, got {res.get('changed_files')}")
+        if res.get("changed_files_raw") != 2:
+            fails.append(f"case 7: want changed_files_raw=2, got {res.get('changed_files_raw')}")
+        if res.get("excluded_count") != 1:
+            fails.append(f"case 7: want excluded_count=1, got {res.get('excluded_count')}")
+        if res.get("diff_lines") != 25:
+            fails.append(f"case 7: want diff_lines=25, got {res.get('diff_lines')}")
+        print("  ok    multi-page PR is slurped and aggregated across pages")
+
+    # -------------------------------------------------------------
+    # 8. gh api failure fails step with exit 1 (#140, finding 3944010346)
+    # -------------------------------------------------------------
+    rc, outs, res, stdout, _ = run_filter_step(
+        filter_script,
+        gh_fail=True,
+    )
+    if rc != 1:
+        fails.append(f"case 8: expected rc=1 on gh api failure, got {rc}")
+    else:
+        print("  ok    gh api failure exits 1")
+
+    # -------------------------------------------------------------
+    # 9. JSON parse error fails step with exit 1 (#140, finding 3944010346)
+    # -------------------------------------------------------------
+    rc, outs, res, stdout, _ = run_filter_step(
+        filter_script,
+        gh_malformed=True,
+    )
+    if rc != 1:
+        fails.append(f"case 9: expected rc=1 on malformed JSON, got {rc}")
+    else:
+        print("  ok    malformed PR files JSON exits 1")
 
     print()
     if fails:

@@ -50,7 +50,7 @@ export function WindowComparisonPanel({ row, windowRounds = [] }: WindowComparis
 
   const maxDuration = Math.max(...durations, thisDuration, 1000);
   const minDuration = durations.length > 0 ? durations[0] : 0;
-  const canCharacterise = n >= WINDOW_DISTRIBUTION_MIN_N;
+  const canCharacterise = durations.length >= WINDOW_DISTRIBUTION_MIN_N;
 
   // Compute distribution metrics only if n >= WINDOW_DISTRIBUTION_MIN_N (#94)
   const median = canCharacterise && durations.length > 0

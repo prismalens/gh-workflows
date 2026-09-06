@@ -338,6 +338,18 @@ export function isChangesResponse(value: unknown): value is ChangesResponse {
 export const REQUIRED_ROUND_AGENT_KEYS = [
   "session_id",
   "agent_id",
+  "subagent_type",
+  "spawn_depth",
+  "status",
+  "model",
+  "input_tokens",
+  "output_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "duration_ms",
+  "tool_uses",
+  "tool_uses_by_name",
+  "file_paths",
 ] as const;
 
 export function isRoundAgentRow(row: unknown): row is RoundAgentRow {
@@ -346,17 +358,31 @@ export function isRoundAgentRow(row: unknown): row is RoundAgentRow {
   return (
     REQUIRED_ROUND_AGENT_KEYS.every((key) => key in r) &&
     typeof r.session_id === "string" &&
-    typeof r.agent_id === "string"
+    typeof r.agent_id === "string" &&
+    (r.subagent_type === null || typeof r.subagent_type === "string") &&
+    (r.spawn_depth === null || typeof r.spawn_depth === "number") &&
+    (r.status === null || typeof r.status === "string") &&
+    (r.model === null || typeof r.model === "string") &&
+    (r.input_tokens === null || typeof r.input_tokens === "number") &&
+    (r.output_tokens === null || typeof r.output_tokens === "number") &&
+    (r.cache_read_input_tokens === null || typeof r.cache_read_input_tokens === "number") &&
+    (r.cache_creation_input_tokens === null || typeof r.cache_creation_input_tokens === "number") &&
+    (r.duration_ms === null || typeof r.duration_ms === "number") &&
+    (r.tool_uses === null || typeof r.tool_uses === "number") &&
+    (r.tool_uses_by_name === null || typeof r.tool_uses_by_name === "string") &&
+    (r.file_paths === null || typeof r.file_paths === "string")
   );
 }
 
 export function isRoundAgentsResponse(value: unknown): value is RoundAgentsResponse {
   if (!value || typeof value !== "object") return false;
-  const { rows, next_cursor } = value as { rows?: unknown; next_cursor?: unknown };
+  const r = value as Record<string, unknown>;
+  if (!("rows" in r) || !("next_cursor" in r)) return false;
+  const { rows, next_cursor } = r;
   return (
     Array.isArray(rows) &&
     rows.every(isRoundAgentRow) &&
-    (next_cursor === null || next_cursor === undefined || typeof next_cursor === "string")
+    (next_cursor === null || typeof next_cursor === "string")
   );
 }
 

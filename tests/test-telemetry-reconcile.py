@@ -3,7 +3,9 @@
 
 Extracts the REAL shell body out of .github/workflows/telemetry-reconcile.yml and runs it
 against stubbed curl and gh, verifying:
-1. Workflow structure: cron schedule, workflow_dispatch input, permissions.
+1. Workflow structure:
+   - Reusable workflow (.github/workflows/telemetry-reconcile.yml): workflow_call inputs, secrets, permissions.
+   - Caller stub (.github/workflows/telemetry-reconcile-caller.yml): cron schedule, workflow_dispatch, permissions.
 2. Clean window: empty finding set when all runs match accounted set (exit 0).
 3. One unaccounted run: non-zero exit with repo, run ID, conclusion, created_at, URL named.
 4. Filtered run: cancelled run with zero jobs is filtered, named in summary, and exits 0.
@@ -11,8 +13,10 @@ against stubbed curl and gh, verifying:
 6. Read API unreachable (timeout, network failure, HTTP 500) fails loudly without false clean.
 7. Read API rejected (HTTP 401, 403) fails loudly with distinct diagnosis.
 8. Missing REVIEW_TELEMETRY_TOKEN fails loudly and names the secret.
-9. Cross-owner repository inaccessible emits warning and summary notice rather than silent skip.
-10. Security: secret token value is never echoed in stdout or stderr.
+9. Slurped pagination and page-two fixture: runs on page two are detected and accounted for.
+10. GitHub API failure on workflow runs read fails loudly with error annotation.
+11. Missing repository fails loudly.
+12. Security: secret token value is never echoed in stdout or stderr.
 
 Run: python3 tests/test-telemetry-reconcile.py
 """
@@ -26,6 +30,7 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = ROOT / ".github/workflows/telemetry-reconcile.yml"
+CALLER_WF = ROOT / ".github/workflows/telemetry-reconcile-caller.yml"
 
 
 def extract_step_script(job_name: str, step_name: str) -> str:
@@ -133,15 +138,20 @@ if [[ "$endpoint" == *"actions/workflows/claude-code-review.yml/runs"* ]]; then
   repo=$(echo "$endpoint" | sed -E 's|^repos/([^/]+/[^/]+)/actions/.*|\1|')
   if [ -n "$mock_file" ] && [ -f "$mock_file" ]; then
     status=$(jq -r --arg r "$repo" '.repos[$r].status // "ok"' "$mock_file")
-    if [ "$status" = "permission_denied" ] || [ "$status" = "not_found" ]; then
+    if [ "$status" = "permission_denied" ] || [ "$status" = "not_found" ] || [ "$status" = "api_error" ]; then
       echo "gh: Not Found (HTTP 404)" >&2
       exit 1
     fi
+    pages=$(jq -c --arg r "$repo" '.repos[$r].pages // null' "$mock_file")
+    if [ "$pages" != "null" ]; then
+      echo "$pages"
+      exit 0
+    fi
     runs=$(jq -c --arg r "$repo" '.repos[$r].runs // []' "$mock_file")
-    echo "{\"total_count\": $(echo "$runs" | jq 'length'), \"workflow_runs\": $runs}"
+    echo "[{\"total_count\": $(echo "$runs" | jq 'length'), \"workflow_runs\": $runs}]"
     exit 0
   fi
-  echo '{"total_count": 0, "workflow_runs": []}'
+  echo '[{"total_count": 0, "workflow_runs": []}]'
   exit 0
 fi
 
@@ -168,7 +178,7 @@ def run_reconciler_step(script, *, token="valid-test-telemetry-token-123",
                         curl_code="200", curl_fail=False,
                         accounted_json=None, custom_headers=None, custom_body=None,
                         gh_mocks=None, since="2026-09-05T02:00:00Z", until="2026-09-06T04:00:00Z",
-                        window_hours="26", env_overrides=None):
+                        window_hours="26", repository="prismalens/gh-workflows", env_overrides=None):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
@@ -200,6 +210,8 @@ def run_reconciler_step(script, *, token="valid-test-telemetry-token-123",
             WINDOW_HOURS=str(window_hours),
             SINCE=since,
             UNTIL=until,
+            REPOSITORY=repository,
+            GITHUB_REPOSITORY=repository,
         )
         if accounted_json is not None:
             env["MOCK_ACCOUNTED_JSON"] = json.dumps(accounted_json)
@@ -228,33 +240,67 @@ def main():
 
     wf_data = yaml.safe_load(WF.read_text(encoding="utf-8"))
 
-    # Triggers
+    # Reusable workflow triggers: workflow_call
     on_section = wf_data.get("on") or wf_data.get(True) or {}
-    if "schedule" not in on_section or not isinstance(on_section["schedule"], list):
-        fails.append("workflow missing on.schedule list")
+    if "workflow_call" not in on_section:
+        fails.append("reusable workflow missing on.workflow_call")
     else:
-        cron_expr = on_section["schedule"][0].get("cron")
-        if not cron_expr:
-            fails.append("workflow schedule missing cron expression")
-        else:
-            print(f"  ok    workflow schedule trigger: cron '{cron_expr}'")
-
-    if "workflow_dispatch" not in on_section:
-        fails.append("workflow missing on.workflow_dispatch")
-    else:
-        inputs = (on_section.get("workflow_dispatch") or {}).get("inputs", {})
-        window_in = inputs.get("window_hours", {})
+        call_inputs = (on_section.get("workflow_call") or {}).get("inputs", {})
+        window_in = call_inputs.get("window_hours", {})
         if str(window_in.get("default", "")) != "26":
-            fails.append(f"workflow_dispatch.inputs.window_hours default want '26', got {window_in.get('default')!r}")
+            fails.append(f"workflow_call.inputs.window_hours default want '26', got {window_in.get('default')!r}")
         else:
-            print("  ok    workflow dispatch trigger: present with window_hours default '26'")
+            print("  ok    reusable workflow trigger: workflow_call with window_hours default 26")
 
-    # Permissions
+        call_secrets = (on_section.get("workflow_call") or {}).get("secrets", {})
+        if not call_secrets.get("REVIEW_TELEMETRY_TOKEN", {}).get("required"):
+            fails.append("workflow_call.secrets.REVIEW_TELEMETRY_TOKEN missing or not required")
+        else:
+            print("  ok    reusable workflow secrets: REVIEW_TELEMETRY_TOKEN required")
+
+    # Permissions on reusable workflow
     perms = wf_data.get("permissions", {})
-    if perms.get("contents") != "read":
-        fails.append(f"permissions want contents: read, got {perms!r}")
+    if perms.get("actions") != "read" or perms.get("contents") != "read":
+        fails.append(f"permissions want actions: read, contents: read, got {perms!r}")
     else:
-        print("  ok    workflow permissions: contents: read")
+        print("  ok    reusable workflow permissions: actions: read, contents: read")
+
+    # Caller stub verification
+    if not CALLER_WF.exists():
+        fails.append(f"caller workflow file not found at {CALLER_WF}")
+    else:
+        caller_data = yaml.safe_load(CALLER_WF.read_text(encoding="utf-8"))
+        caller_on = caller_data.get("on") or caller_data.get(True) or {}
+        if "schedule" not in caller_on or not isinstance(caller_on["schedule"], list):
+            fails.append("caller workflow missing on.schedule list")
+        else:
+            cron_expr = caller_on["schedule"][0].get("cron")
+            if cron_expr != "23 4 * * *":
+                fails.append(f"caller workflow schedule cron want '23 4 * * *', got {cron_expr!r}")
+            else:
+                print(f"  ok    caller workflow schedule trigger: cron '{cron_expr}'")
+
+        if "workflow_dispatch" not in caller_on:
+            fails.append("caller workflow missing on.workflow_dispatch")
+        else:
+            caller_inputs = (caller_on.get("workflow_dispatch") or {}).get("inputs", {})
+            window_in = caller_inputs.get("window_hours", {})
+            if str(window_in.get("default", "")) != "26":
+                fails.append(f"caller workflow_dispatch.inputs.window_hours default want '26', got {window_in.get('default')!r}")
+            else:
+                print("  ok    caller workflow dispatch trigger: present with window_hours default '26'")
+
+        caller_perms = caller_data.get("permissions", {})
+        if caller_perms.get("actions") != "read" or caller_perms.get("contents") != "read":
+            fails.append(f"caller permissions want actions: read, contents: read, got {caller_perms!r}")
+        else:
+            print("  ok    caller workflow permissions: actions: read, contents: read")
+
+        caller_job = caller_data.get("jobs", {}).get("reconcile", {})
+        if caller_job.get("uses") != "./.github/workflows/telemetry-reconcile.yml":
+            fails.append(f"caller job uses want './.github/workflows/telemetry-reconcile.yml', got {caller_job.get('uses')!r}")
+        else:
+            print("  ok    caller job invokes reusable workflow: uses ./.github/workflows/telemetry-reconcile.yml")
 
     script = extract_step_script("reconcile", "Reconcile review telemetry")
 
@@ -267,47 +313,14 @@ def main():
     # -------------------------------------------------------------
     gh_clean_mocks = {
         "repos": {
-            "prismalens/prismalens": {
+            "prismalens/gh-workflows": {
                 "status": "ok",
                 "runs": [
                     {
                         "id": 1001,
                         "conclusion": "success",
                         "created_at": "2026-09-05T12:00:00Z",
-                        "html_url": "https://github.com/prismalens/prismalens/actions/runs/1001",
-                    }
-                ],
-            },
-            "prismalens/sreforge": {
-                "status": "ok",
-                "runs": [
-                    {
-                        "id": 1002,
-                        "conclusion": "success",
-                        "created_at": "2026-09-05T14:00:00Z",
-                        "html_url": "https://github.com/prismalens/sreforge/actions/runs/1002",
-                    }
-                ],
-            },
-            "prismalens/gh-workflows": {
-                "status": "ok",
-                "runs": [
-                    {
-                        "id": 1003,
-                        "conclusion": "failure",
-                        "created_at": "2026-09-05T16:00:00Z",
-                        "html_url": "https://github.com/prismalens/gh-workflows/actions/runs/1003",
-                    }
-                ],
-            },
-            "Sumit1993/mage-memory": {
-                "status": "ok",
-                "runs": [
-                    {
-                        "id": 1004,
-                        "conclusion": "success",
-                        "created_at": "2026-09-05T18:00:00Z",
-                        "html_url": "https://github.com/Sumit1993/mage-memory/actions/runs/1004",
+                        "html_url": "https://github.com/prismalens/gh-workflows/actions/runs/1001",
                     }
                 ],
             },
@@ -317,7 +330,7 @@ def main():
     accounted_clean = {
         "since": SINCE,
         "until": UNTIL,
-        "run_ids": [1001, 1002, 1003, 1004],
+        "run_ids": [1001],
     }
     code, stdout, stderr, summary, auth = run_reconciler_step(
         script,
@@ -344,30 +357,23 @@ def main():
     # -------------------------------------------------------------
     gh_unacc_mocks = {
         "repos": {
-            "prismalens/prismalens": {
+            "prismalens/gh-workflows": {
                 "status": "ok",
                 "runs": [
                     {
                         "id": 2001,
                         "conclusion": "success",
                         "created_at": "2026-09-05T12:00:00Z",
-                        "html_url": "https://github.com/prismalens/prismalens/actions/runs/2001",
-                    }
-                ],
-            },
-            "prismalens/sreforge": {
-                "status": "ok",
-                "runs": [
+                        "html_url": "https://github.com/prismalens/gh-workflows/actions/runs/2001",
+                    },
                     {
                         "id": 2002,
                         "conclusion": "failure",
                         "created_at": "2026-09-05T15:30:00Z",
-                        "html_url": "https://github.com/prismalens/sreforge/actions/runs/2002",
-                    }
+                        "html_url": "https://github.com/prismalens/gh-workflows/actions/runs/2002",
+                    },
                 ],
             },
-            "prismalens/gh-workflows": {"status": "ok", "runs": []},
-            "Sumit1993/mage-memory": {"status": "ok", "runs": []},
         },
         "jobs": {},
     }
@@ -387,16 +393,16 @@ def main():
     if code == 0:
         fails.append("unaccounted run: expected non-zero exit, got 0")
         print("  FAIL  unaccounted run: exit 0")
-    elif "2002" not in combined or "prismalens/sreforge" not in combined:
-        fails.append("unaccounted run: output does not name run 2002 and repository prismalens/sreforge")
+    elif "2002" not in combined or "prismalens/gh-workflows" not in combined:
+        fails.append("unaccounted run: output does not name run 2002 and repository prismalens/gh-workflows")
         print("  FAIL  unaccounted run: missing run details in output")
-    elif "https://github.com/prismalens/sreforge/actions/runs/2002" not in combined:
+    elif "https://github.com/prismalens/gh-workflows/actions/runs/2002" not in combined:
         fails.append("unaccounted run: output missing run URL")
         print("  FAIL  unaccounted run: missing run URL in output")
     elif "::error::" not in combined:
         fails.append("unaccounted run: missing ::error:: annotation")
         print("  FAIL  unaccounted run: missing ::error::")
-    elif "2002" not in summary or "prismalens/sreforge" not in summary:
+    elif "2002" not in summary or "prismalens/gh-workflows" not in summary:
         fails.append("unaccounted run: step summary does not include unaccounted run 2002")
         print("  FAIL  unaccounted run: missing run in summary")
     else:
@@ -407,17 +413,14 @@ def main():
     # -------------------------------------------------------------
     gh_cancelled_zero_jobs = {
         "repos": {
-            "prismalens/prismalens": {"status": "ok", "runs": []},
-            "prismalens/sreforge": {"status": "ok", "runs": []},
-            "prismalens/gh-workflows": {"status": "ok", "runs": []},
-            "Sumit1993/mage-memory": {
+            "prismalens/gh-workflows": {
                 "status": "ok",
                 "runs": [
                     {
                         "id": 3001,
                         "conclusion": "cancelled",
                         "created_at": "2026-09-05T17:00:00Z",
-                        "html_url": "https://github.com/Sumit1993/mage-memory/actions/runs/3001",
+                        "html_url": "https://github.com/prismalens/gh-workflows/actions/runs/3001",
                     }
                 ],
             },
@@ -459,8 +462,6 @@ def main():
     # -------------------------------------------------------------
     gh_cancelled_with_jobs = {
         "repos": {
-            "prismalens/prismalens": {"status": "ok", "runs": []},
-            "prismalens/sreforge": {"status": "ok", "runs": []},
             "prismalens/gh-workflows": {
                 "status": "ok",
                 "runs": [
@@ -472,7 +473,6 @@ def main():
                     }
                 ],
             },
-            "Sumit1993/mage-memory": {"status": "ok", "runs": []},
         },
         "jobs": {
             "4001": {
@@ -590,47 +590,137 @@ def main():
         print("  ok    empty REVIEW_TELEMETRY_TOKEN: exits non-zero and names secret in error")
 
     # -------------------------------------------------------------
-    # 9. Cross-owner repository inaccessible emits warning and summary note
+    # 9. Slurped pagination and page-two fixture (finding 3944010366)
     # -------------------------------------------------------------
-    gh_cross_owner_skip = {
+    gh_paginated_mocks = {
         "repos": {
-            "prismalens/prismalens": {"status": "ok", "runs": []},
-            "prismalens/sreforge": {"status": "ok", "runs": []},
-            "prismalens/gh-workflows": {"status": "ok", "runs": []},
-            "Sumit1993/mage-memory": {"status": "permission_denied"},
+            "prismalens/gh-workflows": {
+                "status": "ok",
+                "pages": [
+                    {
+                        "total_count": 2,
+                        "workflow_runs": [
+                            {
+                                "id": 5001,
+                                "conclusion": "success",
+                                "created_at": "2026-09-05T10:00:00Z",
+                                "html_url": "https://github.com/prismalens/gh-workflows/actions/runs/5001",
+                            }
+                        ],
+                    },
+                    {
+                        "total_count": 2,
+                        "workflow_runs": [
+                            {
+                                "id": 5002,
+                                "conclusion": "success",
+                                "created_at": "2026-09-05T12:00:00Z",
+                                "html_url": "https://github.com/prismalens/gh-workflows/actions/runs/5002",
+                            }
+                        ],
+                    },
+                ],
+            },
+        },
+        "jobs": {},
+    }
+    # 9a: Both runs on both pages accounted for -> exit 0 (happy path)
+    accounted_both_pages = {
+        "since": SINCE,
+        "until": UNTIL,
+        "run_ids": [5001, 5002],
+    }
+    code, stdout, stderr, summary, auth = run_reconciler_step(
+        script,
+        accounted_json=accounted_both_pages,
+        gh_mocks=gh_paginated_mocks,
+        since=SINCE,
+        until=UNTIL,
+    )
+    combined = stdout + "\n" + stderr
+    if code != 0:
+        fails.append(f"slurped pagination (all accounted): expected exit 0, got {code}:\n{combined}")
+        print(f"  FAIL  slurped pagination (all accounted): exited {code}")
+    elif "All review runs accounted for" not in summary:
+        fails.append("slurped pagination (all accounted): summary missing clean report")
+        print("  FAIL  slurped pagination (all accounted): summary missing clean report")
+    elif "| `prismalens/gh-workflows` | 2 | 2 | 0 | ✅ Clean |" not in summary:
+        fails.append("slurped pagination (all accounted): summary table missing 2 runs in window")
+        print("  FAIL  slurped pagination (all accounted): summary table missing 2 runs")
+    else:
+        print("  ok    slurped pagination (all accounted): run on page two detected and accounted for (exit 0)")
+
+    # 9b: Run on page two unaccounted -> exit 1 (failure path)
+    accounted_missing_page2 = {
+        "since": SINCE,
+        "until": UNTIL,
+        "run_ids": [5001],  # 5002 on page 2 is missing!
+    }
+    code, stdout, stderr, summary, auth = run_reconciler_step(
+        script,
+        accounted_json=accounted_missing_page2,
+        gh_mocks=gh_paginated_mocks,
+        since=SINCE,
+        until=UNTIL,
+    )
+    combined = stdout + "\n" + stderr
+    if code == 0:
+        fails.append("slurped pagination (page 2 unaccounted): expected exit 1, got 0")
+        print("  FAIL  slurped pagination (page 2 unaccounted): exit 0")
+    elif "5002" not in combined or "::error::" not in combined:
+        fails.append("slurped pagination (page 2 unaccounted): run 5002 not reported as error")
+        print("  FAIL  slurped pagination (page 2 unaccounted): run 5002 not in error output")
+    else:
+        print("  ok    slurped pagination (page 2 unaccounted): run on page two detected as unaccounted (exit 1)")
+
+    # -------------------------------------------------------------
+    # 10. Read workflow runs API failure emits ::error:: and fails
+    # -------------------------------------------------------------
+    gh_api_fail_mock = {
+        "repos": {
+            "prismalens/gh-workflows": {
+                "status": "api_error",
+            },
         },
         "jobs": {},
     }
     code, stdout, stderr, summary, auth = run_reconciler_step(
         script,
-        accounted_json=accounted_empty,
-        gh_mocks=gh_cross_owner_skip,
+        accounted_json=accounted_clean,
+        gh_mocks=gh_api_fail_mock,
         since=SINCE,
         until=UNTIL,
     )
     combined = stdout + "\n" + stderr
-    # An unreadable repository is unknown coverage, not clean coverage, so the run must go
-    # red rather than report success over the repos it did reach. Story: #87.
     if code == 0:
-        fails.append(f"cross-owner skip: expected non-zero when a repository could not be read, got 0:\n{combined}")
-        print("  FAIL  cross-owner skip: exited 0 with a repository unread")
-    elif "::warning::Skipped Sumit1993/mage-memory" not in combined:
-        fails.append("cross-owner skip: did not emit ::warning::Skipped Sumit1993/mage-memory")
-        print("  FAIL  cross-owner skip: missing warning annotation")
-    elif "::error::Coverage unknown for Sumit1993/mage-memory" not in combined:
-        fails.append("cross-owner skip: did not emit a coverage-unknown error annotation")
-        print("  FAIL  cross-owner skip: missing coverage-unknown error")
-    elif "all runs accounted for" in combined:
-        fails.append("cross-owner skip: claimed all runs accounted for while a repository was unread")
-        print("  FAIL  cross-owner skip: false clean")
-    elif "Sumit1993/mage-memory" not in summary or "⚠️ Skipped" not in summary:
-        fails.append("cross-owner skip: summary did not record skipped repository")
-        print("  FAIL  cross-owner skip: missing skipped notice in summary")
+        fails.append("gh api failure: expected non-zero exit, got 0")
+        print("  FAIL  gh api failure: exit 0")
+    elif "::error::Failed to read workflow runs for prismalens/gh-workflows" not in combined:
+        fails.append("gh api failure: missing ::error::Failed to read workflow runs annotation")
+        print("  FAIL  gh api failure: missing error annotation")
     else:
-        print("  ok    cross-owner repository inaccessible: warns, errors, records the skip, and fails rather than claiming clean")
+        print("  ok    gh api failure: exits non-zero and emits error annotation")
 
     # -------------------------------------------------------------
-    # 10. Security: secret token value is never echoed in output
+    # 11. Missing repository fails loudly
+    # -------------------------------------------------------------
+    code, stdout, stderr, summary, auth = run_reconciler_step(
+        script,
+        repository="",
+        env_overrides={"REPOSITORY": "", "GITHUB_REPOSITORY": ""},
+    )
+    combined = stdout + "\n" + stderr
+    if code == 0:
+        fails.append("missing repository: expected non-zero exit, got 0")
+        print("  FAIL  missing repository: exit 0")
+    elif "Repository cannot be determined" not in combined:
+        fails.append("missing repository: missing error diagnostic")
+        print("  FAIL  missing repository: missing error diagnostic")
+    else:
+        print("  ok    missing repository: exits non-zero and warns repository cannot be determined")
+
+    # -------------------------------------------------------------
+    # 12. Security: secret token value is never echoed in output
     # -------------------------------------------------------------
     secret_val = "SUPER_SECRET_VALUE_NEVER_ECHO_ABC789"
     _, out_clean, err_clean, _, _ = run_reconciler_step(script, token=secret_val, accounted_json=accounted_clean, gh_mocks=gh_clean_mocks)

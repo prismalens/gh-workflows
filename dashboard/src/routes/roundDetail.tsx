@@ -75,7 +75,13 @@ function RoundDetailPage() {
       ) : (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <ResolutionPanel row={round.data.row} />
-          <TimingPanel row={round.data.row} agents={agents.data?.rows} />
+          {agents.isPending ? (
+            <LoadingRows rows={2} label="Loading subagents" />
+          ) : agents.isError ? (
+            <QueryError error={agents.error} title="Could not load subagents" />
+          ) : (
+            <TimingPanel row={round.data.row} agents={agents.data.rows} />
+          )}
           <WindowComparisonPanel row={round.data.row} windowRounds={windowRounds.data?.rows} />
           <FanOutPanel row={round.data.row} />
           <TokensPanel row={round.data.row} />
