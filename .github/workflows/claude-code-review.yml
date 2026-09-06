@@ -1069,6 +1069,179 @@ jobs:
         if: steps.mode.outputs.mode == 'incremental'
         run: cp /tmp/incremental-range.json "$GITHUB_WORKSPACE/.claude-incremental-range.json"
 
+      # Default path filters exclude generated files, lockfiles, and build artifacts (#105).
+      # Excluded files are subtracted from changed_files and diff_lines before telemetry is built.
+      - name: Filter review paths
+        id: filter_paths
+        if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.resolve.outputs.number }}
+          MODE: ${{ steps.mode.outputs.mode }}
+          PATH_FILTERS: ${{ steps.config.outputs.path_filters }}
+          CONFIG_RESOLUTION: ${{ steps.config.outputs.config_resolution }}
+          RESOLVE_CHANGED_FILES: ${{ needs.resolve.outputs.changed_files }}
+          RESOLVE_DIFF_LINES: ${{ needs.resolve.outputs.diff_lines }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import fnmatch
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          # Default path filter patterns for generated files and lockfiles (#105)
+          DEFAULT_PATH_FILTERS = [
+              "package-lock.json",
+              "pnpm-lock.yaml",
+              "yarn.lock",
+              "Cargo.lock",
+              "poetry.lock",
+              "go.sum",
+              "dist/**",
+              "build/**",
+              "vendor/**",
+              "**/__snapshots__/**",
+              "*.min.js",
+              "*.min.css",
+              "**/node_modules/**",
+          ]
+
+          def matches_pattern(path: str, pattern: str) -> bool:
+              if pattern.endswith("/**"):
+                  prefix = pattern[:-3]
+                  if path == prefix or path.startswith(prefix + "/"):
+                      return True
+                  if fnmatch.fnmatch(path, pattern):
+                      return True
+              elif fnmatch.fnmatch(path, pattern):
+                  return True
+              return False
+
+          # Determine effective path_filters: pure override semantics (#105)
+          config_resolution_raw = os.environ.get("CONFIG_RESOLUTION", "{}")
+          try:
+              config_res = json.loads(config_resolution_raw) if config_resolution_raw else {}
+              sources = config_res.get("sources", {})
+              pf_source = sources.get("path_filters", "workflow default")
+          except Exception:
+              pf_source = "workflow default"
+
+          raw_filters = os.environ.get("PATH_FILTERS", "")
+          if pf_source in ("repo config", "org defaults"):
+              try:
+                  path_filters = json.loads(raw_filters) if raw_filters else []
+              except Exception:
+                  path_filters = []
+          elif raw_filters and raw_filters not in ("[]", '""'):
+              try:
+                  path_filters = json.loads(raw_filters)
+              except Exception:
+                  path_filters = DEFAULT_PATH_FILTERS
+          else:
+              path_filters = DEFAULT_PATH_FILTERS
+
+          mode = os.environ.get("MODE", "")
+          repo = os.environ.get("REPO", "")
+          pr = os.environ.get("PR", "")
+          resolve_cf = os.environ.get("RESOLVE_CHANGED_FILES", "")
+          resolve_dl = os.environ.get("RESOLVE_DIFF_LINES", "")
+
+          is_incremental = (mode == "incremental")
+          files_data = []
+
+          if is_incremental:
+              range_file = None
+              for p in [pathlib.Path(".claude-incremental-range.json"), pathlib.Path("/tmp/incremental-range.json")]:
+                  if p.exists():
+                      range_file = p
+                      break
+              if range_file and range_file.exists():
+                  try:
+                      with open(range_file, "r", encoding="utf-8") as f:
+                          range_data = json.load(f)
+                      files_data = range_data.get("files", [])
+                  except Exception as e:
+                      print(f"::warning::Failed to read incremental range file: {e}")
+          else:
+              if repo and pr:
+                  cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate"]
+                  res = subprocess.run(cmd, capture_output=True, text=True)
+                  if res.returncode == 0 and res.stdout.strip():
+                      try:
+                          files_data = json.loads(res.stdout)
+                      except Exception as e:
+                          print(f"::warning::Failed to parse PR files JSON: {e}")
+
+          if files_data:
+              raw_changed_files = len(files_data)
+              raw_diff_lines = sum(
+                  (item.get("additions", 0) or 0) + (item.get("deletions", 0) or 0)
+                  if isinstance(item, dict) else 0
+                  for item in files_data
+              )
+              kept_files = []
+              excluded_count = 0
+              for item in files_data:
+                  fname = item.get("filename", "") if isinstance(item, dict) else str(item)
+                  if any(matches_pattern(fname, pat) for pat in path_filters):
+                      excluded_count += 1
+                  else:
+                      kept_files.append(item)
+              filtered_changed_files = len(kept_files)
+              filtered_diff_lines = sum(
+                  (item.get("additions", 0) or 0) + (item.get("deletions", 0) or 0)
+                  if isinstance(item, dict) else 0
+                  for item in kept_files
+              )
+          else:
+              raw_changed_files = int(resolve_cf) if resolve_cf.isdigit() else 0
+              raw_diff_lines = int(resolve_dl) if resolve_dl.isdigit() else 0
+              filtered_changed_files = raw_changed_files
+              filtered_diff_lines = raw_diff_lines
+              excluded_count = 0
+              kept_files = []
+
+          print(f"path_filters: {len(path_filters)} patterns, {excluded_count} of {raw_changed_files} changed file(s) excluded")
+
+          if is_incremental:
+              for p in [pathlib.Path("/tmp/incremental-range.json"), pathlib.Path(".claude-incremental-range.json")]:
+                  if p.exists():
+                      try:
+                          with open(p, "r", encoding="utf-8") as f:
+                              data = json.load(f)
+                          data["files"] = kept_files
+                          with open(p, "w", encoding="utf-8") as f:
+                              json.dump(data, f)
+                      except Exception as e:
+                          print(f"::warning::Failed to update {p}: {e}")
+
+          result = {
+              "changed_files": filtered_changed_files,
+              "diff_lines": filtered_diff_lines,
+              "changed_files_raw": raw_changed_files,
+              "diff_lines_raw": raw_diff_lines,
+              "excluded_count": excluded_count,
+              "pattern_count": len(path_filters),
+          }
+          try:
+              with open("/tmp/claude-path-filters-result.json", "w", encoding="utf-8") as f:
+                  json.dump(result, f)
+          except Exception as e:
+              print(f"::warning::Failed to write path filters result: {e}")
+
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as f:
+                  f.write(f"changed_files={filtered_changed_files}\n")
+                  f.write(f"diff_lines={filtered_diff_lines}\n")
+                  f.write(f"changed_files_raw={raw_changed_files}\n")
+                  f.write(f"diff_lines_raw={raw_diff_lines}\n")
+          PY
+
       - name: Resolve path instructions
         id: path_instructions
         if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental'
@@ -1769,11 +1942,29 @@ jobs:
 
           changed_files="${RESOLVE_CHANGED_FILES:-}"
           diff_lines="${RESOLVE_DIFF_LINES:-}"
+          changed_files_raw="${RESOLVE_CHANGED_FILES:-}"
+          diff_lines_raw="${RESOLVE_DIFF_LINES:-}"
           if [ -f /tmp/incremental-range.json ]; then
             range_files=$(jq -r '.files | length' /tmp/incremental-range.json 2>/dev/null || true)
             range_lines=$(jq -r '[.files[]? | (.additions // 0) + (.deletions // 0)] | add // 0' /tmp/incremental-range.json 2>/dev/null || true)
-            if [ -n "${range_files:-}" ] && [ "$range_files" != "null" ]; then changed_files="$range_files"; fi
-            if [ -n "${range_lines:-}" ] && [ "$range_lines" != "null" ]; then diff_lines="$range_lines"; fi
+            if [ -n "${range_files:-}" ] && [ "$range_files" != "null" ]; then
+              changed_files="$range_files"
+              changed_files_raw="$range_files"
+            fi
+            if [ -n "${range_lines:-}" ] && [ "$range_lines" != "null" ]; then
+              diff_lines="$range_lines"
+              diff_lines_raw="$range_lines"
+            fi
+          fi
+          if [ -f /tmp/claude-path-filters-result.json ]; then
+            pf_cf=$(jq -r '.changed_files // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
+            pf_dl=$(jq -r '.diff_lines // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
+            pf_cfr=$(jq -r '.changed_files_raw // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
+            pf_dlr=$(jq -r '.diff_lines_raw // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
+            if [ -n "$pf_cf" ]; then changed_files="$pf_cf"; fi
+            if [ -n "$pf_dl" ]; then diff_lines="$pf_dl"; fi
+            if [ -n "$pf_cfr" ]; then changed_files_raw="$pf_cfr"; fi
+            if [ -n "$pf_dlr" ]; then diff_lines_raw="$pf_dlr"; fi
           fi
 
           # The store never takes model-authored or attacker-influencable text, so .result
@@ -1789,6 +1980,8 @@ jobs:
             --arg head_sha "${HEAD_SHA:-}" \
             --arg changed_files "${changed_files:-}" \
             --arg diff_lines "${diff_lines:-}" \
+            --arg changed_files_raw "${changed_files_raw:-}" \
+            --arg diff_lines_raw "${diff_lines_raw:-}" \
             --arg prompt_hash "${PROMPT_HASH:-}" \
             --arg action_version "${ACTION_VERSION:-}" \
             --arg config_hash "${CONFIG_HASH:-}" \
@@ -1834,6 +2027,8 @@ jobs:
               permission_denials: denials,
               changed_files: num($changed_files),
               diff_lines: num($diff_lines),
+              changed_files_raw: num($changed_files_raw),
+              diff_lines_raw: num($diff_lines_raw),
               prompt_hash: (if $prompt_hash == "" then null else $prompt_hash end),
               action_version: (if $action_version == "" then null else $action_version end),
               config_hash: (if $config_hash == "" then null else $config_hash end),
