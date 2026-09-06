@@ -62,7 +62,7 @@ export function TileStrip({ n, windowLabel, children }: TileStripProps) {
       </p>
       <div
         data-testid="tile-strip"
-        className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4"
+        className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3"
       >
         {children}
       </div>

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { RoundRow } from "@/api/types";
 import { makeRounds } from "@/fixtures/rounds";
-import { DenialsPanel, FanOutPanel, RawRecordPanel, TokensPanel } from "./panels";
+import { DenialsPanel, FanOutPanel, RawRecordPanel, ResolutionPanel, TokensPanel } from "./panels";
 
 const BASE = makeRounds({ count: 1 })[0];
 
@@ -114,10 +114,32 @@ describe("degraded banners on a round panel name the reason the row supports (#1
     render(<DenialsPanel row={row} />);
     render(<RawRecordPanel row={row} />);
 
-    // "unbuilt" banners (per-agent breakdown, review verdict) are unrelated to #100
-    // and still render; none of the six #100 reasons should appear.
+    // "unbuilt" banners (per-agent breakdown) are unrelated to #100 and still
+    // render; none of the six #100 reasons should appear.
     for (const el of screen.getAllByTestId("degraded")) {
       expect(el.getAttribute("data-reason")).toBe("unbuilt");
     }
+  });
+});
+
+describe("the review verdict banner stops claiming ignorance of a column that exists (#141)", () => {
+  it("renders the decoded label and the raw text when verdict_kind is recorded", () => {
+    const row: RoundRow = {
+      ...BASE,
+      verdict_kind: "reviewed",
+      verdict_text: "2 inline comments, no blocking findings",
+    };
+    render(<ResolutionPanel row={row} />);
+    expect(screen.queryByTestId("degraded")).not.toBeInTheDocument();
+    expect(screen.getByText("reviewed")).toBeInTheDocument();
+    expect(screen.getByText("2 inline comments, no blocking findings")).toBeInTheDocument();
+  });
+
+  it("says the round predates the field rather than that it was never collected", () => {
+    const row: RoundRow = { ...BASE, verdict_kind: null, verdict_text: null };
+    render(<ResolutionPanel row={row} />);
+    const el = screen.getByText("Review verdict").closest('[data-testid="degraded"]');
+    expect(el).toHaveAttribute("data-reason", "lane-did-not-send");
+    expect(el?.textContent ?? "").toContain("predates the verdict fields");
   });
 });

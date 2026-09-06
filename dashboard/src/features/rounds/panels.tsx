@@ -23,6 +23,7 @@ import {
   CACHE_READ_WEIGHT,
   LIST_RATE_EQUIVALENT,
 } from "@/honesty/thresholds";
+import { decodeVerdictKind, VERDICT_KIND_BUCKET_COPY } from "@/honesty/verdict";
 import {
   formatCount,
   formatDuration,
@@ -137,11 +138,25 @@ export function ResolutionPanel({ row }: { row: RoundRow }) {
         )}
       </div>
 
-      <Degraded
-        what="Review verdict"
-        reason="unbuilt"
-        detail="A record proves a round ran and finished; whether it approved, requested changes or found nothing is not sent to telemetry. Two states are derivable today: reviewed, and unknown."
-      />
+      {row.verdict_kind !== null ? (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground">Review verdict</span>
+          <span className="text-sm font-medium">
+            {VERDICT_KIND_BUCKET_COPY[decodeVerdictKind(row)].label}
+          </span>
+          {row.verdict_text && (
+            <pre className="whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-xs">
+              {row.verdict_text}
+            </pre>
+          )}
+        </div>
+      ) : (
+        <Degraded
+          what="Review verdict"
+          reason="lane-did-not-send"
+          detail="This round predates the verdict fields."
+        />
+      )}
     </Panel>
   );
 }
@@ -282,7 +297,7 @@ export function FanOutPanel({ row }: { row: RoundRow }) {
       <Degraded
         what="Per-agent breakdown"
         reason="unbuilt"
-        detail="Which agent spent what would have to come from parsing the execution file's sidechains. Gap M9 in #46."
+        detail="This round predates per-agent rows. Rounds recorded since #131 draw a timeline in the timing panel."
       />
     </Panel>
   );

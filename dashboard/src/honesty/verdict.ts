@@ -1,4 +1,5 @@
 import type { RoundRow } from "@/api/types";
+import { derivedMetric, type Metric } from "./metrics";
 
 /**
  * Decodes a round into the four states the lane records, plus `unknown`.
@@ -145,4 +146,128 @@ export function verdictMix(rows: RoundRow[]): VerdictMix {
     unknown,
     n: rows.length,
   };
+}
+
+/**
+ * The six states the verdict strip and the silent-rate tile decode straight
+ * from `verdict_kind`, with no `round_type` fallback: a round with no
+ * `verdict_kind` predates the field rather than being an unreadable round
+ * type. Kept apart from FourStateVerdict above, which folds in the
+ * round_type fallback and stays load-bearing for callers outside this lane
+ * (features/failures, features/repos). Issue #141.
+ */
+export type VerdictKindBucket =
+  | "reviewed"
+  | "threads-only"
+  | "did-not-run"
+  | "silent"
+  | "error"
+  | "no-verdict-recorded";
+
+/** `clean` is folded into reviewed, matching headStatus.ts's own treatment of it. */
+const VERDICT_KIND_BUCKET_MAP: Record<string, VerdictKindBucket> = {
+  reviewed: "reviewed",
+  "reviewed-incremental": "reviewed",
+  clean: "reviewed",
+  "verify-rechecked": "threads-only",
+  "auto-paused": "did-not-run",
+  "no-token": "did-not-run",
+  "no-new-commits": "did-not-run",
+  silent: "silent",
+  "verify-silent": "silent",
+  error: "error",
+};
+
+export function decodeVerdictKind(row: RoundRow): VerdictKindBucket {
+  if (row.verdict_kind === null) return "no-verdict-recorded";
+  return VERDICT_KIND_BUCKET_MAP[row.verdict_kind] ?? "error";
+}
+
+export const VERDICT_KIND_BUCKET_COPY: Record<
+  VerdictKindBucket,
+  { label: string; explain: string }
+> = {
+  reviewed: {
+    label: "reviewed",
+    explain: "verdict_kind is reviewed, reviewed-incremental, or clean: the lane read the head.",
+  },
+  "threads-only": {
+    label: "threads-only",
+    explain: "verdict_kind is verify-rechecked: threads were re-checked without reading the head.",
+  },
+  "did-not-run": {
+    label: "did-not-run",
+    explain: "verdict_kind is auto-paused, no-token, or no-new-commits: the round did not execute.",
+  },
+  silent: {
+    label: "silent",
+    explain: "verdict_kind is silent or verify-silent: the lane finished and posted nothing.",
+  },
+  error: {
+    label: "error",
+    explain: "verdict_kind is error: the round failed.",
+  },
+  "no-verdict-recorded": {
+    label: "no verdict recorded",
+    explain: "verdict_kind is null: this round predates the verdict fields.",
+  },
+};
+
+export interface VerdictKindMix {
+  reviewed: number;
+  threadsOnly: number;
+  didNotRun: number;
+  silent: number;
+  error: number;
+  noVerdictRecorded: number;
+  n: number;
+  [key: string]: number;
+}
+
+const VERDICT_KIND_MIX_KEY: Record<VerdictKindBucket, keyof Omit<VerdictKindMix, "n">> = {
+  reviewed: "reviewed",
+  "threads-only": "threadsOnly",
+  "did-not-run": "didNotRun",
+  silent: "silent",
+  error: "error",
+  "no-verdict-recorded": "noVerdictRecorded",
+};
+
+export function verdictKindMix(rows: RoundRow[]): VerdictKindMix {
+  const mix: VerdictKindMix = {
+    reviewed: 0,
+    threadsOnly: 0,
+    didNotRun: 0,
+    silent: 0,
+    error: 0,
+    noVerdictRecorded: 0,
+    n: rows.length,
+  };
+  for (const row of rows) {
+    mix[VERDICT_KIND_MIX_KEY[decodeVerdictKind(row)]]++;
+  }
+  return mix;
+}
+
+/**
+ * Rounds whose verdict_kind means the lane posted nothing worth reading: the
+ * two states features/prs/headStatus.ts:81-86 groups into its "failed" state
+ * (silent, verify-silent), plus a hard error. Not imported from there so
+ * honesty/ stays free of a features/ dependency; keep the two in step by hand.
+ */
+function isSilentOrError(bucket: VerdictKindBucket): boolean {
+  return bucket === "silent" || bucket === "error";
+}
+
+/**
+ * Share of rounds in the window that posted nothing, over the rounds that
+ * carry a verdict_kind at all. `kind: "empty"` means none of the windowed
+ * rows carry a verdict_kind, which the caller must render as a round predating
+ * the field rather than as "no rounds in range".
+ */
+export function silentRateMetric(rows: RoundRow[]): Metric {
+  const withVerdict = rows.filter((row) => row.verdict_kind !== null);
+  const silentCount = withVerdict.filter((row) => isSilentOrError(decodeVerdictKind(row))).length;
+  const rate = withVerdict.length === 0 ? null : silentCount / withVerdict.length;
+  return derivedMetric(rate, withVerdict);
 }

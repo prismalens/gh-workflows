@@ -1,9 +1,10 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChangeRow, RoundRow } from "@/api/types";
 import { CountTile } from "@/honesty/Tile";
-import { decodeVerdict, verdictMix } from "@/honesty/verdict";
+import { decodeVerdict, verdictKindMix, verdictMix } from "@/honesty/verdict";
+import { VerdictStrip } from "./VerdictStrip";
 import { makeRounds } from "@/fixtures/rounds";
 import {
   activityBand,
@@ -45,6 +46,37 @@ describe("the two-state verdict decoding", () => {
     const mix = verdictMix(rows);
     expect(mix.reviewed + mix.unknown).toBe(mix.n);
     expect(mix.n).toBe(30);
+  });
+});
+
+describe("the verdict strip buckets straight from verdict_kind (#141)", () => {
+  it("renders all six buckets and their counts", () => {
+    const rows = [
+      round({ session_id: "r1", verdict_kind: "reviewed" }),
+      round({ session_id: "r2", verdict_kind: "verify-rechecked" }),
+      round({ session_id: "r3", verdict_kind: "auto-paused" }),
+      round({ session_id: "r4", verdict_kind: "silent" }),
+      round({ session_id: "r5", verdict_kind: "error" }),
+      round({ session_id: "r6", verdict_kind: null }),
+    ];
+    render(<VerdictStrip mix={verdictKindMix(rows)} windowLabel="the last 7 days" />);
+    const strip = screen.getByTestId("verdict-strip");
+    for (const label of [
+      "reviewed",
+      "threads-only",
+      "did-not-run",
+      "silent",
+      "error",
+      "no verdict recorded",
+    ]) {
+      expect(within(strip).getByText(label)).toBeInTheDocument();
+    }
+    expect(within(strip).getByText("n = 6")).toBeInTheDocument();
+  });
+
+  it("says no rounds in range rather than an empty bar", () => {
+    render(<VerdictStrip mix={verdictKindMix([])} windowLabel="the last 7 days" />);
+    expect(screen.getByText("no rounds in range")).toBeInTheDocument();
   });
 });
 

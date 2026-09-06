@@ -33,6 +33,7 @@ npm test                    # vitest: honesty rules, API contract, both routes
 npx tsc -b                  # typecheck alone
 npm run dev                 # Vite dev server, proxying /api to 127.0.0.1:8787
 VITE_FIXTURES=1 npm run dev # same, but against the in-memory fixture table
+npm run shots               # every route, headless Chrome, fixture data, into shots/
 ```
 
 `dist/` is gitignored. A deploy has to build it first. Unlike the block above, these run
