@@ -296,7 +296,7 @@ export function FanOutPanel({ row }: { row: RoundRow }) {
 
       <Degraded
         what="Per-agent breakdown"
-        reason="unbuilt"
+        reason="lane-did-not-send"
         detail="This round predates per-agent rows. Rounds recorded since #131 draw a timeline in the timing panel."
       />
     </Panel>

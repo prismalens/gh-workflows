@@ -114,10 +114,12 @@ describe("degraded banners on a round panel name the reason the row supports (#1
     render(<DenialsPanel row={row} />);
     render(<RawRecordPanel row={row} />);
 
-    // "unbuilt" banners (per-agent breakdown) are unrelated to #100 and still
-    // render; none of the six #100 reasons should appear.
+    // The per-agent breakdown still renders unconditionally (#141: this view has
+    // no way to know whether the round actually predates per-agent rows), always
+    // as lane-did-not-send, unrelated to the #100 lane-version reasons above.
     for (const el of screen.getAllByTestId("degraded")) {
-      expect(el.getAttribute("data-reason")).toBe("unbuilt");
+      expect(el).toHaveAttribute("data-reason", "lane-did-not-send");
+      expect(el.textContent ?? "").toContain("predates per-agent rows");
     }
   });
 });
