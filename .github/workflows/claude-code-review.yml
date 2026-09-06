@@ -278,6 +278,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           import subprocess
           import sys
 
@@ -387,10 +388,17 @@ jobs:
 
                       if "variant" in review:
                           variant_value = review["variant"]
-                          if not isinstance(variant_value, str) or len(variant_value) > MAX_VARIANT_LENGTH:
+                          # Allowlisted, not merely length-bounded: this value is written to
+                          # GITHUB_OUTPUT, where a newline would terminate the record early and
+                          # corrupt every later output in the step. Story: #47.
+                          if (
+                              not isinstance(variant_value, str)
+                              or len(variant_value) > MAX_VARIANT_LENGTH
+                              or not re.fullmatch(r"[A-Za-z0-9._-]*", variant_value)
+                          ):
                               errors.append(
-                                  f"Invalid value for 'review.variant' in {filename}: expected a string of at most "
-                                  f"{MAX_VARIANT_LENGTH} characters"
+                                  f"Invalid value for 'review.variant' in {filename}: expected at most "
+                                  f"{MAX_VARIANT_LENGTH} characters from A-Z a-z 0-9 . _ -"
                               )
 
                       if "path_instructions" in review:

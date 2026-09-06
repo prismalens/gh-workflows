@@ -168,17 +168,14 @@ async function sha256Hex(text) {
     .join("");
 }
 
-const VARIANT_KEY_SEPARATOR = "\x1e";
-// A record separator (\x1e) cannot occur inside any component here, and a null component
-// is represented as \x00 rather than skipped or left blank, so it can never collide with a
-// component that is a genuinely empty string (which contributes zero bytes). #47 amendment.
-const VARIANT_KEY_NULL = "\x00";
-
+// The ingest route accepts arbitrary strings for every component, so no separator byte is
+// safe to join on: a component containing it would collide with a different set of
+// components. JSON encodes the array unambiguously and keeps null distinct from "". #47.
 async function computeVariantKey(promptHash, model, actionVersion, configHash, roundType) {
   const components = [promptHash, model, actionVersion, configHash, roundType].map((c) =>
-    c === null || c === undefined ? VARIANT_KEY_NULL : c
+    c === null || c === undefined ? null : String(c)
   );
-  return sha256Hex(components.join(VARIANT_KEY_SEPARATOR));
+  return sha256Hex(JSON.stringify(components));
 }
 
 // Exported for direct unit testing (worker/index.test.js); the Workers runtime only ever

@@ -893,6 +893,22 @@ describe("computeVariantKey (#47)", () => {
     const allNull = await computeVariantKey(null, null, null, null, null);
     assert.match(allNull, /^[0-9a-f]{64}$/);
   });
+
+  it("cannot be collided by a component containing the old separator or null bytes", async () => {
+    // The ingest route accepts arbitrary strings, so a component may contain any byte. A
+    // join-on-separator scheme let ["a\x1eb", null, ...] collide with ["a", "b", ...]. #47.
+    const withSep = await computeVariantKey("a\x1eb", "m", "v", "c", "r");
+    const split = await computeVariantKey("a", "\x1eb", "v", "c", "r");
+    assert.notStrictEqual(withSep, split);
+
+    const literalNull = await computeVariantKey("\x00", "m", "v", "c", "r");
+    const realNull = await computeVariantKey(null, "m", "v", "c", "r");
+    assert.notStrictEqual(literalNull, realNull);
+
+    const quoteish = await computeVariantKey('a"b', "m", "v", "c", "r");
+    const plain = await computeVariantKey("ab", "m", "v", "c", "r");
+    assert.notStrictEqual(quoteish, plain);
+  });
 });
 
 describe("Worker telemetry read API", () => {
