@@ -310,3 +310,116 @@ Story: `prismalens/gh-workflows#20`. Canary results are recorded on the pull req
 ## Fork PRs
 
 Fork heads never reach the reviewer: GitHub withholds the repository's secrets from fork code, and this lane deliberately does not use `pull_request_target`. A separate `fork-notice` job upserts a `<!-- claude-review-fork-notice -->` comment saying so and pointing at the `coderabbit_review` label. Fork `pull_request` runs also hold a read-only `GITHUB_TOKEN` unless the repository enables *Send write tokens to workflows from fork pull requests* (off by default); when the comment is denied, the job falls back to a workflow warning annotation carrying the same text.
+
+## Pull request state tracking (`prs` table and `/pr-state`) (#136)
+
+`usage_records` carries `pr_state`, `pr_title`, `pr_author`, `pr_base_ref`, and `pr_head_ref`. All five are captured during a review round and never revisited. They stay on `usage_records` as the historical snapshot of what each round saw.
+
+**`usage_records.pr_*` is what the round saw and `prs.*` is what is true now.** A reader wanting current state must use `prs.*`.
+
+### The `prs` table
+
+The `prs` table in Cloudflare D1 (migration `0007_prs.sql`) stores current pull request facts decoupled from round snapshots:
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `repository` | TEXT NOT NULL | Repository (`owner/repo`), part of primary key |
+| `pr_number` | INTEGER NOT NULL | Pull request number, part of primary key |
+| `state` | TEXT | Current normalised state: `open`, `closed`, or `merged` |
+| `title` | TEXT | Current PR title |
+| `author` | TEXT | PR author login |
+| `base_ref` | TEXT | Target branch name |
+| `head_ref` | TEXT | Head branch name |
+| `head_sha` | TEXT | Latest head commit SHA |
+| `merged_at` | TEXT | Timestamp when merged (ISO 8601), or NULL |
+| `closed_at` | TEXT | Timestamp when closed (ISO 8601), or NULL |
+| `updated_at` | TEXT NOT NULL | Timestamp when the system last learned something (set server-side) |
+| `source` | TEXT NOT NULL | How the fact was learned: `round`, `hook`, or `reconciler` |
+
+`PRIMARY KEY (repository, pr_number)`
+`INDEX idx_prs_state ON prs (state)`
+
+Both `updated_at` and `source` are required on every row. A row that cannot state when or how it was learned is structurally incomplete.
+
+### Source values
+
+- `hook`: Event-driven push from consumer repositories via the `.github/workflows/pr-state.yml` caller stub on PR lifecycle events.
+- `round`: Telemetry captured during review rounds.
+- `reconciler`: Periodic reconciliation sweep walking the GitHub Actions / PRs API across repositories (#134).
+
+### `POST /pr-state`
+
+Authenticated via `Authorization: Bearer <REVIEW_TELEMETRY_TOKEN>` (identical to `/ingest`).
+
+Request body:
+- `repository` (string, required)
+- `pr_number` (integer, required)
+- `source` (string, required: must be `round`, `hook`, or `reconciler`)
+- `state` (string, optional: must be `open`, `closed`, or `merged`)
+- Optional strings: `title`, `author`, `base_ref`, `head_ref`, `head_sha`, `merged_at`, `closed_at`
+
+Invariants:
+- **Upsert on `(repository, pr_number)`**: An absent field leaves the stored value untouched rather than nulling it. Only what the caller actually knows gets written.
+- **Normalised state validation**: `state` must be one of `open`, `closed`, `merged`. (GitHub PR API reports closed PRs with `merged: true`; callers normalise to `merged` before sending).
+- **Server-side timestamp**: `updated_at` is generated server-side. Caller clocks are never trusted.
+- **Race protection**: A later write with an older `updated_at` cannot overwrite a newer stored row (`WHERE excluded.updated_at >= prs.updated_at` and pre-write check).
+
+### `GET /api/prs`
+
+Returns paginated current PR records from `prs`, protected by Cloudflare Access JWT validation.
+
+Query parameters:
+- `repository` (optional): Filter by exact repository string.
+- `state` (optional): Filter by state (`open`, `closed`, `merged`).
+- `limit` (optional): Page size `1`..`1000` (default `100`).
+- `cursor` (optional): Composite cursor `<updated_at>|<repository>|<pr_number>` for pagination.
+
+Response:
+```json
+{
+  "rows": [
+    {
+      "repository": "prismalens/gh-workflows",
+      "pr_number": 136,
+      "state": "open",
+      "title": "feat: a prs table",
+      "author": "alice",
+      "base_ref": "main",
+      "head_ref": "feat/prs-table",
+      "head_sha": "abc1234",
+      "merged_at": null,
+      "closed_at": null,
+      "updated_at": "2026-09-06T12:00:00.000Z",
+      "source": "hook"
+    }
+  ],
+  "next_cursor": "2026-09-06T12:00:00.000Z|prismalens/gh-workflows|136"
+}
+```
+
+### Worked-Example Consumer Stub (`pr-state.yml`)
+
+Consumer repositories install `.github/workflows/pr-state.yml` as a managed caller stub:
+
+```yaml
+name: PR State
+
+on:
+  pull_request_target:
+    types: [opened, reopened, closed, edited, ready_for_review, converted_to_draft]
+
+concurrency:
+  group: pr-state-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  pr-state:
+    uses: prismalens/gh-workflows/.github/workflows/pr-state.yml@main
+    secrets:
+      REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+```
+
+Key characteristics:
+- Runs on `pull_request_target` so fork pull requests can report state with secrets access, while remaining safe because **it checks out no code and executes no repository code**.
+- Explicitly maps `REVIEW_TELEMETRY_TOKEN` (`secrets: inherit` fails across organization boundaries).
+- Never fails consumer CI: failures emit warnings and exit 0.

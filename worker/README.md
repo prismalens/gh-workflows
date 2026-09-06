@@ -113,6 +113,34 @@ Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_
   - `run_url` (TEXT)
   - `lane_version` (TEXT)
 
+---
+
+## PR State Ingest (`POST /pr-state`) (#136)
+
+Ingests current pull request facts into the `prs` table, authenticated with `Authorization: Bearer <REVIEW_TELEMETRY_TOKEN>`.
+
+### Request Body
+
+- **Required**:
+  - `repository` (TEXT, capped to 512): `owner/repo` string.
+  - `pr_number` (INTEGER): Pull request number.
+  - `source` (TEXT): Exactly one of `round`, `hook`, or `reconciler`.
+- **Optional**:
+  - `state` (TEXT): Validated against normalised set `open`, `closed`, `merged`.
+  - `title` (TEXT, capped to 512): Pull request title.
+  - `author` (TEXT, capped to 512): PR author login.
+  - `base_ref` (TEXT, capped to 512): PR base branch.
+  - `head_ref` (TEXT, capped to 512): PR head branch.
+  - `head_sha` (TEXT, capped to 512): PR head commit SHA.
+  - `merged_at` (TEXT, capped to 512): ISO 8601 merge timestamp.
+  - `closed_at` (TEXT, capped to 512): ISO 8601 close timestamp.
+
+### Behaviour & Invariants
+
+- **Upsert on `(repository, pr_number)`**: An absent field leaves the stored value alone rather than nulling it. Only what the caller actually knows gets written.
+- **Server-side `updated_at`**: `updated_at` is generated server-side. Caller clocks are never trusted.
+- **Race Protection**: A later write with an older `updated_at` cannot overwrite a newer one.
+
 ## Read Contract (v2)
 
 Read endpoints are served under `/api/*` and gated behind Cloudflare Access JWT validation (`verifyAccess`).
@@ -233,6 +261,47 @@ Returns paginated lane lifecycle events from `lane_events` (skipped or non-execu
     }
   ],
   "next_cursor": "2026-08-31T14:20:00.000Z|123456"
+}
+```
+
+---
+
+### `GET /api/prs`
+
+Returns paginated pull request state records from `prs`.
+
+#### Query Parameters
+
+- `limit` (optional): Integer `1`..`1000` (default `100`).
+- `repository` (optional): Filter by exact repository string.
+- `state` (optional): Filter by state (`open`, `closed`, `merged`).
+- `cursor` (optional): Composite cursor `<updated_at>|<repository>|<pr_number>` for pagination.
+
+#### Columns
+
+- `repository`, `pr_number`, `state`, `title`, `author`, `base_ref`, `head_ref`, `head_sha`, `merged_at`, `closed_at`, `updated_at`, `source`.
+
+#### Response Shape
+
+```json
+{
+  "rows": [
+    {
+      "repository": "prismalens/gh-workflows",
+      "pr_number": 136,
+      "state": "open",
+      "title": "feat: a prs table",
+      "author": "alice",
+      "base_ref": "main",
+      "head_ref": "feat/prs-table",
+      "head_sha": "abc1234",
+      "merged_at": null,
+      "closed_at": null,
+      "updated_at": "2026-09-06T12:00:00.000Z",
+      "source": "hook"
+    }
+  ],
+  "next_cursor": "2026-09-06T12:00:00.000Z|prismalens/gh-workflows|136"
 }
 ```
 
