@@ -8,6 +8,8 @@ let lastRefetchTime = 0;
 // bound from the row limit is what makes an over-size payload a 413 here rather
 // than a 500 from the insert. Story: #60.
 const D1_MAX_ROW_BYTES = 2_000_000;
+// Half of round_agents' primary key. Truncating it would merge two agents. Story: #93.
+const AGENT_ID_MAX_LENGTH = 512;
 const MAX_INGEST_BYTES = D1_MAX_ROW_BYTES / 2;
 
 // The zone-level WAF rule (wrangler.toml) is what protects the free-plan request
@@ -110,6 +112,10 @@ function truncateString(val, maxLen = 512) {
     return null;
   }
   return val.length > maxLen ? val.slice(0, maxLen) : val;
+}
+
+function toIntegerOrNull(val) {
+  return typeof val === "number" && Number.isInteger(val) ? val : null;
 }
 
 function serializeJson(val, fallback) {
@@ -741,6 +747,47 @@ async function handleLaneEvents(url, env) {
   );
 }
 
+async function handleRoundAgents(url, env) {
+  const sessionId = url.searchParams.get("session_id");
+  if (!sessionId) {
+    return new Response(JSON.stringify({ error: "missing session_id" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const query = `SELECT
+    session_id,
+    agent_id,
+    subagent_type,
+    spawn_depth,
+    status,
+    model,
+    input_tokens,
+    output_tokens,
+    cache_read_input_tokens,
+    cache_creation_input_tokens,
+    duration_ms,
+    tool_uses,
+    tool_uses_by_name,
+    file_paths
+  FROM round_agents
+  WHERE session_id = ?
+  ORDER BY agent_id ASC
+  LIMIT 64`;
+
+  const { results } = await env.DB.prepare(query).bind(sessionId).all();
+  const rows = results ?? [];
+
+  return new Response(
+    JSON.stringify({
+      rows,
+      next_cursor: null,
+    }),
+    { headers: READ_HEADERS }
+  );
+}
+
 async function handleIngest(request, env) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
@@ -833,6 +880,60 @@ async function handleIngest(request, env) {
       }
     }
 
+    if (payload.agents !== undefined) {
+      if (!Array.isArray(payload.agents)) {
+        return new Response(JSON.stringify({ error: "invalid agents: must be an array" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      // Per-agent telemetry storage (#93): cap at 64 entries to bound batch size.
+      if (payload.agents.length > 64) {
+        return new Response(JSON.stringify({ error: "too many agents: max 64" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      for (let i = 0; i < payload.agents.length; i++) {
+        const agent = payload.agents[i];
+        if (!agent || typeof agent !== "object" || Array.isArray(agent)) {
+          return new Response(
+            JSON.stringify({ error: `invalid agent at index ${i}: must be an object` }),
+            {
+              status: 400,
+              headers: { "content-type": "application/json" },
+            }
+          );
+        }
+
+        if (typeof agent.agent_id !== "string" || agent.agent_id.trim().length === 0) {
+          return new Response(
+            JSON.stringify({ error: `invalid agent at index ${i}: missing or empty agent_id` }),
+            {
+              status: 400,
+              headers: { "content-type": "application/json" },
+            }
+          );
+        }
+
+        // Half the primary key, so truncating it would silently merge two agents that
+        // differ only past the limit. Reject instead. Story: #93.
+        if (agent.agent_id.length > AGENT_ID_MAX_LENGTH) {
+          return new Response(
+            JSON.stringify({
+              error: `invalid agent at index ${i}: agent_id exceeds ${AGENT_ID_MAX_LENGTH} characters`,
+            }),
+            {
+              status: 400,
+              headers: { "content-type": "application/json" },
+            }
+          );
+        }
+      }
+    }
+
     // Computed here, not in the workflow, so it cannot drift between callers pinned at
     // @main: one implementation. Story: #47 amendment.
     const variantKey = await computeVariantKey(
@@ -846,7 +947,7 @@ async function handleIngest(request, env) {
     // Name columns literally so unmapped payload fields are dropped (#41).
     // Protect against retried POST requests without re-running (#41).
     try {
-      await env.DB.prepare(
+      const usageStmt = env.DB.prepare(
         `INSERT INTO usage_records (
           session_id,
           recorded_at,
@@ -953,7 +1054,70 @@ async function handleIngest(request, env) {
         payload.config_hash ?? null,
         payload.variant ?? null,
         variantKey
-      ).run();
+      );
+
+      const agentStmts = [];
+      if (Array.isArray(payload.agents) && payload.agents.length > 0) {
+        for (const agent of payload.agents) {
+          const stmt = env.DB.prepare(
+            `INSERT INTO round_agents (
+              session_id,
+              agent_id,
+              subagent_type,
+              spawn_depth,
+              status,
+              model,
+              input_tokens,
+              output_tokens,
+              cache_read_input_tokens,
+              cache_creation_input_tokens,
+              duration_ms,
+              tool_uses,
+              tool_uses_by_name,
+              file_paths
+            ) VALUES (
+              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+              ?11, ?12, ?13, ?14
+            )
+            ON CONFLICT(session_id, agent_id) DO UPDATE SET
+              subagent_type = excluded.subagent_type,
+              spawn_depth = excluded.spawn_depth,
+              status = excluded.status,
+              model = excluded.model,
+              input_tokens = excluded.input_tokens,
+              output_tokens = excluded.output_tokens,
+              cache_read_input_tokens = excluded.cache_read_input_tokens,
+              cache_creation_input_tokens = excluded.cache_creation_input_tokens,
+              duration_ms = excluded.duration_ms,
+              tool_uses = excluded.tool_uses,
+              tool_uses_by_name = excluded.tool_uses_by_name,
+              file_paths = excluded.file_paths`
+          ).bind(
+            payload.session_id,
+            agent.agent_id,
+            truncateString(agent.subagent_type, 512),
+            toIntegerOrNull(agent.spawn_depth),
+            truncateString(agent.status, 512),
+            truncateString(agent.model, 512),
+            toIntegerOrNull(agent.input_tokens),
+            toIntegerOrNull(agent.output_tokens),
+            toIntegerOrNull(agent.cache_read_input_tokens),
+            toIntegerOrNull(agent.cache_creation_input_tokens),
+            toIntegerOrNull(agent.duration_ms),
+            toIntegerOrNull(agent.tool_uses),
+            serializeJson(agent.tool_uses_by_name, null),
+            serializeJson(agent.file_paths, null)
+          );
+          agentStmts.push(stmt);
+        }
+      }
+
+      // Single D1 batch guarantees a round is never recorded with a partial agent set (#93).
+      if (agentStmts.length > 0) {
+        await env.DB.batch([usageStmt, ...agentStmts]);
+      } else {
+        await usageStmt.run();
+      }
     } catch {
       return new Response(null, { status: 500 });
     }
@@ -1318,7 +1482,10 @@ export default {
 
     if (
       method === "GET" &&
-      (pathname === "/api/summary" || pathname === "/api/runs" || pathname === "/api/lane-events")
+      (pathname === "/api/summary" ||
+        pathname === "/api/runs" ||
+        pathname === "/api/lane-events" ||
+        pathname === "/api/round-agents")
     ) {
       const authError = await verifyAccess(request, env);
       if (authError) {
@@ -1332,6 +1499,9 @@ export default {
       }
       if (pathname === "/api/lane-events") {
         return handleLaneEvents(url, env);
+      }
+      if (pathname === "/api/round-agents") {
+        return handleRoundAgents(url, env);
       }
     }
 
