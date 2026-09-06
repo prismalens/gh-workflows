@@ -3,6 +3,8 @@ import type {
   ChangesResponse,
   LaneEventRow,
   LaneEventsResponse,
+  RoundAgentRow,
+  RoundAgentsResponse,
   RoundRow,
   RunsResponse,
   SummaryResponse,
@@ -90,6 +92,11 @@ export function changesUrl(query: ChangesQuery = {}): string {
   }
   const qs = params.toString();
   return qs ? `/api/changes?${qs}` : "/api/changes";
+}
+
+export function roundAgentsUrl(sessionId: string): string {
+  const params = new URLSearchParams({ session_id: sessionId });
+  return `/api/round-agents?${params.toString()}`;
 }
 
 async function getJson<T>(path: string, validate: (value: unknown) => value is T): Promise<T> {
@@ -328,11 +335,37 @@ export function isChangesResponse(value: unknown): value is ChangesResponse {
   );
 }
 
+export const REQUIRED_ROUND_AGENT_KEYS = [
+  "session_id",
+  "agent_id",
+] as const;
+
+export function isRoundAgentRow(row: unknown): row is RoundAgentRow {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  return (
+    REQUIRED_ROUND_AGENT_KEYS.every((key) => key in r) &&
+    typeof r.session_id === "string" &&
+    typeof r.agent_id === "string"
+  );
+}
+
+export function isRoundAgentsResponse(value: unknown): value is RoundAgentsResponse {
+  if (!value || typeof value !== "object") return false;
+  const { rows, next_cursor } = value as { rows?: unknown; next_cursor?: unknown };
+  return (
+    Array.isArray(rows) &&
+    rows.every(isRoundAgentRow) &&
+    (next_cursor === null || next_cursor === undefined || typeof next_cursor === "string")
+  );
+}
+
 export interface TelemetryApi {
   fetchRuns(query?: RunsQuery): Promise<RunsResponse>;
   fetchSummary(): Promise<SummaryResponse>;
   fetchLaneEvents(query?: LaneEventsQuery): Promise<LaneEventsResponse>;
   fetchChanges(query?: ChangesQuery): Promise<ChangesResponse>;
+  fetchRoundAgents(sessionId: string): Promise<RoundAgentsResponse>;
   /** Set only by the fixture table, so the UI can say the rounds are invented. */
   readonly fixtures?: boolean;
 }
@@ -342,6 +375,8 @@ export const httpApi: TelemetryApi = {
   fetchSummary: () => getJson("/api/summary", isSummaryResponse),
   fetchLaneEvents: (query = {}) => getJson(laneEventsUrl(query), isLaneEventsResponse),
   fetchChanges: (query = {}) => getJson(changesUrl(query), isChangesResponse),
+  fetchRoundAgents: (sessionId: string) =>
+    getJson(roundAgentsUrl(sessionId), isRoundAgentsResponse),
 };
 
 /**

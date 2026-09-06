@@ -83,6 +83,15 @@ export function useRoundQuery(sessionId: string, recordedAt?: string) {
   });
 }
 
+export function useRoundAgentsQuery(sessionId: string) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["round-agents", sessionId],
+    queryFn: () => api.fetchRoundAgents(sessionId),
+    staleTime: 5 * 60_000,
+  });
+}
+
 export function distinctRoundTypes(rows: RoundRow[]): string[] {
   return [...new Set(rows.map((row) => row.round_type).filter((t): t is string => !!t))].sort();
 }

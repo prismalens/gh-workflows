@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { ROUND_SCAN_PAGES } from "@/api/client";
 import { MAX_LIMIT_WITH_BLOBS } from "@/api/client";
-import { useRoundQuery } from "@/api/queries";
+import { useRoundAgentsQuery, useRoundQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -37,6 +37,7 @@ function RoundDetailPage() {
   const { sessionId } = roundDetailRoute.useParams();
   const { at } = roundDetailRoute.useSearch();
   const round = useRoundQuery(sessionId, at);
+  const agents = useRoundAgentsQuery(sessionId);
 
   return (
     <div className="flex flex-col gap-5">
@@ -66,7 +67,7 @@ function RoundDetailPage() {
       ) : (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <ResolutionPanel row={round.data.row} />
-          <TimingPanel row={round.data.row} />
+          <TimingPanel row={round.data.row} agents={agents.data?.rows} />
           <FanOutPanel row={round.data.row} />
           <TokensPanel row={round.data.row} />
           <DenialsPanel row={round.data.row} />

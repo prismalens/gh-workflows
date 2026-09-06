@@ -5,6 +5,8 @@ import type {
   ChangesResponse,
   LaneEventRow,
   LaneEventsResponse,
+  RoundAgentRow,
+  RoundAgentsResponse,
   RoundRow,
   RunsResponse,
   SummaryResponse,
@@ -30,6 +32,7 @@ export function makeFixtureApi(
   rows: RoundRow[] = FIXTURE_ROUNDS,
   laneEvents: LaneEventRow[] = [],
   changes: ChangeRow[] = [],
+  roundAgents: Record<string, RoundAgentRow[]> | RoundAgentRow[] = [],
 ): TelemetryApi {
   const sorted = [...rows].sort((a, b) => {
     const byTime = b.recorded_at.localeCompare(a.recorded_at);
@@ -185,6 +188,19 @@ export function makeFixtureApi(
         rows: page,
         next_cursor:
           page.length === limit && last ? `${last.at}|${last.id}` : null,
+      };
+    },
+
+    async fetchRoundAgents(sessionId: string): Promise<RoundAgentsResponse> {
+      let matching: RoundAgentRow[] = [];
+      if (Array.isArray(roundAgents)) {
+        matching = roundAgents.filter((r) => r.session_id === sessionId);
+      } else if (roundAgents && typeof roundAgents === "object") {
+        matching = roundAgents[sessionId] ?? [];
+      }
+      return {
+        rows: matching,
+        next_cursor: null,
       };
     },
   };
