@@ -1655,6 +1655,46 @@ describe("Worker telemetry read API", () => {
       assert.ok(sqlQueries.some((s) => s.includes("GROUP BY model_source")));
     });
 
+    it("carries a per-repository array from one grouped query, for the repos page's quiet-repository card (#142 finding 3944697641)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM canary_pings")) {
+            return { last_seen_at: "2026-08-31T20:00:00.000Z" };
+          }
+          if (sql.includes("COUNT(*) as rows")) {
+            return { rows: 10, first_recorded_at: "2026-08-01T00:00:00.000Z" };
+          }
+          if (sql.includes("DISTINCT repository")) {
+            return [
+              { repository: "prismalens/gh-workflows" },
+              { repository: "prismalens/quiet-repo" },
+            ];
+          }
+          if (sql.includes("GROUP BY repository")) {
+            return [
+              { repository: "prismalens/gh-workflows", rounds: 9, last_recorded_at: "2026-08-31T20:00:00.000Z" },
+              { repository: "prismalens/quiet-repo", rounds: 1, last_recorded_at: "2026-07-15T00:00:00.000Z" },
+            ];
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.deepEqual(data.per_repository, [
+        { repository: "prismalens/gh-workflows", rounds: 9, last_recorded_at: "2026-08-31T20:00:00.000Z" },
+        { repository: "prismalens/quiet-repo", rounds: 1, last_recorded_at: "2026-07-15T00:00:00.000Z" },
+      ]);
+
+      const sqlQueries = db.queries.map((q) => q.sql);
+      assert.ok(sqlQueries.some((s) => s.includes("GROUP BY repository")));
+    });
+
     it("returns canary_last_seen_at as null, not 0 and not absent, when canary_pings is empty", async () => {
       const helper = await getAccessHelper();
       const db = createFakeDb({

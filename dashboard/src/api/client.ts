@@ -259,6 +259,7 @@ export function isRunsResponse(value: unknown): value is RunsResponse {
 export const REQUIRED_SUMMARY_KEYS = [
   "rows",
   "repositories",
+  "per_repository",
   "wall_clock_ms",
   "denials_per_run",
   "cache_hit_rate",
@@ -272,6 +273,16 @@ export const REQUIRED_SUMMARY_KEYS = [
   "canary_last_seen_at",
 ] as const;
 
+function isPerRepositorySummary(row: unknown): boolean {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  return (
+    typeof r.repository === "string" &&
+    typeof r.rounds === "number" &&
+    (r.last_recorded_at === null || typeof r.last_recorded_at === "string")
+  );
+}
+
 export function isSummaryResponse(value: unknown): value is SummaryResponse {
   if (!value || typeof value !== "object") return false;
   const val = value as Record<string, unknown>;
@@ -279,6 +290,8 @@ export function isSummaryResponse(value: unknown): value is SummaryResponse {
   return (
     typeof val.rows === "number" &&
     Array.isArray(val.repositories) &&
+    Array.isArray(val.per_repository) &&
+    val.per_repository.every(isPerRepositorySummary) &&
     typeof val.verdict_kinds === "object" &&
     val.verdict_kinds !== null &&
     !Array.isArray(val.verdict_kinds) &&

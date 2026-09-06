@@ -67,6 +67,27 @@ describe("enrichPRs (#136, #141)", () => {
     expect(enriched[0].stateIsFallback).toBe(true);
   });
 
+  it("stateIsFallback is true for a matching prs row with a null state (#142 finding 3944697634)", () => {
+    const rounds = [
+      round({
+        session_id: "s-6",
+        repository: "a/b",
+        pr_number: 6,
+        pr_state: "closed",
+      }),
+    ];
+    const prs = groupRoundsByPR(rounds);
+    const enriched = enrichPRs(prs, [
+      prRow({ repository: "a/b", pr_number: 6, state: null, title: "Real title" }),
+    ]);
+
+    // A matching row still supplies title and author; state falls back to the
+    // round's guess, and stateIsFallback must say so.
+    expect(enriched[0].state).toBe("closed");
+    expect(enriched[0].title).toBe("Real title");
+    expect(enriched[0].stateIsFallback).toBe(true);
+  });
+
   it("drops a prs row whose PR has no round in the base set instead of adding one", () => {
     const rounds = [round({ session_id: "s-3", repository: "a/b", pr_number: 3 })];
     const prs = groupRoundsByPR(rounds);

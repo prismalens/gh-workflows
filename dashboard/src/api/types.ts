@@ -60,9 +60,18 @@ export interface RunsResponse {
   next_cursor: string | null;
 }
 
+export interface PerRepositorySummary {
+  repository: string;
+  /** All-time round count, not windowed. */
+  rounds: number;
+  /** This repository's most recent round ever, or null if it never posted. */
+  last_recorded_at: string | null;
+}
+
 export interface SummaryResponse {
   rows: number;
   repositories: string[];
+  per_repository: PerRepositorySummary[];
   wall_clock_ms: { mean: number | null; p95: number | null };
   denials_per_run: number | null;
   cache_hit_rate: number | null;

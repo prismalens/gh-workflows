@@ -37,6 +37,7 @@ export const reposRoute = createRoute({
 });
 
 const EMPTY_ROWS = Object.freeze([]) as never[];
+const EMPTY_PER_REPOSITORY = Object.freeze([]) as never[];
 
 function ReposPage() {
   const search = reposRoute.useSearch();
@@ -46,10 +47,10 @@ function ReposPage() {
   const summary = useSummaryQuery();
   const rounds = useRoundsQuery({ range: search.range }, now);
   // The malformed-config row reads the same blob-carrying query the failures
-  // page uses; the quiet row needs a last-round timestamp the window itself
-  // cannot supply, so it reads an unwindowed page (#141).
+  // page uses; the quiet row's last-round timestamp comes from the summary's
+  // per_repository array, not an unwindowed page of every round (#142 finding
+  // 3944697641).
   const attention = useAttentionQuery({ range: search.range }, now);
-  const allRounds = useRoundsQuery({ range: "all" }, now);
 
   const fetched = rounds.data?.rows ?? EMPTY_ROWS;
   const truncated = rounds.data?.next_cursor != null;
@@ -72,9 +73,13 @@ function ReposPage() {
   const denials = repos.reduce((sum, repo) => sum + repo.denials, 0);
 
   const blobRows = attention.data?.rows ?? EMPTY_ROWS;
-  const allTimeRows = allRounds.data?.rows ?? EMPTY_ROWS;
+  const perRepository = summary.data?.per_repository ?? EMPTY_PER_REPOSITORY;
   const malformed = useMemo(() => malformedConfigs(blobRows), [blobRows]);
-  const quiet = useMemo(() => quietRepos(repos, allTimeRows), [repos, allTimeRows]);
+  const quiet = useMemo(() => quietRepos(repos, perRepository), [repos, perRepository]);
+  const lastRecordedByRepo = useMemo(
+    () => new Map(perRepository.map((r) => [r.repository, r.last_recorded_at])),
+    [perRepository],
+  );
 
   return (
     <div className="flex flex-col gap-5">
@@ -86,11 +91,11 @@ function ReposPage() {
         />
       </div>
 
-      {rounds.isPending || summary.isPending || attention.isPending || allRounds.isPending ? (
+      {rounds.isPending || summary.isPending || attention.isPending ? (
         <LoadingRows label="Loading repositories" />
-      ) : rounds.isError || summary.isError || attention.isError || allRounds.isError ? (
+      ) : rounds.isError || summary.isError || attention.isError ? (
         <QueryError
-          error={rounds.error ?? summary.error ?? attention.error ?? allRounds.error}
+          error={rounds.error ?? summary.error ?? attention.error}
           title="Could not load repositories"
         />
       ) : (
@@ -157,10 +162,15 @@ function ReposPage() {
                           >
                             <Timestamp iso={repo.lastRound.recorded_at} compact />
                           </Link>
+                        ) : lastRecordedByRepo.get(repo.repository) ? (
+                          // Quiet in this window: the summary's per_repository array still
+                          // knows when it last posted (#142 finding 3944697641).
+                          <Timestamp
+                            iso={lastRecordedByRepo.get(repo.repository) ?? null}
+                            compact
+                          />
                         ) : (
-                          <span className="text-muted-foreground">
-                            no round over {windowed.label}
-                          </span>
+                          <span className="text-muted-foreground">no round ever recorded</span>
                         )}
                       </TableCell>
                       <TableCell>{orDash(repo.lastRound?.round_type ?? null)}</TableCell>

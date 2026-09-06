@@ -133,7 +133,9 @@ export function enrichPRs(prs: PRSummary[], prsRows: PrRow[]): PRSummary[] {
       state: row.state || pr.state,
       title: row.title || pr.title,
       author: row.author || pr.author,
-      stateIsFallback: false,
+      // A null row.state falls back to the round's guess above; stateIsFallback
+      // must track that same condition (#142 finding 3944697634).
+      stateIsFallback: !row.state,
       mergedAt: row.merged_at,
       closedAt: row.closed_at,
       prsUpdatedAt: row.updated_at,

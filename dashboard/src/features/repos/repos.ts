@@ -1,4 +1,4 @@
-import type { RoundRow } from "@/api/types";
+import type { PerRepositorySummary, RoundRow } from "@/api/types";
 // Reuses the failures page's own parse-outcome derivation (#141), so the two
 // pages can never disagree about what counts as malformed.
 import { summariseConfigs } from "@/features/failures/failures";
@@ -76,17 +76,16 @@ export interface QuietRepoWatch {
 
 /**
  * Repositories with nothing in the window (`rounds === 0` from `summariseRepos`),
- * paired with their true last round from an unwindowed fetch, so "quiet" can name
- * when it last spoke rather than just that it is silent now.
+ * paired with their true last round from GET /api/summary's per_repository array
+ * (#142 finding 3944697641: that one grouped query replaced an unwindowed page of
+ * every round), so "quiet" can name when it last spoke rather than just that it
+ * is silent now.
  */
-export function quietRepos(repos: RepoSummary[], allTimeRows: RoundRow[]): QuietRepoWatch[] {
-  const lastByRepo = new Map<string, string>();
-  for (const row of allTimeRows) {
-    const prev = lastByRepo.get(row.repository);
-    if (prev === undefined || row.recorded_at > prev) {
-      lastByRepo.set(row.repository, row.recorded_at);
-    }
-  }
+export function quietRepos(
+  repos: RepoSummary[],
+  perRepository: PerRepositorySummary[],
+): QuietRepoWatch[] {
+  const lastByRepo = new Map(perRepository.map((r) => [r.repository, r.last_recorded_at]));
 
   return repos
     .filter((repo) => repo.rounds === 0)

@@ -137,7 +137,7 @@ Decides whether an account may start an agent run in this repository. Admits on 
 
 #### Why `pr-title` is NOT a reusable workflow
 
-The PR title required status check name is pinned in repository rulesets (branch protection rules). Reusable workflows (`workflow_call`) automatically rename check runs to `"caller-job-name / callee-job-name"` (e.g. `validate / Validate PR title`), breaking pinned required status check names in rulesets. Composite actions execute within the caller's job context, keeping the check run name exact.
+A consumer repository typically pins the PR title status check name in its own rulesets (branch protection rules); gh-workflows itself has no such ruleset (see [AGENTS.md](AGENTS.md)). Reusable workflows (`workflow_call`) automatically rename check runs to `"caller-job-name / callee-job-name"` (e.g. `validate / Validate PR title`), breaking a consumer's pinned required status check name. Composite actions execute within the caller's job context, keeping the check run name exact.
 
 #### Usage Snippet
 

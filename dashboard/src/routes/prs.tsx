@@ -9,6 +9,7 @@ import { FilterChips } from "@/components/FilterChips";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { DEFAULT_PAGE_SIZE, TablePager, type PageSize } from "@/components/TablePager";
 import { PRsTable } from "@/features/prs/PRsTable";
+import { formatCount } from "@/lib/format";
 import { type HeadStatusState } from "@/features/prs/headStatus";
 import {
   comparePRsByAttention,
@@ -259,6 +260,13 @@ function PRsPage() {
                 }
               />
             </>
+          )}
+
+          {prs.data?.next_cursor != null && (
+            <div className="text-[11px] text-muted-foreground">
+              the {formatCount(prs.data.rows.length)} most recently updated pull requests are
+              enriched from the prs table; older ones show the state at their last round.
+            </div>
           )}
 
           <div className="text-[11px] text-muted-foreground">

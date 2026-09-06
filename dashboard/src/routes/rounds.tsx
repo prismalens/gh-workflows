@@ -160,8 +160,8 @@ function RoundsPage() {
           size="sm"
           variant="outline"
           className="ml-auto"
-          disabled={windowed.rows.length === 0}
-          onClick={() => downloadCsv(windowed.rows)}
+          disabled={matchingRows.length === 0}
+          onClick={() => downloadCsv(matchingRows)}
         >
           <Download className="size-4" /> Export CSV
         </Button>

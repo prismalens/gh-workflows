@@ -91,7 +91,9 @@ async function main() {
   ], {
     cwd: DASHBOARD_ROOT,
     env: { ...process.env, VITE_FIXTURES: "1" },
-    stdio: ["ignore", "pipe", "pipe"],
+    // Unread pipes can block vite's output and hide startup errors behind the generic
+    // timeout in waitForServer (#141 CodeRabbit finding 3944697615).
+    stdio: ["ignore", "inherit", "inherit"],
   });
 
   let viteExited = false;

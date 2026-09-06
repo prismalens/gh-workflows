@@ -72,13 +72,12 @@ describe("malformedConfigs", () => {
 });
 
 describe("quietRepos", () => {
-  it("names a windowed-quiet repository's true last round from the unwindowed rows", () => {
+  it("names a windowed-quiet repository's true last round from the summary's per_repository array", () => {
     const windowedRepos = summariseRepos([], ["o/quiet"]);
-    const allTimeRows = [
-      round({ session_id: "a1", repository: "o/quiet", recorded_at: "2026-07-01T00:00:00.000Z" }),
-      round({ session_id: "a2", repository: "o/quiet", recorded_at: "2026-07-15T00:00:00.000Z" }),
+    const perRepository = [
+      { repository: "o/quiet", rounds: 2, last_recorded_at: "2026-07-15T00:00:00.000Z" },
     ];
-    expect(quietRepos(windowedRepos, allTimeRows)).toEqual([
+    expect(quietRepos(windowedRepos, perRepository)).toEqual([
       { repository: "o/quiet", lastRoundAt: "2026-07-15T00:00:00.000Z" },
     ]);
   });
@@ -86,6 +85,9 @@ describe("quietRepos", () => {
   it("leaves out a repository that posted in the window", () => {
     const posted = [round({ session_id: "p1", repository: "o/one" })];
     const windowedRepos = summariseRepos(posted, ["o/one"]);
-    expect(quietRepos(windowedRepos, posted)).toEqual([]);
+    const perRepository = [
+      { repository: "o/one", rounds: 1, last_recorded_at: posted[0].recorded_at },
+    ];
+    expect(quietRepos(windowedRepos, perRepository)).toEqual([]);
   });
 });

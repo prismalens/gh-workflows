@@ -106,6 +106,7 @@ export function makeFixtureApi(
         return {
           rows: 0,
           repositories: [],
+          per_repository: [],
           wall_clock_ms: { mean: null, p95: null },
           denials_per_run: null,
           cache_hit_rate: null,
@@ -140,9 +141,21 @@ export function makeFixtureApi(
         if (r.model_source) model_sources[r.model_source] = (model_sources[r.model_source] ?? 0) + 1;
       }
 
+      // sorted is newest-first, so the first row seen per repository is its last round.
+      const perRepo = new Map<string, { rounds: number; last_recorded_at: string }>();
+      for (const r of sorted) {
+        const entry = perRepo.get(r.repository);
+        if (entry) entry.rounds += 1;
+        else perRepo.set(r.repository, { rounds: 1, last_recorded_at: r.recorded_at });
+      }
+      const per_repository = [...perRepo.entries()]
+        .map(([repository, entry]) => ({ repository, ...entry }))
+        .sort((a, b) => a.repository.localeCompare(b.repository));
+
       return {
         rows: sorted.length,
         repositories: [...new Set(sorted.map((r) => r.repository))].sort(),
+        per_repository,
         wall_clock_ms: {
           mean: durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null,
           p95: durations.length

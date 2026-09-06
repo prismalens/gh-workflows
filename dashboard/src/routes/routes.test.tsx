@@ -1,10 +1,12 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import * as csvModule from "@/api/csv";
 import type { PrRow } from "@/api/types";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
 import { LIST_RATE_EQUIVALENT } from "@/honesty/thresholds";
+import { formatTimestamp, formatTimestampCompact } from "@/lib/format";
 import { renderRoute } from "@/test/renderRoute";
 
 // Rounds are laid out backwards from the moment the test runs, so the rolling
@@ -216,7 +218,47 @@ describe("/repos", () => {
     renderRoute({ path: "/repos", api: oneRepo });
     const table = await screen.findByRole("table");
     expect(within(table).getByText("prismalens/sreforge")).toBeInTheDocument();
-    expect(within(table).getAllByText(/no round over/).length).toBeGreaterThan(0);
+    // Quiet in this window, but the summary's per_repository array still knows
+    // when it last posted (#142 finding 3944697641), so the cell is a real
+    // timestamp rather than the old "no round over" placeholder.
+    expect(within(table).queryByText(/no round over/)).toBeNull();
+    const sreforgeRow = within(table).getByText("prismalens/sreforge").closest("tr") as HTMLElement;
+    expect(within(sreforgeRow).getByText(/^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/)).toBeInTheDocument();
+  });
+
+  it("a quiet repository's Last round comes from the summary, with no all-time rounds query issued (#142 finding 3944697641)", async () => {
+    const base = makeFixtureApi(makeRounds({ count: 64, now }));
+    let sawAllTimeQuery = false;
+    const oneRepo = {
+      ...base,
+      fetchRuns: async (query?: Parameters<typeof base.fetchRuns>[0]) => {
+        // The removed all-time call (`range: "all"`) is the only one that ever
+        // carried no `since`; a windowed range=30d call always has one.
+        if (query?.since === undefined) {
+          sawAllTimeQuery = true;
+        }
+        const page = await base.fetchRuns(query);
+        return {
+          ...page,
+          rows: page.rows.filter((row) => row.repository === "prismalens/prismalens"),
+        };
+      },
+    };
+    const summaryResult = await base.fetchSummary();
+    const sreforgeSummary = summaryResult.per_repository.find(
+      (r) => r.repository === "prismalens/sreforge",
+    );
+    expect(sreforgeSummary?.last_recorded_at).toBeTruthy();
+
+    renderRoute({ path: "/repos?range=30d", api: oneRepo });
+    const table = await screen.findByRole("table");
+    const sreforgeRow = within(table).getByText("prismalens/sreforge").closest("tr") as HTMLElement;
+    const cell = within(sreforgeRow).getByTitle(formatTimestamp(sreforgeSummary!.last_recorded_at));
+    expect(cell).toHaveTextContent(formatTimestampCompact(sreforgeSummary!.last_recorded_at));
+
+    // The one useRoundsQuery call left on this page is windowed (range=30d);
+    // the removed all-time query never fires.
+    expect(sawAllTimeQuery).toBe(false);
   });
 
   it("waits for the all-time list before drawing a denominator it would get wrong", async () => {
@@ -539,6 +581,45 @@ describe("/rounds", () => {
     expect(screen.getByPlaceholderText("Search repository, PR, session, sha")).toHaveValue(
       "target",
     );
+  });
+
+  it("Export CSV exports the matching rows, not the whole window (#142 finding 3944697643)", async () => {
+    const baseRoundForExportTest = makeRounds({ count: 1, now })[0];
+    const target1 = {
+      ...baseRoundForExportTest,
+      session_id: "export-target-aaa",
+      pr_number: 655,
+      repository: "prismalens/sreforge",
+      round_type: "full",
+      verdict_kind: "clean",
+      job_conclusion: "success",
+      model: "claude-opus-4-6",
+      recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
+    };
+    const target2 = { ...target1, session_id: "export-target-bbb", pr_number: 656 };
+    const wrongVerdict = {
+      ...target1,
+      session_id: "export-other-ccc",
+      pr_number: 657,
+      verdict_kind: "error",
+      job_conclusion: "failure",
+    };
+    const api = makeFixtureApi([target1, target2, wrongVerdict]);
+
+    const downloadSpy = vi.spyOn(csvModule, "downloadCsv").mockImplementation(() => {});
+    renderRoute({ path: "/rounds?range=all&verdict=reviewed", api });
+
+    // The window holds all 3 rows; the verdict filter narrows the table to 2.
+    expect(await screen.findByText("rows 1 to 2 of 2 matching, 3 in window")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+
+    expect(downloadSpy).toHaveBeenCalledTimes(1);
+    const exported = downloadSpy.mock.calls[0]?.[0] ?? [];
+    expect(exported.map((r) => r.session_id).sort()).toEqual(
+      ["export-target-aaa", "export-target-bbb"].sort(),
+    );
+
+    downloadSpy.mockRestore();
   });
 });
 
@@ -1311,6 +1392,40 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     await screen.findByRole("table");
     expect(screen.getByText("Current real title")).toBeInTheDocument();
     expect(screen.queryByText("PR #802")).toBeNull();
+  });
+
+  it("shows the enrichment cutoff line when the prs response is truncated, not the whole window (#136 ruling, #142 finding 3944697631)", async () => {
+    const prsRow: PrRow = {
+      repository: "prismalens/sreforge",
+      pr_number: 801,
+      state: "merged",
+      title: "Current real title",
+      author: "real-author",
+      base_ref: "main",
+      head_ref: "feature-801",
+      head_sha: "abc123",
+      merged_at: "2026-08-30T00:00:00.000Z",
+      closed_at: null,
+      updated_at: new Date(now.getTime() - 2 * 3600000).toISOString(),
+      source: "hook",
+    };
+    const truncatedApi = {
+      ...fourStateApi,
+      fetchPRs: async () => ({ rows: [prsRow], next_cursor: "some-cursor" }),
+    };
+
+    renderRoute({ path: "/prs", api: truncatedApi });
+    await screen.findByRole("table");
+    expect(
+      screen.getByText(
+        "the 1 most recently updated pull requests are enriched from the prs table; older ones show the state at their last round.",
+      ),
+    ).toBeInTheDocument();
+
+    cleanup();
+    renderRoute({ path: "/prs", api: fourStateApi });
+    await screen.findByRole("table");
+    expect(screen.queryByText(/enriched from the prs table/)).toBeNull();
   });
 
   it("'12abc' as a PR number is rejected rather than parsed as 12 (finding 3943781319)", async () => {

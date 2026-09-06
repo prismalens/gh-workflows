@@ -330,6 +330,7 @@ describe("a 200 of the wrong shape is malformed, not a TypeError", () => {
     jsonBody({
       rows: 0,
       repositories: [],
+      per_repository: [],
       wall_clock_ms: { mean: null, p95: null },
       denials_per_run: null,
       cache_hit_rate: null,
@@ -467,6 +468,7 @@ describe("an error names the failure it actually was", () => {
       body: JSON.stringify({
         rows: 0,
         repositories: [],
+        per_repository: [],
         wall_clock_ms: { mean: null, p95: null },
         denials_per_run: null,
         cache_hit_rate: null,
