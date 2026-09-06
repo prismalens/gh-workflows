@@ -16,6 +16,16 @@ function createFakeDb(options = {}) {
   };
   return {
     queries,
+    async batch(statements) {
+      if (options.shouldThrow) {
+        throw new Error("D1 batch error");
+      }
+      const results = [];
+      for (const stmt of statements) {
+        results.push(await stmt.run());
+      }
+      return results;
+    },
     prepare(sql) {
       return {
         bind(...args) {
@@ -609,6 +619,305 @@ describe("Worker telemetry ingest", () => {
       const query = db.queries[0];
       assert.equal(query.args[30], payload.comment_node_ids);
       assert.equal(query.args[35], payload.config_resolution);
+    });
+  });
+
+  describe("Per-agent telemetry ingest (round_agents) (#93)", () => {
+    it("a payload with no agents key still records the round, unchanged", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const payload = {
+        session_id: "s-no-agents-1",
+        repository: "prismalens/gh-workflows",
+        model: "claude-3-5-sonnet",
+      };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: payload,
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+      assert.match(db.queries[0].sql, /INSERT INTO usage_records/);
+      assert.equal(db.queries[0].args[0], "s-no-agents-1");
+    });
+
+    it("a payload with two agents records two rows joined to the round by session_id", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const payload = {
+        session_id: "s-with-agents-1",
+        repository: "prismalens/gh-workflows",
+        agents: [
+          {
+            agent_id: "agent-alpha",
+            subagent_type: "worker",
+            spawn_depth: 1,
+            status: "completed",
+            model: "claude-3-5-sonnet",
+            input_tokens: 1500,
+            output_tokens: 300,
+            cache_read_input_tokens: 100,
+            cache_creation_input_tokens: 50,
+            duration_ms: 12000,
+            tool_uses: 5,
+            tool_uses_by_name: { ReadFile: 3, RunCommand: 2 },
+            file_paths: ["src/index.js", "src/util.js"],
+          },
+          {
+            agent_id: "agent-beta",
+            subagent_type: "reviewer",
+            spawn_depth: 2,
+            status: "completed",
+            model: "claude-3-5-haiku",
+            input_tokens: 800,
+            output_tokens: 150,
+            cache_read_input_tokens: 50,
+            cache_creation_input_tokens: 20,
+            duration_ms: 5000,
+            tool_uses: 2,
+            tool_uses_by_name: { ReadFile: 2 },
+            file_paths: ["src/index.js"],
+          },
+        ],
+      };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: payload,
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 3);
+      assert.match(db.queries[0].sql, /INSERT INTO usage_records/);
+      assert.equal(db.queries[0].args[0], "s-with-agents-1");
+
+      assert.match(db.queries[1].sql, /INSERT INTO round_agents/);
+      assert.equal(db.queries[1].args[0], "s-with-agents-1");
+      assert.equal(db.queries[1].args[1], "agent-alpha");
+      assert.equal(db.queries[1].args[2], "worker");
+      assert.equal(db.queries[1].args[3], 1);
+      assert.equal(db.queries[1].args[4], "completed");
+      assert.equal(db.queries[1].args[5], "claude-3-5-sonnet");
+      assert.equal(db.queries[1].args[6], 1500);
+      assert.equal(db.queries[1].args[7], 300);
+      assert.equal(db.queries[1].args[8], 100);
+      assert.equal(db.queries[1].args[9], 50);
+      assert.equal(db.queries[1].args[10], 12000);
+      assert.equal(db.queries[1].args[11], 5);
+      assert.equal(db.queries[1].args[12], JSON.stringify({ ReadFile: 3, RunCommand: 2 }));
+      assert.equal(db.queries[1].args[13], JSON.stringify(["src/index.js", "src/util.js"]));
+
+      assert.match(db.queries[2].sql, /INSERT INTO round_agents/);
+      assert.equal(db.queries[2].args[0], "s-with-agents-1");
+      assert.equal(db.queries[2].args[1], "agent-beta");
+      assert.equal(db.queries[2].args[2], "reviewer");
+      assert.equal(db.queries[2].args[3], 2);
+    });
+
+    it("a session_id inside an agent entry is ignored in favour of the top-level one", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const payload = {
+        session_id: "canonical-session-id",
+        repository: "prismalens/gh-workflows",
+        agents: [
+          {
+            session_id: "spoofed-session-id",
+            agent_id: "agent-1",
+            subagent_type: "worker",
+          },
+        ],
+      };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: payload,
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 2);
+      assert.equal(db.queries[1].args[0], "canonical-session-id");
+    });
+
+    it("65 entries is rejected, 64 is accepted", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+
+      const agents65 = Array.from({ length: 65 }, (_, i) => ({
+        agent_id: `agent-${i}`,
+      }));
+      const badReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-65",
+          repository: "prismalens/gh-workflows",
+          agents: agents65,
+        },
+      });
+      const badRes = await worker.fetch(badReq, env);
+      assert.equal(badRes.status, 400);
+      assert.equal(db.queries.length, 0);
+
+      const agents64 = Array.from({ length: 64 }, (_, i) => ({
+        agent_id: `agent-${i}`,
+      }));
+      const goodReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-64",
+          repository: "prismalens/gh-workflows",
+          agents: agents64,
+        },
+      });
+      const goodRes = await worker.fetch(goodReq, env);
+      assert.equal(goodRes.status, 204);
+      assert.equal(db.queries.length, 65);
+    });
+
+    it("a non-array agents, a non-object entry, and a missing agent_id are each rejected with the index named", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+
+      // non-array agents
+      const nonArrayReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-bad-agents-array",
+          repository: "prismalens/gh-workflows",
+          agents: "not-an-array",
+        },
+      });
+      const nonArrayRes = await worker.fetch(nonArrayReq, env);
+      assert.equal(nonArrayRes.status, 400);
+      assert.equal(db.queries.length, 0);
+
+      // non-object entry at index 1
+      const nonObjectReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-bad-agent-entry",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: "agent-0" }, "not-an-object", { agent_id: "agent-2" }],
+        },
+      });
+      const nonObjectRes = await worker.fetch(nonObjectReq, env);
+      assert.equal(nonObjectRes.status, 400);
+      const nonObjectBody = await nonObjectRes.json();
+      assert.match(nonObjectBody.error, /index 1/);
+      assert.equal(db.queries.length, 0);
+
+      // missing agent_id at index 2
+      const missingIdReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-missing-agent-id",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: "agent-0" }, { agent_id: "agent-1" }, { subagent_type: "worker" }],
+        },
+      });
+      const missingIdRes = await worker.fetch(missingIdReq, env);
+      assert.equal(missingIdRes.status, 400);
+      const missingIdBody = await missingIdRes.json();
+      assert.match(missingIdBody.error, /index 2/);
+      assert.equal(db.queries.length, 0);
+
+      // empty agent_id at index 0
+      const emptyIdReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-empty-agent-id",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: "" }],
+        },
+      });
+      const emptyIdRes = await worker.fetch(emptyIdReq, env);
+      assert.equal(emptyIdRes.status, 400);
+      const emptyIdBody = await emptyIdRes.json();
+      assert.match(emptyIdBody.error, /index 0/);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("integer fields that are not integers become null and string fields are truncated", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const longStatus = "x".repeat(600);
+      const payload = {
+        session_id: "s-types",
+        repository: "prismalens/gh-workflows",
+        agents: [
+          {
+            agent_id: "agent-type-check",
+            status: longStatus,
+            spawn_depth: "not-an-int",
+            input_tokens: 12.34,
+            output_tokens: "1000",
+            duration_ms: NaN,
+            tool_uses: null,
+          },
+        ],
+      };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: payload,
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 2);
+      const agentQuery = db.queries[1];
+      assert.equal(agentQuery.args[4].length, 512);
+      assert.equal(agentQuery.args[3], null);
+      assert.equal(agentQuery.args[6], null);
+      assert.equal(agentQuery.args[7], null);
+      assert.equal(agentQuery.args[10], null);
+      assert.equal(agentQuery.args[11], null);
+    });
+
+    it("re-ingesting the same (session_id, agent_id) replaces rather than duplicates", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const payload1 = {
+        session_id: "s-reingest",
+        repository: "prismalens/gh-workflows",
+        agents: [
+          {
+            agent_id: "agent-1",
+            status: "running",
+            input_tokens: 100,
+          },
+        ],
+      };
+      const req1 = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: payload1,
+      });
+      const res1 = await worker.fetch(req1, env);
+      assert.equal(res1.status, 204);
+
+      const query1 = db.queries[1];
+      assert.match(query1.sql, /INSERT INTO round_agents/);
+      assert.match(query1.sql, /ON CONFLICT\s*\(session_id,\s*agent_id\)\s+DO\s+UPDATE\s+SET/);
+      assert.match(query1.sql, /status\s*=\s*excluded\.status/);
+      assert.match(query1.sql, /input_tokens\s*=\s*excluded\.input_tokens/);
+
+      const payload2 = {
+        session_id: "s-reingest",
+        repository: "prismalens/gh-workflows",
+        agents: [
+          {
+            agent_id: "agent-1",
+            status: "completed",
+            input_tokens: 500,
+          },
+        ],
+      };
+      const req2 = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: payload2,
+      });
+      const res2 = await worker.fetch(req2, env);
+      assert.equal(res2.status, 204);
+      assert.equal(db.queries.length, 4);
+      assert.equal(db.queries[3].args[4], "completed");
+      assert.equal(db.queries[3].args[6], 500);
     });
   });
 
@@ -1447,6 +1756,149 @@ describe("Worker telemetry read API", () => {
       const query = db.queries[0];
       assert.ok(query.sql.includes("(recorded_at < ? OR (recorded_at = ? AND run_id < ?))"));
       assert.deepEqual(query.args, ["2026-08-31T15:00:00.000Z", "2026-08-31T15:00:00.000Z", 1002, 100]);
+    });
+  });
+
+  describe("GET /api/round-agents (#93)", () => {
+    it("returns 503 when Access is not configured in env", async () => {
+      const db = createFakeDb();
+      const env = { DB: db };
+      const req = makeRequest("/api/round-agents?session_id=s-1", { method: "GET" });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 503);
+    });
+
+    it("returns 403 when Cf-Access-Jwt-Assertion header is missing", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb();
+      const env = { ...helper.env, DB: db };
+      const req = makeRequest("/api/round-agents?session_id=s-1", { method: "GET" });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 403);
+    });
+
+    it("returns 403 when JWT is invalid", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb();
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/round-agents?session_id=s-1", "invalid.jwt.token");
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 403);
+    });
+
+    it("returns 400 when session_id query param is missing", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb();
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/round-agents", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.match(body.error, /session_id/);
+    });
+
+    it("returns the rows for one session and not another's", async () => {
+      const helper = await getAccessHelper();
+      const sessionAgents = {
+        "session-A": [
+          {
+            session_id: "session-A",
+            agent_id: "agent-01",
+            subagent_type: "worker",
+            spawn_depth: 1,
+            status: "completed",
+            model: "claude-3-5-sonnet",
+            input_tokens: 1000,
+            output_tokens: 200,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            duration_ms: 3000,
+            tool_uses: 2,
+            tool_uses_by_name: "{}",
+            file_paths: "[]",
+          },
+          {
+            session_id: "session-A",
+            agent_id: "agent-02",
+            subagent_type: "reviewer",
+            spawn_depth: 1,
+            status: "completed",
+            model: "claude-3-5-haiku",
+            input_tokens: 500,
+            output_tokens: 100,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            duration_ms: 1500,
+            tool_uses: 1,
+            tool_uses_by_name: "{}",
+            file_paths: "[]",
+          },
+        ],
+        "session-B": [
+          {
+            session_id: "session-B",
+            agent_id: "agent-99",
+            subagent_type: "worker",
+            spawn_depth: 1,
+            status: "failed",
+            model: "claude-3-5-sonnet",
+            input_tokens: 2000,
+            output_tokens: 400,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            duration_ms: 4000,
+            tool_uses: 3,
+            tool_uses_by_name: "{}",
+            file_paths: "[]",
+          },
+        ],
+      };
+
+      const db = createFakeDb({
+        handler: (sql, args) => {
+          if (sql.includes("FROM round_agents")) {
+            const sid = args[0];
+            return {
+              results: sessionAgents[sid] ?? [],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+
+      const reqA = makeAuthenticatedRequest("/api/round-agents?session_id=session-A", helper.jwt);
+      const resA = await worker.fetch(reqA, env);
+      assert.equal(resA.status, 200);
+      const dataA = await resA.json();
+      assert.equal(dataA.rows.length, 2);
+      assert.equal(dataA.rows[0].agent_id, "agent-01");
+      assert.equal(dataA.rows[1].agent_id, "agent-02");
+      assert.equal(dataA.next_cursor, null);
+
+      const queryA = db.queries[0];
+      assert.ok(queryA.sql.includes("FROM round_agents"));
+      assert.ok(queryA.sql.includes("WHERE session_id = ?"));
+      assert.ok(queryA.sql.includes("ORDER BY agent_id ASC"));
+      assert.equal(queryA.args[0], "session-A");
+
+      // Request session-B
+      const reqB = makeAuthenticatedRequest("/api/round-agents?session_id=session-B", helper.jwt);
+      const resB = await worker.fetch(reqB, env);
+      assert.equal(resB.status, 200);
+      const dataB = await resB.json();
+      assert.equal(dataB.rows.length, 1);
+      assert.equal(dataB.rows[0].agent_id, "agent-99");
+      assert.equal(dataB.rows[0].session_id, "session-B");
+      assert.equal(dataB.next_cursor, null);
+
+      // Request non-existent session
+      const reqC = makeAuthenticatedRequest("/api/round-agents?session_id=session-nonexistent", helper.jwt);
+      const resC = await worker.fetch(reqC, env);
+      assert.equal(resC.status, 200);
+      const dataC = await resC.json();
+      assert.deepEqual(dataC.rows, []);
+      assert.equal(dataC.next_cursor, null);
     });
   });
 
