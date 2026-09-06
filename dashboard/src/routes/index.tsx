@@ -34,7 +34,7 @@ import { aggregateRounds, tokenSums } from "@/honesty/aggregate";
 import { Degraded } from "@/honesty/Degraded";
 import { meanMetric } from "@/honesty/metrics";
 import { RangeControl } from "@/honesty/RangeControl";
-import { applyRange, rangeSchema, type RangeKey } from "@/honesty/range";
+import { applyRange, linkableRange, rangeSchema, type RangeKey } from "@/honesty/range";
 import { CountTile, Tile } from "@/honesty/Tile";
 import { aggregateMode, TileStrip } from "@/honesty/TileStrip";
 import { PER_DAY_RATE_MIN_ROUNDS } from "@/honesty/thresholds";
@@ -209,6 +209,14 @@ function OverviewPage() {
               className="underline underline-offset-4"
             >
               Widen to all time
+            </Link>
+            , or{" "}
+            <Link
+              to="/failures"
+              search={{ range: linkableRange(search.range), repository: search.repository }}
+              className="underline underline-offset-4"
+            >
+              Check skips on the failures page
             </Link>
             .
           </AlertDescription>

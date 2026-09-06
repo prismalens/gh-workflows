@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { createRoute, Link } from "@tanstack/react-router";
 import { z } from "zod";
 
-import { useRoundsQuery, useSummaryQuery } from "@/api/queries";
+import { useAttentionQuery, useRoundsQuery, useSummaryQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +15,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { summariseRepos } from "@/features/repos/repos";
+import { malformedConfigs, quietRepos, summariseRepos } from "@/features/repos/repos";
+import { WatchOut } from "@/features/repos/WatchOut";
 import { Degraded } from "@/honesty/Degraded";
 import { RangeControl } from "@/honesty/RangeControl";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
@@ -44,6 +45,11 @@ function ReposPage() {
 
   const summary = useSummaryQuery();
   const rounds = useRoundsQuery({ range: search.range }, now);
+  // The malformed-config row reads the same blob-carrying query the failures
+  // page uses; the quiet row needs a last-round timestamp the window itself
+  // cannot supply, so it reads an unwindowed page (#141).
+  const attention = useAttentionQuery({ range: search.range }, now);
+  const allRounds = useRoundsQuery({ range: "all" }, now);
 
   const fetched = rounds.data?.rows ?? EMPTY_ROWS;
   const truncated = rounds.data?.next_cursor != null;
@@ -65,6 +71,11 @@ function ReposPage() {
   const active = repos.filter((repo) => repo.rounds > 0).length;
   const denials = repos.reduce((sum, repo) => sum + repo.denials, 0);
 
+  const blobRows = attention.data?.rows ?? EMPTY_ROWS;
+  const allTimeRows = allRounds.data?.rows ?? EMPTY_ROWS;
+  const malformed = useMemo(() => malformedConfigs(blobRows), [blobRows]);
+  const quiet = useMemo(() => quietRepos(repos, allTimeRows), [repos, allTimeRows]);
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-3">
@@ -75,11 +86,11 @@ function ReposPage() {
         />
       </div>
 
-      {rounds.isPending || summary.isPending ? (
+      {rounds.isPending || summary.isPending || attention.isPending || allRounds.isPending ? (
         <LoadingRows label="Loading repositories" />
-      ) : rounds.isError || summary.isError ? (
+      ) : rounds.isError || summary.isError || attention.isError || allRounds.isError ? (
         <QueryError
-          error={rounds.error ?? summary.error}
+          error={rounds.error ?? summary.error ?? attention.error ?? allRounds.error}
           title="Could not load repositories"
         />
       ) : (
@@ -102,6 +113,13 @@ function ReposPage() {
               detail="summed across every repository in the window"
             />
           </section>
+
+          <WatchOut
+            malformed={malformed}
+            quiet={quiet}
+            range={search.range}
+            windowLabel={windowed.label}
+          />
 
           <Card>
             <CardContent className="p-0">
@@ -173,8 +191,7 @@ function ReposPage() {
           />
 
           <p className="text-xs text-muted-foreground">
-            A repository with no round in this window is still listed. A dead lane and a quiet
-            repository look the same here, because a skipped run records nothing.
+            A repository with no round in this window is still listed.
           </p>
         </>
       )}

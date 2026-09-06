@@ -174,6 +174,15 @@ describe("/ overview: the altitude ruling", () => {
     expect(screen.queryByTestId("activity-band")).not.toBeInTheDocument();
     expect(screen.queryByTestId("verdict-strip")).not.toBeInTheDocument();
   });
+
+  it("offers a second remedy beside widen, to the failures page, current range and repo carried (#141)", async () => {
+    renderRoute({ path: "/?range=90d&repository=prismalens%2Fsreforge", api: emptyApi });
+    const skips = await screen.findByRole("link", { name: "Check skips on the failures page" });
+    const href = decodeURIComponent(skips.getAttribute("href") ?? "");
+    expect(href).toContain("/failures");
+    expect(href).toContain("range=90d");
+    expect(href).toContain("repository=prismalens/sreforge");
+  });
 });
 
 describe("/repos", () => {
@@ -280,6 +289,56 @@ describe("/repos", () => {
       "aria-pressed",
       "true",
     );
+  });
+
+  describe("the watch-out card (#141)", () => {
+    it("renders the one muted line when there is nothing to watch", async () => {
+      renderRoute({ path: "/repos", api: emptyApi });
+      const card = await screen.findByTestId("watch-out");
+      expect(card).toHaveTextContent("Nothing to watch in this window.");
+    });
+
+    it("lists a repository whose most recent config layer failed to parse", async () => {
+      const configResolution = JSON.stringify({
+        layers: {
+          repo_config: { outcome: "unparseable", unconsumed: [] },
+          org_defaults: { outcome: "absent", unconsumed: [] },
+          workflow_inputs: { outcome: "ok", unconsumed: [] },
+        },
+      });
+      const rows = makeRounds({ count: 3, now }).map((row, i) =>
+        i === 0 ? { ...row, config_resolution: configResolution } : row,
+      );
+      renderRoute({ path: "/repos", api: makeFixtureApi(rows) });
+
+      const card = await screen.findByTestId("watch-out");
+      expect(card).toHaveTextContent("Repo config layer malformed, lane on workflow defaults");
+      const link = within(card).getAllByRole("link")[0];
+      expect(decodeURIComponent(link.getAttribute("href") ?? "")).toContain("/failures");
+    });
+
+    it("lists a repository quiet in the window, with its true last round from outside it", async () => {
+      const recent = makeRounds({ count: 4, now, seed: 5 }).map((row, i) => ({
+        ...row,
+        session_id: `recent-${i}`,
+        repository: "prismalens/prismalens",
+        recorded_at: new Date(now.getTime() - i * 3600000).toISOString(),
+      }));
+      const old = {
+        ...recent[0],
+        session_id: "old-1",
+        repository: "prismalens/sreforge",
+        recorded_at: "2026-06-01T00:00:00.000Z",
+      };
+      renderRoute({ path: "/repos?range=30d", api: makeFixtureApi([...recent, old]) });
+
+      const card = await screen.findByTestId("watch-out");
+      expect(card).toHaveTextContent("prismalens/sreforge: no round in the last 30 days");
+      const link = within(card).getByRole("link", { name: "prismalens/sreforge" });
+      const href = decodeURIComponent(link.getAttribute("href") ?? "");
+      expect(href).toContain("/rounds");
+      expect(href).toContain("range=all");
+    });
   });
 });
 

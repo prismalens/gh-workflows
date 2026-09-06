@@ -2,12 +2,22 @@ import { describe, expect, it } from "vitest";
 
 import type { RoundRow } from "@/api/types";
 import { makeRounds } from "@/fixtures/rounds";
-import { summariseRepos } from "./repos";
+import { malformedConfigs, quietRepos, summariseRepos } from "./repos";
 
 const BASE = makeRounds({ count: 1 })[0];
 
 function round(overrides: Partial<RoundRow>): RoundRow {
   return { ...BASE, ...overrides };
+}
+
+function configResolution(outcome: string): string {
+  return JSON.stringify({
+    layers: {
+      repo_config: { outcome, unconsumed: [] },
+      org_defaults: { outcome: "absent", unconsumed: [] },
+      workflow_inputs: { outcome: "ok", unconsumed: [] },
+    },
+  });
 }
 
 describe("the repos list", () => {
@@ -31,5 +41,51 @@ describe("the repos list", () => {
     expect(quiet?.rounds).toBe(0);
     expect(quiet?.lastRound).toBeNull();
     expect(quiet?.lastState).toBeNull();
+  });
+});
+
+describe("malformedConfigs", () => {
+  it("names a repository whose most recently seen layer failed to parse", () => {
+    const blobRows = [
+      round({
+        session_id: "b1",
+        repository: "o/broken",
+        recorded_at: "2026-08-30T01:00:00.000Z",
+        config_resolution: configResolution("unparseable"),
+      }),
+    ];
+    const watch = malformedConfigs(blobRows);
+    expect(watch).toEqual([{ repository: "o/broken", layer: "Repo config" }]);
+  });
+
+  it("says nothing about a repository whose layers all parsed", () => {
+    const blobRows = [
+      round({
+        session_id: "b2",
+        repository: "o/fine",
+        recorded_at: "2026-08-30T01:00:00.000Z",
+        config_resolution: configResolution("ok"),
+      }),
+    ];
+    expect(malformedConfigs(blobRows)).toEqual([]);
+  });
+});
+
+describe("quietRepos", () => {
+  it("names a windowed-quiet repository's true last round from the unwindowed rows", () => {
+    const windowedRepos = summariseRepos([], ["o/quiet"]);
+    const allTimeRows = [
+      round({ session_id: "a1", repository: "o/quiet", recorded_at: "2026-07-01T00:00:00.000Z" }),
+      round({ session_id: "a2", repository: "o/quiet", recorded_at: "2026-07-15T00:00:00.000Z" }),
+    ];
+    expect(quietRepos(windowedRepos, allTimeRows)).toEqual([
+      { repository: "o/quiet", lastRoundAt: "2026-07-15T00:00:00.000Z" },
+    ]);
+  });
+
+  it("leaves out a repository that posted in the window", () => {
+    const posted = [round({ session_id: "p1", repository: "o/one" })];
+    const windowedRepos = summariseRepos(posted, ["o/one"]);
+    expect(quietRepos(windowedRepos, posted)).toEqual([]);
   });
 });
