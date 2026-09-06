@@ -57,14 +57,67 @@ describe("/ overview: the altitude ruling", () => {
     expect((await screen.findAllByText(/\/day mean/)).length).toBeGreaterThan(0);
   });
 
-  it("renders the verdict mix in its two-state degraded form and says why", async () => {
-    renderRoute({ path: "/", api: fullApi });
+  it("buckets the verdict strip straight from verdict_kind, six ways, and the buckets sum to n (#141)", async () => {
+    const baseRound = makeRounds({ count: 1, now })[0];
+    const sixBucketRounds = [
+      {
+        ...baseRound,
+        session_id: "vb-1",
+        verdict_kind: "reviewed",
+        recorded_at: new Date(now.getTime() - 6 * 3600000).toISOString(),
+      },
+      {
+        ...baseRound,
+        session_id: "vb-2",
+        verdict_kind: "verify-rechecked",
+        recorded_at: new Date(now.getTime() - 5 * 3600000).toISOString(),
+      },
+      {
+        ...baseRound,
+        session_id: "vb-3",
+        verdict_kind: "auto-paused",
+        recorded_at: new Date(now.getTime() - 4 * 3600000).toISOString(),
+      },
+      {
+        ...baseRound,
+        session_id: "vb-4",
+        verdict_kind: "silent",
+        recorded_at: new Date(now.getTime() - 3 * 3600000).toISOString(),
+      },
+      {
+        ...baseRound,
+        session_id: "vb-5",
+        verdict_kind: "error",
+        recorded_at: new Date(now.getTime() - 2 * 3600000).toISOString(),
+      },
+      {
+        ...baseRound,
+        session_id: "vb-6",
+        verdict_kind: null,
+        recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
+      },
+    ];
+
+    renderRoute({ path: "/", api: makeFixtureApi(sixBucketRounds) });
     const strip = await screen.findByTestId("verdict-strip");
-    expect(within(strip).getByText("reviewed")).toBeInTheDocument();
-    expect(within(strip).getByText("unknown")).toBeInTheDocument();
-    for (const absent of ["threads-only", "did-not-run", "silent"]) {
-      expect(within(strip).queryByText(absent)).not.toBeInTheDocument();
+
+    const labels = [
+      "reviewed",
+      "threads-only",
+      "did-not-run",
+      "silent",
+      "error",
+      "no verdict recorded",
+    ];
+    let total = 0;
+    for (const label of labels) {
+      const segment = within(strip).getByText(label);
+      const count = Number(segment.querySelector(".font-medium")?.textContent);
+      expect(count).toBe(1);
+      total += count;
     }
+    expect(total).toBe(6);
+    expect(within(strip).getByText("n = 6")).toBeInTheDocument();
     expect(within(strip).getByTestId("approximate")).toBeInTheDocument();
   });
 
@@ -458,7 +511,8 @@ describe("/rounds/$sessionId", () => {
     const perAgent = (await screen.findAllByTestId("degraded")).find((node) =>
       node.textContent?.includes("Per-agent breakdown"),
     );
-    expect(perAgent).toHaveAttribute("data-reason", "unbuilt");
+    expect(perAgent).toHaveAttribute("data-reason", "lane-did-not-send");
+    expect(perAgent?.textContent ?? "").toContain("predates per-agent rows");
   });
 
   it("separates a field this lane left empty from one that is not built yet (#100)", async () => {
@@ -471,7 +525,8 @@ describe("/rounds/$sessionId", () => {
     );
     expect(subagentLifecycle).toHaveAttribute("data-reason", "lane-sent-nothing");
     const perAgent = degraded.find((node) => node.textContent?.includes("Per-agent breakdown"));
-    expect(perAgent).toHaveAttribute("data-reason", "unbuilt");
+    expect(perAgent).toHaveAttribute("data-reason", "lane-did-not-send");
+    expect(perAgent?.textContent ?? "").toContain("predates per-agent rows");
   });
 
   it("reads a fan-out round's summed API time as parallelism, never negative overhead", async () => {

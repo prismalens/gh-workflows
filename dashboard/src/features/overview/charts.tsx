@@ -1,4 +1,5 @@
 import type { KeyboardEvent, ReactNode } from "react";
+import { cn } from "@/lib/utils";
 import {
   Bar,
   BarChart,
@@ -53,6 +54,14 @@ const AXIS = {
 } as const;
 
 /**
+ * Recharts mounts a bar or dot at zero and animates it in via requestAnimationFrame.
+ * Under Chrome's headless `--virtual-time-budget` (dashboard/scripts/shots.mjs) rAF
+ * never fires, so the shape stays invisible at any budget (#141). Off everywhere,
+ * not only for the screenshot script, so a viewer reads the numbers immediately.
+ */
+const NO_MOUNT_ANIMATION = { isAnimationActive: false } as const;
+
+/**
  * Recharts types a tooltip label as ReactNode and a tooltip value as its own
  * union, so both are narrowed here rather than asserted into the shape we want.
  */
@@ -86,14 +95,16 @@ interface ChartCardProps {
   legend: ReactNode;
   note?: string;
   children: ReactNode;
+  /** Grid placement on the caller's layout, e.g. col-span or self-stretch. */
+  className?: string;
 }
 
-function ChartCard({ title, legend, note, children }: ChartCardProps) {
+function ChartCard({ title, legend, note, children, className }: ChartCardProps) {
   return (
-    <Card className="min-w-0">
-      <CardContent className="flex flex-col gap-3 p-4">
+    <Card className={cn("flex min-w-0 flex-col", className)}>
+      <CardContent className="flex flex-1 flex-col gap-3 p-4">
         <span className="text-xs font-medium text-muted-foreground">{title}</span>
-        <div className="h-48 w-full">{children}</div>
+        <div className="min-h-48 w-full flex-1">{children}</div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">{legend}</div>
         {note && <p className="text-xs text-muted-foreground">{note}</p>}
       </CardContent>
@@ -121,6 +132,8 @@ export interface RoundsPerDayChartProps {
   changes?: ChangeRow[];
   selectedMarkerId?: string | null;
   onMarkerClick?: (changeId: string) => void;
+  /** Grid placement on the caller's layout, e.g. col-span or self-stretch. */
+  className?: string;
 }
 
 export function RoundsPerDayChart({
@@ -130,9 +143,11 @@ export function RoundsPerDayChart({
   changes,
   selectedMarkerId,
   onMarkerClick,
+  className,
 }: RoundsPerDayChartProps) {
   return (
     <ChartCard
+      className={className}
       title="Rounds per day, by type"
       legend={types.map((type, index) => (
         <Swatch key={type} color={seriesColor(type, index)}>
@@ -152,7 +167,13 @@ export function RoundsPerDayChart({
             contentStyle={TOOLTIP_STYLE}
           />
           {types.map((type, index) => (
-            <Bar key={type} dataKey={type} stackId="rounds" fill={seriesColor(type, index)} />
+            <Bar
+              key={type}
+              dataKey={type}
+              stackId="rounds"
+              fill={seriesColor(type, index)}
+              {...NO_MOUNT_ANIMATION}
+            />
           ))}
           {changes?.map((change) => {
             const isSelected = selectedMarkerId === change.id;
@@ -246,6 +267,7 @@ export function TokenCompositionChart({
               stackId="tokens"
               fill={series.color}
               name={series.label}
+              {...NO_MOUNT_ANIMATION}
             />
           ))}
           {changes?.map((change) => {
@@ -357,8 +379,13 @@ export function WallClockScatterChart({
             formatter={durationValue}
             labelFormatter={stampLabel}
           />
-          <Scatter name="reviewed" data={reviewed} fill="var(--chart-1)" />
-          <Scatter name="not reviewed" data={notReviewed} fill="var(--muted-foreground)" />
+          <Scatter name="reviewed" data={reviewed} fill="var(--chart-1)" {...NO_MOUNT_ANIMATION} />
+          <Scatter
+            name="not reviewed"
+            data={notReviewed}
+            fill="var(--muted-foreground)"
+            {...NO_MOUNT_ANIMATION}
+          />
           {changes?.map((change) => {
             const isSelected = selectedMarkerId === change.id;
             const atMs = new Date(change.at).getTime();

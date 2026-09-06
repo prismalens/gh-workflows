@@ -1935,6 +1935,51 @@ describe("Worker telemetry read API", () => {
       assert.deepEqual(dataC.rows, []);
       assert.equal(dataC.next_cursor, null);
     });
+
+    it("honors the limit query parameter instead of the hardcoded 64 (#141)", async () => {
+      const helper = await getAccessHelper();
+      const threeAgents = ["agent-01", "agent-02", "agent-03"].map((agentId) => ({
+        session_id: "s-1",
+        agent_id: agentId,
+        subagent_type: "worker",
+        spawn_depth: 1,
+        status: "completed",
+        model: "claude-3-5-sonnet",
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        duration_ms: 500,
+        tool_uses: 1,
+        tool_uses_by_name: "{}",
+        file_paths: "[]",
+      }));
+
+      const db = createFakeDb({
+        handler: (sql, args) => {
+          if (sql.includes("FROM round_agents")) {
+            assert.ok(sql.includes("LIMIT ?"));
+            const limit = args[1];
+            return { results: threeAgents.slice(0, limit) };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+
+      const req = makeAuthenticatedRequest(
+        "/api/round-agents?session_id=s-1&limit=2",
+        helper.jwt,
+      );
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.rows.length, 2);
+
+      const query = db.queries[0];
+      assert.equal(query.args[0], "s-1");
+      assert.equal(query.args[1], 2);
+    });
   });
 
   describe("Changes Registry API (/api/changes)", () => {

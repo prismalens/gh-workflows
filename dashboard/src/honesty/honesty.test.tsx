@@ -9,6 +9,7 @@ import type { ChangeRow, RoundRow } from "@/api/types";
 import { aggregateRounds, cacheHitRate, cachingMultiplier, tokenSums } from "./aggregate";
 import { Degraded } from "./Degraded";
 import { meanMetric, medianMetric, p95Metric, derivedMetric } from "./metrics";
+import { decodeVerdictKind, silentRateMetric, verdictKindMix } from "./verdict";
 import {
   applyRange,
   isRangeKey,
@@ -357,6 +358,75 @@ describe("the derived aggregates", () => {
       n: 5,
       shown: "max",
     });
+  });
+});
+
+describe("verdict_kind decoding, straight with no round_type fallback (#141)", () => {
+  function verdictRow(verdictKind: string | null): RoundRow {
+    return { ...makeRounds({ count: 1 })[0], verdict_kind: verdictKind };
+  }
+
+  it("buckets every recognised verdict_kind, folding clean into reviewed", () => {
+    expect(decodeVerdictKind(verdictRow("reviewed"))).toBe("reviewed");
+    expect(decodeVerdictKind(verdictRow("reviewed-incremental"))).toBe("reviewed");
+    expect(decodeVerdictKind(verdictRow("clean"))).toBe("reviewed");
+    expect(decodeVerdictKind(verdictRow("verify-rechecked"))).toBe("threads-only");
+    expect(decodeVerdictKind(verdictRow("auto-paused"))).toBe("did-not-run");
+    expect(decodeVerdictKind(verdictRow("silent"))).toBe("silent");
+    expect(decodeVerdictKind(verdictRow("verify-silent"))).toBe("silent");
+    expect(decodeVerdictKind(verdictRow("error"))).toBe("error");
+  });
+
+  it("calls a null verdict_kind no-verdict-recorded rather than guessing from round_type", () => {
+    const row = { ...verdictRow(null), round_type: "full" };
+    expect(decodeVerdictKind(row)).toBe("no-verdict-recorded");
+  });
+
+  it("sums the six buckets to n", () => {
+    const rows = [
+      verdictRow("reviewed"),
+      verdictRow("verify-rechecked"),
+      verdictRow("auto-paused"),
+      verdictRow("silent"),
+      verdictRow("error"),
+      verdictRow(null),
+    ];
+    const mix = verdictKindMix(rows);
+    expect(mix).toMatchObject({
+      reviewed: 1,
+      threadsOnly: 1,
+      didNotRun: 1,
+      silent: 1,
+      error: 1,
+      noVerdictRecorded: 1,
+      n: 6,
+    });
+  });
+
+  it("computes the silent rate over rounds carrying silent, verify-silent, or error, out of every round with a verdict_kind", () => {
+    const rows = [
+      verdictRow("reviewed"),
+      verdictRow("reviewed"),
+      verdictRow("silent"),
+      verdictRow("verify-silent"),
+      verdictRow("error"),
+      verdictRow(null), // excluded from the denominator, not counted as clean
+    ];
+    const metric = silentRateMetric(rows);
+    // 3 of the 5 rounds carrying a verdict_kind decode to silent or error.
+    expect(metric).toMatchObject({ kind: "value", value: 0.6, n: 5 });
+  });
+
+  it("withholds the rate below the low-n threshold, like every other metric", () => {
+    const rows = Array.from({ length: LOW_N_THRESHOLD - 1 }, () => verdictRow("silent"));
+    expect(silentRateMetric(rows)).toMatchObject({ kind: "value", lowN: true });
+  });
+
+  it("reports empty, not a rate over zero, when no round in range carries a verdict_kind", () => {
+    // This is the case a caller must render as "predates the verdict fields",
+    // never as "no rounds in range": the rounds are there, just too old.
+    const rows = [verdictRow(null), verdictRow(null)];
+    expect(silentRateMetric(rows)).toEqual({ kind: "empty", n: 0 });
   });
 });
 

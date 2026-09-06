@@ -773,6 +773,25 @@ async function handleRoundAgents(url, env) {
     });
   }
 
+  let limit = 64;
+  const limitParam = url.searchParams.get("limit");
+  if (limitParam !== null) {
+    if (!/^[1-9]\d*$/.test(limitParam)) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const parsedLimit = Number(limitParam);
+    if (parsedLimit > 1000) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    limit = parsedLimit;
+  }
+
   const query = `SELECT
     session_id,
     agent_id,
@@ -791,9 +810,9 @@ async function handleRoundAgents(url, env) {
   FROM round_agents
   WHERE session_id = ?
   ORDER BY agent_id ASC
-  LIMIT 64`;
+  LIMIT ?`;
 
-  const { results } = await env.DB.prepare(query).bind(sessionId).all();
+  const { results } = await env.DB.prepare(query).bind(sessionId, limit).all();
   const rows = results ?? [];
 
   return new Response(

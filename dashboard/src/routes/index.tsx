@@ -38,7 +38,7 @@ import { applyRange, rangeSchema, type RangeKey } from "@/honesty/range";
 import { CountTile, Tile } from "@/honesty/Tile";
 import { aggregateMode, TileStrip } from "@/honesty/TileStrip";
 import { PER_DAY_RATE_MIN_ROUNDS } from "@/honesty/thresholds";
-import { verdictMix } from "@/honesty/verdict";
+import { silentRateMetric, verdictKindMix } from "@/honesty/verdict";
 import {
   formatCount,
   formatDuration,
@@ -115,7 +115,8 @@ function OverviewPage() {
     [windowed.rows, windowChanges],
   );
   const scatter = useMemo(() => wallClockPoints(windowed.rows), [windowed.rows]);
-  const mix = useMemo(() => verdictMix(windowed.rows), [windowed.rows]);
+  const mix = useMemo(() => verdictKindMix(windowed.rows), [windowed.rows]);
+  const silentRate = useMemo(() => silentRateMetric(windowed.rows), [windowed.rows]);
   const stats = useMemo(() => aggregateRounds(windowed.rows), [windowed.rows]);
   const tokens = useMemo(() => tokenSums(windowed.rows), [windowed.rows]);
   const billable = useMemo(
@@ -214,49 +215,56 @@ function OverviewPage() {
         </Alert>
       ) : (
         <>
-          {/* The activity band: throughput and adoption, above everything else. */}
+          {/* The activity band: throughput and adoption, above everything else.
+              Left column (3/5) is two count tiles side by side then repositories
+              spanning both; right column (2/5) is the chart, full height. Tiles
+              keep their natural height so they never stretch to match it (#141). */}
           <section
             data-testid="activity-band"
-            className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-4"
+            className="grid grid-cols-1 items-start gap-3 lg:grid-cols-5"
           >
-            <CountTile
-              label="PRs reviewed"
-              count={band.prsReviewed}
-              approximate="Distinct pull requests whose head the round type says was read. A verify round reads no code and counts no PR, and a round recorded without a type cannot be attributed, so this undercounts and never overcounts."
-              detail={`distinct pull requests over ${windowed.label}`}
-              support={
-                perDayRate
-                  ? `${formatCount(round2(band.prsReviewed / band.daysSpanned))}/day mean over ${band.daysSpanned} ${band.daysSpanned === 1 ? "day" : "days"}`
-                  : allTimeRounds !== null
-                    ? `under ${PER_DAY_RATE_MIN_ROUNDS} rounds in the window, so the cumulative renders here, never a per-day rate: ${formatCount(allTimeRounds)} rounds all time`
-                    : undefined
-              }
-            />
-            <CountTile
-              label="Review rounds"
-              count={band.rounds}
-              detail={
-                band.byType.length === 0
-                  ? "no round in this window carries a type"
-                  : band.byType.map((entry) => `${entry.rounds} ${entry.type}`).join(" · ")
-              }
-              support={
-                perDayRate
-                  ? `${formatCount(round2(band.rounds / band.daysSpanned))}/day mean · the n behind every tile below`
-                  : `the n behind every tile below${allTimeRounds !== null ? ` · ${formatCount(allTimeRounds)} all time` : ""}`
-              }
-            />
-            <CountTile
-              label="Repositories"
-              count={band.reposActive}
-              detail={
-                reposEverPosted !== null
-                  ? `active this window, of ${formatCount(reposEverPosted)} that have ever posted`
-                  : "active this window"
-              }
-              support="not of the repositories configured: no fleet registry exists to give that denominator"
-            />
+            <div className="grid grid-cols-2 gap-3 lg:col-span-3">
+              <CountTile
+                label="PRs reviewed"
+                count={band.prsReviewed}
+                approximate="Distinct pull requests whose head the round type says was read. A verify round reads no code and counts no PR, and a round recorded without a type cannot be attributed, so this undercounts and never overcounts."
+                detail={`distinct pull requests over ${windowed.label}`}
+                support={
+                  perDayRate
+                    ? `${formatCount(round2(band.prsReviewed / band.daysSpanned))}/day mean over ${band.daysSpanned} ${band.daysSpanned === 1 ? "day" : "days"}`
+                    : allTimeRounds !== null
+                      ? `under ${PER_DAY_RATE_MIN_ROUNDS} rounds in the window, so the cumulative renders here, never a per-day rate: ${formatCount(allTimeRounds)} rounds all time`
+                      : undefined
+                }
+              />
+              <CountTile
+                label="Review rounds"
+                count={band.rounds}
+                detail={
+                  band.byType.length === 0
+                    ? "no round in this window carries a type"
+                    : band.byType.map((entry) => `${entry.rounds} ${entry.type}`).join(" · ")
+                }
+                support={
+                  perDayRate
+                    ? `${formatCount(round2(band.rounds / band.daysSpanned))}/day mean · the n behind every tile below`
+                    : `the n behind every tile below${allTimeRounds !== null ? ` · ${formatCount(allTimeRounds)} all time` : ""}`
+                }
+              />
+              <CountTile
+                label="Repositories"
+                count={band.reposActive}
+                className="col-span-2"
+                detail={
+                  reposEverPosted !== null
+                    ? `active this window, of ${formatCount(reposEverPosted)} that have ever posted`
+                    : "active this window"
+                }
+                support="not of the repositories configured: no fleet registry exists to give that denominator"
+              />
+            </div>
             <RoundsPerDayChart
+              className="self-stretch lg:col-span-2"
               data={perDay}
               types={types}
               countByType={countByType}
@@ -308,6 +316,20 @@ function OverviewPage() {
                 format={formatTokens}
                 hint="input plus output, per round. A token count is a count, not money."
               />
+              {silentRate.kind === "empty" ? (
+                <Degraded
+                  what="Silent rate"
+                  reason="lane-did-not-send"
+                  detail="Every round in this window predates the verdict fields, so none of them can be counted."
+                />
+              ) : (
+                <Tile
+                  label="Silent rate"
+                  metric={silentRate}
+                  format={formatPercent}
+                  hint="verdict_kind decoding to silent, verify-silent, or error, over rounds carrying a verdict_kind"
+                />
+              )}
             </TileStrip>
             {/* Under TILES_MIN_ROUNDS the ruling replaces aggregates with the rounds
                 themselves, and TileStrip's notice names a table below it, so the
@@ -315,11 +337,6 @@ function OverviewPage() {
             {aggregateMode(band.rounds) === "table-instead" && (
               <RoundsTable rows={windowed.rows} sorting={sorting} onSortingChange={setSorting} />
             )}
-            <Degraded
-              what="Silent rate"
-              reason="unbuilt"
-              detail="A round that posted nothing still records a row, so a silent round is indistinguishable here from one that spoke. Naming it needs the verdict column (issue 02)."
-            />
           </section>
 
           <section className="flex flex-col gap-3">
