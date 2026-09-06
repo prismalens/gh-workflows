@@ -7,6 +7,7 @@ import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { FanOutTimeline } from "./FanOutTimeline";
+import { TokenCompositionBar } from "./TokenCompositionBar";
 import {
   Table,
   TableBody,
@@ -323,6 +324,7 @@ export function TokensPanel({ row }: { row: RoundRow }) {
             </Fact>
             <Fact label={LIST_RATE_EQUIVALENT}>{orDash(row.total_cost_usd, formatUsd)}</Fact>
           </Facts>
+          <TokenCompositionBar row={row} />
           <p className="text-xs text-muted-foreground">
             The multiplier is uncached-equivalent input over billed-equivalent input. It is
             arithmetic over the recorded counts, not a saving: no counterfactual run exists to
@@ -431,3 +433,5 @@ export function RawRecordPanel({ row }: { row: RoundRow }) {
 }
 
 export { FanOutTimeline } from "./FanOutTimeline";
+export { TokenCompositionBar } from "./TokenCompositionBar";
+export { WindowComparisonPanel } from "./WindowComparisonPanel";
