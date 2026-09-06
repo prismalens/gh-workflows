@@ -1,16 +1,18 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   createColumnHelper,
+  createPaginatedRowModel,
   createSortedRowModel,
+  rowPaginationFeature,
   rowSortingFeature,
   tableFeatures,
   useTable,
+  type PaginationState,
   type SortingState,
 } from "@tanstack/react-table";
 import { ExternalLink } from "lucide-react";
 
-import { Timestamp } from "@/components/Timestamp";
 import {
   Table,
   TableBody,
@@ -19,6 +21,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { formatTimestamp, formatTimestampCompact } from "@/lib/format";
 import { ATTENTION_RANKS } from "./headStatus";
 import { HeadStatusChip } from "./HeadStatusChip";
 import type { PRSummary } from "./prs";
@@ -26,6 +29,8 @@ import type { PRSummary } from "./prs";
 const features = tableFeatures({
   rowSortingFeature,
   sortedRowModel: createSortedRowModel(),
+  rowPaginationFeature,
+  paginatedRowModel: createPaginatedRowModel(),
 });
 
 const helper = createColumnHelper<typeof features, PRSummary>();
@@ -93,7 +98,7 @@ const columns = helper.columns([
     cell: () => (
       <span
         className="text-xs text-muted-foreground"
-        title="Open findings count arrives with issue 08"
+        title="Open findings count arrives with #111"
       >
         —
       </span>
@@ -103,8 +108,11 @@ const columns = helper.columns([
     id: "last_round",
     header: "Last round",
     cell: ({ row }) => (
-      <span className="tabular text-xs text-muted-foreground">
-        <Timestamp iso={row.original.lastRoundAt} />
+      <span
+        className="tabular text-xs text-muted-foreground"
+        title={formatTimestamp(row.original.lastRoundAt)}
+      >
+        {formatTimestampCompact(row.original.lastRoundAt)}
       </span>
     ),
   }),
@@ -138,9 +146,22 @@ export interface PRsTableProps {
   prs: PRSummary[];
   sorting: SortingState;
   onSortingChange: (next: SortingState) => void;
+  /** Externally controlled (URL-owned) pagination. Omit to render every row on one page. */
+  pagination?: PaginationState;
+  onPaginationChange?: (next: PaginationState) => void;
 }
 
-export function PRsTable({ prs, sorting, onSortingChange }: PRsTableProps) {
+const UNPAGINATED: PaginationState = { pageIndex: 0, pageSize: Infinity };
+
+export function PRsTable({
+  prs,
+  sorting,
+  onSortingChange,
+  pagination,
+  onPaginationChange,
+}: PRsTableProps) {
+  const [fallbackPagination, setFallbackPagination] = useState<PaginationState>(UNPAGINATED);
+  const paginationState = pagination ?? fallbackPagination;
   const data = useMemo(() => prs, [prs]);
 
   const table = useTable({
@@ -148,14 +169,20 @@ export function PRsTable({ prs, sorting, onSortingChange }: PRsTableProps) {
     columns,
     data,
     getRowId: (row) => row.id,
-    state: { sorting },
+    state: { sorting, pagination: paginationState },
+    // The route owns page resets on filter/sort/range changes (#141).
+    autoResetPageIndex: false,
     onSortingChange: (updater) =>
       onSortingChange(typeof updater === "function" ? updater(sorting) : updater),
+    onPaginationChange: (updater) => {
+      const next = typeof updater === "function" ? updater(paginationState) : updater;
+      (onPaginationChange ?? setFallbackPagination)(next);
+    },
   });
 
   return (
     <div className="rounded-md border border-border bg-card">
-      <Table>
+      <Table className="[&_td]:py-1.5 [&_td]:text-xs [&_th]:h-8">
         <TableHeader>
           {table.getHeaderGroups().map((group) => (
             <TableRow key={group.id}>
