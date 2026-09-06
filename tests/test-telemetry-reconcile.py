@@ -609,17 +609,25 @@ def main():
         until=UNTIL,
     )
     combined = stdout + "\n" + stderr
-    if code != 0:
-        fails.append(f"cross-owner skip: expected exit 0 when other repos are clean, got {code}:\n{combined}")
-        print(f"  FAIL  cross-owner skip: exited {code}")
+    # An unreadable repository is unknown coverage, not clean coverage, so the run must go
+    # red rather than report success over the repos it did reach. Story: #87.
+    if code == 0:
+        fails.append(f"cross-owner skip: expected non-zero when a repository could not be read, got 0:\n{combined}")
+        print("  FAIL  cross-owner skip: exited 0 with a repository unread")
     elif "::warning::Skipped Sumit1993/mage-memory" not in combined:
         fails.append("cross-owner skip: did not emit ::warning::Skipped Sumit1993/mage-memory")
         print("  FAIL  cross-owner skip: missing warning annotation")
+    elif "::error::Coverage unknown for Sumit1993/mage-memory" not in combined:
+        fails.append("cross-owner skip: did not emit a coverage-unknown error annotation")
+        print("  FAIL  cross-owner skip: missing coverage-unknown error")
+    elif "all runs accounted for" in combined:
+        fails.append("cross-owner skip: claimed all runs accounted for while a repository was unread")
+        print("  FAIL  cross-owner skip: false clean")
     elif "Sumit1993/mage-memory" not in summary or "⚠️ Skipped" not in summary:
         fails.append("cross-owner skip: summary did not record skipped repository")
         print("  FAIL  cross-owner skip: missing skipped notice in summary")
     else:
-        print("  ok    cross-owner repository inaccessible: emits warning, notes skip in summary, exits 0")
+        print("  ok    cross-owner repository inaccessible: warns, errors, records the skip, and fails rather than claiming clean")
 
     # -------------------------------------------------------------
     # 10. Security: secret token value is never echoed in output

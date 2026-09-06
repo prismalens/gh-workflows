@@ -230,5 +230,18 @@ jobs:
             exit 1
           fi
 
-          echo "Reconciliation complete: all runs accounted for."
+          # A repository we could not read is unknown coverage, not clean coverage. Claiming
+          # "all runs accounted for" while some were never fetched reproduces the defect this
+          # reconciler exists to catch: a warning nobody reads behind a green check. Story: #87.
+          if [ ${#SKIPPED_REPOS[@]} -gt 0 ]; then
+            echo ""
+            echo "Reconciler failed: ${#SKIPPED_REPOS[@]} repository/repositories could not be read, so coverage is unknown for them."
+            for skip in "${SKIPPED_REPOS[@]}"; do
+              IFS='|' read -r s_repo s_err <<< "$skip"
+              echo "::error::Coverage unknown for ${s_repo}: ${s_err} (#87)"
+            done
+            exit 1
+          fi
+
+          echo "Reconciliation complete: all runs accounted for across ${#COVERED_REPOS[@]} repositories."
           exit 0
