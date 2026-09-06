@@ -2027,6 +2027,7 @@ jobs:
     outputs:
       resolved: ${{ steps.apply.outputs.resolved }}
       open: ${{ steps.apply.outputs.open }}
+      unverified: ${{ steps.apply.outputs.unverified }}
     permissions:
       # `contents: write` is what `resolveReviewThread` actually costs; it is refused at
       # `contents: read` (measured: prismalens/sreforge#157, and run 33006099680 for the
@@ -2201,6 +2202,10 @@ jobs:
           discarded = 0
           resolved_count = 0
           open_count = 0
+          # Counted inside open_count, not beside it: a thread nobody could check is open
+          # for a different reason than one that still fails, and only the second asks the
+          # operator for a code change. Story: #123.
+          unverified_count = 0
 
           for i, entry in enumerate(verdicts):
               if not isinstance(entry, dict):
@@ -2281,6 +2286,8 @@ jobs:
               else:
                   print(f"Thread '{thread_id}' left open ({verdict}).")
                   open_count += 1
+                  if verdict == "cannot_verify":
+                      unverified_count += 1
 
           # The round's mandatory summary. It used to be a prose instruction to the agent,
           # which an agent can silently skip; a templated post from here cannot. The first
@@ -2308,6 +2315,7 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"resolved={resolved_count}\n")
               f.write(f"open={open_count}\n")
+              f.write(f"unverified={unverified_count}\n")
 
           print("Finished applying thread verdicts.")
           # A thread replied "Verified fixed" but left unresolved is the failure this guards:
@@ -2350,6 +2358,7 @@ jobs:
           MUTATE_RESULT: ${{ needs.mutate.result }}
           RESOLVED: ${{ needs.mutate.outputs.resolved }}
           OPEN: ${{ needs.mutate.outputs.open }}
+          UNVERIFIED: ${{ needs.mutate.outputs.unverified }}
           STARTED_AT: ${{ needs.review.outputs.started_at }}
           RANGE_BASE: ${{ needs.review.outputs.range_base }}
           RANGE_HEAD: ${{ needs.review.outputs.range_head }}
@@ -2433,7 +2442,15 @@ jobs:
                     | select(.created_at >= \"$STARTED_AT\")
                     | select((.body | split(\"\n\")[0] | rtrimstr(\"\r\")) == \"## Code review — verification round\")][0] // empty")
             if [ -n "$found_summary" ]; then
-              verdict="re-checked open threads at \`$short\`: ${RESOLVED:-0} resolved / ${OPEN:-0} left open."
+              # "left open" alone reads the same whether the finding still stands or the
+              # agent was blocked from looking. Only the first asks for a code change, so
+              # the unverifiable ones are named separately. Story: #123.
+              if [ "${UNVERIFIED:-0}" -gt 0 ] 2>/dev/null; then
+                still="$(( ${OPEN:-0} - ${UNVERIFIED:-0} ))"
+                verdict="re-checked open threads at \`$short\`: ${RESOLVED:-0} resolved / ${still} still apply / ${UNVERIFIED} could not be verified."
+              else
+                verdict="re-checked open threads at \`$short\`: ${RESOLVED:-0} resolved / ${OPEN:-0} left open."
+              fi
               verdict_kind="verify-rechecked"
             else
               verdict="ran a verification round on \`$short\` (mutate result: ${MUTATE_RESULT}) but posted **nothing**. \
