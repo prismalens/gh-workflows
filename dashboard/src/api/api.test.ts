@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, changesUrl, httpApi, laneEventsUrl, lookupRound, MAX_LIMIT_WITH_BLOBS, runsUrl } from "./client";
+import { ApiError, changesUrl, httpApi, laneEventsUrl, lookupRound, MAX_LIMIT_WITH_BLOBS, runsUrl, type RunsQuery } from "./client";
+import { lookupPR } from "./queries";
 import { CSV_COLUMNS, roundsToCsv } from "./csv";
 import { parsePerModelUsage, parseRawResult, parseSubagentStats } from "./blobs";
 import { makeFixtureApi } from "@/fixtures/api";
@@ -460,5 +461,69 @@ describe("an error names the failure it actually was", () => {
     });
     await httpApi.fetchSummary();
     expect(vi.mocked(fetch).mock.calls[0][1]).toMatchObject({ redirect: "manual" });
+  });
+});
+
+describe("lookupPR pages through cursors and validates PR numbers (findings 3943781301, 3943781319)", () => {
+  it("rejects non-positive or non-integer PR numbers without fetching", async () => {
+    let called = false;
+    const dummyApi = {
+      ...api,
+      fetchRuns: async () => {
+        called = true;
+        return { rows: [], next_cursor: null };
+      },
+    };
+
+    expect(await lookupPR(dummyApi, "prismalens/gh-workflows", 0)).toEqual({ found: false });
+    expect(await lookupPR(dummyApi, "prismalens/gh-workflows", -5)).toEqual({ found: false });
+    expect(await lookupPR(dummyApi, "prismalens/gh-workflows", Number.NaN)).toEqual({ found: false });
+    expect(await lookupPR(dummyApi, "prismalens/gh-workflows", 1.5)).toEqual({ found: false });
+    expect(called).toBe(false);
+  });
+
+  it("pages through repository rounds following next_cursor before returning matching PR rounds", async () => {
+    const page1Row = {
+      ...rows[0],
+      session_id: "p1-round",
+      pr_number: 999,
+      recorded_at: "2026-08-31T10:00:00.000Z",
+    };
+    const page2Row = {
+      ...rows[1],
+      session_id: "p2-round",
+      pr_number: 999,
+      recorded_at: "2026-08-31T11:00:00.000Z",
+    };
+    const otherRow = {
+      ...rows[2],
+      session_id: "other-pr",
+      pr_number: 888,
+      recorded_at: "2026-08-31T12:00:00.000Z",
+    };
+
+    const cursorsSeen: (string | undefined)[] = [];
+    const multiPageApi = {
+      ...api,
+      fetchRuns: async (query: RunsQuery = {}) => {
+        cursorsSeen.push(query.cursor);
+        if (!query.cursor) {
+          return { rows: [otherRow, page1Row], next_cursor: "page-2-cursor" };
+        }
+        if (query.cursor === "page-2-cursor") {
+          return { rows: [page2Row], next_cursor: null };
+        }
+        return { rows: [page1Row, page2Row], next_cursor: null };
+      },
+    };
+
+    const result = await lookupPR(multiPageApi, "prismalens/gh-workflows", 999);
+    expect(result.found).toBe(true);
+    if (result.found) {
+      expect(result.rounds).toHaveLength(2);
+      expect(result.rounds.map((r) => r.session_id)).toEqual(["p2-round", "p1-round"]);
+    }
+    expect(cursorsSeen).toContain(undefined);
+    expect(cursorsSeen).toContain("page-2-cursor");
   });
 });
