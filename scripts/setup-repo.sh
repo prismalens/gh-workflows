@@ -153,12 +153,12 @@ if [ "$SKIP_RULESET" -eq 0 ]; then
           required_review_thread_resolution:true, allowed_merge_methods:["squash"],
           require_extra_approval_for_unattributed_changes:true}},
         {type:"required_status_checks", parameters:{
-          strict_required_status_checks_policy:false, required_status_checks:$checks}},
+          strict_required_status_checks_policy:true, required_status_checks:$checks}},
         {type:"merge_queue", parameters:{
           check_response_timeout_minutes:60, grouping_strategy:"ALLGREEN",
           max_entries_to_build:5, max_entries_to_merge:5,
           merge_method:"SQUASH", min_entries_to_merge:1,
-          min_entries_to_merge_wait_minutes:5}},
+          min_entries_to_merge_wait_minutes:1}},
         {type:"required_linear_history"}
       ]}')
     POST_FAILED=0
@@ -235,7 +235,9 @@ if [ "$SKIP_RULESET" -eq 0 ]; then
       fi
       LIVE_CHECKS=$(printf '%s' "$LIVE_FULL" | jq -r '[.rules[]?|select(.type=="required_status_checks")|.parameters.required_status_checks[]?.context]|sort|join(", ")')
       say "  live checks: ${LIVE_CHECKS:-none}"
-      say "  want checks: ${REQUIRED_CHECKS[*]}"
+      # Joined the same way the live line is, so the two are comparable by eye.
+      want_checks=$(printf '%s, ' "${REQUIRED_CHECKS[@]}"); want_checks=${want_checks%, }
+      say "  want checks: $want_checks"
       say "  to change it, edit the ruleset in the GitHub UI or PATCH the one field."
     elif [ "$DRY" -eq 1 ]; then
       say "  WOULD create \"$RULESET_NAME\" on the default branch"
