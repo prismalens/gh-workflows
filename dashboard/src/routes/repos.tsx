@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { createRoute, Link } from "@tanstack/react-router";
 import { z } from "zod";
 
-import { useRoundsQuery, useSummaryQuery } from "@/api/queries";
+import { useAttentionQuery, useRoundsQuery, useSummaryQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +15,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { summariseRepos } from "@/features/repos/repos";
+import { malformedConfigs, quietRepos, summariseRepos } from "@/features/repos/repos";
+import { WatchOut } from "@/features/repos/WatchOut";
 import { Degraded } from "@/honesty/Degraded";
 import { RangeControl } from "@/honesty/RangeControl";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
@@ -36,6 +37,7 @@ export const reposRoute = createRoute({
 });
 
 const EMPTY_ROWS = Object.freeze([]) as never[];
+const EMPTY_PER_REPOSITORY = Object.freeze([]) as never[];
 
 function ReposPage() {
   const search = reposRoute.useSearch();
@@ -44,6 +46,11 @@ function ReposPage() {
 
   const summary = useSummaryQuery();
   const rounds = useRoundsQuery({ range: search.range }, now);
+  // The malformed-config row reads the same blob-carrying query the failures
+  // page uses; the quiet row's last-round timestamp comes from the summary's
+  // per_repository array, not an unwindowed page of every round (#142 finding
+  // 3944697641).
+  const attention = useAttentionQuery({ range: search.range }, now);
 
   const fetched = rounds.data?.rows ?? EMPTY_ROWS;
   const truncated = rounds.data?.next_cursor != null;
@@ -65,6 +72,15 @@ function ReposPage() {
   const active = repos.filter((repo) => repo.rounds > 0).length;
   const denials = repos.reduce((sum, repo) => sum + repo.denials, 0);
 
+  const blobRows = attention.data?.rows ?? EMPTY_ROWS;
+  const perRepository = summary.data?.per_repository ?? EMPTY_PER_REPOSITORY;
+  const malformed = useMemo(() => malformedConfigs(blobRows), [blobRows]);
+  const quiet = useMemo(() => quietRepos(repos, perRepository), [repos, perRepository]);
+  const lastRecordedByRepo = useMemo(
+    () => new Map(perRepository.map((r) => [r.repository, r.last_recorded_at])),
+    [perRepository],
+  );
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-3">
@@ -75,11 +91,11 @@ function ReposPage() {
         />
       </div>
 
-      {rounds.isPending || summary.isPending ? (
+      {rounds.isPending || summary.isPending || attention.isPending ? (
         <LoadingRows label="Loading repositories" />
-      ) : rounds.isError || summary.isError ? (
+      ) : rounds.isError || summary.isError || attention.isError ? (
         <QueryError
-          error={rounds.error ?? summary.error}
+          error={rounds.error ?? summary.error ?? attention.error}
           title="Could not load repositories"
         />
       ) : (
@@ -102,6 +118,13 @@ function ReposPage() {
               detail="summed across every repository in the window"
             />
           </section>
+
+          <WatchOut
+            malformed={malformed}
+            quiet={quiet}
+            range={search.range}
+            windowLabel={windowed.label}
+          />
 
           <Card>
             <CardContent className="p-0">
@@ -137,12 +160,17 @@ function ReposPage() {
                             search={{ at: repo.lastRound.recorded_at }}
                             className="underline-offset-4 hover:underline"
                           >
-                            <Timestamp iso={repo.lastRound.recorded_at} />
+                            <Timestamp iso={repo.lastRound.recorded_at} compact />
                           </Link>
+                        ) : lastRecordedByRepo.get(repo.repository) ? (
+                          // Quiet in this window: the summary's per_repository array still
+                          // knows when it last posted (#142 finding 3944697641).
+                          <Timestamp
+                            iso={lastRecordedByRepo.get(repo.repository) ?? null}
+                            compact
+                          />
                         ) : (
-                          <span className="text-muted-foreground">
-                            no round over {windowed.label}
-                          </span>
+                          <span className="text-muted-foreground">no round ever recorded</span>
                         )}
                       </TableCell>
                       <TableCell>{orDash(repo.lastRound?.round_type ?? null)}</TableCell>
@@ -173,8 +201,7 @@ function ReposPage() {
           />
 
           <p className="text-xs text-muted-foreground">
-            A repository with no round in this window is still listed. A dead lane and a quiet
-            repository look the same here, because a skipped run records nothing.
+            A repository with no round in this window is still listed.
           </p>
         </>
       )}

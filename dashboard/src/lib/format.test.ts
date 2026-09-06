@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { formatCompactRounds, formatTimestamp, localDay } from "./format";
+import { formatCompactRounds, formatTimestamp, formatTimestampCompact, localDay } from "./format";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -59,6 +59,29 @@ describe("localDay follows the same zone as formatTimestamp (#97)", () => {
   it("keeps the same instant on its own day under UTC", () => {
     vi.stubEnv("TZ", "UTC");
     expect(localDay("2026-08-31T19:10:00.000Z")).toBe("2026-08-31");
+  });
+});
+
+describe("formatTimestampCompact: month short, day, 24h, no year, no seconds (#141)", () => {
+  it("renders Aug 31 08:14 for a fixed instant under UTC", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(formatTimestampCompact("2026-08-31T08:14:00.000Z")).toBe("Aug 31 08:14");
+  });
+
+  it("reads the viewer's zone rather than UTC", () => {
+    vi.stubEnv("TZ", "Asia/Kolkata");
+    // 19:10 UTC lands at 00:40 IST the next calendar day.
+    expect(formatTimestampCompact("2026-08-31T19:10:00.000Z")).toBe("Sep 1 00:40");
+  });
+
+  it("pads a single-digit hour or minute", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(formatTimestampCompact("2026-01-05T03:05:00.000Z")).toBe("Jan 5 03:05");
+  });
+
+  it("returns a dash for a missing timestamp", () => {
+    expect(formatTimestampCompact(null)).toBe("—");
+    expect(formatTimestampCompact(undefined)).toBe("—");
   });
 });
 

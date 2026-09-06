@@ -92,6 +92,8 @@ Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_
   - `pr_state` (TEXT): Pull request state (#72).
   - `pr_base_ref` (TEXT, capped to 512): Pull request base branch name (#72).
   - `pr_head_ref` (TEXT, capped to 512): Pull request head branch name (#72).
+  - `agents_status` (TEXT): Rollup outcome for the round's agent fan-out, distinct from an empty
+    `agents` array (#89).
 
 #### `lane_event`
 - **Required**:
@@ -211,7 +213,7 @@ Returns paginated telemetry review rounds from `usage_records`.
 
 - **Default Response**:
   - v1 columns: `session_id`, `recorded_at`, `repository`, `pr_number`, `pr_url`, `head_sha`, `run_id`, `run_attempt`, `run_url`, `round_type`, `model`, `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `total_cost_usd`, `duration_ms`, `duration_api_ms`, `num_turns`, `permission_denials`, `changed_files`, `diff_lines`.
-  - 15 Wave 2 columns: `lane_version`, `verdict_kind`, `inline_count`, `summary_count`, `round_ordinal`, `fallback_reason`, `range_base`, `range_head`, `model_source`, `job_conclusion`, `pr_title`, `pr_author`, `pr_state`, `pr_base_ref`, `pr_head_ref`.
+  - 16 Wave 2 columns: `lane_version`, `verdict_kind`, `inline_count`, `summary_count`, `round_ordinal`, `fallback_reason`, `range_base`, `range_head`, `model_source`, `job_conclusion`, `pr_title`, `pr_author`, `pr_state`, `pr_base_ref`, `pr_head_ref`, `agents_status`.
 - **Behind `include=blobs`**:
   - v1 blobs: `per_model_usage`, `subagent_stats`, `raw_result`.
   - Wave 2 blobs: `verdict_text`, `comment_node_ids`, `config_resolution`.
@@ -264,6 +266,32 @@ Returns paginated lane lifecycle events from `lane_events` (skipped or non-execu
   "next_cursor": "2026-08-31T14:20:00.000Z|123456"
 }
 ```
+
+---
+
+### `GET /api/round-agents`
+
+Returns per-agent rows for one round from `round_agents`, ordered by `agent_id` ascending (#131, #89).
+
+#### Query Parameters
+
+- `session_id` (required): Exact match on the round's `session_id`. Missing returns 400.
+- `limit` (optional): Integer `1`..`1000` (default `64`).
+
+#### Columns
+
+- `session_id`, `agent_id`, `subagent_type`, `spawn_depth`, `status`, `model`, `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `duration_ms`, `tool_uses`, `tool_uses_by_name`, `file_paths`.
+
+#### Response Shape
+
+```json
+{
+  "rows": [ ... ],
+  "next_cursor": null
+}
+```
+
+This route has no cursor pagination; `next_cursor` is always `null` and `limit` is the only cap.
 
 ---
 

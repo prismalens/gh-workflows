@@ -40,6 +40,25 @@ export function formatTimestamp(iso: string | null | undefined): string {
   return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
+const COMPACT_MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/**
+ * The compact form for a table cell: `Aug 31 08:14`, viewer's zone, 24-hour, no
+ * year, no seconds. The full form stays available for the cell's `title` (#97).
+ */
+export function formatTimestampCompact(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const month = COMPACT_MONTHS[date.getMonth()];
+  const day = date.getDate();
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${month} ${day} ${hours}:${minutes}`;
+}
+
 /** The viewer's zone name, for a chart note that says which calendar days it means. */
 export function localZoneName(date: Date = new Date()): string {
   return (

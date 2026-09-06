@@ -21,18 +21,18 @@ Reusable workflow callees live in `.github/workflows/` and are invoked by consum
 
 ### This Repository's Own CI
 
-`.github/workflows/tests.yml` is the only self-triggering workflow here. The callees above run in
-consumer repositories, so without it nothing verifies them before they ship. It runs on every
-pull request and on pushes to `main`, in two independent jobs:
+`.github/workflows/tests.yml` verifies the callees above, which run in consumer repositories and
+are not otherwise checked before they ship. It runs on every pull request and on pushes to
+`main`. Two of its jobs:
 
 - `test` extracts the real shell and Python out of the callees and runs it, then runs `actionlint`
   at a pinned version.
 - `dashboard` builds the SPA in `dashboard/`: `npm ci`, then `npm test` for the honesty rules, the
-  read-route contract and both routes, then `npm run build`, which typechecks and bundles.
+  read-route contract and the routes, then `npm run build`, which typechecks and bundles.
   `dashboard/dist` is gitignored, so this job is the only thing that catches a broken build.
 
-Neither job is a required check. Nothing in this repository is enforced by branch protection or a
-ruleset; see [AGENTS.md](AGENTS.md).
+None of its jobs is a required check. Nothing in this repository is enforced by branch protection
+or a ruleset; see [AGENTS.md](AGENTS.md).
 
 ### Worked-Example Consumer Stub (Mention Lane)
 
@@ -137,7 +137,7 @@ Decides whether an account may start an agent run in this repository. Admits on 
 
 #### Why `pr-title` is NOT a reusable workflow
 
-The PR title required status check name is pinned in repository rulesets (branch protection rules). Reusable workflows (`workflow_call`) automatically rename check runs to `"caller-job-name / callee-job-name"` (e.g. `validate / Validate PR title`), breaking pinned required status check names in rulesets. Composite actions execute within the caller's job context, keeping the check run name exact.
+A consumer repository typically pins the PR title status check name in its own rulesets (branch protection rules); gh-workflows itself has no such ruleset (see [AGENTS.md](AGENTS.md)). Reusable workflows (`workflow_call`) automatically rename check runs to `"caller-job-name / callee-job-name"` (e.g. `validate / Validate PR title`), breaking a consumer's pinned required status check name. Composite actions execute within the caller's job context, keeping the check run name exact.
 
 #### Usage Snippet
 
@@ -187,6 +187,7 @@ jobs:
 To guard against supply chain tampering from repointed tags, every third-party GitHub Action used across workflows and composite actions is pinned to a full commit SHA:
 
 - `actions/checkout`
+- `actions/setup-node`
 - `actions/upload-artifact`
 - `actions/download-artifact`
 - `anthropics/claude-code-action`

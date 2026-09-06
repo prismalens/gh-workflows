@@ -1,34 +1,44 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Approximate } from "@/honesty/Degraded";
-import { VERDICT_COPY, type VerdictMix } from "@/honesty/verdict";
+import {
+  VERDICT_KIND_BUCKET_COPY,
+  type VerdictKindBucket,
+  type VerdictKindMix,
+} from "@/honesty/verdict";
 import { formatCount, formatPercent } from "@/lib/format";
-import { seriesColor } from "./charts";
 
-const SEGMENTS = [
-  { state: "reviewed", color: seriesColor("full", 0) },
-  { state: "unknown", color: "var(--muted-foreground)" },
-] as const;
+const SEGMENTS: ReadonlyArray<{
+  bucket: VerdictKindBucket;
+  mixKey: keyof Omit<VerdictKindMix, "n">;
+  color: string;
+}> = [
+  { bucket: "reviewed", mixKey: "reviewed", color: "var(--chart-1)" },
+  { bucket: "threads-only", mixKey: "threadsOnly", color: "var(--chart-3)" },
+  { bucket: "did-not-run", mixKey: "didNotRun", color: "var(--chart-2)" },
+  { bucket: "silent", mixKey: "silent", color: "var(--chart-4)" },
+  { bucket: "error", mixKey: "error", color: "var(--destructive)" },
+  { bucket: "no-verdict-recorded", mixKey: "noVerdictRecorded", color: "var(--muted-foreground)" },
+];
 
 export interface VerdictStripProps {
-  mix: VerdictMix;
+  mix: VerdictKindMix;
   windowLabel: string;
 }
 
 /**
  * Sits directly under the activity band because it is what makes the bold counts
  * above it trustworthy: it says how many of those rounds are ones we can claim
- * read a head. Two states, permanently, until the verdict column lands (#46).
+ * read a head. Bucketed straight from verdict_kind (#141); a round with no
+ * verdict_kind is its own bucket rather than a guess from round_type.
  */
 export function VerdictStrip({ mix, windowLabel }: VerdictStripProps) {
   return (
     <Card className="min-w-0">
       <CardContent className="flex flex-col gap-2 p-4" data-testid="verdict-strip">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <span className="text-xs font-medium text-muted-foreground">
-            Verdict mix, as far as it is recorded
-          </span>
+          <span className="text-xs font-medium text-muted-foreground">Verdict mix</span>
           <span className="flex items-center gap-2">
-            <Approximate why="Two states, not four. The lane's posted verdict is not a column yet: issue 02." />
+            <Approximate why="Six buckets decoded from verdict_kind. A round recorded before that field existed falls into no verdict recorded rather than being guessed at." />
             <span className="tabular text-xs text-muted-foreground">n = {formatCount(mix.n)}</span>
           </span>
         </div>
@@ -40,10 +50,10 @@ export function VerdictStrip({ mix, windowLabel }: VerdictStripProps) {
             <div className="flex h-3 w-full overflow-hidden rounded-sm">
               {SEGMENTS.map((segment) => (
                 <div
-                  key={segment.state}
+                  key={segment.bucket}
                   style={{
                     backgroundColor: segment.color,
-                    width: `${(mix[segment.state] / mix.n) * 100}%`,
+                    width: `${(mix[segment.mixKey] / mix.n) * 100}%`,
                   }}
                 />
               ))}
@@ -51,22 +61,20 @@ export function VerdictStrip({ mix, windowLabel }: VerdictStripProps) {
             <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
               {SEGMENTS.map((segment) => (
                 <span
-                  key={segment.state}
+                  key={segment.bucket}
                   className="inline-flex items-center gap-1.5 text-muted-foreground"
-                  title={VERDICT_COPY[segment.state].explain}
+                  title={VERDICT_KIND_BUCKET_COPY[segment.bucket].explain}
                 >
                   <span
                     aria-hidden
                     className="size-2.5 rounded-[2px]"
                     style={{ backgroundColor: segment.color }}
                   />
-                  {VERDICT_COPY[segment.state].label}{" "}
+                  {VERDICT_KIND_BUCKET_COPY[segment.bucket].label}{" "}
                   <span className="tabular font-medium text-foreground">
-                    {formatCount(mix[segment.state])}
+                    {formatCount(mix[segment.mixKey])}
                   </span>
-                  <span className="tabular">
-                    ({formatPercent(mix[segment.state] / mix.n)})
-                  </span>
+                  <span className="tabular">({formatPercent(mix[segment.mixKey] / mix.n)})</span>
                 </span>
               ))}
             </div>
@@ -74,8 +82,8 @@ export function VerdictStrip({ mix, windowLabel }: VerdictStripProps) {
         )}
 
         <p className="text-xs text-muted-foreground">
-          Over {windowLabel}. Reviewed is claimed from the round type, which says the lane read
-          the head. Unknown is a verify round or a round recorded without a type, not a failure.
+          Over {windowLabel}. Reviewed, threads-only, did-not-run, silent and error are decoded
+          from verdict_kind. No verdict recorded means the round predates that field.
         </p>
       </CardContent>
     </Card>

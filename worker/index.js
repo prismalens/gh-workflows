@@ -396,6 +396,7 @@ async function handleSummary(env) {
       JSON.stringify({
         rows: 0,
         repositories: [],
+        per_repository: [],
         wall_clock_ms: { mean: null, p95: null },
         denials_per_run: null,
         cache_hit_rate: null,
@@ -416,6 +417,20 @@ async function handleSummary(env) {
     "SELECT DISTINCT repository FROM usage_records ORDER BY repository"
   ).all();
   const repositories = repoRows.results ? repoRows.results.map((r) => r.repository) : [];
+
+  // One grouped query for the repos page's quiet-repository card and its Last
+  // round column (#141, #142 finding 3944697641), instead of an unwindowed
+  // page of every round the dashboard would otherwise have to walk.
+  const perRepoRows = await env.DB.prepare(
+    "SELECT repository, COUNT(*) as rounds, MAX(recorded_at) as last_recorded_at FROM usage_records GROUP BY repository ORDER BY repository"
+  ).all();
+  const per_repository = perRepoRows.results
+    ? perRepoRows.results.map((r) => ({
+        repository: r.repository,
+        rounds: r.rounds,
+        last_recorded_at: r.last_recorded_at,
+      }))
+    : [];
 
   const countRow = await env.DB.prepare(
     "SELECT COUNT(*) as cnt FROM usage_records WHERE duration_ms IS NOT NULL"
@@ -482,6 +497,7 @@ async function handleSummary(env) {
     JSON.stringify({
       rows: stats.rows,
       repositories,
+      per_repository,
       wall_clock_ms: {
         mean: stats.mean_duration,
         p95,
@@ -773,6 +789,25 @@ async function handleRoundAgents(url, env) {
     });
   }
 
+  let limit = 64;
+  const limitParam = url.searchParams.get("limit");
+  if (limitParam !== null) {
+    if (!/^[1-9]\d*$/.test(limitParam)) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const parsedLimit = Number(limitParam);
+    if (parsedLimit > 1000) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    limit = parsedLimit;
+  }
+
   const query = `SELECT
     session_id,
     agent_id,
@@ -791,9 +826,9 @@ async function handleRoundAgents(url, env) {
   FROM round_agents
   WHERE session_id = ?
   ORDER BY agent_id ASC
-  LIMIT 64`;
+  LIMIT ?`;
 
-  const { results } = await env.DB.prepare(query).bind(sessionId).all();
+  const { results } = await env.DB.prepare(query).bind(sessionId, limit).all();
   const rows = results ?? [];
 
   return new Response(

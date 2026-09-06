@@ -3,31 +3,39 @@ import { Link } from "@tanstack/react-router";
 import {
   createColumnHelper,
   createExpandedRowModel,
+  createPaginatedRowModel,
   createSortedRowModel,
   rowExpandingFeature,
+  rowPaginationFeature,
   rowSortingFeature,
   tableFeatures,
   useTable,
+  type PaginationState,
   type SortingState,
 } from "@tanstack/react-table";
 import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
-import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
   TableCell,
+  TableFooter,
   TableHead,
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
 import type { RoundRow } from "@/api/types";
-import { LIST_RATE_EQUIVALENT } from "@/honesty/thresholds";
+import { decodeHeadStatus } from "@/features/prs/headStatus";
+import { HeadStatusChip } from "@/features/prs/HeadStatusChip";
+import { meanMetric, numeric } from "@/honesty/metrics";
+import { LIST_RATE_EQUIVALENT, LOW_N_THRESHOLD } from "@/honesty/thresholds";
 import {
   formatCount,
   formatDuration,
+  formatTimestamp,
+  formatTimestampCompact,
   formatTokens,
   formatUsd,
   orDash,
@@ -39,12 +47,14 @@ const features = tableFeatures({
   sortedRowModel: createSortedRowModel(),
   rowExpandingFeature,
   expandedRowModel: createExpandedRowModel(),
+  rowPaginationFeature,
+  paginatedRowModel: createPaginatedRowModel(),
 });
 
 const helper = createColumnHelper<typeof features, RoundRow>();
 
 /** sortUndefined never fires on a null, and every nullable column in the store is null. */
-function nullToUndefined(value: number | null): number | undefined {
+function nullToUndefined<T>(value: T | null): T | undefined {
   return value === null ? undefined : value;
 }
 
@@ -75,9 +85,10 @@ const columns = helper.columns([
         to="/rounds/$sessionId"
         params={{ sessionId: row.original.session_id }}
         search={{ at: row.original.recorded_at }}
+        title={formatTimestamp(row.original.recorded_at)}
         className="tabular whitespace-nowrap underline-offset-4 hover:underline"
       >
-        <Timestamp iso={row.original.recorded_at} />
+        {formatTimestampCompact(row.original.recorded_at)}
       </Link>
     ),
   }),
@@ -114,6 +125,38 @@ const columns = helper.columns([
       ) : (
         <span className="text-muted-foreground">—</span>
       ),
+  }),
+  // Reuses features/prs/headStatus.ts's decode, so the rounds and PR pages never
+  // disagree on a verdict label (#141). A null verdict_kind predates that field
+  // entirely and is never run through the decode.
+  helper.accessor(
+    (row) => (row.verdict_kind === null ? undefined : decodeHeadStatus(row).label),
+    {
+      id: "verdict_kind",
+      sortUndefined: "last",
+      header: "Verdict",
+      cell: ({ row }) =>
+        row.original.verdict_kind === null ? (
+          <span
+            className="text-muted-foreground"
+            title="This round predates the verdict fields."
+          >
+            —
+          </span>
+        ) : (
+          <HeadStatusChip status={decodeHeadStatus(row.original)} />
+        ),
+    },
+  ),
+  helper.accessor((row) => nullToUndefined(row.model), {
+    id: "model",
+    sortUndefined: "last",
+    header: "Model",
+    cell: ({ row }) => (
+      <span className="font-mono text-xs text-muted-foreground">
+        {row.original.model ?? "—"}
+      </span>
+    ),
   }),
   helper.accessor((row) => nullToUndefined(row.duration_ms), {
     id: "duration_ms",
@@ -179,10 +222,26 @@ export interface RoundsTableProps {
   rows: RoundRow[];
   sorting: SortingState;
   onSortingChange: (next: SortingState) => void;
+  /** Externally controlled (URL-owned) pagination. Omit to render every row on one page. */
+  pagination?: PaginationState;
+  onPaginationChange?: (next: PaginationState) => void;
+  /** The footer row of #141: n, mean and max wall clock, total denials over `rows`. */
+  showFooter?: boolean;
 }
 
-export function RoundsTable({ rows, sorting, onSortingChange }: RoundsTableProps) {
+const UNPAGINATED: PaginationState = { pageIndex: 0, pageSize: Infinity };
+
+export function RoundsTable({
+  rows,
+  sorting,
+  onSortingChange,
+  pagination,
+  onPaginationChange,
+  showFooter = false,
+}: RoundsTableProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [fallbackPagination, setFallbackPagination] = useState<PaginationState>(UNPAGINATED);
+  const paginationState = pagination ?? fallbackPagination;
   const data = useMemo(() => rows, [rows]);
 
   const table = useTable({
@@ -191,7 +250,10 @@ export function RoundsTable({ rows, sorting, onSortingChange }: RoundsTableProps
     data,
     getRowId: (row) => row.session_id,
     getRowCanExpand: () => true,
-    state: { sorting, expanded },
+    state: { sorting, expanded, pagination: paginationState },
+    // The route owns page resets on filter/sort/range changes (#141); a second,
+    // automatic reset here would fight that and hide the intended page.
+    autoResetPageIndex: false,
     onSortingChange: (updater) =>
       onSortingChange(typeof updater === "function" ? updater(sorting) : updater),
     onExpandedChange: (updater) =>
@@ -199,10 +261,14 @@ export function RoundsTable({ rows, sorting, onSortingChange }: RoundsTableProps
         const next = typeof updater === "function" ? updater(prev) : updater;
         return typeof next === "boolean" ? {} : next;
       }),
+    onPaginationChange: (updater) => {
+      const next = typeof updater === "function" ? updater(paginationState) : updater;
+      (onPaginationChange ?? setFallbackPagination)(next);
+    },
   });
 
   return (
-    <Table>
+    <Table className="[&_td]:py-1.5 [&_td]:text-xs [&_th]:h-8">
       <TableHeader>
         {table.getHeaderGroups().map((group) => (
           <TableRow key={group.id}>
@@ -250,7 +316,47 @@ export function RoundsTable({ rows, sorting, onSortingChange }: RoundsTableProps
           </Fragment>
         ))}
       </TableBody>
+      {showFooter && (
+        <TableFooter>
+          <RoundsFooterRow rows={rows} columnCount={columns.length} />
+        </TableFooter>
+      )}
     </Table>
+  );
+}
+
+/**
+ * Rounds table footer (#141): n, mean and max wall clock, total denials, over
+ * the filtered set the route hands in via `rows`, never the current page.
+ * Honesty rule: n is printed, and there is deliberately no p95 here.
+ */
+function RoundsFooterRow({ rows, columnCount }: { rows: RoundRow[]; columnCount: number }) {
+  const durations = useMemo(() => numeric(rows.map((row) => row.duration_ms)), [rows]);
+  const mean = useMemo(() => meanMetric(rows.map((row) => row.duration_ms)), [rows]);
+  const max = durations.length > 0 ? Math.max(...durations) : null;
+  const denialCounts = useMemo(() => numeric(rows.map((row) => row.permission_denials)), [rows]);
+  const totalDenials = denialCounts.reduce((sum, n) => sum + n, 0);
+
+  return (
+    <TableRow className="hover:bg-transparent">
+      <TableCell colSpan={columnCount} className="text-xs text-muted-foreground">
+        <span className="tabular" data-testid="rounds-footer-n">
+          n = {formatCount(rows.length)}
+        </span>
+        <span className="mx-2">·</span>
+        <span className="tabular">
+          mean wall clock{" "}
+          {mean.kind === "empty" ? "—" : formatDuration(mean.value)}
+          {mean.kind === "value" && mean.lowN ? ` (n < ${LOW_N_THRESHOLD})` : ""}
+        </span>
+        <span className="mx-2">·</span>
+        <span className="tabular">
+          max wall clock {max === null ? "—" : formatDuration(max)}
+        </span>
+        <span className="mx-2">·</span>
+        <span className="tabular">total denials {formatCount(totalDenials)}</span>
+      </TableCell>
+    </TableRow>
   );
 }
 

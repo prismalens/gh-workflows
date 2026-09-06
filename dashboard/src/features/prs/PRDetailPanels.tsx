@@ -76,7 +76,7 @@ export function ConfigInEffect({ pr }: { pr: PRSummary }) {
           <dd className="text-foreground">unavailable</dd>
         </dl>
         <div className="pt-2 border-t border-border/30 text-[11px] text-muted-foreground">
-          each names its layer after issue 02 ·{" "}
+          each layer name comes from model_source on the round ·{" "}
           <Link to="/repos" className="text-primary hover:underline">
             repo config
           </Link>
@@ -156,7 +156,7 @@ export function ReportTabs({ pr }: { pr: PRSummary }) {
           Findings
         </button>
         <span className="ml-auto text-[11px] text-muted-foreground">
-          walkthrough and summary render stored bodies after issue 08; link cards until then
+          walkthrough and summary link out until #111 ships stored bodies
         </span>
       </div>
 
@@ -170,7 +170,7 @@ export function ReportTabs({ pr }: { pr: PRSummary }) {
           </CardTitle>
           {tab === "findings" && (
             <Badge variant="warning" className="text-[10px] px-2 py-0.5">
-              needs review_findings, #47 · gap G8
+              arrives with #111
             </Badge>
           )}
         </CardHeader>
@@ -179,7 +179,7 @@ export function ReportTabs({ pr }: { pr: PRSummary }) {
             <div className="flex flex-col gap-2">
               <p className="text-muted-foreground">
                 Walkthrough comments are posted to GitHub on each full and incremental round.
-                Stored comment bodies land with issue 08.
+                Stored comment bodies arrive with #111; until then this links to the comment on GitHub.
               </p>
               {pr.url && (
                 <div>
@@ -200,7 +200,7 @@ export function ReportTabs({ pr }: { pr: PRSummary }) {
             <div className="flex flex-col gap-2">
               <p className="text-muted-foreground">
                 Summary comments record the review resolution and audit details.
-                Stored comment bodies land with issue 08.
+                Stored comment bodies arrive with #111 too; until then this links to the comment on GitHub.
               </p>
               {pr.url && (
                 <div>

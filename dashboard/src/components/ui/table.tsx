@@ -18,6 +18,12 @@ export function TableBody({ className, ...props }: React.HTMLAttributes<HTMLTabl
   return <tbody className={cn(className)} {...props} />;
 }
 
+export function TableFooter({ className, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) {
+  return (
+    <tfoot className={cn("[&_tr]:border-t [&_tr]:border-border", className)} {...props} />
+  );
+}
+
 export function TableRow({ className, ...props }: React.HTMLAttributes<HTMLTableRowElement>) {
   return (
     <tr

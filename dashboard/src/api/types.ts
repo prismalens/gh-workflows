@@ -60,9 +60,18 @@ export interface RunsResponse {
   next_cursor: string | null;
 }
 
+export interface PerRepositorySummary {
+  repository: string;
+  /** All-time round count, not windowed. */
+  rounds: number;
+  /** This repository's most recent round ever, or null if it never posted. */
+  last_recorded_at: string | null;
+}
+
 export interface SummaryResponse {
   rows: number;
   repositories: string[];
+  per_repository: PerRepositorySummary[];
   wall_clock_ms: { mean: number | null; p95: number | null };
   denials_per_run: number | null;
   cache_hit_rate: number | null;
@@ -160,5 +169,29 @@ export interface RoundAgentRow {
 
 export interface RoundAgentsResponse {
   rows: RoundAgentRow[];
+  next_cursor: string | null;
+}
+
+/**
+ * One row of the `prs` table (worker/migrations/0007_prs.sql), from GET /api/prs
+ * (#136, #140, #141). Current state, decoupled from any round's snapshot.
+ */
+export interface PrRow {
+  repository: string;
+  pr_number: number;
+  state: string | null;
+  title: string | null;
+  author: string | null;
+  base_ref: string | null;
+  head_ref: string | null;
+  head_sha: string | null;
+  merged_at: string | null;
+  closed_at: string | null;
+  updated_at: string;
+  source: string;
+}
+
+export interface PrsResponse {
+  rows: PrRow[];
   next_cursor: string | null;
 }
