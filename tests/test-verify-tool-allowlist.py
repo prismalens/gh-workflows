@@ -53,10 +53,22 @@ def verify_allowlist(text: str) -> str:
         raise AssertionError("could not locate the `verify:` job in the workflow")
     body = verify[1].split("\n  mutate:", 1)[0]
 
-    matches = re.findall(r'--allowed-tools\s*\n\s*"([^"]*)"', body)
+    # Anchor on the `claude_args:` block that is actually passed to the action. Searching the
+    # whole job would let a documentation example or a comment supply the match, and a guard
+    # that validates the wrong string while the real one goes unchecked is worse than no guard.
+    args_blocks = re.findall(
+        r"^          claude_args: >-\n((?:^ {12}.*\n|^\s*\n)+)", body, re.M
+    )
+    if len(args_blocks) != 1:
+        raise AssertionError(
+            f"expected exactly one `claude_args:` block in the verify job, found {len(args_blocks)}"
+        )
+
+    matches = re.findall(r'--allowed-tools\s*\n\s*"([^"]*)"', args_blocks[0])
     if len(matches) != 1:
         raise AssertionError(
-            f"expected exactly one --allowed-tools in the verify job, found {len(matches)}"
+            f"expected exactly one --allowed-tools in the verify job's claude_args, "
+            f"found {len(matches)}"
         )
     return matches[0]
 
