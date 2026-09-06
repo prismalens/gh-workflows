@@ -43,8 +43,13 @@ export function RoundTimelineCard({
     (round.input_tokens ?? 0) +
     (round.cache_read_input_tokens ?? 0) +
     (round.cache_creation_input_tokens ?? 0);
+  // Cache ratio requires complete input telemetry before computing (finding 3943781313).
+  const hasCompleteCacheInputs =
+    round.input_tokens !== null &&
+    round.cache_read_input_tokens !== null &&
+    round.cache_creation_input_tokens !== null;
   const cacheHitRatio =
-    totalInput > 0 && round.cache_read_input_tokens !== null
+    hasCompleteCacheInputs && round.cache_read_input_tokens !== null && totalInput > 0
       ? round.cache_read_input_tokens / totalInput
       : null;
 

@@ -121,17 +121,33 @@ export type PRLookup =
   | { found: true; rounds: RoundRow[] }
   | { found: false };
 
-/** Looks up all rounds for a pull request, enriching with blobs if available (#75). */
 export async function lookupPR(
   api: TelemetryApi,
   repository: string,
   prNumber: number,
 ): Promise<PRLookup> {
-  const response = await api.fetchRuns({
-    repository,
-    limit: MAX_LIMIT,
-  });
-  const matching = response.rows.filter((r: RoundRow) => r.pr_number === prNumber);
+  // Reject non-positive or non-integer PR numbers (finding 3943781319).
+  if (!Number.isInteger(prNumber) || prNumber <= 0) {
+    return { found: false };
+  }
+
+  // Follow next_cursor across all readable pages (finding 3943781301).
+  let cursor: string | undefined;
+  const matching: RoundRow[] = [];
+  do {
+    const response = await api.fetchRuns({
+      repository,
+      limit: MAX_LIMIT,
+      cursor,
+    });
+    for (const r of response.rows) {
+      if (r.pr_number === prNumber) {
+        matching.push(r);
+      }
+    }
+    cursor = response.next_cursor ?? undefined;
+  } while (cursor);
+
   if (matching.length === 0) {
     return { found: false };
   }
@@ -158,11 +174,12 @@ export async function lookupPR(
   return { found: true, rounds: withBlobs };
 }
 
-export function usePRDetailQuery(repository: string, prNumber: number) {
+export function usePRDetailQuery(repository: string, prNumber: number | null) {
   const api = useApi();
   return useQuery({
     queryKey: ["pr", repository, prNumber],
-    queryFn: () => lookupPR(api, repository, prNumber),
+    queryFn: () => (prNumber !== null ? lookupPR(api, repository, prNumber) : Promise.resolve<PRLookup>({ found: false })),
+    enabled: prNumber !== null,
     staleTime: 30_000,
   });
 }

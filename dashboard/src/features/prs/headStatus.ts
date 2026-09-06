@@ -48,6 +48,8 @@ function formatRawVerdict(round: RoundRow): string {
       return `the lane finished and posted nothing`;
     default:
       if (round.job_conclusion === "failure") return "the review run reported an error";
+      // Render unrecognized verdict kinds explicitly (finding 3943781304).
+      if (round.verdict_kind) return `unrecognized review verdict: ${round.verdict_kind}`;
       if (round.round_type === "verify") return `re-checked open threads at ${sha}`;
       return `reviewed ${sha} · ${inlines} inline / ${summaries} summary`;
   }
@@ -156,7 +158,9 @@ export function decodeHeadStatus(round: RoundRow | undefined): HeadStatus {
     round.verdict_kind === "reviewed" ||
     round.verdict_kind === "reviewed-incremental" ||
     round.verdict_kind === "clean" ||
-    (round.round_type && HEAD_READING_ROUND_TYPES.has(round.round_type))
+    (round.verdict_kind === null &&
+      round.round_type &&
+      HEAD_READING_ROUND_TYPES.has(round.round_type))
   ) {
     const isIncremental =
       round.verdict_kind === "reviewed-incremental" || round.round_type === "incremental";

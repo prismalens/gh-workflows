@@ -28,7 +28,9 @@ export const prDetailRoute = createRoute({
 function PRDetailPage() {
   const { owner, repo, number } = prDetailRoute.useParams();
   const repository = `${owner}/${repo}`;
-  const prNumber = parseInt(number, 10);
+  // Reject malformed PR numbers like "12abc" before querying (finding 3943781319).
+  const isValidPrNumber = /^\d+$/.test(number) && Number(number) > 0;
+  const prNumber = isValidPrNumber ? Number(number) : null;
 
   const prQuery = usePRDetailQuery(repository, prNumber);
 
@@ -52,7 +54,18 @@ function PRDetailPage() {
         </span>
       </div>
 
-      {prQuery.isPending ? (
+      {!isValidPrNumber ? (
+        <Alert variant="muted">
+          <AlertTitle>This pull request was not found</AlertTitle>
+          <AlertDescription>
+            No review rounds were found for {owner}/{repo}#{number} in the readable telemetry window.{" "}
+            <Link to="/prs" className="underline underline-offset-4">
+              Back to pull requests
+            </Link>
+            .
+          </AlertDescription>
+        </Alert>
+      ) : prQuery.isPending ? (
         <LoadingRows rows={5} label="Loading this pull request" />
       ) : prQuery.isError ? (
         <QueryError error={prQuery.error} title="Could not load this pull request" />

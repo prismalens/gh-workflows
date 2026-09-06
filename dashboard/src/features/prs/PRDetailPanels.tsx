@@ -63,14 +63,17 @@ export function ConfigInEffect({ pr }: { pr: PRSummary }) {
           <dd className="font-mono text-foreground">
             {latest.model ?? "—"} · {latest.model_source ?? "default"}
           </dd>
+          {/* Limit and author-skip decisions are not in this data model; match is proven only by model_source (findings 3943781307, 3943781310). */}
           <dt className="text-muted-foreground">auto-pause</dt>
           <dd className="text-foreground">
-            {pr.rounds.length} of 3 automatic rounds used
+            automatic-round limit unavailable
           </dd>
           <dt className="text-muted-foreground">path filter</dt>
-          <dd className="text-foreground">no match</dd>
+          <dd className="text-foreground">
+            {latest.model_source === "escalated by path match" ? "match" : "no match"}
+          </dd>
           <dt className="text-muted-foreground">skip author</dt>
-          <dd className="text-foreground">not skipped</dd>
+          <dd className="text-foreground">unavailable</dd>
         </dl>
         <div className="pt-2 border-t border-border/30 text-[11px] text-muted-foreground">
           each names its layer after issue 02 ·{" "}

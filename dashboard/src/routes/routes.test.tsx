@@ -875,6 +875,217 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(screen.getByText(/no review rounds were found/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Back to pull requests" })).toBeInTheDocument();
   });
+
+  it("/prs with no state parameter renders only open pull requests (finding 3943781321)", async () => {
+    const mixedStateRounds = [
+      {
+        ...baseRound,
+        session_id: "pr-open-1",
+        pr_number: 301,
+        pr_title: "Active open PR",
+        pr_state: "open",
+        recorded_at: new Date(now.getTime() - 3 * 3600000).toISOString(),
+      },
+      {
+        ...baseRound,
+        session_id: "pr-merged-1",
+        pr_number: 302,
+        pr_title: "Completed merged PR",
+        pr_state: "merged",
+        recorded_at: new Date(now.getTime() - 2 * 3600000).toISOString(),
+      },
+      {
+        ...baseRound,
+        session_id: "pr-closed-1",
+        pr_number: 303,
+        pr_title: "Abandoned closed PR",
+        pr_state: "closed",
+        recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
+      },
+    ];
+    const mixedApi = makeFixtureApi(mixedStateRounds);
+
+    // Default route without ?state: only open PRs render
+    renderRoute({ path: "/prs", api: mixedApi });
+    await screen.findByRole("table");
+    expect(screen.getByText("Active open PR")).toBeInTheDocument();
+    expect(screen.queryByText("Completed merged PR")).toBeNull();
+    expect(screen.queryByText("Abandoned closed PR")).toBeNull();
+
+    // With ?state=all: all PRs render (proving both directions)
+    cleanup();
+    renderRoute({ path: "/prs?state=all", api: mixedApi });
+    await screen.findByRole("table");
+    expect(screen.getByText("Active open PR")).toBeInTheDocument();
+    expect(screen.getByText("Completed merged PR")).toBeInTheDocument();
+    expect(screen.getByText("Abandoned closed PR")).toBeInTheDocument();
+  });
+
+  it("'12abc' as a PR number is rejected rather than parsed as 12 (finding 3943781319)", async () => {
+    const known = fourStateRounds[3]; // PR 204
+    const [owner, repo] = known.repository.split("/");
+
+    // Rejected malformed PR number (failure path)
+    renderRoute({
+      path: `/prs/${owner}/${repo}/${known.pr_number}abc`,
+      api: fourStateApi,
+    });
+    expect(await screen.findByText("This pull request was not found")).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(`PR #${known.pr_number}`))).toBeNull();
+
+    // Valid positive decimal integer PR number succeeds (happy path: proving both directions)
+    cleanup();
+    renderRoute({
+      path: `/prs/${owner}/${repo}/${known.pr_number}`,
+      api: fourStateApi,
+    });
+    expect(await screen.findByText(new RegExp(`PR #${known.pr_number}`))).toBeInTheDocument();
+  });
+
+  it("a round missing input_tokens or cache_creation_input_tokens renders no cache percentage (finding 3943781313)", async () => {
+    const [owner, repo] = baseRound.repository.split("/");
+    const missingCacheTokens = [
+      {
+        ...baseRound,
+        session_id: "pr-s-no-cache-input",
+        pr_number: 401,
+        pr_title: "PR with partial token telemetry",
+        input_tokens: null,
+        cache_read_input_tokens: 500,
+        cache_creation_input_tokens: 100,
+        recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
+      },
+      {
+        ...baseRound,
+        session_id: "pr-s-no-cache-creation",
+        pr_number: 402,
+        pr_title: "PR with missing cache creation tokens",
+        input_tokens: 1000,
+        cache_read_input_tokens: 500,
+        cache_creation_input_tokens: null,
+        recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
+      },
+      {
+        ...baseRound,
+        session_id: "pr-s-complete-cache",
+        pr_number: 403,
+        pr_title: "PR with complete token telemetry",
+        input_tokens: 1000,
+        cache_read_input_tokens: 500,
+        cache_creation_input_tokens: 500,
+        recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
+      },
+    ];
+    const cacheApi = makeFixtureApi(missingCacheTokens);
+
+    // Missing input_tokens: no cache percentage
+    renderRoute({ path: `/prs/${owner}/${repo}/401`, api: cacheApi });
+    expect(await screen.findByTestId("round-timeline-card")).toBeInTheDocument();
+    expect(screen.queryByText(/cache \d+%/)).toBeNull();
+
+    // Missing cache_creation_input_tokens: no cache percentage
+    cleanup();
+    renderRoute({ path: `/prs/${owner}/${repo}/402`, api: cacheApi });
+    expect(await screen.findByTestId("round-timeline-card")).toBeInTheDocument();
+    expect(screen.queryByText(/cache \d+%/)).toBeNull();
+
+    // Complete token telemetry: renders cache percentage (proving both directions)
+    cleanup();
+    renderRoute({ path: `/prs/${owner}/${repo}/403`, api: cacheApi });
+    expect(await screen.findByTestId("round-timeline-card")).toBeInTheDocument();
+    expect(screen.getByText(/cache 25\.0%/)).toBeInTheDocument();
+  });
+
+  it("ConfigInEffect renders unavailable limit and author-skip, and path match only on escalation (findings 3943781307, 3943781310)", async () => {
+    const [owner, repo] = baseRound.repository.split("/");
+    const configRounds = [
+      {
+        ...baseRound,
+        session_id: "pr-cfg-default",
+        pr_number: 501,
+        pr_title: "PR with default model source",
+        model_source: "default",
+        recorded_at: new Date(now.getTime() - 2 * 3600000).toISOString(),
+      },
+      {
+        ...baseRound,
+        session_id: "pr-cfg-escalated",
+        pr_number: 502,
+        pr_title: "PR escalated by path match",
+        model_source: "escalated by path match",
+        recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
+      },
+    ];
+    const configApi = makeFixtureApi(configRounds);
+
+    // Default model source: no match, unavailable limit, unavailable skip author
+    renderRoute({ path: `/prs/${owner}/${repo}/501`, api: configApi });
+    const cardDefault = await screen.findByTestId("config-in-effect-card");
+    expect(within(cardDefault).getByText("automatic-round limit unavailable")).toBeInTheDocument();
+    expect(within(cardDefault).getByText("no match")).toBeInTheDocument();
+    expect(within(cardDefault).getByText("unavailable")).toBeInTheDocument();
+
+    // Escalated model source: path match is proven (both directions proven)
+    cleanup();
+    renderRoute({ path: `/prs/${owner}/${repo}/502`, api: configApi });
+    const cardEscalated = await screen.findByTestId("config-in-effect-card");
+    expect(within(cardEscalated).getByText("match")).toBeInTheDocument();
+    expect(within(cardEscalated).getByText("unavailable")).toBeInTheDocument();
+  });
+
+  it("handles clipboard success and failure without unhandled rejections (finding 3943781302)", async () => {
+    const amber = fourStateRounds[1]; // PR 202 (auto-paused, has unblock hint)
+    const [owner, repo] = amber.repository.split("/");
+
+    // Success path: writeText resolves
+    const originalClipboard = navigator.clipboard;
+    const writeTextMock = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: writeTextMock },
+      configurable: true,
+      writable: true,
+    });
+
+    renderRoute({
+      path: `/prs/${owner}/${repo}/${amber.pr_number}`,
+      api: fourStateApi,
+    });
+
+    const copyBtn = await screen.findByRole("button", { name: /copy/i });
+    await act(async () => {
+      fireEvent.click(copyBtn);
+    });
+    expect(writeTextMock).toHaveBeenCalledWith("@claude review");
+    expect(screen.getByText("Copied")).toBeInTheDocument();
+
+    // Failure path: writeText rejects (both directions proven)
+    cleanup();
+    const rejectingMock = vi.fn().mockRejectedValue(new Error("clipboard permission denied"));
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: rejectingMock },
+      configurable: true,
+      writable: true,
+    });
+
+    renderRoute({
+      path: `/prs/${owner}/${repo}/${amber.pr_number}`,
+      api: fourStateApi,
+    });
+
+    const failingCopyBtn = await screen.findByRole("button", { name: /copy/i });
+    await act(async () => {
+      fireEvent.click(failingCopyBtn);
+    });
+    expect(rejectingMock).toHaveBeenCalledWith("@claude review");
+    expect(screen.queryByText("Copied")).toBeNull();
+
+    // Restore original clipboard
+    Object.defineProperty(navigator, "clipboard", {
+      value: originalClipboard,
+      configurable: true,
+      writable: true,
+    });
+  });
 });
 
 

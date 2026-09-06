@@ -22,7 +22,8 @@ const EMPTY_ROWS: RoundRow[] = [];
 const prsSearchSchema = z.object({
   range: standardRangeSchema,
   repository: z.string().min(1).optional().catch(undefined),
-  state: z.string().min(1).optional().catch("open"),
+  // Default both missing and invalid values to "open" (finding 3943781321).
+  state: z.enum(["open", "all", "merged", "closed"]).catch("open").default("open"),
   sort: z.string().min(1).optional().catch("attention"),
   dir: z.enum(["asc", "desc"]).optional().catch("asc"),
 });
@@ -112,7 +113,13 @@ function PRsPage() {
           label="State"
           options={STATE_OPTIONS}
           value={search.state ?? "open"}
-          onChange={(state) => void navigate({ search: (prev) => ({ ...prev, state }) })}
+          onChange={(state) => {
+            const validState =
+              state === "all" || state === "closed" || state === "merged" || state === "open"
+                ? state
+                : "open";
+            void navigate({ search: (prev) => ({ ...prev, state: validState }) });
+          }}
         />
       </div>
 

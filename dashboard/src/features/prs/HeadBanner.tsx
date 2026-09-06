@@ -11,11 +11,15 @@ export function HeadBanner({
 }) {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
-    if (!status.copyableHint) return;
-    void navigator.clipboard.writeText(status.copyableHint);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    if (!status.copyableHint || !navigator?.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(status.copyableHint);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Set copied only on resolved write (finding 3943781302).
+    }
   };
 
   const isGreen = status.headRead;

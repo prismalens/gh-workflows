@@ -190,3 +190,32 @@ describe("the sort order puts unreviewed heads above reviewed-clean ones (#75)",
     expect(reviewedIndex).toBe(3);
   });
 });
+
+describe("unknown verdict kinds default to did-not-run (finding 3943781304)", () => {
+  it("an unknown verdict_kind with round_type: 'full' does not render as reviewed", () => {
+    const unknownFull = decodeHeadStatus(
+      mockRow({ round_type: "full", verdict_kind: "unexpected-future-verdict" }),
+    );
+    expect(unknownFull.state).toBe("did-not-run");
+    expect(unknownFull.headRead).toBe(false);
+    expect(unknownFull.rawVerdict).toBe("unrecognized review verdict: unexpected-future-verdict");
+  });
+
+  it("an unknown verdict_kind with round_type: 'incremental' does not render as reviewed", () => {
+    const unknownIncr = decodeHeadStatus(
+      mockRow({ round_type: "incremental", verdict_kind: "experimental-verdict" }),
+    );
+    expect(unknownIncr.state).toBe("did-not-run");
+    expect(unknownIncr.headRead).toBe(false);
+    expect(unknownIncr.rawVerdict).toBe("unrecognized review verdict: experimental-verdict");
+  });
+
+  it("infers reviewed from round_type only when verdict_kind is absent (null)", () => {
+    const absentVerdict = decodeHeadStatus(
+      mockRow({ round_type: "full", verdict_kind: null }),
+    );
+    expect(absentVerdict.state).toBe("reviewed");
+    expect(absentVerdict.headRead).toBe(true);
+  });
+});
+
