@@ -126,10 +126,19 @@ fi
 # ----------------------------------------------------------------- ruleset
 if [ "$SKIP_RULESET" -eq 0 ]; then
   say "ruleset"
-  # A private repo on a free plan cannot have rulesets at all: the API answers 403
-  # "Upgrade to GitHub Pro or make this repository public". Report and continue.
-  if ! RULESETS=$(gh api "repos/$REPO/rulesets" 2>/dev/null); then
-    say "  unavailable on this repo (private on a free plan, or no admin rights)"
+  # "No rulesets" and "not allowed to look" are different answers and must not share a
+  # branch: a private repo on a free plan answers 403 "Upgrade to GitHub Pro", and
+  # folding that into an empty list reports an unprotected repo as merely bare.
+  RS_ERR=$(mktemp); trap 'rm -f "$RS_ERR"' EXIT
+  if ! RULESETS=$(gh api "repos/$REPO/rulesets" 2>"$RS_ERR"); then
+    if grep -q 'Upgrade to GitHub Pro' "$RS_ERR"; then
+      say "  UNAVAILABLE: private repo on a free plan; rulesets cannot exist here"
+    elif grep -qE '\b(403|404)\b|Not Found|Must have admin' "$RS_ERR"; then
+      say "  UNKNOWN: cannot read rulesets (no admin rights on this repo)"
+      say "  this is not evidence the repo is unprotected"
+    else
+      say "  UNKNOWN: rulesets query failed: $(head -1 "$RS_ERR")"
+    fi
   else
     EXISTING=$(printf '%s' "$RULESETS" | jq -r --arg n "$RULESET_NAME" '.[]|select(.name==$n)|.id' | head -1)
     CHECKS_JSON=$(printf '%s\n' "${REQUIRED_CHECKS[@]}" | jq -R '{context:.}' | jq -s '.')
@@ -141,7 +150,8 @@ if [ "$SKIP_RULESET" -eq 0 ]; then
         {type:"pull_request", parameters:{
           required_approving_review_count:0, dismiss_stale_reviews_on_push:false,
           require_code_owner_review:false, require_last_push_approval:false,
-          required_review_thread_resolution:false, allowed_merge_methods:["squash"]}},
+          required_review_thread_resolution:true, allowed_merge_methods:["squash"],
+          require_extra_approval_for_unattributed_changes:true}},
         {type:"required_status_checks", parameters:{
           strict_required_status_checks_policy:false, required_status_checks:$checks}},
         {type:"merge_queue", parameters:{
@@ -152,10 +162,23 @@ if [ "$SKIP_RULESET" -eq 0 ]; then
         {type:"required_linear_history"}
       ]}')
     if [ -n "$EXISTING" ]; then
-      say "  \"$RULESET_NAME\" exists (id $EXISTING)"
-      say "  required checks wanted: ${REQUIRED_CHECKS[*]}"
-      act "update it in place" \
-        gh api -X PUT "repos/$REPO/rulesets/$EXISTING" --input - <<<"$BODY"
+      # Never PUT over a live ruleset. PUT replaces wholesale, and this body is a
+      # template: any rule the live one has and the template lacks would be silently
+      # switched off. sreforge carries required_review_thread_resolution and
+      # require_extra_approval_for_unattributed_changes, and on a contract with zero
+      # required approvals thread resolution is the only thing enforcing a finding.
+      say "  \"$RULESET_NAME\" exists (id $EXISTING). Not touching it."
+      LIVE=$(printf '%s' "$RULESETS" | jq --arg n "$RULESET_NAME" '.[]|select(.name==$n)')
+      LIVE_FULL=$(gh api "repos/$REPO/rulesets/$EXISTING" 2>/dev/null || printf '%s' "$LIVE")
+      LIVE_TYPES=$(printf '%s' "$LIVE_FULL" | jq -r '[.rules[]?.type]|sort|join(",")')
+      WANT_TYPES=$(printf '%s' "$BODY" | jq -r '[.rules[]?.type]|sort|join(",")')
+      say "  live rules:  $LIVE_TYPES"
+      say "  template:    $WANT_TYPES"
+      [ "$LIVE_TYPES" = "$WANT_TYPES" ] && say "  rule types match" || say "  RULE TYPES DIFFER, review by hand"
+      LIVE_CHECKS=$(printf '%s' "$LIVE_FULL" | jq -r '[.rules[]?|select(.type=="required_status_checks")|.parameters.required_status_checks[]?.context]|sort|join(", ")')
+      say "  live checks: ${LIVE_CHECKS:-none}"
+      say "  want checks: ${REQUIRED_CHECKS[*]}"
+      say "  to change it, edit the ruleset in the GitHub UI or PATCH the one field."
     else
       act "create \"$RULESET_NAME\" on the default branch" \
         gh api -X POST "repos/$REPO/rulesets" --input - <<<"$BODY"
