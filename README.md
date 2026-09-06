@@ -21,18 +21,18 @@ Reusable workflow callees live in `.github/workflows/` and are invoked by consum
 
 ### This Repository's Own CI
 
-`.github/workflows/tests.yml` is the only self-triggering workflow here. The callees above run in
-consumer repositories, so without it nothing verifies them before they ship. It runs on every
-pull request and on pushes to `main`, in two independent jobs:
+`.github/workflows/tests.yml` verifies the callees above, which run in consumer repositories and
+are not otherwise checked before they ship. It runs on every pull request and on pushes to
+`main`. Two of its jobs:
 
 - `test` extracts the real shell and Python out of the callees and runs it, then runs `actionlint`
   at a pinned version.
 - `dashboard` builds the SPA in `dashboard/`: `npm ci`, then `npm test` for the honesty rules, the
-  read-route contract and both routes, then `npm run build`, which typechecks and bundles.
+  read-route contract and the routes, then `npm run build`, which typechecks and bundles.
   `dashboard/dist` is gitignored, so this job is the only thing that catches a broken build.
 
-Neither job is a required check. Nothing in this repository is enforced by branch protection or a
-ruleset; see [AGENTS.md](AGENTS.md).
+None of its jobs is a required check. Nothing in this repository is enforced by branch protection
+or a ruleset; see [AGENTS.md](AGENTS.md).
 
 ### Worked-Example Consumer Stub (Mention Lane)
 
@@ -187,6 +187,7 @@ jobs:
 To guard against supply chain tampering from repointed tags, every third-party GitHub Action used across workflows and composite actions is pinned to a full commit SHA:
 
 - `actions/checkout`
+- `actions/setup-node`
 - `actions/upload-artifact`
 - `actions/download-artifact`
 - `anthropics/claude-code-action`

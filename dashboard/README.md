@@ -1,11 +1,12 @@
 # Assayer dashboard
 
 The review telemetry viewing layer for `prismalens/gh-workflows`. A Vite + React SPA served by
-the telemetry Worker in `../worker` through its `[assets]` binding, reading the Worker's existing
-`GET /api/summary` and `GET /api/runs` routes behind Cloudflare Access.
+the telemetry Worker in `../worker` through its `[assets]` binding, reading the Worker's
+`GET /api/summary`, `GET /api/runs`, `GET /api/lane-events`, `GET /api/changes` and
+`GET /api/round-agents` routes behind Cloudflare Access.
 
-Four routes ship: `/` overview, `/rounds`, `/rounds/$sessionId` and `/repos`. The failures page,
-compare and every PR view arrive with their own issues (#46).
+Seven routes ship: `/` overview, `/rounds`, `/rounds/$sessionId`, `/repos`, `/failures`, `/prs`
+and `/prs/$owner/$repo/$number`. Compare was refused (#119).
 
 The overview's altitude is a ruling, not a layout preference. The first screenful is throughput
 and adoption: the activity band, then the verdict strip directly under it, because the strip is
@@ -29,7 +30,7 @@ above the floor.
 ```bash
 npm ci                      # install; the lockfile is committed
 npm run build               # tsc -b && vite build, into dist/
-npm test                    # vitest: honesty rules, API contract, both routes
+npm test                    # vitest: honesty rules, API contract, the routes
 npx tsc -b                  # typecheck alone
 npm run dev                 # Vite dev server, proxying /api to 127.0.0.1:8787
 VITE_FIXTURES=1 npm run dev # same, but against the in-memory fixture table
@@ -84,8 +85,8 @@ The sparse-range rulings of #46 are code, not convention, and they live in `src/
   never collapses at low volume. Both throw on a money label.
 - `TileStrip.tsx` decides between tiles, the table, and "no rounds in range".
 - `verdict.ts` is the two-state decoding. `reviewed` is claimed only from a round type that reads
-  the head; everything else, verify rounds included, says `unknown`. Four-state verdicts arrive
-  with issue 02, and for a lane older than the Worker they never arrive at all.
+  the head; everything else, verify rounds included, says `unknown`. Four-state verdicts shipped
+  in #70, and for a lane older than the Worker they never arrive at all.
 - `RangeControl.tsx` renders the four buttons from `RANGE_KEYS`. There is no date picker.
 - `Degraded.tsx` renders a missing field as a permanent labelled state, and distinguishes a field
   that is not built yet from one this round's lane never sent.
