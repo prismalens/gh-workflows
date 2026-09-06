@@ -75,7 +75,7 @@ env:
   # The claude-code-action pin, duplicated at the two `uses:` lines below because `uses:`
   # cannot take a `${{ }}` expression. tests/test-action-version-drift.py fails the build
   # if this value and either `uses:` pin ever disagree. Story: #47 amendment.
-  ACTION_VERSION: 'a874e9ecd7bb36efdad65429c6b35815f5a08f10'
+  ACTION_VERSION: 'ef8bb1e43bf303cff727a1dd0b8837029fe982a2'
 
 jobs:
   # ONE set of PR facts for automatic rounds, summons, and in-thread replies alike,
@@ -295,6 +295,7 @@ jobs:
           raw_skip_authors = os.environ.get("INPUT_SKIP_AUTHORS", "dependabot[bot]")
           skip_authors = ",".join(x.strip() for x in raw_skip_authors.split(",") if x.strip())
           path_filters = []
+          path_instructions = []
           # No workflow input backs this: it is an experiment handle read from the repo
           # config only, and absent means control. Story: #47 amendment.
           variant = ""
@@ -304,6 +305,7 @@ jobs:
               "auto_pause_rounds": "workflow default",
               "skip_authors": "workflow default",
               "path_filters": "workflow default",
+              "path_instructions": "workflow default",
               "variant": "control",
           }
 
@@ -544,7 +546,13 @@ jobs:
                               if "variant" in review:
                                   org_unconsumed.append("review.variant")
                               if "path_instructions" in review:
-                                  org_unconsumed.append("review.path_instructions")
+                                  org_instructions = review["path_instructions"]
+                                  path_instructions = [
+                                      {"path": item["path"], "instructions": item["instructions"], "source": "org defaults"}
+                                      for item in org_instructions
+                                  ]
+                                  sources["path_instructions"] = "org defaults"
+                                  org_consumed.append(f"review.path_instructions={len(path_instructions)} entries")
 
                           findings = org_data.get("findings", {})
                           if isinstance(findings, dict):
@@ -628,7 +636,17 @@ jobs:
                                   sources["variant"] = "repo config"
                                   consumed.append(f"review.variant={variant}")
                               if "path_instructions" in review:
-                                  unconsumed.append("review.path_instructions")
+                                  repo_instructions = [
+                                      {"path": item["path"], "instructions": item["instructions"], "source": "repo config"}
+                                      for item in review["path_instructions"]
+                                  ]
+                                  path_instructions.extend(repo_instructions)
+                                  sources["path_instructions"] = (
+                                      "org defaults + repo config"
+                                      if sources["path_instructions"] == "org defaults"
+                                      else "repo config"
+                                  )
+                                  consumed.append(f"review.path_instructions={len(repo_instructions)} entries")
 
                           findings = data.get("findings", {})
                           if isinstance(findings, dict):
@@ -653,6 +671,7 @@ jobs:
               "auto_pause_rounds": auto_pause_rounds,
               "default_model": default_model,
               "path_filters": path_filters,
+              "path_instructions": path_instructions,
               "skip_authors": skip_authors,
           }
           config_hash = hashlib.sha256(
@@ -664,6 +683,7 @@ jobs:
           print(f"  review.auto_pause_rounds: {auto_pause_rounds} (source: {sources['auto_pause_rounds']})")
           print(f"  review.skip_authors: {skip_authors} (source: {sources['skip_authors']})")
           print(f"  review.path_filters: {path_filters} (source: {sources['path_filters']})")
+          print(f"  review.path_instructions: {len(path_instructions)} entries (source: {sources['path_instructions']})")
           print(f"  review.variant: {variant or '(control)'} (source: {sources['variant']})")
           print(f"  config_hash: {config_hash}")
 
@@ -674,6 +694,7 @@ jobs:
                   f.write(f"auto_pause_rounds={auto_pause_rounds}\n")
                   f.write(f"skip_authors={skip_authors}\n")
                   f.write(f"path_filters={json.dumps(path_filters)}\n")
+                  f.write(f"path_instructions={json.dumps(path_instructions)}\n")
                   f.write(f"config_resolution={config_resolution}\n")
                   f.write(f"config_hash={config_hash}\n")
                   f.write(f"variant={variant}\n")
@@ -1048,6 +1069,121 @@ jobs:
         if: steps.mode.outputs.mode == 'incremental'
         run: cp /tmp/incremental-range.json "$GITHUB_WORKSPACE/.claude-incremental-range.json"
 
+      - name: Resolve path instructions
+        id: path_instructions
+        if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.resolve.outputs.number }}
+          MODE: ${{ steps.mode.outputs.mode }}
+          PATH_INSTRUCTIONS: ${{ steps.config.outputs.path_instructions }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import fnmatch
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          raw_instructions = os.environ.get("PATH_INSTRUCTIONS", "[]")
+          try:
+              path_instructions = json.loads(raw_instructions) if raw_instructions else []
+          except Exception:
+              path_instructions = []
+
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+
+          def emit_output(matched: bool):
+              if github_output:
+                  with open(github_output, "a", encoding="utf-8") as f:
+                      f.write(f"matched={'true' if matched else 'false'}\n")
+
+          if not path_instructions:
+              emit_output(False)
+              sys.exit(0)
+
+          mode = os.environ.get("MODE", "")
+          repo = os.environ.get("REPO", "")
+          pr = os.environ.get("PR", "")
+          changed_files = None
+
+          if mode == "incremental":
+              range_path = pathlib.Path(".claude-incremental-range.json")
+              if not range_path.exists():
+                  range_path = pathlib.Path("/tmp/incremental-range.json")
+              if not range_path.exists():
+                  print("::warning::Incremental range file not found; skipping path instructions.")
+              else:
+                  try:
+                      with open(range_path, "r", encoding="utf-8") as f:
+                          range_data = json.load(f)
+                      changed_files = [
+                          item["filename"]
+                          for item in range_data.get("files", [])
+                          if isinstance(item, dict) and "filename" in item
+                      ]
+                  except Exception as e:
+                      print(f"::warning::Failed to read incremental range file: {e}")
+          else:
+              cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--jq", ".[].filename"]
+              res = subprocess.run(cmd, capture_output=True, text=True)
+              if res.returncode != 0:
+                  err = res.stderr.strip() if res.stderr else "unknown error"
+                  print(f"::warning::Command '{' '.join(cmd)}' failed with exit code {res.returncode}: {err}")
+              else:
+                  changed_files = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+
+          if changed_files is None:
+              emit_output(False)
+              sys.exit(0)
+
+          def matches_pattern(path: str, pattern: str) -> bool:
+              if pattern.endswith("/**"):
+                  prefix = pattern[:-3]
+                  if path == prefix or path.startswith(prefix + "/"):
+                      return True
+                  if fnmatch.fnmatch(path, pattern):
+                      return True
+              elif fnmatch.fnmatch(path, pattern):
+                  return True
+              return False
+
+          matched_entries = []
+          for entry in path_instructions:
+              pattern = entry.get("path", "")
+              if any(matches_pattern(f, pattern) for f in changed_files):
+                  matched_entries.append(entry)
+
+          if not matched_entries:
+              print(f"path_instructions: {len(path_instructions)} configured, 0 matched across {len(changed_files)} changed file(s)")
+              emit_output(False)
+              sys.exit(0)
+
+          print(f"path_instructions: {len(path_instructions)} configured, {len(matched_entries)} matched across {len(changed_files)} changed file(s)")
+
+          target_path = pathlib.Path(os.environ.get("GITHUB_WORKSPACE", ".")) / ".claude-path-instructions.md"
+          lines = [
+              "# Path-specific review instructions",
+              "",
+          ]
+          for entry in matched_entries:
+              p = entry.get("path", "")
+              s = entry.get("source", "unknown")
+              instr = entry.get("instructions", "").strip()
+              lines.append(f"## Path: `{p}` (source: `{s}`)")
+              lines.append("")
+              lines.append(instr)
+              lines.append("")
+
+          with open(target_path, "w", encoding="utf-8") as f:
+              f.write("\n".join(lines).strip() + "\n")
+
+          emit_output(True)
+          PY
+
       # The prompt is committed here verbatim, with @@TOKEN@@ placeholders standing in for
       # the per-run values the prompt: block used to substitute via GH Actions expressions, so
       # sha256 on this file (not the rendered text) is a stable prompt_hash across every run
@@ -1074,6 +1210,12 @@ jobs:
             ${{ steps.mode.outputs.mode == 'review-full' && 'DEDUP IS DISABLED FOR THIS RUN, because an org member explicitly asked for a review from scratch. Existing review comments and threads on this PR are NOT dedup targets. If a finding is real, post it — even when an earlier round already raised the same point. Suppressing findings as "already covered" is exactly the failure this run exists to avoid: it makes the run publish nothing while appearing to succeed.' || '' }}
           INCREMENTAL_ROUND_BLOCK: >-
             ${{ steps.mode.outputs.mode == 'incremental' && format('THIS IS AN INCREMENTAL ROUND covering commits {0}..{1} only. The changed files and patches for that range are in `.claude-incremental-range.json` in the repository root. Read it first. Review the range. The rest of the PR diff is legitimate context for understanding it, but findings must be about code inside the range. Only unresolved review threads are dedup targets. A resolved thread must never suppress a finding: a push that reintroduces a bug a human already fixed and resolved would otherwise be waved through as "already covered".', steps.mode.outputs.range_base, steps.mode.outputs.range_head) || '' }}
+          AGENTS1_2_PATH_INSTRUCTIONS: >-
+            ${{ steps.path_instructions.outputs.matched == 'true' && ' Also read `.claude-path-instructions.md` in the repository root. Treat each entry as a rule to audit beside CLAUDE.md and AGENTS.md, flagging with reason "path instruction" and quoting the entry''s `path`.' || '' }}
+          AGENT3_PATH_INSTRUCTIONS: >-
+            ${{ steps.path_instructions.outputs.matched == 'true' && ' Also read `.claude-path-instructions.md` in the repository root; treat entries as context for what breaks under those paths.' || '' }}
+          AGENT4_PATH_INSTRUCTIONS: >-
+            ${{ steps.path_instructions.outputs.matched == 'true' && ' Also read `.claude-path-instructions.md` in the repository root; treat entries as context for what breaks under those paths.' || '' }}
         run: |
           set -euo pipefail
           template="$RUNNER_TEMP/claude-review-prompt.tpl.md"
@@ -1098,13 +1240,13 @@ jobs:
           4. Launch 4 agents in parallel to independently review the changes. Each agent should return the list of issues, where each issue includes a description, the reason it was flagged (e.g. "CLAUDE.md/AGENTS.md adherence", "bug"), and candidate classification (Category, Severity, Effort). The agents review the diff and must not execute the project's tests, type checker, linter, formatter, or package manager (the review job installs no toolchain). The agents should do the following:
 
              Agents 1 + 2: CLAUDE.md and AGENTS.md compliance sonnet agents
-             Audit changes for CLAUDE.md and AGENTS.md compliance in parallel. Note: When evaluating compliance for a file, you should only consider CLAUDE.md and AGENTS.md files that share a file path with the file or parents.
+             Audit changes for CLAUDE.md and AGENTS.md compliance in parallel. Note: When evaluating compliance for a file, you should only consider CLAUDE.md and AGENTS.md files that share a file path with the file or parents.@@AGENTS1_2_PATH_INSTRUCTIONS@@
 
              Agent 3: Opus bug agent (parallel subagent with agent 4)
-             Scan for obvious bugs. @@AGENT3_FOCUS@@ Flag only significant bugs; ignore nitpicks and likely false positives. Do not flag issues that you cannot validate without looking at context outside of the git diff.
+             Scan for obvious bugs. @@AGENT3_FOCUS@@ Flag only significant bugs; ignore nitpicks and likely false positives. Do not flag issues that you cannot validate without looking at context outside of the git diff.@@AGENT3_PATH_INSTRUCTIONS@@
 
              Agent 4: Opus bug agent (parallel subagent with agent 3)
-             Look for problems that exist in the introduced code. This could be security issues, incorrect logic, etc. @@AGENT4_FOCUS@@
+             Look for problems that exist in the introduced code. This could be security issues, incorrect logic, etc. @@AGENT4_FOCUS@@@@AGENT4_PATH_INSTRUCTIONS@@
 
              **CRITICAL: We only want HIGH SIGNAL issues.** Flag issues where:
              - The code will fail to compile or parse (syntax errors, type errors, missing imports, unresolved references)
@@ -1228,6 +1370,9 @@ jobs:
               'STEP9_HEADER',
               'DEDUP_DISABLED_BLOCK',
               'INCREMENTAL_ROUND_BLOCK',
+              'AGENTS1_2_PATH_INSTRUCTIONS',
+              'AGENT3_PATH_INSTRUCTIONS',
+              'AGENT4_PATH_INSTRUCTIONS',
           ]:
               text = text.replace(f'@@{token}@@', os.environ.get(token, ''))
 
@@ -1882,6 +2027,7 @@ jobs:
     outputs:
       resolved: ${{ steps.apply.outputs.resolved }}
       open: ${{ steps.apply.outputs.open }}
+      unverified: ${{ steps.apply.outputs.unverified }}
     permissions:
       # `contents: write` is what `resolveReviewThread` actually costs; it is refused at
       # `contents: read` (measured: prismalens/sreforge#157, and run 33006099680 for the
@@ -2056,6 +2202,10 @@ jobs:
           discarded = 0
           resolved_count = 0
           open_count = 0
+          # Counted inside open_count, not beside it: a thread nobody could check is open
+          # for a different reason than one that still fails, and only the second asks the
+          # operator for a code change. Story: #123.
+          unverified_count = 0
 
           for i, entry in enumerate(verdicts):
               if not isinstance(entry, dict):
@@ -2136,6 +2286,8 @@ jobs:
               else:
                   print(f"Thread '{thread_id}' left open ({verdict}).")
                   open_count += 1
+                  if verdict == "cannot_verify":
+                      unverified_count += 1
 
           # The round's mandatory summary. It used to be a prose instruction to the agent,
           # which an agent can silently skip; a templated post from here cannot. The first
@@ -2163,6 +2315,7 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"resolved={resolved_count}\n")
               f.write(f"open={open_count}\n")
+              f.write(f"unverified={unverified_count}\n")
 
           print("Finished applying thread verdicts.")
           # A thread replied "Verified fixed" but left unresolved is the failure this guards:
@@ -2205,6 +2358,7 @@ jobs:
           MUTATE_RESULT: ${{ needs.mutate.result }}
           RESOLVED: ${{ needs.mutate.outputs.resolved }}
           OPEN: ${{ needs.mutate.outputs.open }}
+          UNVERIFIED: ${{ needs.mutate.outputs.unverified }}
           STARTED_AT: ${{ needs.review.outputs.started_at }}
           RANGE_BASE: ${{ needs.review.outputs.range_base }}
           RANGE_HEAD: ${{ needs.review.outputs.range_head }}
@@ -2288,7 +2442,15 @@ jobs:
                     | select(.created_at >= \"$STARTED_AT\")
                     | select((.body | split(\"\n\")[0] | rtrimstr(\"\r\")) == \"## Code review — verification round\")][0] // empty")
             if [ -n "$found_summary" ]; then
-              verdict="re-checked open threads at \`$short\`: ${RESOLVED:-0} resolved / ${OPEN:-0} left open."
+              # "left open" alone reads the same whether the finding still stands or the
+              # agent was blocked from looking. Only the first asks for a code change, so
+              # the unverifiable ones are named separately. Story: #123.
+              if [ "${UNVERIFIED:-0}" -gt 0 ] 2>/dev/null; then
+                still="$(( ${OPEN:-0} - ${UNVERIFIED:-0} ))"
+                verdict="re-checked open threads at \`$short\`: ${RESOLVED:-0} resolved / ${still} still apply / ${UNVERIFIED} could not be verified."
+              else
+                verdict="re-checked open threads at \`$short\`: ${RESOLVED:-0} resolved / ${OPEN:-0} left open."
+              fi
               verdict_kind="verify-rechecked"
             else
               verdict="ran a verification round on \`$short\` (mutate result: ${MUTATE_RESULT}) but posted **nothing**. \

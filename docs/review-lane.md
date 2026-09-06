@@ -81,6 +81,7 @@ Review lane settings are resolved dynamically through a **four-layer precedence 
 Configuration merges **per key**, not per file:
 - **Pure override**: The repository layer wins outright over organization defaults on any key it defines. Repositories may loosen shared constraints, not only tighten them (e.g. if org defaults specify `auto_pause_rounds: 3`, a repository may set `auto_pause_rounds: 10`).
 - **Inheritance**: Any key omitted by a repository falls back to the organization defaults (or workflow defaults). A repository configuring only `default_model` inherits `auto_pause_rounds`, `skip_authors`, and `path_filters` from the org defaults.
+- **Concatenation exception (`review.path_instructions`)**: `review.path_instructions` is a deliberate one-key exception to the pure override rule. Because instructions are additive guidance rather than a setting with a single value, organization and repository lists concatenate, organization entries first. An organization entry states an ecosystem invariant that a consumer should not silently drop by defining its own entries. A repository that disagrees or provides additional guidance writes its own, which lands later in the file. No deduplication or per-path override is performed.
 
 ### Shared organization defaults (`.github/claude-review-defaults.yml`)
 
@@ -120,7 +121,7 @@ Both `.github/claude-review-defaults.yml` and `.github/claude-review.yml` share 
 | `review.auto_pause_rounds` | integer | **Consumed** | Automatic review rounds limit before pausing (integer >= 1). |
 | `review.skip_authors` | list of strings | **Consumed** | Author logins whose automatic `pull_request` rounds are skipped entirely (no review, no verify, and no liveness comment is posted). |
 | `review.path_filters` | list of strings | **Consumed** | Glob patterns for high-risk files that escalate the review model to Opus. |
-| `review.path_instructions` | list of mappings | *Schema-accepted, not yet wired* | Path-specific instructions for review agents. Emits warning if present. |
+| `review.path_instructions` | list of mappings | **Consumed** | Path-specific instructions for review agents; concatenates organization and repository entries (org first). Matched against changed files and staged in `.claude-path-instructions.md`. |
 | `findings.suppress_below` | string | *Schema-accepted, not yet wired* | Minimum severity threshold (`none`, `Minor`, `Major`, `Critical`). Emits warning if present. |
 | `findings.enable_ai_fix_prompt` | boolean | *Schema-accepted, not yet wired* | Whether to include AI fix prompt details. Emits warning if present. |
 | `findings.include_verification_note` | boolean | *Schema-accepted, not yet wired* | Whether to include verification notes. Emits warning if present. |
@@ -129,7 +130,7 @@ Both `.github/claude-review-defaults.yml` and `.github/claude-review.yml` share 
 
 1. **Absent (HTTP 404)**: When a config file does not exist, prior defaults apply cleanly and a single info line is logged (`No .github/claude-review-defaults.yml found at ref <ref>; applying workflow defaults.` or `No .github/claude-review.yml found at base ref <sha>; applying workflow defaults.`). No warning is emitted.
 2. **Malformed**: If a file contains invalid YAML, unknown keys, invalid schema versions, or disallowed values, the lane emits a `::warning::` annotation naming the file, the ref / base SHA, and the validator's error output, and ignores that layer entirely. A broken config file never takes down the review lane.
-3. **Valid**: Supported keys (`default_model`, `auto_pause_rounds`, `skip_authors`, `path_filters`) are consumed, logged, and merged into the effective configuration. Any schema-valid but unwired keys emit a `::warning::` annotation listing those keys.
+3. **Valid**: Supported keys (`default_model`, `auto_pause_rounds`, `skip_authors`, `path_filters`, `path_instructions`) are consumed, logged, and merged into the effective configuration. Any schema-valid but unwired keys emit a `::warning::` annotation listing those keys.
 
 ### Per-key source logging
 
