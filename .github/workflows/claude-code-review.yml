@@ -2457,10 +2457,13 @@ jobs:
           # Tool list is load-bearing; agent mode resolves tools ONLY from --allowed-tools.
           # Read-only, and nothing that writes: no Task, no Write, no comment MCP servers.
           # This is the third line, not the wall — the two above it are.
+          # `gh pr view` is here because without it the review agent can raise findings this
+          # agent is structurally incapable of checking, and they resolve as `cannot_verify`
+          # forever. Operator ruling on #123. `gh api` stays out: it can POST.
           claude_args: >-
             --json-schema '${{ steps.schema.outputs.json }}'
             --allowed-tools
-            "Read,Grep,Glob,LS,Bash(gh pr diff:*)"
+            "Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*)"
             --model ${{ needs.review.outputs.model }}
 
       # Client-side schema validation replaced server-side constrained decoding, so the
