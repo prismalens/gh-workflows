@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { createRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 
-import { usePRDetailQuery } from "@/api/queries";
+import { usePRDetailQuery, usePRsQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +14,7 @@ import {
   ReportTabs,
 } from "@/features/prs/PRDetailPanels";
 import { HeadBanner } from "@/features/prs/HeadBanner";
-import { groupRoundsByPR } from "@/features/prs/prs";
+import { enrichPRs, groupRoundsByPR } from "@/features/prs/prs";
 import { RoundTimelineCard } from "@/features/prs/RoundTimelineCard";
 import { shortSha } from "@/lib/format";
 import { rootRoute } from "./root";
@@ -33,12 +33,16 @@ function PRDetailPage() {
   const prNumber = isValidPrNumber ? Number(number) : null;
 
   const prQuery = usePRDetailQuery(repository, prNumber);
+  const prsQuery = usePRsQuery({ repository });
 
   const pr = useMemo(() => {
     if (!prQuery.data || !prQuery.data.found) return null;
     const summaries = groupRoundsByPR(prQuery.data.rounds);
-    return summaries[0] ?? null;
-  }, [prQuery.data]);
+    const base = summaries[0] ?? null;
+    if (!base) return null;
+    // Same enrichment as the index (#141): a prs row replaces title, state, author.
+    return enrichPRs([base], prsQuery.data?.rows ?? [])[0] ?? base;
+  }, [prQuery.data, prsQuery.data]);
 
   return (
     <div className="flex flex-col gap-5">

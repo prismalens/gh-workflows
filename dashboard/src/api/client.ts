@@ -3,6 +3,8 @@ import type {
   ChangesResponse,
   LaneEventRow,
   LaneEventsResponse,
+  PrRow,
+  PrsResponse,
   RoundAgentRow,
   RoundAgentsResponse,
   RoundRow,
@@ -57,6 +59,13 @@ export interface ChangesQuery {
   cursor?: string;
 }
 
+export interface PrsQuery {
+  limit?: number;
+  repository?: string;
+  state?: string;
+  cursor?: string;
+}
+
 /** The Worker caps limit at 1000, and at 50 once include=blobs is set. */
 export const MAX_LIMIT = 1000;
 export const MAX_LIMIT_WITH_BLOBS = 50;
@@ -92,6 +101,17 @@ export function changesUrl(query: ChangesQuery = {}): string {
   }
   const qs = params.toString();
   return qs ? `/api/changes?${qs}` : "/api/changes";
+}
+
+export function prsUrl(query: PrsQuery = {}): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  const qs = params.toString();
+  return qs ? `/api/prs?${qs}` : "/api/prs";
 }
 
 export function roundAgentsUrl(sessionId: string): string {
@@ -386,12 +406,58 @@ export function isRoundAgentsResponse(value: unknown): value is RoundAgentsRespo
   );
 }
 
+export const REQUIRED_PR_KEYS = [
+  "repository",
+  "pr_number",
+  "state",
+  "title",
+  "author",
+  "base_ref",
+  "head_ref",
+  "head_sha",
+  "merged_at",
+  "closed_at",
+  "updated_at",
+  "source",
+] as const;
+
+export function isPrRow(row: unknown): row is PrRow {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  return (
+    REQUIRED_PR_KEYS.every((key) => key in r) &&
+    typeof r.repository === "string" &&
+    typeof r.pr_number === "number" &&
+    (r.state === null || typeof r.state === "string") &&
+    (r.title === null || typeof r.title === "string") &&
+    (r.author === null || typeof r.author === "string") &&
+    (r.base_ref === null || typeof r.base_ref === "string") &&
+    (r.head_ref === null || typeof r.head_ref === "string") &&
+    (r.head_sha === null || typeof r.head_sha === "string") &&
+    (r.merged_at === null || typeof r.merged_at === "string") &&
+    (r.closed_at === null || typeof r.closed_at === "string") &&
+    typeof r.updated_at === "string" &&
+    typeof r.source === "string"
+  );
+}
+
+export function isPrsResponse(value: unknown): value is PrsResponse {
+  if (!value || typeof value !== "object") return false;
+  const { rows, next_cursor } = value as { rows?: unknown; next_cursor?: unknown };
+  return (
+    Array.isArray(rows) &&
+    rows.every(isPrRow) &&
+    (next_cursor === null || next_cursor === undefined || typeof next_cursor === "string")
+  );
+}
+
 export interface TelemetryApi {
   fetchRuns(query?: RunsQuery): Promise<RunsResponse>;
   fetchSummary(): Promise<SummaryResponse>;
   fetchLaneEvents(query?: LaneEventsQuery): Promise<LaneEventsResponse>;
   fetchChanges(query?: ChangesQuery): Promise<ChangesResponse>;
   fetchRoundAgents(sessionId: string): Promise<RoundAgentsResponse>;
+  fetchPRs(query?: PrsQuery): Promise<PrsResponse>;
   /** Set only by the fixture table, so the UI can say the rounds are invented. */
   readonly fixtures?: boolean;
 }
@@ -403,6 +469,7 @@ export const httpApi: TelemetryApi = {
   fetchChanges: (query = {}) => getJson(changesUrl(query), isChangesResponse),
   fetchRoundAgents: (sessionId: string) =>
     getJson(roundAgentsUrl(sessionId), isRoundAgentsResponse),
+  fetchPRs: (query = {}) => getJson(prsUrl(query), isPrsResponse),
 };
 
 /**

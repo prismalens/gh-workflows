@@ -1,16 +1,19 @@
-import type { ChangesQuery, LaneEventsQuery, RunsQuery, TelemetryApi } from "@/api/client";
+import type { ChangesQuery, LaneEventsQuery, PrsQuery, RunsQuery, TelemetryApi } from "@/api/client";
 import { MAX_LIMIT_WITH_BLOBS } from "@/api/client";
 import type {
   ChangeRow,
   ChangesResponse,
   LaneEventRow,
   LaneEventsResponse,
+  PrRow,
+  PrsResponse,
   RoundAgentRow,
   RoundAgentsResponse,
   RoundRow,
   RunsResponse,
   SummaryResponse,
 } from "@/api/types";
+import { FIXTURE_PRS } from "./prs";
 import { FIXTURE_ROUNDS } from "./rounds";
 
 const BLOB_COLUMNS = [
@@ -33,10 +36,21 @@ export function makeFixtureApi(
   laneEvents: LaneEventRow[] = [],
   changes: ChangeRow[] = [],
   roundAgents: Record<string, RoundAgentRow[]> | RoundAgentRow[] = [],
+  // Defaults to the real fixture prs set only when rows is also left at its
+  // default, so every existing caller that passes its own rows keeps today's
+  // fallback-only behaviour (#141).
+  prs: PrRow[] = rows === FIXTURE_ROUNDS ? FIXTURE_PRS : [],
 ): TelemetryApi {
   const sorted = [...rows].sort((a, b) => {
     const byTime = b.recorded_at.localeCompare(a.recorded_at);
     return byTime !== 0 ? byTime : b.session_id.localeCompare(a.session_id);
+  });
+
+  const sortedPrs = [...prs].sort((a, b) => {
+    const byTime = b.updated_at.localeCompare(a.updated_at);
+    if (byTime !== 0) return byTime;
+    const byRepo = b.repository.localeCompare(a.repository);
+    return byRepo !== 0 ? byRepo : b.pr_number - a.pr_number;
   });
 
   const sortedEvents = [...laneEvents].sort((a, b) => {
@@ -201,6 +215,36 @@ export function makeFixtureApi(
       return {
         rows: matching,
         next_cursor: null,
+      };
+    },
+
+    async fetchPRs(query: PrsQuery = {}): Promise<PrsResponse> {
+      let filtered = sortedPrs;
+      if (query.repository) filtered = filtered.filter((r) => r.repository === query.repository);
+      if (query.state) filtered = filtered.filter((r) => r.state === query.state);
+      if (query.cursor) {
+        const firstPipe = query.cursor.indexOf("|");
+        const lastPipe = query.cursor.lastIndexOf("|");
+        const cursorAt = query.cursor.slice(0, firstPipe);
+        const cursorRepo = query.cursor.slice(firstPipe + 1, lastPipe);
+        const cursorNumber = Number(query.cursor.slice(lastPipe + 1));
+        filtered = filtered.filter(
+          (r) =>
+            r.updated_at < cursorAt ||
+            (r.updated_at === cursorAt &&
+              (r.repository < cursorRepo ||
+                (r.repository === cursorRepo && r.pr_number < cursorNumber))),
+        );
+      }
+      const limit = query.limit ?? 100;
+      const page = filtered.slice(0, limit);
+      const last = page[page.length - 1];
+      return {
+        rows: page,
+        next_cursor:
+          page.length === limit && last
+            ? `${last.updated_at}|${last.repository}|${last.pr_number}`
+            : null,
       };
     },
   };

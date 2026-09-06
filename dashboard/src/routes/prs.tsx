@@ -3,7 +3,7 @@ import { createRoute } from "@tanstack/react-router";
 import type { SortingState } from "@tanstack/react-table";
 import { z } from "zod";
 
-import { useRoundsQuery, useSummaryQuery } from "@/api/queries";
+import { usePRsQuery, useRoundsQuery, useSummaryQuery } from "@/api/queries";
 import type { RoundRow } from "@/api/types";
 import { FilterChips } from "@/components/FilterChips";
 import { LoadingRows, QueryError } from "@/components/QueryState";
@@ -12,6 +12,7 @@ import { PRsTable } from "@/features/prs/PRsTable";
 import { type HeadStatusState } from "@/features/prs/headStatus";
 import {
   comparePRsByAttention,
+  enrichPRs,
   filterPRsByState,
   groupRoundsByPR,
   type PRSummary,
@@ -76,6 +77,7 @@ function PRsPage() {
     { range: search.range, repository: search.repository },
     now,
   );
+  const prs = usePRsQuery({ repository: search.repository });
 
   const fetched = rounds.data?.rows ?? EMPTY_ROWS;
   const truncated = rounds.data?.next_cursor != null;
@@ -84,11 +86,15 @@ function PRsPage() {
     [fetched, search.range, now, truncated],
   );
 
-  const allPrs = useMemo(() => groupRoundsByPR(windowed.rows), [windowed.rows]);
+  // The base set is PRs with a round in this window (#141); a prs row for a PR
+  // outside it is dropped rather than added, so enrichment only ever fills in.
+  const allPrs = useMemo(
+    () => enrichPRs(groupRoundsByPR(windowed.rows), prs.data?.rows ?? []),
+    [windowed.rows, prs.data],
+  );
 
-  // "in window": range plus repository and state at last round, which already
-  // narrowed the set before this lane's work. "matching" adds head status and
-  // search on top of that (#141).
+  // "in window": range plus repository and state, which already narrowed the
+  // set before this lane's work. "matching" adds head status and search (#141).
   const windowPrs = useMemo(
     () => filterPRsByState(allPrs, search.state),
     [allPrs, search.state],
@@ -185,7 +191,7 @@ function PRsPage() {
           }
         />
         <FilterChips
-          label="State at last round"
+          label="State"
           options={STATE_OPTIONS}
           value={search.state}
           onChange={(state) => {

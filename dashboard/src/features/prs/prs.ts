@@ -1,4 +1,4 @@
-import type { RoundRow } from "@/api/types";
+import type { PrRow, RoundRow } from "@/api/types";
 import { formatCompactRounds } from "@/lib/format";
 import {
   ATTENTION_RANKS,
@@ -15,6 +15,11 @@ export interface PRSummary {
   title: string;
   author: string;
   state: string;
+  /** True until a prs row enriches this PR; the state shown is then the round's guess (#141). */
+  stateIsFallback: boolean;
+  mergedAt: string | null;
+  closedAt: string | null;
+  prsUpdatedAt: string | null;
   url: string | null;
   rounds: RoundRow[];
   latestRound: RoundRow;
@@ -76,6 +81,10 @@ export function groupRoundsByPR(rows: RoundRow[]): PRSummary[] {
       title: latestRound.pr_title || `PR #${latestRound.pr_number}`,
       author: latestRound.pr_author || "—",
       state: latestRound.pr_state || "open",
+      stateIsFallback: true,
+      mergedAt: null,
+      closedAt: null,
+      prsUpdatedAt: null,
       url:
         latestRound.pr_url ||
         `https://github.com/${latestRound.repository}/pull/${latestRound.pr_number}`,
@@ -106,4 +115,28 @@ export function comparePRsByAttention(a: PRSummary, b: PRSummary): number {
 export function filterPRsByState(prs: PRSummary[], state?: string): PRSummary[] {
   if (!state || state === "all") return prs;
   return prs.filter((p) => p.state.toLowerCase() === state.toLowerCase());
+}
+
+/**
+ * Enriches PR summaries with the prs table's current state, title and author
+ * (#136, #141): a matching prs row replaces the round-derived guess outright.
+ * A prs row with no PR in the base set is dropped; the base set's window
+ * (repository/range already applied by the caller) is the frame of this page.
+ */
+export function enrichPRs(prs: PRSummary[], prsRows: PrRow[]): PRSummary[] {
+  const byKey = new Map(prsRows.map((row) => [`${row.repository}#${row.pr_number}`, row]));
+  return prs.map((pr) => {
+    const row = byKey.get(pr.id);
+    if (!row) return pr;
+    return {
+      ...pr,
+      state: row.state || pr.state,
+      title: row.title || pr.title,
+      author: row.author || pr.author,
+      stateIsFallback: false,
+      mergedAt: row.merged_at,
+      closedAt: row.closed_at,
+      prsUpdatedAt: row.updated_at,
+    };
+  });
 }
