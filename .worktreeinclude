@@ -1,0 +1,3 @@
+# A worktree has no gitignored files; lanes that build or test need these named here.
+dashboard/node_modules
+worker/node_modules

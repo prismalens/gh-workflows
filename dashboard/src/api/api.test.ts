@@ -121,7 +121,7 @@ describe("blob parsing", () => {
   });
 
   it("reads the subagent_stats shape the design artboards show", () => {
-    // From docs/design/canvas/RoundDetail.dc.html on the #82 branch.
+    // The shape of a live subagent_stats blob as the Worker returns it.
     const stats = parseSubagentStats({
       ...rows[0],
       subagent_stats: JSON.stringify({
