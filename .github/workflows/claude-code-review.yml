@@ -1410,6 +1410,308 @@ jobs:
             "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
             --model ${{ steps.model.outputs.model }}
 
+      # Rolls up per-agent identity from task_started/task_notification in the execution
+      # file and per-agent costs from subagent transcripts. Story: #93.
+      - name: Roll up subagent transcripts
+        id: agent-rollup
+        if: always()
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          SESSION_ID: ${{ steps.claude-review.outputs.session_id }}
+          CLAUDE_OUTCOME: ${{ steps.claude-review.outcome }}
+        run: |
+          set -uo pipefail
+
+          emit_empty() {
+            if [ -n "${GITHUB_OUTPUT:-}" ]; then
+              echo "agents=[]" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
+          if [ "${CLAUDE_OUTCOME:-skipped}" = "skipped" ]; then
+            echo "agent-rollup: no review ran in this round; nothing to roll up."
+            emit_empty
+            exit 0
+          fi
+
+          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
+            echo "::warning::agent-rollup: execution file is missing (path: '${EXECUTION_FILE:-}'); cannot roll up agents."
+            emit_empty
+            exit 0
+          fi
+
+          if [ -z "${SESSION_ID:-}" ]; then
+            echo "::warning::agent-rollup: session_id is absent; cannot locate transcript directory."
+            emit_empty
+            exit 0
+          fi
+
+          session_dir=""
+          if [ -z "${TRANSCRIPT_DIR:-}" ]; then
+            if [ -d "${HOME:-}/.claude/projects" ]; then
+              session_dir=$(find "${HOME}/.claude/projects" -maxdepth 2 -type d -name "$SESSION_ID" 2>/dev/null | head -n 1 || true)
+            fi
+            if [ -n "$session_dir" ] && [ -d "$session_dir/subagents" ]; then
+              TRANSCRIPT_DIR="$session_dir/subagents"
+            fi
+          fi
+
+          if [ -z "${TRANSCRIPT_DIR:-}" ] || [ ! -d "$TRANSCRIPT_DIR" ]; then
+            echo "::warning::agent-rollup: transcript directory is missing for session '${SESSION_ID}'; cannot roll up agents."
+            emit_empty
+            exit 0
+          fi
+          export TRANSCRIPT_DIR
+
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          def emit(val):
+              payload = json.dumps(val, separators=(",", ":"))
+              out_path = os.environ.get("GITHUB_OUTPUT")
+              if out_path:
+                  with open(out_path, "a", encoding="utf-8") as f:
+                      f.write(f"agents={payload}\n")
+              print(f"agent-rollup: emitted {len(val)} agents")
+
+          try:
+              execution_file = os.environ.get("EXECUTION_FILE", "")
+              transcript_dir = os.environ.get("TRANSCRIPT_DIR", "")
+
+              try:
+                  with open(execution_file, "r", encoding="utf-8") as f:
+                      content = f.read().strip()
+                  if content.startswith("["):
+                      events = json.loads(content)
+                  else:
+                      events = []
+                      for line_no, line in enumerate(content.splitlines(), start=1):
+                          line = line.strip()
+                          if not line:
+                              continue
+                          try:
+                              events.append(json.loads(line))
+                          except Exception as e:
+                              print(f"::warning::agent-rollup: malformed line {line_no} in execution file: {e}")
+              except Exception as e:
+                  print(f"::warning::agent-rollup: execution file does not parse as JSON: {e}")
+                  emit([])
+                  sys.exit(0)
+
+              if not isinstance(events, list):
+                  print("::warning::agent-rollup: execution file does not contain a list of events")
+                  emit([])
+                  sys.exit(0)
+
+              tasks_started = {}
+              tasks_notification = {}
+
+              for event in events:
+                  if not isinstance(event, dict):
+                      continue
+                  if event.get("type") == "system":
+                      subtype = event.get("subtype")
+                      task_id = str(event.get("task_id", "")).strip()
+                      if not task_id:
+                          continue
+                      if subtype == "task_started":
+                          tasks_started[task_id] = event
+                      elif subtype == "task_notification":
+                          tasks_notification[task_id] = event
+
+              transcript_files = {}
+              try:
+                  if os.path.isdir(transcript_dir):
+                      for entry in os.scandir(transcript_dir):
+                          if entry.is_file() and entry.name.startswith("agent-") and entry.name.endswith(".jsonl"):
+                              tid = entry.name[len("agent-"):-len(".jsonl")].strip()
+                              if tid:
+                                  transcript_files[tid] = entry.path
+              except Exception as e:
+                  print(f"::warning::agent-rollup: error reading transcript directory: {e}")
+                  emit([])
+                  sys.exit(0)
+
+              all_agent_ids = sorted(list(set(tasks_started.keys()) | set(tasks_notification.keys()) | set(transcript_files.keys())))
+
+              agents = []
+              for agent_id in all_agent_ids:
+                  tf = transcript_files.get(agent_id)
+                  has_transcript = tf is not None and os.path.isfile(tf)
+
+                  models_seen = []
+                  input_tokens = 0
+                  output_tokens = 0
+                  cache_read = 0
+                  cache_creation = 0
+                  tool_uses_by_name = {}
+                  file_paths = set()
+                  has_assistant_lines = False
+
+                  if has_transcript:
+                      try:
+                          with open(tf, "r", encoding="utf-8", errors="replace") as f:
+                              for line_no, raw_line in enumerate(f, start=1):
+                                  line = raw_line.strip()
+                                  if not line:
+                                      continue
+                                  try:
+                                      item = json.loads(line)
+                                  except Exception as e:
+                                      print(f"::warning::agent-rollup: malformed transcript line {line_no} in {tf}: {e}")
+                                      continue
+
+                                  if not isinstance(item, dict):
+                                      continue
+
+                                  msg = item.get("message")
+                                  is_assistant = False
+                                  if item.get("type") == "assistant":
+                                      is_assistant = True
+                                  elif isinstance(msg, dict) and msg.get("role") == "assistant":
+                                      is_assistant = True
+                                  elif isinstance(msg, dict) and ("usage" in msg or "model" in msg):
+                                      is_assistant = True
+
+                                  if is_assistant:
+                                      has_assistant_lines = True
+                                      model_name = None
+                                      if isinstance(msg, dict) and msg.get("model"):
+                                          model_name = msg.get("model")
+                                      elif item.get("model"):
+                                          model_name = item.get("model")
+                                      if model_name and isinstance(model_name, str):
+                                          models_seen.append(model_name)
+
+                                      usage = {}
+                                      if isinstance(msg, dict) and isinstance(msg.get("usage"), dict):
+                                          usage = msg.get("usage", {})
+                                      elif isinstance(item.get("usage"), dict):
+                                          usage = item.get("usage", {})
+
+                                      inp = usage.get("input_tokens")
+                                      if inp is None:
+                                          inp = usage.get("inputTokens")
+                                      input_tokens += int(inp or 0)
+
+                                      out = usage.get("output_tokens")
+                                      if out is None:
+                                          out = usage.get("outputTokens")
+                                      output_tokens += int(out or 0)
+
+                                      cr = usage.get("cache_read_input_tokens")
+                                      if cr is None:
+                                          cr = usage.get("cacheReadInputTokens")
+                                      cache_read += int(cr or 0)
+
+                                      cc = usage.get("cache_creation_input_tokens")
+                                      if cc is None:
+                                          cc = usage.get("cacheCreationInputTokens")
+                                      cache_creation += int(cc or 0)
+
+                                  content_list = []
+                                  if isinstance(msg, dict) and isinstance(msg.get("content"), list):
+                                      content_list = msg.get("content")
+                                  elif isinstance(item.get("content"), list):
+                                      content_list = item.get("content")
+
+                                  for c in content_list:
+                                      if isinstance(c, dict) and c.get("type") == "tool_use":
+                                          t_name = c.get("name")
+                                          if t_name and isinstance(t_name, str):
+                                              tool_uses_by_name[t_name] = tool_uses_by_name.get(t_name, 0) + 1
+                                          inp_c = c.get("input")
+                                          if isinstance(inp_c, dict):
+                                              fp = inp_c.get("file_path")
+                                              if isinstance(fp, str) and fp:
+                                                  file_paths.add(fp)
+                      except Exception as e:
+                          print(f"::warning::agent-rollup: could not read transcript file {tf}: {e}")
+                          has_transcript = False
+
+                  if has_transcript and models_seen:
+                      model = models_seen[-1]
+                      if len(set(models_seen)) > 1:
+                          distinct_models = list(dict.fromkeys(models_seen))
+                          print(f"::warning::agent-rollup: agent {agent_id} changed model mid-transcript ({' -> '.join(distinct_models)}); reporting last model '{model}'")
+                  else:
+                      model = None
+
+                  ts = tasks_started.get(agent_id)
+                  subagent_type = ts.get("subagent_type") if ts else None
+                  spawn_depth = ts.get("spawn_depth") if ts else None
+                  if spawn_depth is not None:
+                      try:
+                          spawn_depth = int(spawn_depth)
+                      except (ValueError, TypeError):
+                          spawn_depth = None
+
+                  tn = tasks_notification.get(agent_id)
+                  status = tn.get("status") if tn else None
+                  usage_notif = tn.get("usage") if (tn and isinstance(tn.get("usage"), dict)) else {}
+                  duration_ms = usage_notif.get("duration_ms", tn.get("duration_ms") if tn else None)
+                  tool_uses = usage_notif.get("tool_uses", tn.get("tool_uses") if tn else None)
+                  if duration_ms is not None:
+                      try:
+                          duration_ms = int(duration_ms)
+                      except (ValueError, TypeError):
+                          duration_ms = None
+                  if tool_uses is not None:
+                      try:
+                          tool_uses = int(tool_uses)
+                      except (ValueError, TypeError):
+                          tool_uses = None
+
+                  if has_transcript:
+                      final_input = input_tokens if has_assistant_lines else 0
+                      final_output = output_tokens if has_assistant_lines else 0
+                      final_cache_read = cache_read if has_assistant_lines else 0
+                      final_cache_creation = cache_creation if has_assistant_lines else 0
+                  else:
+                      final_input = None
+                      final_output = None
+                      final_cache_read = None
+                      final_cache_creation = None
+
+                  record = {
+                      "agent_id": agent_id,
+                      "subagent_type": subagent_type,
+                      "spawn_depth": spawn_depth,
+                      "status": status,
+                      "model": model,
+                      "input_tokens": final_input,
+                      "output_tokens": final_output,
+                      "cache_read_input_tokens": final_cache_read,
+                      "cache_creation_input_tokens": final_cache_creation,
+                      "duration_ms": duration_ms,
+                      "tool_uses": tool_uses,
+                      "tool_uses_by_name": json.dumps(tool_uses_by_name, sort_keys=True),
+                      "file_paths": json.dumps(sorted(list(file_paths))),
+                  }
+                  agents.append(record)
+
+              agents.sort(key=lambda a: a["agent_id"])
+
+              if len(agents) > 64:
+                  print(f"::warning::agent-rollup: {len(agents)} agents found, truncating to 64")
+                  agents = agents[:64]
+
+              emit(agents)
+
+          except Exception as e:
+              print(f"::warning::agent-rollup: unexpected failure: {e}")
+              emit([])
+              sys.exit(0)
+          PY
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::warning::agent-rollup: rollup script failed (rc=$rc); emitting empty agents array."
+            emit_empty
+            exit 0
+          fi
+
       # Reads result.modelUsage, never result.usage: usage counts only the main thread and
       # undercounts cache reads 9.55x, because a round runs six or more subagents (#45).
       - name: Extract review round telemetry
@@ -1417,6 +1719,7 @@ jobs:
         if: always()
         env:
           EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          AGENTS: ${{ steps.agent-rollup.outputs.agents }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           SERVER_URL: ${{ github.server_url }}
@@ -1484,6 +1787,7 @@ jobs:
             --arg action_version "${ACTION_VERSION:-}" \
             --arg config_hash "${CONFIG_HASH:-}" \
             --arg variant "${VARIANT:-}" \
+            --arg agents "${AGENTS:-[]}" \
             '
             def num(s): if s == "" then null else (s | tonumber? // null) end;
             def denials:
@@ -1529,6 +1833,7 @@ jobs:
               variant: (if $variant == "" then null else $variant end),
               per_model_usage: ((.modelUsage // {}) | tojson),
               subagent_stats: (if .subagent_stats == null then null else (.subagent_stats | tojson) end),
+              agents: (if $agents == "" or $agents == "null" then [] else (try ($agents | fromjson) catch []) end),
               raw_result: (
                 . as $o
                 | ($o | del(.result, .permission_denials)) as $base
