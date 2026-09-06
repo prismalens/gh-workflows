@@ -246,23 +246,21 @@ describe("/rounds", () => {
     expect(screen.getAllByText("prismalens/sreforge").length).toBeGreaterThan(0);
   });
 
-  it("puts n on every tile it renders", async () => {
+  it("puts n on the footer's aggregates (#141)", async () => {
     renderRoute({ path: "/rounds", api: fullApi });
-    const counts = await screen.findAllByTestId("tile-n");
-    expect(counts).toHaveLength(5);
-    for (const count of counts) {
-      expect(count).toHaveTextContent(/^n = \d+$/);
-    }
+    const footerN = await screen.findByTestId("rounds-footer-n");
+    expect(footerN).toHaveTextContent(/^n = \d+$/);
   });
 
-  it("labels total_cost_usd as the list-rate equivalent and keeps it out of the tiles", async () => {
+  it("labels total_cost_usd as the list-rate equivalent and keeps money out of the footer", async () => {
     renderRoute({ path: "/rounds", api: fullApi });
     const table = await screen.findByRole("table");
     expect(within(table).getByText(LIST_RATE_EQUIVALENT)).toBeInTheDocument();
 
-    const tiles = screen.getByTestId("tile-strip");
-    expect(tiles.textContent).not.toMatch(/\$/);
-    expect(tiles.textContent).not.toMatch(/cost|usd/i);
+    const footerN = await screen.findByTestId("rounds-footer-n");
+    const footerRow = footerN.closest("tr");
+    expect(footerRow?.textContent).not.toMatch(/\$/);
+    expect(footerRow?.textContent).not.toMatch(/cost|usd/i);
   });
 
   it("offers four range buttons and no date picker", async () => {
@@ -302,17 +300,132 @@ describe("/rounds", () => {
     );
   });
 
-  it("renders the round table instead of tiles when the range is thin", async () => {
+  it("renders the round table and its pager at a thin range, no aggregate tiles at all (#141)", async () => {
     renderRoute({ path: "/rounds", api: sparseApi });
-    expect(await screen.findByText(/the table below is the summary/)).toBeInTheDocument();
-    expect(screen.queryByTestId("tile-n")).not.toBeInTheDocument();
-    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.queryByTestId("tile-strip")).not.toBeInTheDocument();
+    // Six fixture rows fit on one page: the count line shows, the nav does not.
+    expect(screen.getByText("rows 1 to 6 of 6")).toBeInTheDocument();
+    expect(screen.queryByText("Previous")).not.toBeInTheDocument();
   });
 
   it("says no rounds in range rather than showing zeros", async () => {
     renderRoute({ path: "/rounds", api: emptyApi });
     expect((await screen.findAllByText("No rounds in range")).length).toBeGreaterThan(0);
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("page and size round-trip through the URL (#141)", async () => {
+    // 64 rows, range=all so the window is exactly the fetched set: two pages of 50.
+    renderRoute({ path: "/rounds?range=all&size=50&page=2", api: fullApi });
+    expect(await screen.findByText("rows 51 to 64 of 64")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "50" })).toHaveAttribute("aria-pressed", "true");
+    const table = screen.getByRole("table");
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(14);
+  });
+
+  it("a page beyond the last clamps to the last (#141)", async () => {
+    renderRoute({ path: "/rounds?range=all&page=999", api: fullApi });
+    // 64 rows at the default size of 25: three pages, the last holding 14 rows.
+    expect(await screen.findByText("rows 51 to 64 of 64")).toBeInTheDocument();
+    const table = screen.getByRole("table");
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(14);
+    expect(screen.getByText("Next")).toBeDisabled();
+  });
+
+  it("every filter, the search term, the sort and the page survive a reload (#141)", async () => {
+    const baseRoundForUrlTest = makeRounds({ count: 1, now })[0];
+    const target1 = {
+      ...baseRoundForUrlTest,
+      session_id: "url-target-aaa",
+      pr_number: 555,
+      repository: "prismalens/sreforge",
+      round_type: "full",
+      verdict_kind: "clean",
+      job_conclusion: "success",
+      model: "claude-opus-4-6",
+      duration_ms: 5000,
+      recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
+    };
+    const target2 = {
+      ...target1,
+      session_id: "url-target-bbb",
+      pr_number: 556,
+      duration_ms: 3000,
+      recorded_at: new Date(now.getTime() - 2 * 3600000).toISOString(),
+    };
+    const wrongRepo = {
+      ...target1,
+      session_id: "url-target-ccc",
+      pr_number: 557,
+      repository: "prismalens/prismalens",
+    };
+    const wrongType = {
+      ...target1,
+      session_id: "url-target-ddd",
+      pr_number: 558,
+      round_type: "verify",
+    };
+    const wrongVerdict = {
+      ...target1,
+      session_id: "url-target-eee",
+      pr_number: 559,
+      verdict_kind: "error",
+      job_conclusion: "failure",
+    };
+    const wrongModel = {
+      ...target1,
+      session_id: "url-target-fff",
+      pr_number: 560,
+      model: "claude-sonnet-4-6",
+    };
+    const wrongSearch = {
+      ...target1,
+      session_id: "url-other-ggg",
+      pr_number: 561,
+    };
+    const api = makeFixtureApi([
+      target1,
+      target2,
+      wrongRepo,
+      wrongType,
+      wrongVerdict,
+      wrongModel,
+      wrongSearch,
+    ]);
+
+    const url =
+      "/rounds?range=all&repository=prismalens%2Fsreforge&round_type=full&verdict=reviewed" +
+      "&model=claude-opus-4-6&q=target&sort=duration_ms&dir=asc&page=1&size=50";
+    renderRoute({ path: url, api });
+
+    // repository + round_type narrow the window to 5 rows (excludes wrongRepo, wrongType);
+    // verdict + model + q narrow further to the 2 target rows.
+    expect(await screen.findByText("rows 1 to 2 of 2 matching, 5 in window")).toBeInTheDocument();
+    const table = screen.getByRole("table");
+    const rows = table.querySelectorAll("tbody tr");
+    expect(rows).toHaveLength(2);
+    // sort=duration_ms&dir=asc: target2 (3000ms) sorts before target1 (5000ms).
+    expect(within(rows[0] as HTMLElement).getByText("#556")).toBeInTheDocument();
+    expect(within(rows[1] as HTMLElement).getByText("#555")).toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: "prismalens/sreforge" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "full" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "reviewed" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "claude-opus-4-6" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "50" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByPlaceholderText("Search repository, PR, session, sha")).toHaveValue(
+      "target",
+    );
   });
 });
 
@@ -443,11 +556,13 @@ describe("a nulled column is absent, never smallest", () => {
   );
   const api = makeFixtureApi(withNulls);
 
+  // Column order: expander, recorded, repository, pr, type, verdict, model,
+  // wall clock (#141 added verdict and model after type, shifting later columns).
+  // Scoped to tbody so the #141 footer row (one cell spanning every column)
+  // never counts as a data row here.
+  const bodyRows = () => screen.getByRole("table").querySelectorAll("tbody tr");
   const wallClockColumn = () =>
-    screen
-      .getAllByRole("row")
-      .slice(1)
-      .map((row) => row.querySelectorAll("td")[5]?.textContent?.trim() ?? "");
+    Array.from(bodyRows()).map((row) => row.querySelectorAll("td")[7]?.textContent?.trim() ?? "");
 
   it("sorts nulled wall clocks last, ascending and descending", async () => {
     renderRoute({ path: "/rounds?sort=duration_ms&dir=asc", api });
@@ -466,10 +581,9 @@ describe("a nulled column is absent, never smallest", () => {
   it("renders a missing token count as absent rather than as the lightest round", async () => {
     renderRoute({ path: "/rounds?sort=billable_tokens&dir=asc", api });
     await screen.findByRole("table");
-    const tokens = screen
-      .getAllByRole("row")
-      .slice(1)
-      .map((row) => row.querySelectorAll("td")[8]?.textContent?.trim() ?? "");
+    const tokens = Array.from(bodyRows()).map(
+      (row) => row.querySelectorAll("td")[10]?.textContent?.trim() ?? "",
+    );
     expect(tokens.slice(-4)).toEqual(["—", "—", "—", "—"]);
     expect(tokens).not.toContain("0");
   });
@@ -477,10 +591,9 @@ describe("a nulled column is absent, never smallest", () => {
   it("sorts a nulled list-rate equivalent last too", async () => {
     renderRoute({ path: "/rounds?sort=total_cost_usd&dir=asc", api });
     await screen.findByRole("table");
-    const costs = screen
-      .getAllByRole("row")
-      .slice(1)
-      .map((row) => row.querySelectorAll("td")[9]?.textContent?.trim() ?? "");
+    const costs = Array.from(bodyRows()).map(
+      (row) => row.querySelectorAll("td")[11]?.textContent?.trim() ?? "",
+    );
     expect(costs.slice(-4)).toEqual(["—", "—", "—", "—"]);
   });
 });
@@ -820,6 +933,105 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(states.indexOf("reviewed")).toBe(3);
   });
 
+  it("page and size round-trip through the URL (#141)", async () => {
+    // Repository cycles every 3 rounds and pr_number every 2, so a PR (keyed by
+    // repository#number) rarely repeats: 64 rounds group into 64 distinct PRs.
+    renderRoute({ path: "/prs?range=all&size=25&page=2", api: fullApi });
+    await screen.findByRole("table");
+    expect(screen.getByText("rows 26 to 50 of 64")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "25" })).toHaveAttribute("aria-pressed", "true");
+    const table = screen.getByRole("table");
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(25);
+  });
+
+  it("a page beyond the last clamps to the last (#141)", async () => {
+    renderRoute({ path: "/prs?range=all&page=999", api: fullApi });
+    await screen.findByRole("table");
+    expect(screen.getByText("rows 51 to 64 of 64")).toBeInTheDocument();
+    const table = screen.getByRole("table");
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(14);
+    expect(screen.getByText("Next")).toBeDisabled();
+  });
+
+  it("every filter, the search term, the sort and the page survive a reload (#141)", async () => {
+    const base = makeRounds({ count: 1, now })[0];
+    const target1 = {
+      ...base,
+      session_id: "pr-url-target-1",
+      pr_number: 701,
+      repository: "prismalens/sreforge",
+      pr_state: "open",
+      verdict_kind: "clean",
+      job_conclusion: "success",
+      round_type: "full",
+      pr_title: "Target Alpha",
+      pr_author: "alice",
+      recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
+    };
+    const target2 = {
+      ...target1,
+      session_id: "pr-url-target-2",
+      pr_number: 702,
+      pr_title: "Target Beta",
+      recorded_at: new Date(now.getTime() - 2 * 3600000).toISOString(),
+    };
+    const wrongState = {
+      ...target1,
+      session_id: "pr-url-target-3",
+      pr_number: 703,
+      pr_state: "closed",
+      pr_title: "Target Gamma",
+    };
+    const wrongHeadStatus = {
+      ...target1,
+      session_id: "pr-url-target-4",
+      pr_number: 704,
+      verdict_kind: "error",
+      job_conclusion: "failure",
+      pr_title: "Target Delta",
+    };
+    const wrongSearch = {
+      ...target1,
+      session_id: "pr-url-other-5",
+      pr_number: 705,
+      pr_title: "Other Epsilon",
+    };
+    const api = makeFixtureApi([target1, target2, wrongState, wrongHeadStatus, wrongSearch]);
+
+    const url =
+      "/prs?range=all&repository=prismalens%2Fsreforge&state=open&head_status=reviewed" +
+      "&q=target&sort=attention&dir=desc&page=1&size=50";
+    renderRoute({ path: url, api });
+
+    // state=open excludes wrongState; head_status+q narrow the remaining 4 down to 2.
+    expect(await screen.findByText("rows 1 to 2 of 2 matching, 4 in window")).toBeInTheDocument();
+    const table = screen.getByRole("table");
+    const rows = table.querySelectorAll("tbody tr");
+    expect(rows).toHaveLength(2);
+    // Both tie on attention rank; dir=desc reverses the default (most-recent-first) order.
+    expect(within(rows[0] as HTMLElement).getByText("sreforge#702")).toBeInTheDocument();
+    expect(within(rows[1] as HTMLElement).getByText("sreforge#701")).toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: "prismalens/sreforge" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    const stateGroup = screen.getByRole("group", { name: "State at last round" });
+    expect(within(stateGroup).getByRole("button", { name: "open" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    const headStatusGroup = screen.getByRole("group", { name: "Head status" });
+    expect(within(headStatusGroup).getByRole("button", { name: "reviewed" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "50" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByPlaceholderText("Search repository, PR, title, author")).toHaveValue(
+      "target",
+    );
+  });
+
   it("renders detail route for a known PR with head banner and telemetry", async () => {
     const known = fourStateRounds[3]; // PR 204 (reviewed)
     const [owner, repo] = known.repository.split("/");
@@ -876,7 +1088,7 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(screen.getByRole("link", { name: "Back to pull requests" })).toBeInTheDocument();
   });
 
-  it("/prs with no state parameter renders only open pull requests (finding 3943781321)", async () => {
+  it("/prs with no state parameter renders every state; an explicit state still filters (finding 3943781321, default reversed by #136)", async () => {
     const mixedStateRounds = [
       {
         ...baseRound,
@@ -905,20 +1117,25 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     ];
     const mixedApi = makeFixtureApi(mixedStateRounds);
 
-    // Default route without ?state: only open PRs render
+    // Default route without ?state (#136): every state renders.
     renderRoute({ path: "/prs", api: mixedApi });
-    await screen.findByRole("table");
-    expect(screen.getByText("Active open PR")).toBeInTheDocument();
-    expect(screen.queryByText("Completed merged PR")).toBeNull();
-    expect(screen.queryByText("Abandoned closed PR")).toBeNull();
-
-    // With ?state=all: all PRs render (proving both directions)
-    cleanup();
-    renderRoute({ path: "/prs?state=all", api: mixedApi });
     await screen.findByRole("table");
     expect(screen.getByText("Active open PR")).toBeInTheDocument();
     expect(screen.getByText("Completed merged PR")).toBeInTheDocument();
     expect(screen.getByText("Abandoned closed PR")).toBeInTheDocument();
+    const stateGroup = screen.getByRole("group", { name: "State at last round" });
+    expect(within(stateGroup).getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    // An explicit ?state=open still filters to just that state.
+    cleanup();
+    renderRoute({ path: "/prs?state=open", api: mixedApi });
+    await screen.findByRole("table");
+    expect(screen.getByText("Active open PR")).toBeInTheDocument();
+    expect(screen.queryByText("Completed merged PR")).toBeNull();
+    expect(screen.queryByText("Abandoned closed PR")).toBeNull();
   });
 
   it("'12abc' as a PR number is rejected rather than parsed as 12 (finding 3943781319)", async () => {
