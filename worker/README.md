@@ -238,6 +238,32 @@ Returns paginated lane lifecycle events from `lane_events` (skipped or non-execu
 
 ---
 
+### `GET /api/accounted-runs`
+
+Programmatic read route for the scheduled telemetry reconciler (#87). Returns the distinct `run_id` values appearing in either `usage_records` or `lane_events` inside the requested window.
+
+#### Authentication
+
+Authenticated via `Authorization: Bearer <REVIEW_TELEMETRY_TOKEN>`, using the same shared secret as telemetry ingest.
+
+#### Query Parameters
+
+- `since` (required): ISO 8601 UTC timestamp lower bound on `recorded_at` (`recorded_at >= ?`).
+- `until` (required): ISO 8601 UTC timestamp upper bound on `recorded_at` (`recorded_at <= ?`).
+- Capped at a maximum window of 30 days.
+
+#### Response Shape
+
+```json
+{
+  "since": "2026-08-30T00:00:00Z",
+  "until": "2026-08-31T02:00:00Z",
+  "run_ids": [1001, 1002, 1003]
+}
+```
+
+---
+
 ### `GET /api/changes`
 
 Returns paginated named changes from `changes`, ordered newest `at` first.

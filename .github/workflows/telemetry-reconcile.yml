@@ -1,0 +1,234 @@
+name: Telemetry Reconciler
+
+on:
+  schedule:
+    # 04:23 UTC daily. Off the hour on purpose: GitHub delays cron at peak hours (#44).
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      window_hours:
+        description: 'Hours to look back for reconciliation (default 26 to bridge boundaries)'
+        required: false
+        default: '26'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    name: Reconcile review telemetry
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reconcile review telemetry
+        env:
+          ACCOUNTED_RUNS_URL: ${{ vars.TELEMETRY_ACCOUNTED_RUNS_URL || 'https://assayer.sfun.cloud/api/accounted-runs' }}
+          REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          WINDOW_HOURS: ${{ inputs.window_hours || '26' }}
+        run: |
+          set -euo pipefail
+
+          # REVIEW_TELEMETRY_TOKEN is required to read /api/accounted-runs (#87).
+          # Failing loudly prevents an unverified pipeline from appearing healthy when
+          # secrets are missing or misconfigured.
+          if [ -z "${REVIEW_TELEMETRY_TOKEN:-}" ]; then
+            echo "::error::REVIEW_TELEMETRY_TOKEN is not set. Until this secret is configured, nothing can reconcile review telemetry (#87)."
+            exit 1
+          fi
+
+          hdr="$(mktemp)"
+          headers="$(mktemp)"
+          body="$(mktemp)"
+          repo_err="$(mktemp)"
+          trap 'rm -f "$hdr" "$headers" "$body" "$repo_err"' EXIT
+          umask 077
+          printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$REVIEW_TELEMETRY_TOKEN" > "$hdr"
+
+          WINDOW_HOURS="${WINDOW_HOURS:-26}"
+          if [ -z "${SINCE:-}" ] || [ -z "${UNTIL:-}" ]; then
+            read -r SINCE UNTIL < <(python3 -c "
+          from datetime import datetime, timezone, timedelta
+          import os
+          hours = int(os.environ.get('WINDOW_HOURS', '26'))
+          now = datetime.now(timezone.utc).replace(microsecond=0)
+          since = now - timedelta(hours=hours)
+          print(since.isoformat().replace('+00:00', 'Z'), now.isoformat().replace('+00:00', 'Z'))
+          ")
+          fi
+
+          ACCOUNTED_URL="${ACCOUNTED_RUNS_URL:-https://assayer.sfun.cloud/api/accounted-runs}"
+
+          if ! code=$(curl -sS -m 15 -D "$headers" -o "$body" -w '%{http_code}' \
+            --proto '=https' \
+            -G "$ACCOUNTED_URL" \
+            -H "@$hdr" \
+            --data-urlencode "since=$SINCE" \
+            --data-urlencode "until=$UNTIL"); then
+            code=000
+          fi
+
+          if [ "$code" != "200" ]; then
+            echo "Accounted runs read failed: received HTTP $code (expected 200)."
+            echo "=== Response Headers ==="
+            cat "$headers" 2>/dev/null || true
+            echo "=== Response Body (first 500 bytes) ==="
+            head -c 500 "$body" 2>/dev/null || true
+            echo ""
+            case "$code" in
+              400) cause="The Worker rejected the request parameters. Check since and until parameters (#87)." ;;
+              401) cause="The Worker rejected the token. REVIEW_TELEMETRY_TOKEN here and the Worker's own secret have diverged; rotate both together (#87)." ;;
+              403) cause="Blocked before the Worker: Cloudflare bot/WAF mitigation challenging curl from an Azure IP, or an Access policy widened to cover the API path (#87)." ;;
+              5*)  cause="The Worker answered but failed, most likely the D1 query. Check D1 status on review-telemetry (#87)." ;;
+              000) cause="No HTTP response at all: DNS, TLS or the 15s timeout (#87)." ;;
+              *)   cause="Unexpected status. The response headers and body above are the evidence (#87)." ;;
+            esac
+            echo "::error::Telemetry reconciler failed to read accounted runs (HTTP $code, expected 200). ${cause}"
+            exit 1
+          fi
+
+          if ! jq -e '.run_ids // .runs' "$body" >/dev/null 2>&1; then
+            echo "::error::Telemetry reconciler failed to parse accounted runs response from Worker (#87)."
+            exit 1
+          fi
+
+          # Covered consumer repositories. #92 tracks dynamic repository discovery and is parked.
+          COVERED_REPOS=(
+            "prismalens/prismalens"
+            "prismalens/sreforge"
+            "prismalens/gh-workflows"
+            "Sumit1993/mage-memory"
+          )
+
+          declare -a UNACCOUNTED_RUNS=()
+          declare -a FILTERED_RUNS=()
+          declare -a SKIPPED_REPOS=()
+          declare -a REPO_STATS=()
+
+          for repo in "${COVERED_REPOS[@]}"; do
+            runs_file="$(mktemp)"
+            # Query review-lane workflow runs via gh api
+            if ! gh api "repos/${repo}/actions/workflows/claude-code-review.yml/runs?per_page=100" > "$runs_file" 2>"$repo_err"; then
+              err_msg="$(cat "$repo_err" 2>/dev/null || echo "API error")"
+              echo "::warning::Skipped ${repo}: repository cannot be read (${err_msg}) (#87)"
+              SKIPPED_REPOS+=("${repo}|${err_msg}")
+              rm -f "$runs_file"
+              continue
+            fi
+
+            runs_in_window=$(jq -c --arg since "$SINCE" --arg until "$UNTIL" \
+              '[.workflow_runs[]? | select(.created_at >= $since and .created_at <= $until)]' "$runs_file")
+            rm -f "$runs_file"
+
+            total_in_window=$(echo "$runs_in_window" | jq 'length')
+            repo_accounted=0
+            repo_unaccounted=0
+
+            while IFS= read -r run_str; do
+              [ -z "$run_str" ] && continue
+              run_id=$(echo "$run_str" | jq -r '.id')
+              run_conclusion=$(echo "$run_str" | jq -r '.conclusion // "in_progress"')
+              run_created_at=$(echo "$run_str" | jq -r '.created_at')
+              run_url=$(echo "$run_str" | jq -r '.html_url')
+
+              # Check if run_id appears in accounted runs
+              if jq -e --argjson id "$run_id" '(.run_ids // .runs // []) | index($id)' "$body" >/dev/null 2>&1; then
+                repo_accounted=$((repo_accounted + 1))
+                continue
+              fi
+
+              # Filter runs that legitimately produce no row (e.g. cancelled with 0 jobs executed) (#87).
+              if [ "$run_conclusion" = "cancelled" ]; then
+                jobs_file="$(mktemp)"
+                if gh api "repos/${repo}/actions/runs/${run_id}/jobs" > "$jobs_file" 2>/dev/null; then
+                  job_count=$(jq '.total_count // (.jobs | length)' "$jobs_file" 2>/dev/null || echo "-1")
+                  rm -f "$jobs_file"
+                  if [ "$job_count" -eq 0 ]; then
+                    echo "Filtered run ${run_id} on ${repo}: conclusion is cancelled with zero jobs executed (#87)"
+                    FILTERED_RUNS+=("${repo}|${run_id}|cancelled with 0 jobs executed")
+                    continue
+                  fi
+                else
+                  rm -f "$jobs_file"
+                fi
+              fi
+
+              repo_unaccounted=$((repo_unaccounted + 1))
+              UNACCOUNTED_RUNS+=("${repo}|${run_id}|${run_conclusion}|${run_created_at}|${run_url}")
+            done < <(echo "$runs_in_window" | jq -c '.[]')
+
+            REPO_STATS+=("${repo}|${total_in_window}|${repo_accounted}|${repo_unaccounted}")
+          done
+
+          # Write job summary
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "## Telemetry Reconciliation Report (#87)"
+              echo ""
+              echo "- **Window:** \`${SINCE}\` to \`${UNTIL}\` (${WINDOW_HOURS} hours)"
+              echo ""
+              echo "### Covered Repositories"
+              echo ""
+              echo "| Repository | Runs in Window | Accounted | Unaccounted | Status |"
+              echo "| --- | --- | --- | --- | --- |"
+              for stat in "${REPO_STATS[@]}"; do
+                IFS='|' read -r r_name r_tot r_acc r_unacc <<< "$stat"
+                if [ "$r_unacc" -eq 0 ]; then
+                  r_status="✅ Clean"
+                else
+                  r_status="❌ ${r_unacc} unaccounted"
+                fi
+                echo "| \`${r_name}\` | ${r_tot} | ${r_acc} | ${r_unacc} | ${r_status} |"
+              done
+              for skip in "${SKIPPED_REPOS[@]}"; do
+                IFS='|' read -r s_name s_reason <<< "$skip"
+                echo "| \`${s_name}\` | — | — | — | ⚠️ Skipped: ${s_reason} |"
+              done
+              echo ""
+
+              if [ ${#FILTERED_RUNS[@]} -gt 0 ]; then
+                echo "### Filtered Runs"
+                echo ""
+                echo "| Repository | Run ID | Reason |"
+                echo "| --- | --- | --- |"
+                for filt in "${FILTERED_RUNS[@]}"; do
+                  IFS='|' read -r f_repo f_id f_reason <<< "$filt"
+                  echo "| \`${f_repo}\` | [${f_id}](https://github.com/${f_repo}/actions/runs/${f_id}) | ${f_reason} |"
+                done
+                echo ""
+              fi
+
+              if [ ${#UNACCOUNTED_RUNS[@]} -gt 0 ]; then
+                echo "### ❌ Unaccounted Runs"
+                echo ""
+                echo "| Repository | Run ID | Conclusion | Created At | URL |"
+                echo "| --- | --- | --- | --- | --- |"
+                for unacc in "${UNACCOUNTED_RUNS[@]}"; do
+                  IFS='|' read -r u_repo u_id u_conc u_created u_url <<< "$unacc"
+                  echo "| \`${u_repo}\` | [${u_id}](${u_url}) | \`${u_conc}\` | ${u_created} | [View Run](${u_url}) |"
+                done
+                echo ""
+                echo "**Result:** ❌ Reconciliation failed: ${#UNACCOUNTED_RUNS[@]} unaccounted run(s) found."
+              else
+                echo "**Result:** ✅ All review runs accounted for."
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ ${#UNACCOUNTED_RUNS[@]} -gt 0 ]; then
+            echo ""
+            echo "=========================================="
+            echo "UNACCOUNTED REVIEW RUNS DETECTED (#87)"
+            echo "=========================================="
+            for unacc in "${UNACCOUNTED_RUNS[@]}"; do
+              IFS='|' read -r u_repo u_id u_conc u_created u_url <<< "$unacc"
+              echo "Unaccounted run: repository=${u_repo} id=${u_id} conclusion=${u_conc} created_at=${u_created} url=${u_url}"
+              echo "::error::Unaccounted run in ${u_repo}: run ${u_id} (${u_conc}, ${u_created}) ${u_url} (#87)"
+            done
+            echo ""
+            echo "Reconciler failed: ${#UNACCOUNTED_RUNS[@]} unaccounted run(s) found."
+            exit 1
+          fi
+
+          echo "Reconciliation complete: all runs accounted for."
+          exit 0

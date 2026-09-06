@@ -788,6 +788,101 @@ async function handleRoundAgents(url, env) {
   );
 }
 
+// Programmatic read route for the telemetry reconciler (#87).
+// Authenticates with REVIEW_TELEMETRY_TOKEN and returns distinct run_ids across
+// both usage_records and lane_events in the requested window (capped at 30 days).
+async function handleAccountedRuns(request, url, env) {
+  const token = env?.REVIEW_TELEMETRY_TOKEN;
+  const authHeader = request.headers.get("authorization");
+  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), {
+      status: 401,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const since = url.searchParams.get("since");
+  if (since === null || since === "") {
+    return new Response(JSON.stringify({ error: "missing since" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const until = url.searchParams.get("until");
+  if (until === null || until === "") {
+    return new Response(JSON.stringify({ error: "missing until" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const isoUtcPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]00(?::?00)?)$/;
+  if (!isoUtcPattern.test(since) || Number.isNaN(new Date(since).getTime())) {
+    return new Response(JSON.stringify({ error: "invalid since" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  if (!isoUtcPattern.test(until) || Number.isNaN(new Date(until).getTime())) {
+    return new Response(JSON.stringify({ error: "invalid until" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const sinceDate = new Date(since);
+  const untilDate = new Date(until);
+  if (untilDate.getTime() < sinceDate.getTime()) {
+    return new Response(JSON.stringify({ error: "invalid window: until precedes since" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const MAX_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+  if (untilDate.getTime() - sinceDate.getTime() > MAX_WINDOW_MS) {
+    return new Response(JSON.stringify({ error: "window exceeds 30 days" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const query = `SELECT run_id FROM usage_records WHERE recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
+UNION
+SELECT run_id FROM lane_events WHERE recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
+ORDER BY run_id ASC`;
+
+  let results;
+  try {
+    const res = await env.DB.prepare(query).bind(since, until, since, until).all();
+    results = res?.results ?? [];
+  } catch {
+    return new Response(JSON.stringify({ error: "database error" }), {
+      status: 500,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const runIds = Array.from(
+    new Set(
+      results
+        .map((r) => Number(r.run_id))
+        .filter((id) => Number.isInteger(id))
+    )
+  ).sort((a, b) => a - b);
+
+  return new Response(
+    JSON.stringify({
+      since,
+      until,
+      run_ids: runIds,
+    }),
+    { headers: READ_HEADERS }
+  );
+}
+
 async function handleIngest(request, env) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
@@ -1478,6 +1573,13 @@ export default {
 
     if (method === "POST" && (pathname === "/ingest" || pathname === "/")) {
       return handleIngest(request, env);
+    }
+
+    if (
+      method === "GET" &&
+      (pathname === "/api/accounted-runs" || pathname === "/api/accounted-runs/")
+    ) {
+      return handleAccountedRuns(request, url, env);
     }
 
     if (

@@ -2351,4 +2351,231 @@ describe("Worker telemetry read API", () => {
       });
     });
   });
+
+  describe("GET /api/accounted-runs (#87)", () => {
+    const validSince = "2026-08-30T00:00:00Z";
+    const validUntil = "2026-08-31T02:00:00Z";
+
+    describe("Authentication", () => {
+      it("returns 401 when authorization header is missing", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 401);
+        const body = await res.json();
+        assert.equal(body.error, "unauthorized");
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("returns 401 when authorization token is wrong", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: { authorization: "Bearer wrong-secret-token" },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 401);
+        const body = await res.json();
+        assert.equal(body.error, "unauthorized");
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("returns 401 when REVIEW_TELEMETRY_TOKEN is not in env", async () => {
+        const db = createFakeDb();
+        const env = { DB: db };
+        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 401);
+        assert.equal(db.queries.length, 0);
+      });
+    });
+
+    describe("Validation", () => {
+      const authHeader = { authorization: `Bearer ${VALID_TOKEN}` };
+
+      it("returns 400 when since parameter is missing", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest(`/api/accounted-runs?until=${validUntil}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        const body = await res.json();
+        assert.equal(body.error, "missing since");
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("returns 400 when until parameter is missing", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest(`/api/accounted-runs?since=${validSince}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        const body = await res.json();
+        assert.equal(body.error, "missing until");
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("returns 400 when since is not a valid ISO 8601 UTC timestamp", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const invalidValues = ["not-a-date", "2026-08-30", "2026-08-30T12:00:00+05:00", "2026-08-30T12:00:00"];
+        for (const badSince of invalidValues) {
+          const req = makeRequest(`/api/accounted-runs?since=${encodeURIComponent(badSince)}&until=${validUntil}`, {
+            method: "GET",
+            headers: authHeader,
+          });
+          const res = await worker.fetch(req, env);
+          assert.equal(res.status, 400);
+          const body = await res.json();
+          assert.equal(body.error, "invalid since");
+        }
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("returns 400 when until is not a valid ISO 8601 UTC timestamp", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=invalid-until-ts`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        const body = await res.json();
+        assert.equal(body.error, "invalid until");
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("returns 400 when until precedes since", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest(`/api/accounted-runs?since=${validUntil}&until=${validSince}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        const body = await res.json();
+        assert.equal(body.error, "invalid window: until precedes since");
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("returns 400 when window exceeds 30 days", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const over30Days = "2026-09-30T00:00:01Z"; // 31 days + 1 sec
+        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${over30Days}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        const body = await res.json();
+        assert.equal(body.error, "window exceeds 30 days");
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("accepts a window of exactly 30 days", async () => {
+        const db = createFakeDb({
+          handler: () => ({ results: [] }),
+        });
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const exactly30Days = "2026-09-29T00:00:00Z";
+        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${exactly30Days}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        assert.equal(db.queries.length, 1);
+      });
+    });
+
+    describe("Query & Results", () => {
+      const authHeader = { authorization: `Bearer ${VALID_TOKEN}` };
+
+      it("returns union of both tables and no duplicates as JSON array of integers", async () => {
+        const db = createFakeDb({
+          handler: (sql, args) => {
+            return {
+              results: [
+                { run_id: 1001 },
+                { run_id: 1002 },
+                { run_id: 1002 }, // Duplicate from lane_events union
+                { run_id: 1003 },
+              ],
+            };
+          },
+        });
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+
+        assert.equal(data.since, validSince);
+        assert.equal(data.until, validUntil);
+        assert.deepEqual(data.run_ids, [1001, 1002, 1003]);
+
+        // Verify all elements are integers
+        for (const id of data.run_ids) {
+          assert.ok(Number.isInteger(id));
+        }
+
+        // Verify query bindings respect the window
+        assert.equal(db.queries.length, 1);
+        const query = db.queries[0];
+        assert.ok(query.sql.includes("FROM usage_records"));
+        assert.ok(query.sql.includes("FROM lane_events"));
+        assert.ok(query.sql.includes("UNION"));
+        assert.deepEqual(query.args, [validSince, validUntil, validSince, validUntil]);
+      });
+
+      it("returns empty run_ids array when neither table has matches", async () => {
+        const db = createFakeDb({
+          handler: () => ({ results: [] }),
+        });
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.equal(data.since, validSince);
+        assert.equal(data.until, validUntil);
+        assert.deepEqual(data.run_ids, []);
+      });
+
+      it("returns 500 when database throws an error", async () => {
+        const db = createFakeDb({ shouldThrow: true });
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest(`/api/accounted-runs?since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 500);
+        const data = await res.json();
+        assert.equal(data.error, "database error");
+      });
+    });
+  });
 });
