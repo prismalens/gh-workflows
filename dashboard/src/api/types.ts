@@ -40,6 +40,12 @@ export interface RoundRow {
   pr_state: string | null;
   pr_base_ref: string | null;
   pr_head_ref: string | null;
+  agents_status?: string | null;
+  variant_key?: string | null;
+  prompt_hash?: string | null;
+  action_version?: string | null;
+  config_hash?: string | null;
+  variant?: string | null;
   /** Only present when the request passed include=blobs. */
   per_model_usage?: string | null;
   subagent_stats?: string | null;
@@ -130,4 +136,29 @@ export interface RawResult {
   is_error?: boolean | null;
   denial_tools?: Array<{ tool: string; count: number }>;
   [key: string]: unknown;
+}
+
+/**
+ * One row per subagent in a round, from GET /api/round-agents (#131, #89).
+ */
+export interface RoundAgentRow {
+  session_id: string;
+  agent_id: string;
+  subagent_type: string | null;
+  spawn_depth: number | null;
+  status: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  duration_ms: number | null;
+  tool_uses: number | null;
+  tool_uses_by_name: string | null;
+  file_paths: string | null;
+}
+
+export interface RoundAgentsResponse {
+  rows: RoundAgentRow[];
+  next_cursor: string | null;
 }

@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, changesUrl, httpApi, laneEventsUrl, lookupRound, MAX_LIMIT_WITH_BLOBS, runsUrl, type RunsQuery } from "./client";
+import { ApiError, changesUrl, httpApi, laneEventsUrl, lookupRound, MAX_LIMIT_WITH_BLOBS, roundAgentsUrl, runsUrl, type RunsQuery } from "./client";
 import { lookupPR } from "./queries";
 import { CSV_COLUMNS, roundsToCsv } from "./csv";
 import { parsePerModelUsage, parseRawResult, parseSubagentStats } from "./blobs";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
-import type { LaneEventRow } from "./types";
+import type { LaneEventRow, RoundAgentRow } from "./types";
 
 const rows = makeRounds({ count: 64 });
 const api = makeFixtureApi(rows);
@@ -525,5 +525,38 @@ describe("lookupPR pages through cursors and validates PR numbers (findings 3943
     }
     expect(cursorsSeen).toContain(undefined);
     expect(cursorsSeen).toContain("page-2-cursor");
+  });
+});
+
+describe("round agents API (#131, #89)", () => {
+  it("formats round agents URL with session_id parameter", () => {
+    expect(roundAgentsUrl("test-session-123")).toBe("/api/round-agents?session_id=test-session-123");
+  });
+
+  it("fetches round agents for a session from the fixture API", async () => {
+    const mockAgent: RoundAgentRow = {
+      session_id: "session-abc",
+      agent_id: "agent-01",
+      subagent_type: "general-purpose",
+      spawn_depth: 1,
+      status: "completed",
+      model: "claude-sonnet-4-6",
+      input_tokens: 1000,
+      output_tokens: 500,
+      cache_read_input_tokens: 2000,
+      cache_creation_input_tokens: 300,
+      duration_ms: 45000,
+      tool_uses: 5,
+      tool_uses_by_name: JSON.stringify({ ReadFile: 3, EditFile: 2 }),
+      file_paths: JSON.stringify(["src/index.ts"]),
+    };
+    const agentApi = makeFixtureApi([], [], [], [mockAgent]);
+    const response = await agentApi.fetchRoundAgents("session-abc");
+    expect(response.rows).toHaveLength(1);
+    expect(response.rows[0].agent_id).toBe("agent-01");
+    expect(response.rows[0].subagent_type).toBe("general-purpose");
+
+    const emptyResponse = await agentApi.fetchRoundAgents("session-other");
+    expect(emptyResponse.rows).toHaveLength(0);
   });
 });

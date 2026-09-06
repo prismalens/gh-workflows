@@ -2,10 +2,12 @@ import type { ReactNode } from "react";
 import { ExternalLink } from "lucide-react";
 
 import { humanizeKey, parsePerModelUsage, parseRawResult, parseSubagentStats } from "@/api/blobs";
-import type { RoundRow } from "@/api/types";
+import type { RoundAgentRow, RoundRow } from "@/api/types";
 import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FanOutTimeline } from "./FanOutTimeline";
+import { TokenCompositionBar } from "./TokenCompositionBar";
 import {
   Table,
   TableBody,
@@ -144,7 +146,7 @@ export function ResolutionPanel({ row }: { row: RoundRow }) {
   );
 }
 
-export function TimingPanel({ row }: { row: RoundRow }) {
+export function TimingPanel({ row, agents }: { row: RoundRow; agents?: RoundAgentRow[] }) {
   const wall = row.duration_ms;
   const api = row.duration_api_ms;
   // duration_api_ms is summed across concurrent subagents, so on a fan-out round it
@@ -153,6 +155,12 @@ export function TimingPanel({ row }: { row: RoundRow }) {
   const parallel = wall !== null && api !== null && api > wall;
   const overhead = wall !== null && api !== null && !parallel ? wall - api : null;
   const parallelism = parallel && wall! > 0 ? api! / wall! : null;
+
+  // #89 / #94: Render fan-out timeline when agents data or agents_status is present.
+  // When unavailable (pre-rollup round with no status), show numbers and ratio as today.
+  const hasAgents = agents && agents.length > 0;
+  const hasRollupStatus = !!row.agents_status;
+  const showTimeline = hasAgents || hasRollupStatus;
 
   return (
     <Panel title="Timing">
@@ -168,11 +176,21 @@ export function TimingPanel({ row }: { row: RoundRow }) {
         )}
         <Fact label="Turns">{orDash(row.num_turns)}</Fact>
       </Facts>
-      <p className="text-xs text-muted-foreground">
-        {parallel
-          ? "API seconds are summed across concurrent agents, so exceeding wall clock means the fan-out ran in parallel, not that the round was slow. Time spent outside the API cannot be separated out on such a round."
-          : "Time outside the API is checkout, tool calls and posting, derived as wall clock minus API time. It is not measured separately."}
-      </p>
+      {showTimeline ? (
+        <div className="pt-3 border-t border-border/40">
+          <FanOutTimeline
+            agents={agents ?? []}
+            agentsStatus={row.agents_status}
+            wallClockMs={wall}
+          />
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          {parallel
+            ? "API seconds are summed across concurrent agents, so exceeding wall clock means the fan-out ran in parallel, not that the round was slow. Time spent outside the API cannot be separated out on such a round."
+            : "Time outside the API is checkout, tool calls and posting, derived as wall clock minus API time. It is not measured separately."}
+        </p>
+      )}
     </Panel>
   );
 }
@@ -306,6 +324,7 @@ export function TokensPanel({ row }: { row: RoundRow }) {
             </Fact>
             <Fact label={LIST_RATE_EQUIVALENT}>{orDash(row.total_cost_usd, formatUsd)}</Fact>
           </Facts>
+          <TokenCompositionBar row={row} />
           <p className="text-xs text-muted-foreground">
             The multiplier is uncached-equivalent input over billed-equivalent input. It is
             arithmetic over the recorded counts, not a saving: no counterfactual run exists to
@@ -412,3 +431,7 @@ export function RawRecordPanel({ row }: { row: RoundRow }) {
     </Panel>
   );
 }
+
+export { FanOutTimeline } from "./FanOutTimeline";
+export { TokenCompositionBar } from "./TokenCompositionBar";
+export { WindowComparisonPanel } from "./WindowComparisonPanel";
