@@ -67,3 +67,21 @@ export function orDash(value: number | string | null | undefined, fmt?: Formatte
   if (typeof value === "number") return fmt ? fmt(value) : formatCount(value);
   return value;
 }
+
+/** Compact rounds by type: F full/review, I incremental, V verify (#75). */
+export function formatCompactRounds(rounds: Array<{ round_type?: string | null }>): string {
+  let full = 0;
+  let incremental = 0;
+  let verify = 0;
+  for (const r of rounds) {
+    if (r.round_type === "incremental") {
+      incremental++;
+    } else if (r.round_type === "verify") {
+      verify++;
+    } else if (r.round_type === "full" || r.round_type === "review") {
+      full++;
+    }
+  }
+  return `${full}F/${incremental}I/${verify}V`;
+}
+

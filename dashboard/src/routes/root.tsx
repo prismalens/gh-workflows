@@ -30,6 +30,7 @@ function FixtureBanner() {
 
 const NAV = [
   { to: "/", label: "Overview" },
+  { to: "/prs", label: "PRs" },
   { to: "/rounds", label: "Rounds" },
   { to: "/failures", label: "Failures" },
   { to: "/repos", label: "Repos" },

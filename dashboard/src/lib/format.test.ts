@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { formatTimestamp, localDay } from "./format";
+import { formatCompactRounds, formatTimestamp, localDay } from "./format";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -61,3 +61,25 @@ describe("localDay follows the same zone as formatTimestamp (#97)", () => {
     expect(localDay("2026-08-31T19:10:00.000Z")).toBe("2026-08-31");
   });
 });
+
+describe("formatCompactRounds (#75)", () => {
+  it("formats compact counts by round type", () => {
+    expect(formatCompactRounds([])).toBe("0F/0I/0V");
+    expect(
+      formatCompactRounds([
+        { round_type: "full" },
+        { round_type: "full" },
+        { round_type: "full" },
+        { round_type: "verify" },
+      ]),
+    ).toBe("3F/0I/1V");
+    expect(
+      formatCompactRounds([
+        { round_type: "review" },
+        { round_type: "incremental" },
+        { round_type: "incremental" },
+      ]),
+    ).toBe("1F/2I/0V");
+  });
+});
+

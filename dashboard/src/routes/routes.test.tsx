@@ -733,4 +733,149 @@ describe("/ overview: change markers on the trend charts", () => {
   });
 });
 
+describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
+  const baseRound = makeRounds({ count: 1, now })[0];
+
+  const fourStateRounds = [
+    {
+      ...baseRound,
+      session_id: "pr-s-1",
+      pr_number: 201,
+      pr_title: "PR with silent review failure",
+      verdict_kind: "silent",
+      round_type: "full",
+      job_conclusion: "success",
+      recorded_at: new Date(now.getTime() - 4 * 3600000).toISOString(),
+    },
+    {
+      ...baseRound,
+      session_id: "pr-s-2",
+      pr_number: 202,
+      pr_title: "PR that auto-paused at limit",
+      verdict_kind: "auto-paused",
+      round_ordinal: 3,
+      round_type: "full",
+      job_conclusion: "success",
+      recorded_at: new Date(now.getTime() - 3 * 3600000).toISOString(),
+    },
+    {
+      ...baseRound,
+      session_id: "pr-s-3",
+      pr_number: 203,
+      pr_title: "PR with verify only",
+      verdict_kind: "verify-rechecked",
+      round_type: "verify",
+      job_conclusion: "success",
+      recorded_at: new Date(now.getTime() - 2 * 3600000).toISOString(),
+    },
+    {
+      ...baseRound,
+      session_id: "pr-s-4",
+      pr_number: 204,
+      pr_title: "PR fully reviewed and clean",
+      verdict_kind: "reviewed",
+      round_type: "full",
+      job_conclusion: "success",
+      recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
+    },
+  ];
+  const fourStateApi = makeFixtureApi(fourStateRounds);
+
+  it("renders the PR index table with rows against fixture data", async () => {
+    renderRoute({ path: "/prs", api: fullApi });
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.getByText("Pull requests")).toBeInTheDocument();
+    const rows = screen.getAllByRole("row");
+    expect(rows.length).toBeGreaterThan(5);
+  });
+
+  it("head-status decode produces the right label for each of the four states", async () => {
+    renderRoute({ path: "/prs", api: fourStateApi });
+    const table = await screen.findByRole("table");
+
+    // State 1: failed (silent) -> "failed: posted nothing"
+    expect(within(table).getByText("failed: posted nothing")).toBeInTheDocument();
+
+    // State 2: did-not-run -> "auto-paused (3/3)"
+    expect(within(table).getByText("auto-paused (3/3)")).toBeInTheDocument();
+
+    // State 3: threads-only -> "threads-only"
+    expect(within(table).getByText("threads-only")).toBeInTheDocument();
+
+    // State 4: reviewed -> "reviewed"
+    expect(within(table).getByText("reviewed")).toBeInTheDocument();
+  });
+
+  it("the sort order puts unreviewed heads above reviewed-clean ones by default", async () => {
+    renderRoute({ path: "/prs", api: fourStateApi });
+    await screen.findByRole("table");
+
+    const chips = screen.getAllByTestId("head-status-chip");
+    const states = chips.map((c) => c.getAttribute("data-state"));
+
+    // Sorted by attention: failed > did-not-run > threads-only > reviewed
+    expect(states).toEqual(["failed", "did-not-run", "threads-only", "reviewed"]);
+
+    // The reviewed (clean) head is last; all unreviewed heads are above it
+    expect(states.indexOf("reviewed")).toBe(3);
+  });
+
+  it("renders detail route for a known PR with head banner and telemetry", async () => {
+    const known = fourStateRounds[3]; // PR 204 (reviewed)
+    const [owner, repo] = known.repository.split("/");
+    renderRoute({
+      path: `/prs/${owner}/${repo}/${known.pr_number}`,
+      api: fourStateApi,
+    });
+
+    // PR header
+    expect(await screen.findByText(new RegExp(`PR #${known.pr_number}`))).toBeInTheDocument();
+
+    // Head banner answering "has this head been read"
+    const banner = screen.getByTestId("head-banner");
+    expect(banner).toHaveTextContent(/reviewed — the lane read this head commit/i);
+
+    // Raw verdict string in monospace under it
+    expect(screen.getByTestId("raw-verdict")).toBeInTheDocument();
+
+    // Round timeline card
+    expect(screen.getByTestId("round-timeline-card")).toBeInTheDocument();
+
+    // Ladder, config, totals
+    expect(screen.getByTestId("head-ladder-card")).toBeInTheDocument();
+    expect(screen.getByTestId("config-in-effect-card")).toBeInTheDocument();
+    expect(screen.getByTestId("pr-totals-card")).toBeInTheDocument();
+    expect(screen.getByTestId("report-tabs")).toBeInTheDocument();
+  });
+
+  it("renders copyable unblock hint for amber/red states on detail route", async () => {
+    const amber = fourStateRounds[1]; // PR 202 (auto-paused)
+    const [owner, repo] = amber.repository.split("/");
+    renderRoute({
+      path: `/prs/${owner}/${repo}/${amber.pr_number}`,
+      api: fourStateApi,
+    });
+
+    expect(await screen.findByText(new RegExp(`PR #${amber.pr_number}`))).toBeInTheDocument();
+    const banner = screen.getByTestId("head-banner");
+    expect(banner).toHaveTextContent(/not reviewed — auto-paused/i);
+
+    const hint = screen.getByTestId("unblock-hint");
+    expect(hint).toHaveTextContent("@claude review");
+    expect(screen.getByRole("button", { name: /copy/i })).toBeInTheDocument();
+  });
+
+  it("shows an empty state rather than crashing for an unknown PR", async () => {
+    renderRoute({
+      path: "/prs/prismalens/prismalens/99999",
+      api: fullApi,
+    });
+
+    expect(await screen.findByText("This pull request was not found")).toBeInTheDocument();
+    expect(screen.getByText(/no review rounds were found/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to pull requests" })).toBeInTheDocument();
+  });
+});
+
+
 

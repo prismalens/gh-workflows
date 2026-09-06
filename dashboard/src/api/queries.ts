@@ -7,6 +7,7 @@ import {
   MAX_LIMIT_WITH_BLOBS,
   type LaneEventsQuery,
   type RunsQuery,
+  type TelemetryApi,
 } from "./client";
 import { useApi } from "./provider";
 import type { RoundRow } from "./types";
@@ -115,3 +116,54 @@ export function useChangesQuery() {
     staleTime: 30_000,
   });
 }
+
+export type PRLookup =
+  | { found: true; rounds: RoundRow[] }
+  | { found: false };
+
+/** Looks up all rounds for a pull request, enriching with blobs if available (#75). */
+export async function lookupPR(
+  api: TelemetryApi,
+  repository: string,
+  prNumber: number,
+): Promise<PRLookup> {
+  const response = await api.fetchRuns({
+    repository,
+    limit: MAX_LIMIT,
+  });
+  const matching = response.rows.filter((r: RoundRow) => r.pr_number === prNumber);
+  if (matching.length === 0) {
+    return { found: false };
+  }
+
+  const withBlobs = await Promise.all(
+    matching.map(async (row: RoundRow) => {
+      try {
+        const exact = await api.fetchRuns({
+          repository,
+          since: row.recorded_at,
+          until: row.recorded_at,
+          include: "blobs",
+          limit: MAX_LIMIT_WITH_BLOBS,
+        });
+        const hit = exact.rows.find((r: RoundRow) => r.session_id === row.session_id);
+        return hit ?? row;
+      } catch {
+        return row;
+      }
+    }),
+  );
+
+  withBlobs.sort((a: RoundRow, b: RoundRow) => b.recorded_at.localeCompare(a.recorded_at));
+  return { found: true, rounds: withBlobs };
+}
+
+export function usePRDetailQuery(repository: string, prNumber: number) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["pr", repository, prNumber],
+    queryFn: () => lookupPR(api, repository, prNumber),
+    staleTime: 30_000,
+  });
+}
+
