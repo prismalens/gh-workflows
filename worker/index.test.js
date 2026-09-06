@@ -773,6 +773,41 @@ describe("Worker telemetry ingest", () => {
       assert.equal(db.queries.length, 65);
     });
 
+    it("an agent_id over 512 characters is rejected rather than truncated into a collision", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+
+      // Same first 512 characters, different tails. Truncating the primary key would
+      // make the second silently overwrite the first.
+      const prefix = "a".repeat(512);
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-long-agent-id",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: `${prefix}-one` }, { agent_id: `${prefix}-two` }],
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      assert.match((await res.json()).error, /index 0.*512/);
+      assert.equal(db.queries.length, 0);
+
+      // Exactly at the limit is still accepted.
+      const okDb = createFakeDb();
+      const okReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-agent-id-at-limit",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: prefix }],
+        },
+      });
+      const okRes = await worker.fetch(okReq, { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: okDb });
+      assert.equal(okRes.status, 204);
+      assert.equal(okDb.queries[1].args[1], prefix);
+    });
+
     it("a non-array agents, a non-object entry, and a missing agent_id are each rejected with the index named", async () => {
       const db = createFakeDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };

@@ -8,6 +8,8 @@ let lastRefetchTime = 0;
 // bound from the row limit is what makes an over-size payload a 413 here rather
 // than a 500 from the insert. Story: #60.
 const D1_MAX_ROW_BYTES = 2_000_000;
+// Half of round_agents' primary key. Truncating it would merge two agents. Story: #93.
+const AGENT_ID_MAX_LENGTH = 512;
 const MAX_INGEST_BYTES = D1_MAX_ROW_BYTES / 2;
 
 // The zone-level WAF rule (wrangler.toml) is what protects the free-plan request
@@ -915,6 +917,20 @@ async function handleIngest(request, env) {
             }
           );
         }
+
+        // Half the primary key, so truncating it would silently merge two agents that
+        // differ only past the limit. Reject instead. Story: #93.
+        if (agent.agent_id.length > AGENT_ID_MAX_LENGTH) {
+          return new Response(
+            JSON.stringify({
+              error: `invalid agent at index ${i}: agent_id exceeds ${AGENT_ID_MAX_LENGTH} characters`,
+            }),
+            {
+              status: 400,
+              headers: { "content-type": "application/json" },
+            }
+          );
+        }
       }
     }
 
@@ -1078,7 +1094,7 @@ async function handleIngest(request, env) {
               file_paths = excluded.file_paths`
           ).bind(
             payload.session_id,
-            truncateString(agent.agent_id, 512),
+            agent.agent_id,
             truncateString(agent.subagent_type, 512),
             toIntegerOrNull(agent.spawn_depth),
             truncateString(agent.status, 512),
