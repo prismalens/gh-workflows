@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import type { PrRow } from "@/api/types";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
 import { LIST_RATE_EQUIVALENT } from "@/honesty/thresholds";
@@ -1071,7 +1072,7 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
       "aria-pressed",
       "true",
     );
-    const stateGroup = screen.getByRole("group", { name: "State at last round" });
+    const stateGroup = screen.getByRole("group", { name: "State" });
     expect(within(stateGroup).getByRole("button", { name: "open" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -1178,7 +1179,7 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(screen.getByText("Active open PR")).toBeInTheDocument();
     expect(screen.getByText("Completed merged PR")).toBeInTheDocument();
     expect(screen.getByText("Abandoned closed PR")).toBeInTheDocument();
-    const stateGroup = screen.getByRole("group", { name: "State at last round" });
+    const stateGroup = screen.getByRole("group", { name: "State" });
     expect(within(stateGroup).getByRole("button", { name: "All" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -1191,6 +1192,66 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(screen.getByText("Active open PR")).toBeInTheDocument();
     expect(screen.queryByText("Completed merged PR")).toBeNull();
     expect(screen.queryByText("Abandoned closed PR")).toBeNull();
+  });
+
+  it("reads title, state and author from the prs table, and mutes the round's guess otherwise (#136, #141)", async () => {
+    const enrichedRound = {
+      ...baseRound,
+      session_id: "pr-prs-enriched",
+      repository: "prismalens/sreforge",
+      pr_number: 801,
+      pr_title: "Stale round title",
+      pr_author: "stale-author",
+      pr_state: "open",
+      recorded_at: new Date(now.getTime() - 2 * 3600000).toISOString(),
+    };
+    const fallbackRound = {
+      ...baseRound,
+      session_id: "pr-prs-fallback",
+      repository: "prismalens/sreforge",
+      pr_number: 802,
+      pr_title: "",
+      pr_state: "closed",
+      recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
+    };
+    const prsRows: PrRow[] = [
+      {
+        repository: "prismalens/sreforge",
+        pr_number: 801,
+        state: "merged",
+        title: "Current real title",
+        author: "real-author",
+        base_ref: "main",
+        head_ref: "feature-801",
+        head_sha: "abc123",
+        merged_at: "2026-08-30T00:00:00.000Z",
+        closed_at: null,
+        updated_at: enrichedRound.recorded_at,
+        source: "hook",
+      },
+    ];
+    const api = makeFixtureApi([enrichedRound, fallbackRound], [], [], [], prsRows);
+
+    renderRoute({ path: "/prs?range=all", api });
+    const table = await screen.findByRole("table");
+
+    // Enriched: real title and merged state replace the round's stale guess.
+    expect(within(table).getByText("Current real title")).toBeInTheDocument();
+    expect(within(table).getByText("merged")).toBeInTheDocument();
+    expect(within(table).queryByText("Stale round title")).toBeNull();
+
+    // Fallback: no prs row for 802, so the PR #n title and the round's
+    // pr_state show up muted, with the "not refreshed" hint.
+    expect(within(table).getByText("PR #802")).toBeInTheDocument();
+    const fallbackState = within(table).getByText("closed", { selector: "span.italic" });
+    expect(fallbackState).toHaveAttribute("title", "state at last round, not refreshed since");
+
+    // The filter honours the enriched state: PR 801 shows only under merged.
+    cleanup();
+    renderRoute({ path: "/prs?range=all&state=merged", api });
+    await screen.findByRole("table");
+    expect(screen.getByText("Current real title")).toBeInTheDocument();
+    expect(screen.queryByText("PR #802")).toBeNull();
   });
 
   it("'12abc' as a PR number is rejected rather than parsed as 12 (finding 3943781319)", async () => {

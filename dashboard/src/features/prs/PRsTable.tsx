@@ -66,17 +66,25 @@ const columns = helper.columns([
   }),
   helper.accessor("state", {
     header: "State",
-    cell: ({ row }) => (
-      <span
-        className={`inline-block rounded px-1.5 py-0.5 text-[10.5px] font-medium border ${
-          row.original.state === "open"
-            ? "border-emerald-600/40 text-emerald-500 bg-emerald-500/10"
-            : "border-muted-foreground/30 text-muted-foreground bg-muted/20"
-        }`}
-      >
-        {row.original.state}
-      </span>
-    ),
+    cell: ({ row }) =>
+      row.original.stateIsFallback ? (
+        <span
+          className="text-[10.5px] text-muted-foreground italic"
+          title="state at last round, not refreshed since"
+        >
+          {row.original.state}
+        </span>
+      ) : (
+        <span
+          className={`inline-block rounded px-1.5 py-0.5 text-[10.5px] font-medium border ${
+            row.original.state === "open"
+              ? "border-emerald-600/40 text-emerald-500 bg-emerald-500/10"
+              : "border-muted-foreground/30 text-muted-foreground bg-muted/20"
+          }`}
+        >
+          {row.original.state}
+        </span>
+      ),
   }),
   helper.accessor((row) => ATTENTION_RANKS[row.headStatus.state], {
     id: "head_status",

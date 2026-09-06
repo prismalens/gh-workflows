@@ -162,3 +162,27 @@ export interface RoundAgentsResponse {
   rows: RoundAgentRow[];
   next_cursor: string | null;
 }
+
+/**
+ * One row of the `prs` table (worker/migrations/0007_prs.sql), from GET /api/prs
+ * (#136, #140, #141). Current state, decoupled from any round's snapshot.
+ */
+export interface PrRow {
+  repository: string;
+  pr_number: number;
+  state: string | null;
+  title: string | null;
+  author: string | null;
+  base_ref: string | null;
+  head_ref: string | null;
+  head_sha: string | null;
+  merged_at: string | null;
+  closed_at: string | null;
+  updated_at: string;
+  source: string;
+}
+
+export interface PrsResponse {
+  rows: PrRow[];
+  next_cursor: string | null;
+}

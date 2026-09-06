@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, changesUrl, httpApi, isRoundAgentRow, isRoundAgentsResponse, laneEventsUrl, lookupRound, MAX_LIMIT_WITH_BLOBS, REQUIRED_ROUND_AGENT_KEYS, roundAgentsUrl, runsUrl, type RunsQuery } from "./client";
+import { ApiError, changesUrl, httpApi, isRoundAgentRow, isRoundAgentsResponse, laneEventsUrl, lookupRound, MAX_LIMIT_WITH_BLOBS, prsUrl, REQUIRED_ROUND_AGENT_KEYS, roundAgentsUrl, runsUrl, type RunsQuery } from "./client";
 import { lookupPR } from "./queries";
 import { CSV_COLUMNS, roundsToCsv } from "./csv";
 import { parsePerModelUsage, parseRawResult, parseSubagentStats } from "./blobs";
@@ -28,6 +28,11 @@ describe("the read route is called only in the shapes worker/index.js accepts", 
       "/api/changes?limit=100&cursor=2026-08-31%7Cc1",
     );
     expect(changesUrl()).toBe("/api/changes");
+
+    expect(prsUrl({ limit: 1000, repository: "a/b", state: "open" })).toBe(
+      "/api/prs?limit=1000&repository=a%2Fb&state=open",
+    );
+    expect(prsUrl()).toBe("/api/prs");
   });
 });
 
@@ -304,6 +309,21 @@ describe("a 200 of the wrong shape is malformed, not a TypeError", () => {
     await expect(httpApi.fetchChanges()).rejects.toMatchObject({ kind: "malformed" });
   });
 
+  it("rejects a prs payload whose rows are missing required fields", async () => {
+    jsonBody({
+      rows: [
+        {
+          repository: "a/b",
+          pr_number: 1,
+          // Missing state, title, author, base_ref, head_ref, head_sha,
+          // merged_at, closed_at, updated_at, source.
+        },
+      ],
+      next_cursor: null,
+    });
+    await expect(httpApi.fetchPRs()).rejects.toMatchObject({ kind: "malformed" });
+  });
+
   it("accepts the shapes the Worker actually returns", async () => {
     jsonBody({ rows: [], next_cursor: null });
     await expect(httpApi.fetchRuns()).resolves.toMatchObject({ rows: [] });
@@ -327,6 +347,8 @@ describe("a 200 of the wrong shape is malformed, not a TypeError", () => {
     await expect(httpApi.fetchLaneEvents()).resolves.toMatchObject({ rows: [] });
     jsonBody({ rows: [], next_cursor: null });
     await expect(httpApi.fetchChanges()).resolves.toMatchObject({ rows: [] });
+    jsonBody({ rows: [], next_cursor: null });
+    await expect(httpApi.fetchPRs()).resolves.toMatchObject({ rows: [] });
   });
 });
 

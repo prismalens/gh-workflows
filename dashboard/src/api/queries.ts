@@ -6,6 +6,7 @@ import {
   MAX_LIMIT,
   MAX_LIMIT_WITH_BLOBS,
   type LaneEventsQuery,
+  type PrsQuery,
   type RunsQuery,
   type TelemetryApi,
 } from "./client";
@@ -181,6 +182,25 @@ export async function lookupPR(
 
   withBlobs.sort((a: RoundRow, b: RoundRow) => b.recorded_at.localeCompare(a.recorded_at));
   return { found: true, rounds: withBlobs };
+}
+
+export interface PRsFilters {
+  repository?: string;
+}
+
+/** One page of at most MAX_LIMIT prs rows, the worker's current-state table (#136, #141). */
+export function usePRsQuery(filters: PRsFilters = {}) {
+  const api = useApi();
+  const query: PrsQuery = {
+    limit: MAX_LIMIT,
+    ...(filters.repository ? { repository: filters.repository } : {}),
+  };
+
+  return useQuery({
+    queryKey: ["prs", query],
+    queryFn: () => api.fetchPRs(query),
+    staleTime: 30_000,
+  });
 }
 
 export function usePRDetailQuery(repository: string, prNumber: number | null) {
