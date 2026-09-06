@@ -140,7 +140,7 @@ if [ "$SKIP_RULESET" -eq 0 ]; then
       say "  UNKNOWN: rulesets query failed: $(head -1 "$RS_ERR")"
     fi
   else
-    EXISTING=$(printf '%s' "$RULESETS" | jq -r --arg n "$RULESET_NAME" '.[]|select(.name==$n)|.id' | head -1)
+    EXISTING=$(printf '%s' "$RULESETS" | jq -r --arg n "$RULESET_NAME" '.[]|select(.source_type=="Repository" and .name==$n)|.id' | head -1)
     CHECKS_JSON=$(printf '%s\n' "${REQUIRED_CHECKS[@]}" | jq -R '{context:.}' | jq -s '.')
     BODY=$(jq -n --arg name "$RULESET_NAME" --argjson checks "$CHECKS_JSON" '{
       name: $name, target: "branch", enforcement: "active",
@@ -161,6 +161,7 @@ if [ "$SKIP_RULESET" -eq 0 ]; then
           min_entries_to_merge_wait_minutes:5}},
         {type:"required_linear_history"}
       ]}')
+    POST_FAILED=0
     if [ -n "$EXISTING" ]; then
       # Never PUT over a live ruleset. PUT replaces wholesale, and this body is a
       # template: any rule the live one has and the template lacks would be silently
@@ -168,22 +169,93 @@ if [ "$SKIP_RULESET" -eq 0 ]; then
       # require_extra_approval_for_unattributed_changes, and on a contract with zero
       # required approvals thread resolution is the only thing enforcing a finding.
       say "  \"$RULESET_NAME\" exists (id $EXISTING). Not touching it."
-      LIVE=$(printf '%s' "$RULESETS" | jq --arg n "$RULESET_NAME" '.[]|select(.name==$n)')
+      LIVE=$(printf '%s' "$RULESETS" | jq --arg n "$RULESET_NAME" '.[]|select(.source_type=="Repository" and .name==$n)')
       LIVE_FULL=$(gh api "repos/$REPO/rulesets/$EXISTING" 2>/dev/null || printf '%s' "$LIVE")
       LIVE_TYPES=$(printf '%s' "$LIVE_FULL" | jq -r '[.rules[]?.type]|sort|join(",")')
       WANT_TYPES=$(printf '%s' "$BODY" | jq -r '[.rules[]?.type]|sort|join(",")')
       say "  live rules:  $LIVE_TYPES"
       say "  template:    $WANT_TYPES"
       [ "$LIVE_TYPES" = "$WANT_TYPES" ] && say "  rule types match" || say "  RULE TYPES DIFFER, review by hand"
+      PARAM_REPORT=$(jq -n --argjson live "${LIVE_FULL:-{\}}" --argjson want "$BODY" '
+        def normalize:
+          if type == "object" then
+            to_entries
+            | sort_by(.key)
+            | map({key: .key, value: (.value | normalize)})
+            | from_entries
+          elif type == "array" then
+            map(normalize)
+            | if length == 0 then
+                .
+              elif all(type == "object") then
+                sort_by([(.context // .id // .name // null), tojson])
+              elif all(type == "number" or type == "string" or type == "boolean") then
+                sort
+              else
+                sort_by(tojson)
+              end
+          else
+            .
+          end;
+
+        ($live.rules // []) as $lr
+        | ($want.rules // []) as $wr
+        | (([$lr[]?.type] + [$wr[]?.type]) | unique | sort) as $types
+        | [
+            $types[] as $t
+            | (first($lr[]? | select(.type == $t) | .parameters) // {}) as $lp
+            | (first($wr[]? | select(.type == $t) | .parameters) // {}) as $wp
+            | ($wp | keys) as $wkeys
+            | $wkeys[] as $k
+            | ($lp[$k] | normalize) as $lv
+            | ($wp[$k] | normalize) as $wv
+            | select($lv != $wv)
+            | "PARAM DIFFERS \($t).\($k): live=\($lv) template=\($wv)"
+          ] as $diffs
+        | [
+            $types[] as $t
+            | (first($lr[]? | select(.type == $t) | .parameters) // {}) as $lp
+            | (first($wr[]? | select(.type == $t) | .parameters) // {}) as $wp
+            | (($lp | keys) - ($wp | keys))[]
+          ] as $ignored
+        | { diffs: $diffs, has_ignored: ($ignored | length > 0) }
+      ')
+      DIFF_COUNT=$(printf '%s' "$PARAM_REPORT" | jq '.diffs | length')
+      if [ "$DIFF_COUNT" -eq 0 ]; then
+        say "  parameters match"
+      else
+        while IFS= read -r line; do
+          if [ -n "$line" ]; then
+            say "  $line"
+          fi
+        done < <(printf '%s' "$PARAM_REPORT" | jq -r '.diffs[]')
+      fi
+      if [ "$(printf '%s' "$PARAM_REPORT" | jq -r .has_ignored)" = "true" ]; then
+        say "  keys absent from template not compared"
+      fi
       LIVE_CHECKS=$(printf '%s' "$LIVE_FULL" | jq -r '[.rules[]?|select(.type=="required_status_checks")|.parameters.required_status_checks[]?.context]|sort|join(", ")')
       say "  live checks: ${LIVE_CHECKS:-none}"
       say "  want checks: ${REQUIRED_CHECKS[*]}"
       say "  to change it, edit the ruleset in the GitHub UI or PATCH the one field."
+    elif [ "$DRY" -eq 1 ]; then
+      say "  WOULD create \"$RULESET_NAME\" on the default branch"
     else
-      act "create \"$RULESET_NAME\" on the default branch" \
-        gh api -X POST "repos/$REPO/rulesets" --input - <<<"$BODY"
+      say "  create \"$RULESET_NAME\" on the default branch"
+      if ! gh api -X POST "repos/$REPO/rulesets" --input - >/dev/null 2>"$RS_ERR" <<<"$BODY"; then
+        POST_FAILED=1
+        if grep -q 'Upgrade to GitHub Pro' "$RS_ERR"; then
+          say "  UNAVAILABLE: private repo on a free plan; rulesets cannot exist here"
+        elif grep -qE '\b(403|404)\b|Not Found|Must have admin' "$RS_ERR"; then
+          say "  UNKNOWN: cannot create ruleset (no admin rights on this repo)"
+          say "  this is not evidence the repo is unprotected"
+        else
+          say "  UNKNOWN: ruleset creation failed: $(head -1 "$RS_ERR")"
+        fi
+      fi
     fi
-    say "  note: an org-level ruleset, if one exists, applies on top of this and cannot be relaxed here"
+    if [ "$POST_FAILED" -eq 0 ]; then
+      say "  note: an org-level ruleset, if one exists, applies on top of this and cannot be relaxed here"
+    fi
   fi
   say ""
 fi
