@@ -120,7 +120,7 @@ Both `.github/claude-review-defaults.yml` and `.github/claude-review.yml` share 
 | `review.default_model` | string | **Consumed** | Default model ID for review runs (`claude-sonnet-5` or `claude-opus-5`). |
 | `review.auto_pause_rounds` | integer | **Consumed** | Automatic review rounds limit before pausing (integer >= 1). |
 | `review.skip_authors` | list of strings | **Consumed** | Author logins whose automatic `pull_request` rounds are skipped entirely (no review, no verify, and no liveness comment is posted). |
-| `review.path_filters` | list of strings | **Consumed** | Glob patterns for high-risk files that escalate the review model to Opus. |
+| `review.path_filters` | list of strings | **Consumed** | Glob patterns for files excluded from review size metrics and agent diffs. Defaults to generated files and lockfiles (#105). Pure override if set. |
 | `review.path_instructions` | list of mappings | **Consumed** | Path-specific instructions for review agents; concatenates organization and repository entries (org first). Matched against changed files and staged in `.claude-path-instructions.md`. |
 | `findings.suppress_below` | string | *Schema-accepted, not yet wired* | Minimum severity threshold (`none`, `Minor`, `Major`, `Critical`). Emits warning if present. |
 | `findings.enable_ai_fix_prompt` | boolean | *Schema-accepted, not yet wired* | Whether to include AI fix prompt details. Emits warning if present. |
@@ -145,6 +145,41 @@ Effective review configuration:
 ```
 
 Security-critical controls remain workflow-only inputs and are never configurable in `.github/claude-review.yml` or `.github/claude-review-defaults.yml`: `--allowed-tools`, `id-token` write permissions, and fork handling.
+
+### Generated file filters and review size metrics (`review.path_filters`) (#105)
+
+Lockfiles and generated files (such as `package-lock.json`, vendored trees, and minified assets) distort review metrics and exhaust the review agent's turn budget while producing zero inline findings. To prevent mechanical files from polluting review size or triggering line caps, the review lane applies default path filters to exclude them from `changed_files` and `diff_lines` calculations before agent prompts and telemetry records are constructed.
+
+#### Built-in default path filters
+
+When `review.path_filters` is omitted, the workflow applies the following default patterns:
+- `package-lock.json`
+- `pnpm-lock.yaml`
+- `yarn.lock`
+- `Cargo.lock`
+- `poetry.lock`
+- `go.sum`
+- `dist/**`
+- `build/**`
+- `vendor/**`
+- `**/__snapshots__/**`
+- `*.min.js`
+- `*.min.css`
+- `**/node_modules/**`
+
+#### Override semantics
+
+`review.path_filters` follows strict **pure override** semantics:
+- Defining `review.path_filters` in a repository's `.github/claude-review.yml` (or in organization defaults) **replaces** the built-in defaults entirely rather than merging with them. Unlike `path_instructions`, `path_filters` does not concatenate.
+- To disable all filtering, set `review.path_filters: []`.
+
+#### Telemetry and logging
+
+- The filter step logs pattern and exclusion counts on every run:
+  ```text
+  path_filters: N patterns, K of M changed file(s) excluded
+  ```
+- Telemetry records both metrics: post-exclusion values (`changed_files`, `diff_lines`) and raw pre-exclusion values (`changed_files_raw`, `diff_lines_raw`), preserving visibility into diff sizes before filtering.
 
 ### Model escalation from changed files (#34)
 
