@@ -280,6 +280,19 @@ Returns paginated pull request state records from `prs`.
 #### Columns
 
 - `repository`, `pr_number`, `state`, `title`, `author`, `base_ref`, `head_ref`, `head_sha`, `merged_at`, `closed_at`, `updated_at`, `source`.
+### `GET /api/accounted-runs`
+
+Programmatic read route for the scheduled telemetry reconciler (#87). Returns the distinct `run_id` values appearing in either `usage_records` or `lane_events` inside the requested window.
+
+#### Authentication
+
+Authenticated via `Authorization: Bearer <REVIEW_TELEMETRY_TOKEN>`, using the same shared secret as telemetry ingest.
+
+#### Query Parameters
+
+- `since` (required): ISO 8601 UTC timestamp lower bound on `recorded_at` (`recorded_at >= ?`).
+- `until` (required): ISO 8601 UTC timestamp upper bound on `recorded_at` (`recorded_at <= ?`).
+- Capped at a maximum window of 30 days.
 
 #### Response Shape
 
@@ -302,6 +315,9 @@ Returns paginated pull request state records from `prs`.
     }
   ],
   "next_cursor": "2026-09-06T12:00:00.000Z|prismalens/gh-workflows|136"
+  "since": "2026-08-30T00:00:00Z",
+  "until": "2026-08-31T02:00:00Z",
+  "run_ids": [1001, 1002, 1003]
 }
 ```
 
