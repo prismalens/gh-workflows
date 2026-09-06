@@ -85,6 +85,7 @@ const JSON_OBJECT_FIELDS = ["config_resolution"];
 const VALID_LANE_EVENT_REASONS = new Set([
   "no-token",
   "auto-paused",
+  "paused-by-request", // #124, finding 3944010353
   "fork-head",
   "skip-author",
 ]);
@@ -106,6 +107,20 @@ const CANARY_STRING_FIELDS = [
   "recorded_at",
   "run_url",
   "lane_version",
+];
+
+const VALID_PR_STATES = new Set(["open", "closed", "merged"]);
+const VALID_PR_SOURCES = new Set(["round", "hook", "reconciler"]);
+
+const PR_STRING_FIELDS = [
+  "title",
+  "author",
+  "base_ref",
+  "head_ref",
+  "head_sha",
+  "merged_at",
+  "closed_at",
+  "updated_at", // #136, finding 3944010389
 ];
 
 function truncateString(val, maxLen = 512) {
@@ -790,6 +805,231 @@ async function handleRoundAgents(url, env) {
   );
 }
 
+async function handlePrs(url, env) {
+  const searchParams = url.searchParams;
+  let limit = 100;
+  const limitParam = searchParams.get("limit");
+  if (limitParam !== null) {
+    if (!/^[1-9]\d*$/.test(limitParam)) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const parsedLimit = Number(limitParam);
+    if (parsedLimit > 1000) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    limit = parsedLimit;
+  }
+
+  const conditions = [];
+  const bindings = [];
+
+  const repository = searchParams.get("repository");
+  if (repository !== null) {
+    conditions.push("repository = ?");
+    bindings.push(repository);
+  }
+
+  const state = searchParams.get("state");
+  if (state !== null) {
+    conditions.push("state = ?");
+    bindings.push(state);
+  }
+
+  const cursor = searchParams.get("cursor");
+  if (cursor !== null) {
+    const firstPipe = cursor.indexOf("|");
+    if (firstPipe === -1) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const lastPipe = cursor.lastIndexOf("|");
+    if (firstPipe === lastPipe) {
+      if (repository === null) {
+        // Two-part cursor requires repository filter to be valid (#136, finding 3944010384).
+        return new Response(JSON.stringify({ error: "invalid cursor" }), {
+          status: 400,
+          headers: READ_HEADERS,
+        });
+      }
+      const cursorUpdatedAt = cursor.slice(0, firstPipe);
+      const cursorPrNumber = cursor.slice(firstPipe + 1);
+      if (!cursorUpdatedAt || !cursorPrNumber || !/^\d+$/.test(cursorPrNumber)) {
+        return new Response(JSON.stringify({ error: "invalid cursor" }), {
+          status: 400,
+          headers: READ_HEADERS,
+        });
+      }
+      conditions.push("(updated_at < ? OR (updated_at = ? AND pr_number < ?))");
+      bindings.push(cursorUpdatedAt, cursorUpdatedAt, Number(cursorPrNumber));
+    } else {
+      const cursorUpdatedAt = cursor.slice(0, firstPipe);
+      const cursorRepo = cursor.slice(firstPipe + 1, lastPipe);
+      const cursorPrNumber = cursor.slice(lastPipe + 1);
+      if (!cursorUpdatedAt || !cursorRepo || !cursorPrNumber || !/^\d+$/.test(cursorPrNumber)) {
+        return new Response(JSON.stringify({ error: "invalid cursor" }), {
+          status: 400,
+          headers: READ_HEADERS,
+        });
+      }
+      conditions.push("(updated_at < ? OR (updated_at = ? AND (repository < ? OR (repository = ? AND pr_number < ?))))");
+      bindings.push(cursorUpdatedAt, cursorUpdatedAt, cursorRepo, cursorRepo, Number(cursorPrNumber));
+    }
+  }
+
+  let query = `SELECT
+    repository,
+    pr_number,
+    state,
+    title,
+    author,
+    base_ref,
+    head_ref,
+    head_sha,
+    merged_at,
+    closed_at,
+    updated_at,
+    source
+  FROM prs`;
+
+  if (conditions.length > 0) {
+    query += ` WHERE ${conditions.join(" AND ")}`;
+  }
+
+  query += ` ORDER BY updated_at DESC, repository DESC, pr_number DESC LIMIT ?`;
+  bindings.push(limit);
+
+  const { results } = await env.DB.prepare(query).bind(...bindings).all();
+  const rows = results ?? [];
+  const nextCursor =
+    rows.length === limit && rows.length > 0
+      ? `${rows[rows.length - 1].updated_at}|${rows[rows.length - 1].repository}|${rows[rows.length - 1].pr_number}`
+      : null;
+
+  return new Response(
+    JSON.stringify({
+      rows,
+      next_cursor: nextCursor,
+    }),
+    { headers: READ_HEADERS }
+  );
+}
+
+// Programmatic read route for the telemetry reconciler (#87).
+// Authenticates with REVIEW_TELEMETRY_TOKEN and returns distinct run_ids across
+// both usage_records and lane_events in the requested window (capped at 30 days).
+async function handleAccountedRuns(request, url, env) {
+  const token = env?.REVIEW_TELEMETRY_TOKEN;
+  const authHeader = request.headers.get("authorization");
+  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), {
+      status: 401,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const repository = url.searchParams.get("repository");
+  if (repository === null || repository === "") {
+    return new Response(JSON.stringify({ error: "missing repository" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const since = url.searchParams.get("since");
+  if (since === null || since === "") {
+    return new Response(JSON.stringify({ error: "missing since" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const until = url.searchParams.get("until");
+  if (until === null || until === "") {
+    return new Response(JSON.stringify({ error: "missing until" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const isoUtcPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]00(?::?00)?)$/;
+  if (!isoUtcPattern.test(since) || Number.isNaN(new Date(since).getTime())) {
+    return new Response(JSON.stringify({ error: "invalid since" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  if (!isoUtcPattern.test(until) || Number.isNaN(new Date(until).getTime())) {
+    return new Response(JSON.stringify({ error: "invalid until" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const sinceDate = new Date(since);
+  const untilDate = new Date(until);
+  if (untilDate.getTime() < sinceDate.getTime()) {
+    return new Response(JSON.stringify({ error: "invalid window: until precedes since" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const MAX_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+  if (untilDate.getTime() - sinceDate.getTime() > MAX_WINDOW_MS) {
+    return new Response(JSON.stringify({ error: "window exceeds 30 days" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  // Normalize timestamp bounds to canonical ISO string for text comparison in D1 (#87, finding 3944010386).
+  const sinceIso = sinceDate.toISOString();
+  const untilIso = untilDate.toISOString();
+
+  const query = `SELECT run_id FROM usage_records WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
+UNION
+SELECT run_id FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
+ORDER BY run_id ASC`;
+
+  let results;
+  try {
+    const res = await env.DB.prepare(query).bind(repository, sinceIso, untilIso, repository, sinceIso, untilIso).all();
+    results = res?.results ?? [];
+  } catch {
+    return new Response(JSON.stringify({ error: "database error" }), {
+      status: 500,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const runIds = Array.from(
+    new Set(
+      results
+        .map((r) => Number(r.run_id))
+        .filter((id) => Number.isInteger(id))
+    )
+  ).sort((a, b) => a - b);
+
+  return new Response(
+    JSON.stringify({
+      repository,
+      since,
+      until,
+      run_ids: runIds,
+    }),
+    { headers: READ_HEADERS }
+  );
+}
+
 async function handleIngest(request, env) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
@@ -1249,6 +1489,158 @@ async function handleIngest(request, env) {
   });
 }
 
+async function handlePrState(request, env) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+
+  const token = env?.REVIEW_TELEMETRY_TOKEN;
+  const authHeader = request.headers.get("authorization");
+  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
+    return new Response(null, { status: 401 });
+  }
+
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null) {
+    const length = parseInt(contentLength, 10);
+    if (Number.isNaN(length) || length > MAX_INGEST_BYTES) {
+      return new Response(null, { status: 413 });
+    }
+  }
+
+  let rawBody;
+  try {
+    rawBody = await readBoundedText(request, MAX_INGEST_BYTES);
+  } catch {
+    return new Response(null, { status: 400 });
+  }
+
+  if (rawBody === null) {
+    return new Response(null, { status: 413 });
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {
+    return new Response(null, { status: 400 });
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return new Response(null, { status: 400 });
+  }
+
+  if (typeof payload.repository !== "string" || payload.repository.trim().length === 0) {
+    return new Response(JSON.stringify({ error: "missing or invalid repository" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (typeof payload.pr_number !== "number" || !Number.isInteger(payload.pr_number)) {
+    return new Response(JSON.stringify({ error: "missing or invalid pr_number" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (typeof payload.source !== "string" || !VALID_PR_SOURCES.has(payload.source)) {
+    return new Response(JSON.stringify({ error: "invalid source" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (payload.state !== undefined) {
+    if (typeof payload.state !== "string" || !VALID_PR_STATES.has(payload.state)) {
+      return new Response(JSON.stringify({ error: "invalid state" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
+  for (const field of PR_STRING_FIELDS) {
+    const val = payload[field];
+    if (val !== undefined && val !== null && typeof val !== "string") {
+      return new Response(JSON.stringify({ error: "invalid field types" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
+  // Stale-write protection keys on when event occurred, not Worker receipt time (#136, finding 3944010389).
+  let updatedAt;
+  if (payload.updated_at !== undefined && payload.updated_at !== null) {
+    if (typeof payload.updated_at !== "string" || Number.isNaN(new Date(payload.updated_at).getTime())) {
+      return new Response(JSON.stringify({ error: "invalid updated_at" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    updatedAt = new Date(payload.updated_at).toISOString();
+  } else {
+    updatedAt = new Date().toISOString();
+  }
+
+  try {
+    const existing = await env.DB.prepare(
+      "SELECT updated_at FROM prs WHERE repository = ? AND pr_number = ?"
+    ).bind(payload.repository, payload.pr_number).first();
+
+    if (existing && existing.updated_at && existing.updated_at > updatedAt) {
+      return new Response(null, { status: 204 });
+    }
+
+    await env.DB.prepare(
+      `INSERT INTO prs (
+        repository,
+        pr_number,
+        state,
+        title,
+        author,
+        base_ref,
+        head_ref,
+        head_sha,
+        merged_at,
+        closed_at,
+        updated_at,
+        source
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+      ON CONFLICT(repository, pr_number) DO UPDATE SET
+        state = COALESCE(excluded.state, prs.state),
+        title = COALESCE(excluded.title, prs.title),
+        author = COALESCE(excluded.author, prs.author),
+        base_ref = COALESCE(excluded.base_ref, prs.base_ref),
+        head_ref = COALESCE(excluded.head_ref, prs.head_ref),
+        head_sha = COALESCE(excluded.head_sha, prs.head_sha),
+        merged_at = COALESCE(excluded.merged_at, prs.merged_at),
+        closed_at = COALESCE(excluded.closed_at, prs.closed_at),
+        updated_at = excluded.updated_at,
+        source = excluded.source
+      WHERE excluded.updated_at >= prs.updated_at`
+    ).bind(
+      truncateString(payload.repository, 512),
+      payload.pr_number,
+      payload.state ?? null,
+      truncateString(payload.title, 512),
+      truncateString(payload.author, 512),
+      truncateString(payload.base_ref, 512),
+      truncateString(payload.head_ref, 512),
+      truncateString(payload.head_sha, 512),
+      truncateString(payload.merged_at, 512),
+      truncateString(payload.closed_at, 512),
+      updatedAt,
+      payload.source
+    ).run();
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+
+  return new Response(null, { status: 204 });
+}
+
 async function handleGetChanges(url, env) {
   const searchParams = url.searchParams;
   let limit = 100;
@@ -1484,12 +1876,24 @@ export default {
       return handleIngest(request, env);
     }
 
+    if (method === "POST" && pathname === "/pr-state") {
+      return handlePrState(request, env);
+    }
+
+    if (
+      method === "GET" &&
+      (pathname === "/api/accounted-runs" || pathname === "/api/accounted-runs/")
+    ) {
+      return handleAccountedRuns(request, url, env);
+    }
+
     if (
       method === "GET" &&
       (pathname === "/api/summary" ||
         pathname === "/api/runs" ||
         pathname === "/api/lane-events" ||
-        pathname === "/api/round-agents")
+        pathname === "/api/round-agents" ||
+        pathname === "/api/prs")
     ) {
       const authError = await verifyAccess(request, env);
       if (authError) {
@@ -1506,6 +1910,9 @@ export default {
       }
       if (pathname === "/api/round-agents") {
         return handleRoundAgents(url, env);
+      }
+      if (pathname === "/api/prs") {
+        return handlePrs(url, env);
       }
     }
 

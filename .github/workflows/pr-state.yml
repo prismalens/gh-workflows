@@ -1,0 +1,117 @@
+name: PR State
+
+# pull_request_target, not pull_request, because a fork PR must still report its state and
+# pull_request withholds secrets from fork code. It runs no repository code and checks
+# nothing out, which is what makes that safe here. That choice is otherwise alarming.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, closed, edited, ready_for_review, converted_to_draft]
+  workflow_call:
+    secrets:
+      REVIEW_TELEMETRY_TOKEN:
+        description: "Review telemetry token"
+        required: false
+      REVIEW_TELEMETRY_URL:
+        description: "Review telemetry URL"
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-state:
+    name: Record PR state
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post PR state
+        env:
+          INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL || vars.PR_STATE_URL || 'https://assayer.sfun.cloud/pr-state' }}
+          INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_STATE: ${{ github.event.pull_request.state }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
+          PR_CLOSED_AT: ${{ github.event.pull_request.closed_at }}
+          PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${INGEST_TOKEN:-}" ]; then
+            echo "::warning::pr-state: REVIEW_TELEMETRY_TOKEN is not set; skipping PR state reporting."
+            exit 0
+          fi
+
+          case "$INGEST_URL" in
+            https://*) ;;
+            *)
+              echo "::warning::pr-state: INGEST_URL is not https, so the token was not sent and PR state was not recorded."
+              exit 0
+              ;;
+          esac
+
+          if [ "$PR_MERGED" = "true" ]; then
+            STATE="merged"
+          elif [ "$PR_STATE" = "closed" ]; then
+            STATE="closed"
+          else
+            STATE="open"
+          fi
+
+          payload=$(jq -nc \
+            --arg repo "$REPOSITORY" \
+            --argjson pr_number "$PR_NUMBER" \
+            --arg state "$STATE" \
+            --arg title "${PR_TITLE:-}" \
+            --arg author "${PR_AUTHOR:-}" \
+            --arg base_ref "${PR_BASE_REF:-}" \
+            --arg head_ref "${PR_HEAD_REF:-}" \
+            --arg head_sha "${PR_HEAD_SHA:-}" \
+            --arg merged_at "${PR_MERGED_AT:-}" \
+            --arg closed_at "${PR_CLOSED_AT:-}" \
+            --arg updated_at "${PR_UPDATED_AT:-}" \
+            '{
+              repository: $repo,
+              pr_number: $pr_number,
+              state: $state,
+              source: "hook"
+            }
+            + (if $title != "" then {title: $title} else {} end)
+            + (if $author != "" then {author: $author} else {} end)
+            + (if $base_ref != "" then {base_ref: $base_ref} else {} end)
+            + (if $head_ref != "" then {head_ref: $head_ref} else {} end)
+            + (if $head_sha != "" then {head_sha: $head_sha} else {} end)
+            + (if $merged_at != "" and $merged_at != "null" then {merged_at: $merged_at} else {} end)
+            + (if $closed_at != "" and $closed_at != "null" then {closed_at: $closed_at} else {} end)
+            + (if $updated_at != "" and $updated_at != "null" then {updated_at: $updated_at} else {} end)')
+
+          hdr="$(mktemp)"
+          trap 'rm -f "$hdr"' EXIT
+          umask 077
+          printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+
+          code=$(printf '%s' "$payload" | curl -sS -m 10 \
+            --proto '=https' \
+            -o /dev/null -w '%{http_code}' \
+            -X POST "$INGEST_URL" \
+            -H "@$hdr" \
+            --data-binary @-) || {
+              echo "::warning::pr-state: the POST did not complete; delivery of PR state is unconfirmed."
+              exit 0
+            }
+
+          case "$code" in
+            2??) ;;
+            *)
+              echo "::warning::pr-state: ingest returned HTTP $code; delivery of PR state is unconfirmed."
+              exit 0
+              ;;
+          esac
+
+          echo "Recorded PR state (HTTP $code)."

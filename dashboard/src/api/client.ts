@@ -3,6 +3,8 @@ import type {
   ChangesResponse,
   LaneEventRow,
   LaneEventsResponse,
+  RoundAgentRow,
+  RoundAgentsResponse,
   RoundRow,
   RunsResponse,
   SummaryResponse,
@@ -90,6 +92,11 @@ export function changesUrl(query: ChangesQuery = {}): string {
   }
   const qs = params.toString();
   return qs ? `/api/changes?${qs}` : "/api/changes";
+}
+
+export function roundAgentsUrl(sessionId: string): string {
+  const params = new URLSearchParams({ session_id: sessionId });
+  return `/api/round-agents?${params.toString()}`;
 }
 
 async function getJson<T>(path: string, validate: (value: unknown) => value is T): Promise<T> {
@@ -328,11 +335,63 @@ export function isChangesResponse(value: unknown): value is ChangesResponse {
   );
 }
 
+export const REQUIRED_ROUND_AGENT_KEYS = [
+  "session_id",
+  "agent_id",
+  "subagent_type",
+  "spawn_depth",
+  "status",
+  "model",
+  "input_tokens",
+  "output_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "duration_ms",
+  "tool_uses",
+  "tool_uses_by_name",
+  "file_paths",
+] as const;
+
+export function isRoundAgentRow(row: unknown): row is RoundAgentRow {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  return (
+    REQUIRED_ROUND_AGENT_KEYS.every((key) => key in r) &&
+    typeof r.session_id === "string" &&
+    typeof r.agent_id === "string" &&
+    (r.subagent_type === null || typeof r.subagent_type === "string") &&
+    (r.spawn_depth === null || typeof r.spawn_depth === "number") &&
+    (r.status === null || typeof r.status === "string") &&
+    (r.model === null || typeof r.model === "string") &&
+    (r.input_tokens === null || typeof r.input_tokens === "number") &&
+    (r.output_tokens === null || typeof r.output_tokens === "number") &&
+    (r.cache_read_input_tokens === null || typeof r.cache_read_input_tokens === "number") &&
+    (r.cache_creation_input_tokens === null || typeof r.cache_creation_input_tokens === "number") &&
+    (r.duration_ms === null || typeof r.duration_ms === "number") &&
+    (r.tool_uses === null || typeof r.tool_uses === "number") &&
+    (r.tool_uses_by_name === null || typeof r.tool_uses_by_name === "string") &&
+    (r.file_paths === null || typeof r.file_paths === "string")
+  );
+}
+
+export function isRoundAgentsResponse(value: unknown): value is RoundAgentsResponse {
+  if (!value || typeof value !== "object") return false;
+  const r = value as Record<string, unknown>;
+  if (!("rows" in r) || !("next_cursor" in r)) return false;
+  const { rows, next_cursor } = r;
+  return (
+    Array.isArray(rows) &&
+    rows.every(isRoundAgentRow) &&
+    (next_cursor === null || typeof next_cursor === "string")
+  );
+}
+
 export interface TelemetryApi {
   fetchRuns(query?: RunsQuery): Promise<RunsResponse>;
   fetchSummary(): Promise<SummaryResponse>;
   fetchLaneEvents(query?: LaneEventsQuery): Promise<LaneEventsResponse>;
   fetchChanges(query?: ChangesQuery): Promise<ChangesResponse>;
+  fetchRoundAgents(sessionId: string): Promise<RoundAgentsResponse>;
   /** Set only by the fixture table, so the UI can say the rounds are invented. */
   readonly fixtures?: boolean;
 }
@@ -342,6 +401,8 @@ export const httpApi: TelemetryApi = {
   fetchSummary: () => getJson("/api/summary", isSummaryResponse),
   fetchLaneEvents: (query = {}) => getJson(laneEventsUrl(query), isLaneEventsResponse),
   fetchChanges: (query = {}) => getJson(changesUrl(query), isChangesResponse),
+  fetchRoundAgents: (sessionId: string) =>
+    getJson(roundAgentsUrl(sessionId), isRoundAgentsResponse),
 };
 
 /**

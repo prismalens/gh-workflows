@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { ROUND_SCAN_PAGES } from "@/api/client";
 import { MAX_LIMIT_WITH_BLOBS } from "@/api/client";
-import { useRoundQuery } from "@/api/queries";
+import { useRoundAgentsQuery, useRoundQuery, useRoundsQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import {
   ResolutionPanel,
   TimingPanel,
   TokensPanel,
+  WindowComparisonPanel,
 } from "@/features/rounds/panels";
 import { rootRoute } from "./root";
 
@@ -37,6 +38,14 @@ function RoundDetailPage() {
   const { sessionId } = roundDetailRoute.useParams();
   const { at } = roundDetailRoute.useSearch();
   const round = useRoundQuery(sessionId, at);
+  const agents = useRoundAgentsQuery(sessionId);
+  const windowRounds = useRoundsQuery(
+    {
+      range: "rolling",
+      repository: round.data?.found ? round.data.row.repository : undefined,
+    },
+    new Date(),
+  );
 
   return (
     <div className="flex flex-col gap-5">
@@ -66,7 +75,14 @@ function RoundDetailPage() {
       ) : (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <ResolutionPanel row={round.data.row} />
-          <TimingPanel row={round.data.row} />
+          {agents.isPending ? (
+            <LoadingRows rows={2} label="Loading subagents" />
+          ) : agents.isError ? (
+            <QueryError error={agents.error} title="Could not load subagents" />
+          ) : (
+            <TimingPanel row={round.data.row} agents={agents.data.rows} />
+          )}
+          <WindowComparisonPanel row={round.data.row} windowRounds={windowRounds.data?.rows} />
           <FanOutPanel row={round.data.row} />
           <TokensPanel row={round.data.row} />
           <DenialsPanel row={round.data.row} />

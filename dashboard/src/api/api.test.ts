@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, changesUrl, httpApi, laneEventsUrl, lookupRound, MAX_LIMIT_WITH_BLOBS, runsUrl, type RunsQuery } from "./client";
+import { ApiError, changesUrl, httpApi, isRoundAgentRow, isRoundAgentsResponse, laneEventsUrl, lookupRound, MAX_LIMIT_WITH_BLOBS, REQUIRED_ROUND_AGENT_KEYS, roundAgentsUrl, runsUrl, type RunsQuery } from "./client";
 import { lookupPR } from "./queries";
 import { CSV_COLUMNS, roundsToCsv } from "./csv";
 import { parsePerModelUsage, parseRawResult, parseSubagentStats } from "./blobs";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
-import type { LaneEventRow } from "./types";
+import type { LaneEventRow, RoundAgentRow } from "./types";
 
 const rows = makeRounds({ count: 64 });
 const api = makeFixtureApi(rows);
@@ -525,5 +525,126 @@ describe("lookupPR pages through cursors and validates PR numbers (findings 3943
     }
     expect(cursorsSeen).toContain(undefined);
     expect(cursorsSeen).toContain("page-2-cursor");
+  });
+});
+
+describe("round agents API (#131, #89)", () => {
+  it("formats round agents URL with session_id parameter", () => {
+    expect(roundAgentsUrl("test-session-123")).toBe("/api/round-agents?session_id=test-session-123");
+  });
+
+  it("fetches round agents for a session from the fixture API", async () => {
+    const mockAgent: RoundAgentRow = {
+      session_id: "session-abc",
+      agent_id: "agent-01",
+      subagent_type: "general-purpose",
+      spawn_depth: 1,
+      status: "completed",
+      model: "claude-sonnet-4-6",
+      input_tokens: 1000,
+      output_tokens: 500,
+      cache_read_input_tokens: 2000,
+      cache_creation_input_tokens: 300,
+      duration_ms: 45000,
+      tool_uses: 5,
+      tool_uses_by_name: JSON.stringify({ ReadFile: 3, EditFile: 2 }),
+      file_paths: JSON.stringify(["src/index.ts"]),
+    };
+    const agentApi = makeFixtureApi([], [], [], [mockAgent]);
+    const response = await agentApi.fetchRoundAgents("session-abc");
+    expect(response.rows).toHaveLength(1);
+    expect(response.rows[0].agent_id).toBe("agent-01");
+    expect(response.rows[0].subagent_type).toBe("general-purpose");
+
+    const emptyResponse = await agentApi.fetchRoundAgents("session-other");
+    expect(emptyResponse.rows).toHaveLength(0);
+  });
+
+  it("validates all 14 declared RoundAgentRow fields and rejects invalid types (#131, finding 3944010369)", () => {
+    const validRow = {
+      session_id: "session-abc",
+      agent_id: "agent-01",
+      subagent_type: "general-purpose",
+      spawn_depth: 1,
+      status: "completed",
+      model: "claude-sonnet-4-6",
+      input_tokens: 1000,
+      output_tokens: 500,
+      cache_read_input_tokens: 2000,
+      cache_creation_input_tokens: 300,
+      duration_ms: 45000,
+      tool_uses: 5,
+      tool_uses_by_name: JSON.stringify({ ReadFile: 3 }),
+      file_paths: JSON.stringify(["src/index.ts"]),
+    };
+    expect(isRoundAgentRow(validRow)).toBe(true);
+
+    // All nullable fields set to null is valid
+    const allNullsRow = {
+      session_id: "session-abc",
+      agent_id: "agent-01",
+      subagent_type: null,
+      spawn_depth: null,
+      status: null,
+      model: null,
+      input_tokens: null,
+      output_tokens: null,
+      cache_read_input_tokens: null,
+      cache_creation_input_tokens: null,
+      duration_ms: null,
+      tool_uses: null,
+      tool_uses_by_name: null,
+      file_paths: null,
+    };
+    expect(isRoundAgentRow(allNullsRow)).toBe(true);
+
+    // Missing any required key is invalid
+    for (const key of REQUIRED_ROUND_AGENT_KEYS) {
+      const missingKeyRow: Record<string, unknown> = { ...validRow };
+      delete missingKeyRow[key];
+      expect(isRoundAgentRow(missingKeyRow)).toBe(false);
+    }
+
+    // Wrong type for string field is invalid
+    expect(isRoundAgentRow({ ...validRow, session_id: 123 })).toBe(false);
+    expect(isRoundAgentRow({ ...validRow, subagent_type: 123 })).toBe(false);
+
+    // Wrong type for number field is invalid
+    expect(isRoundAgentRow({ ...validRow, input_tokens: "1000" })).toBe(false);
+    expect(isRoundAgentRow({ ...validRow, duration_ms: "45000" })).toBe(false);
+  });
+
+  it("requires next_cursor to be present as string or null in RoundAgentsResponse (#131, finding 3944010369)", () => {
+    const validRow = {
+      session_id: "session-abc",
+      agent_id: "agent-01",
+      subagent_type: null,
+      spawn_depth: null,
+      status: null,
+      model: null,
+      input_tokens: null,
+      output_tokens: null,
+      cache_read_input_tokens: null,
+      cache_creation_input_tokens: null,
+      duration_ms: null,
+      tool_uses: null,
+      tool_uses_by_name: null,
+      file_paths: null,
+    };
+
+    // next_cursor: null is valid
+    expect(isRoundAgentsResponse({ rows: [validRow], next_cursor: null })).toBe(true);
+
+    // next_cursor: string is valid
+    expect(isRoundAgentsResponse({ rows: [validRow], next_cursor: "cursor-123" })).toBe(true);
+
+    // Missing next_cursor is invalid
+    expect(isRoundAgentsResponse({ rows: [validRow] })).toBe(false);
+
+    // next_cursor: undefined is invalid
+    expect(isRoundAgentsResponse({ rows: [validRow], next_cursor: undefined })).toBe(false);
+
+    // next_cursor: number is invalid
+    expect(isRoundAgentsResponse({ rows: [validRow], next_cursor: 123 })).toBe(false);
   });
 });

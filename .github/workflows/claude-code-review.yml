@@ -99,7 +99,9 @@ jobs:
             github.event_name == 'issue_comment' && github.event.issue.pull_request &&
             github.event.issue.state == 'open' && (
               contains(github.event.comment.body, '@claude review') ||
-              contains(github.event.comment.body, '@claude full review')
+              contains(github.event.comment.body, '@claude full review') ||
+              contains(github.event.comment.body, '@claude pause') ||
+              contains(github.event.comment.body, '@claude resume')
             )
           ) || (
             github.event_name == 'pull_request_review_comment' &&
@@ -144,9 +146,12 @@ jobs:
         id: summon
         if: steps.admit.outputs.admitted == 'true' || github.event_name == 'pull_request'
         env:
+          # SECURITY INVARIANT: mapped to pinned literals from contains(); never extracted from body (#124).
           SUMMON: >-
             ${{ github.event_name == 'pull_request' && 'none'
-              || (contains(github.event.comment.body, '@claude full review') && 'full' || 'incremental') }}
+              || (contains(github.event.comment.body, '@claude pause') && 'pause'
+              || (contains(github.event.comment.body, '@claude resume') && 'resume'
+              || (contains(github.event.comment.body, '@claude full review') && 'full' || 'incremental'))) }}
         run: echo "summon=$SUMMON" >> "$GITHUB_OUTPUT"
 
       - name: Fetch PR metadata and validate origin
@@ -295,6 +300,7 @@ jobs:
           raw_skip_authors = os.environ.get("INPUT_SKIP_AUTHORS", "dependabot[bot]")
           skip_authors = ",".join(x.strip() for x in raw_skip_authors.split(",") if x.strip())
           path_filters = []
+          escalation_paths = []
           path_instructions = []
           # No workflow input backs this: it is an experiment handle read from the repo
           # config only, and absent means control. Story: #47 amendment.
@@ -304,6 +310,7 @@ jobs:
               "default_model": "workflow default",
               "auto_pause_rounds": "workflow default",
               "skip_authors": "workflow default",
+              "escalation_paths": "workflow default",
               "path_filters": "workflow default",
               "path_instructions": "workflow default",
               "variant": "control",
@@ -317,6 +324,7 @@ jobs:
               "default_model",
               "auto_pause_rounds",
               "skip_authors",
+              "escalation_paths",
               "path_filters",
               "path_instructions",
               "variant",
@@ -387,6 +395,11 @@ jobs:
                           filters = review["path_filters"]
                           if not isinstance(filters, list) or not all(isinstance(x, str) for x in filters):
                               errors.append(f"Invalid value for 'review.path_filters' in {filename}: expected list of strings")
+
+                      if "escalation_paths" in review:
+                          esc = review["escalation_paths"]
+                          if not isinstance(esc, list) or not all(isinstance(x, str) for x in esc):
+                              errors.append(f"Invalid value for 'review.escalation_paths' in {filename}: expected list of strings")
 
                       if "variant" in review:
                           variant_value = review["variant"]
@@ -541,6 +554,10 @@ jobs:
                                   path_filters = review["path_filters"]
                                   sources["path_filters"] = "org defaults"
                                   org_consumed.append(f"review.path_filters={path_filters}")
+                              if "escalation_paths" in review:
+                                  escalation_paths = review["escalation_paths"]
+                                  sources["escalation_paths"] = "org defaults"
+                                  org_consumed.append(f"review.escalation_paths={escalation_paths}")
                               # variant is an experiment handle for THIS repo's own comparison,
                               # never an org-wide default. Story: #47 amendment.
                               if "variant" in review:
@@ -631,6 +648,10 @@ jobs:
                                   path_filters = review["path_filters"]
                                   sources["path_filters"] = "repo config"
                                   consumed.append(f"review.path_filters={path_filters}")
+                              if "escalation_paths" in review:
+                                  escalation_paths = review["escalation_paths"]
+                                  sources["escalation_paths"] = "repo config"
+                                  consumed.append(f"review.escalation_paths={escalation_paths}")
                               if "variant" in review:
                                   variant = review["variant"]
                                   sources["variant"] = "repo config"
@@ -670,6 +691,7 @@ jobs:
           resolved_config = {
               "auto_pause_rounds": auto_pause_rounds,
               "default_model": default_model,
+              "escalation_paths": escalation_paths,
               "path_filters": path_filters,
               "path_instructions": path_instructions,
               "skip_authors": skip_authors,
@@ -682,6 +704,7 @@ jobs:
           print(f"  review.default_model: {default_model} (source: {sources['default_model']})")
           print(f"  review.auto_pause_rounds: {auto_pause_rounds} (source: {sources['auto_pause_rounds']})")
           print(f"  review.skip_authors: {skip_authors} (source: {sources['skip_authors']})")
+          print(f"  review.escalation_paths: {escalation_paths} (source: {sources['escalation_paths']})")
           print(f"  review.path_filters: {path_filters} (source: {sources['path_filters']})")
           print(f"  review.path_instructions: {len(path_instructions)} entries (source: {sources['path_instructions']})")
           print(f"  review.variant: {variant or '(control)'} (source: {sources['variant']})")
@@ -693,6 +716,7 @@ jobs:
                   f.write(f"default_model={default_model}\n")
                   f.write(f"auto_pause_rounds={auto_pause_rounds}\n")
                   f.write(f"skip_authors={skip_authors}\n")
+                  f.write(f"escalation_paths={json.dumps(escalation_paths)}\n")
                   f.write(f"path_filters={json.dumps(path_filters)}\n")
                   f.write(f"path_instructions={json.dumps(path_instructions)}\n")
                   f.write(f"config_resolution={config_resolution}\n")
@@ -837,6 +861,13 @@ jobs:
           debounce_minutes="$(as_int "${DEBOUNCE_MINUTES:-0}")"
           diff_lines_int="$(as_int "${DIFF_LINES:-0}")"
 
+          # Explicit pause summon (#124): stops rounds and records requested pause.
+          if [ "$SUMMON" = "pause" ]; then
+            echo "pull request paused by explicit request (@claude pause)"
+            emit skip paused-by-request
+            exit 0
+          fi
+
           # Diff-size floor (#114). Automatic rounds only: a summon is a person asking, and
           # a person asking for a review on a one-line change gets one.
           if [ "$EVENT_NAME" = "pull_request" ] && [ "$min_diff_lines" -gt 0 ] \
@@ -872,10 +903,18 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request" ]; then
             # `// empty`, never `// ""`: --paginate runs the filter per page, and a blank
             # line from a non-matching page is what `head -1` would otherwise read as N.
-            rounds=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            liveness_comment=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
               "[.[] | select(.user.login==\"github-actions[bot]\")
                     | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty" \
-              | head -1 | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
+              | head -1 || true)
+            # Requested pause marker (#124): manual pause stops automatic rounds until resumed.
+            if echo "$liveness_comment" | grep -qE 'paused=1'; then
+              echo "skipping review: pull request is paused by manual request (@claude pause)"
+              emit skip paused-by-request
+              exit 0
+            fi
+
+            rounds=$(echo "$liveness_comment" | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
             rounds=${rounds:-0}
             # A non-integer limit would make `-ge` abort the gate and review anyway.
             limit=$MAX_ROUNDS
@@ -915,7 +954,7 @@ jobs:
           resolve_range
 
       # Match --model against allowlisted aliases; ID emitted from list, never read from body.
-      # If no summon override is present, escalate to opus if changed files match review.path_filters.
+      # If no summon override is present, escalate to opus if changed files match review.escalation_paths.
       # Misses fall back to default_model and emit a warning. Stories: #27, #34.
       - name: Resolve review model
         id: model
@@ -926,7 +965,7 @@ jobs:
           BODY: ${{ github.event.comment.body }}
           ALIASES: ${{ inputs.model_aliases }}
           DEFAULT_MODEL: ${{ steps.config.outputs.default_model }}
-          PATH_FILTERS: ${{ steps.config.outputs.path_filters }}
+          ESCALATION_PATHS: ${{ steps.config.outputs.escalation_paths }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -941,7 +980,7 @@ jobs:
           body = os.environ.get("BODY", "")
           aliases_raw = os.environ.get("ALIASES", "")
           default_model = os.environ.get("DEFAULT_MODEL", "claude-sonnet-5")
-          path_filters_raw = os.environ.get("PATH_FILTERS", "[]")
+          escalation_paths_raw = os.environ.get("ESCALATION_PATHS", "[]")
 
           if not aliases_raw.strip():
               print("::error::model_aliases input is empty", file=sys.stderr)
@@ -987,11 +1026,11 @@ jobs:
           else:
               # 2. No summon override: check path-based escalation against changed files
               try:
-                  path_filters = json.loads(path_filters_raw) if path_filters_raw else []
+                  escalation_paths = json.loads(escalation_paths_raw) if escalation_paths_raw else []
               except Exception:
-                  path_filters = []
+                  escalation_paths = []
 
-              if path_filters and repo and pr:
+              if escalation_paths and repo and pr:
                   cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--jq", ".[].filename"]
                   res = subprocess.run(cmd, capture_output=True, text=True)
                   if res.returncode != 0:
@@ -1016,7 +1055,7 @@ jobs:
                       matched_file = None
                       matched_pattern = None
                       for f in changed_files:
-                          for pat in path_filters:
+                          for pat in escalation_paths:
                               if matches_pattern(f, pat):
                                   matched_file = f
                                   matched_pattern = pat
@@ -1068,6 +1107,185 @@ jobs:
       - name: Stage the incremental range for the review agent
         if: steps.mode.outputs.mode == 'incremental'
         run: cp /tmp/incremental-range.json "$GITHUB_WORKSPACE/.claude-incremental-range.json"
+
+      # Default path filters exclude generated files, lockfiles, and build artifacts (#105).
+      # Excluded files are subtracted from changed_files and diff_lines before telemetry is built.
+      - name: Filter review paths
+        id: filter_paths
+        if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.resolve.outputs.number }}
+          MODE: ${{ steps.mode.outputs.mode }}
+          PATH_FILTERS: ${{ steps.config.outputs.path_filters }}
+          CONFIG_RESOLUTION: ${{ steps.config.outputs.config_resolution }}
+          RESOLVE_CHANGED_FILES: ${{ needs.resolve.outputs.changed_files }}
+          RESOLVE_DIFF_LINES: ${{ needs.resolve.outputs.diff_lines }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import fnmatch
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          # Default path filter patterns for generated files and lockfiles (#105)
+          DEFAULT_PATH_FILTERS = [
+              "package-lock.json",
+              "pnpm-lock.yaml",
+              "yarn.lock",
+              "Cargo.lock",
+              "poetry.lock",
+              "go.sum",
+              "dist/**",
+              "build/**",
+              "vendor/**",
+              "**/__snapshots__/**",
+              "*.min.js",
+              "*.min.css",
+              "**/node_modules/**",
+          ]
+
+          def matches_pattern(path: str, pattern: str) -> bool:
+              if pattern.endswith("/**"):
+                  prefix = pattern[:-3]
+                  if path == prefix or path.startswith(prefix + "/"):
+                      return True
+                  if fnmatch.fnmatch(path, pattern):
+                      return True
+              elif fnmatch.fnmatch(path, pattern):
+                  return True
+              return False
+
+          # Determine effective path_filters: pure override semantics (#105)
+          config_resolution_raw = os.environ.get("CONFIG_RESOLUTION", "{}")
+          try:
+              config_res = json.loads(config_resolution_raw) if config_resolution_raw else {}
+              sources = config_res.get("sources", {})
+              pf_source = sources.get("path_filters", "workflow default")
+          except Exception:
+              pf_source = "workflow default"
+
+          raw_filters = os.environ.get("PATH_FILTERS", "")
+          if pf_source in ("repo config", "org defaults"):
+              try:
+                  path_filters = json.loads(raw_filters) if raw_filters else []
+              except Exception:
+                  path_filters = []
+          elif raw_filters and raw_filters not in ("[]", '""'):
+              try:
+                  path_filters = json.loads(raw_filters)
+              except Exception:
+                  path_filters = DEFAULT_PATH_FILTERS
+          else:
+              path_filters = DEFAULT_PATH_FILTERS
+
+          mode = os.environ.get("MODE", "")
+          repo = os.environ.get("REPO", "")
+          pr = os.environ.get("PR", "")
+          resolve_cf = os.environ.get("RESOLVE_CHANGED_FILES", "")
+          resolve_dl = os.environ.get("RESOLVE_DIFF_LINES", "")
+
+          is_incremental = (mode == "incremental")
+          files_data = []
+
+          if is_incremental:
+              range_file = None
+              for p in [pathlib.Path(".claude-incremental-range.json"), pathlib.Path("/tmp/incremental-range.json")]:
+                  if p.exists():
+                      range_file = p
+                      break
+              if range_file and range_file.exists():
+                  try:
+                      with open(range_file, "r", encoding="utf-8") as f:
+                          range_data = json.load(f)
+                      files_data = range_data.get("files", [])
+                  except Exception as e:
+                      print(f"::warning::Failed to read incremental range file: {e}")
+          else:
+              if repo and pr:
+                  cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--slurp"]
+                  res = subprocess.run(cmd, capture_output=True, text=True)
+                  if res.returncode == 0 and res.stdout.strip():
+                      try:
+                          pages = json.loads(res.stdout)
+                          files_data = [f for page in pages for f in page]
+                      except Exception as e:
+                          print(f"::warning::Failed to parse PR files JSON: {e}")
+                          raise SystemExit("Cannot apply path filters without the PR file list")
+                  else:
+                      err = res.stderr.strip() if res.stderr else f"exit code {res.returncode}"
+                      print(f"::error::Failed to list PR files: {err}; path filters were not applied.")
+                      raise SystemExit(1)
+
+          if files_data:
+              raw_changed_files = len(files_data)
+              raw_diff_lines = sum(
+                  (item.get("additions", 0) or 0) + (item.get("deletions", 0) or 0)
+                  if isinstance(item, dict) else 0
+                  for item in files_data
+              )
+              kept_files = []
+              excluded_count = 0
+              for item in files_data:
+                  fname = item.get("filename", "") if isinstance(item, dict) else str(item)
+                  if any(matches_pattern(fname, pat) for pat in path_filters):
+                      excluded_count += 1
+                  else:
+                      kept_files.append(item)
+              filtered_changed_files = len(kept_files)
+              filtered_diff_lines = sum(
+                  (item.get("additions", 0) or 0) + (item.get("deletions", 0) or 0)
+                  if isinstance(item, dict) else 0
+                  for item in kept_files
+              )
+          else:
+              raw_changed_files = int(resolve_cf) if resolve_cf.isdigit() else 0
+              raw_diff_lines = int(resolve_dl) if resolve_dl.isdigit() else 0
+              filtered_changed_files = raw_changed_files
+              filtered_diff_lines = raw_diff_lines
+              excluded_count = 0
+              kept_files = []
+
+          print(f"path_filters: {len(path_filters)} patterns, {excluded_count} of {raw_changed_files} changed file(s) excluded")
+
+          if is_incremental:
+              for p in [pathlib.Path("/tmp/incremental-range.json"), pathlib.Path(".claude-incremental-range.json")]:
+                  if p.exists():
+                      try:
+                          with open(p, "r", encoding="utf-8") as f:
+                              data = json.load(f)
+                          data["files"] = kept_files
+                          with open(p, "w", encoding="utf-8") as f:
+                              json.dump(data, f)
+                      except Exception as e:
+                          print(f"::warning::Failed to update {p}: {e}")
+
+          result = {
+              "changed_files": filtered_changed_files,
+              "diff_lines": filtered_diff_lines,
+              "changed_files_raw": raw_changed_files,
+              "diff_lines_raw": raw_diff_lines,
+              "excluded_count": excluded_count,
+              "pattern_count": len(path_filters),
+          }
+          try:
+              with open("/tmp/claude-path-filters-result.json", "w", encoding="utf-8") as f:
+                  json.dump(result, f)
+          except Exception as e:
+              print(f"::warning::Failed to write path filters result: {e}")
+
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as f:
+                  f.write(f"changed_files={filtered_changed_files}\n")
+                  f.write(f"diff_lines={filtered_diff_lines}\n")
+                  f.write(f"changed_files_raw={raw_changed_files}\n")
+                  f.write(f"diff_lines_raw={raw_diff_lines}\n")
+          PY
 
       - name: Resolve path instructions
         id: path_instructions
@@ -1769,11 +1987,29 @@ jobs:
 
           changed_files="${RESOLVE_CHANGED_FILES:-}"
           diff_lines="${RESOLVE_DIFF_LINES:-}"
+          changed_files_raw="${RESOLVE_CHANGED_FILES:-}"
+          diff_lines_raw="${RESOLVE_DIFF_LINES:-}"
           if [ -f /tmp/incremental-range.json ]; then
             range_files=$(jq -r '.files | length' /tmp/incremental-range.json 2>/dev/null || true)
             range_lines=$(jq -r '[.files[]? | (.additions // 0) + (.deletions // 0)] | add // 0' /tmp/incremental-range.json 2>/dev/null || true)
-            if [ -n "${range_files:-}" ] && [ "$range_files" != "null" ]; then changed_files="$range_files"; fi
-            if [ -n "${range_lines:-}" ] && [ "$range_lines" != "null" ]; then diff_lines="$range_lines"; fi
+            if [ -n "${range_files:-}" ] && [ "$range_files" != "null" ]; then
+              changed_files="$range_files"
+              changed_files_raw="$range_files"
+            fi
+            if [ -n "${range_lines:-}" ] && [ "$range_lines" != "null" ]; then
+              diff_lines="$range_lines"
+              diff_lines_raw="$range_lines"
+            fi
+          fi
+          if [ -f /tmp/claude-path-filters-result.json ]; then
+            pf_cf=$(jq -r '.changed_files // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
+            pf_dl=$(jq -r '.diff_lines // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
+            pf_cfr=$(jq -r '.changed_files_raw // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
+            pf_dlr=$(jq -r '.diff_lines_raw // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
+            if [ -n "$pf_cf" ]; then changed_files="$pf_cf"; fi
+            if [ -n "$pf_dl" ]; then diff_lines="$pf_dl"; fi
+            if [ -n "$pf_cfr" ]; then changed_files_raw="$pf_cfr"; fi
+            if [ -n "$pf_dlr" ]; then diff_lines_raw="$pf_dlr"; fi
           fi
 
           # The store never takes model-authored or attacker-influencable text, so .result
@@ -1789,6 +2025,8 @@ jobs:
             --arg head_sha "${HEAD_SHA:-}" \
             --arg changed_files "${changed_files:-}" \
             --arg diff_lines "${diff_lines:-}" \
+            --arg changed_files_raw "${changed_files_raw:-}" \
+            --arg diff_lines_raw "${diff_lines_raw:-}" \
             --arg prompt_hash "${PROMPT_HASH:-}" \
             --arg action_version "${ACTION_VERSION:-}" \
             --arg config_hash "${CONFIG_HASH:-}" \
@@ -1834,6 +2072,8 @@ jobs:
               permission_denials: denials,
               changed_files: num($changed_files),
               diff_lines: num($diff_lines),
+              changed_files_raw: num($changed_files_raw),
+              diff_lines_raw: num($diff_lines_raw),
               prompt_hash: (if $prompt_hash == "" then null else $prompt_hash end),
               action_version: (if $action_version == "" then null else $action_version end),
               config_hash: (if $config_hash == "" then null else $config_hash end),
@@ -2242,10 +2482,13 @@ jobs:
           # Tool list is load-bearing; agent mode resolves tools ONLY from --allowed-tools.
           # Read-only, and nothing that writes: no Task, no Write, no comment MCP servers.
           # This is the third line, not the wall — the two above it are.
+          # `gh pr view` is here because without it the review agent can raise findings this
+          # agent is structurally incapable of checking, and they resolve as `cannot_verify`
+          # forever. Operator ruling on #123. `gh api` stays out: it can POST.
           claude_args: >-
             --json-schema '${{ steps.schema.outputs.json }}'
             --allowed-tools
-            "Read,Grep,Glob,LS,Bash(gh pr diff:*)"
+            "Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*)"
             --model ${{ needs.review.outputs.model }}
 
       # Client-side schema validation replaced server-side constrained decoding, so the
@@ -2705,6 +2948,9 @@ jobs:
           prev=$(jq -r '.body // ""' <<< "${found:-null}" \
             | head -1 | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
           prev=${prev:-0}
+          prev_paused=$(jq -r '.body // ""' <<< "${found:-null}" \
+            | head -1 | grep -oE 'paused=[0-9]+' | head -1 | cut -d= -f2 || true)
+          prev_paused=${prev_paused:-0}
 
           # Baseline head for the future incremental range. Absent on markers written before
           # this field existed, and on PRs no review has ever posted on — both mean "no
@@ -2720,12 +2966,23 @@ jobs:
             rounds=$((prev + 1))
           fi
 
+          # Determine if lane should be in paused state (#124)
+          is_paused=0
+          if [ "$SKIP_REASON" = "paused-by-request" ]; then
+            is_paused=1
+          elif [ "$EVENT_NAME" = "pull_request" ] && [ "$prev_paused" = "1" ]; then
+            is_paused=1
+          fi
+
           verdict_kind=""
           inline_count=0
           summary_count=0
           comment_node_ids="[]"
 
-          if [ "$SKIP_REASON" = "paused" ]; then
+          if [ "$SKIP_REASON" = "paused-by-request" ]; then
+            verdict="paused by request at \`$short\`; resume with \`@claude resume\`."
+            verdict_kind="paused-by-request"
+          elif [ "$SKIP_REASON" = "paused" ]; then
             # The `@claude review` text below cannot self-summon: GITHUB_TOKEN-authored events
             # never trigger workflows, and this upsert PATCHes rather than creating a comment.
             verdict="auto-paused after ${rounds} automatic rounds at \`$short\` — re-request with \`@claude review\`."
@@ -2851,9 +3108,14 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
+          paused_flag=""
+          if [ "$is_paused" = "1" ]; then
+            paused_flag=" paused=1"
+          fi
+
           # `sha=` is omitted entirely when there is no baseline, so markers on never-reviewed
           # PRs stay clean and the field's absence is unambiguous.
-          marker="<!-- claude-review-liveness rounds=${rounds}${reviewed_sha:+ sha=${reviewed_sha}} -->"
+          marker="<!-- claude-review-liveness rounds=${rounds}${reviewed_sha:+ sha=${reviewed_sha}}${paused_flag} -->"
           body="$marker
           **Claude review lane** — [run]($RUN_URL): $verdict"
 
@@ -2939,6 +3201,7 @@ jobs:
         ) ||
         needs.review.outputs.skip_reason == 'no-token' ||
         needs.review.outputs.skip_reason == 'paused' ||
+        needs.review.outputs.skip_reason == 'paused-by-request' ||
         needs.review.outputs.skip_reason == 'skipped-author'
       )
     runs-on: ubuntu-latest
@@ -2970,6 +3233,8 @@ jobs:
           elif [ "$SKIP_REASON" = "paused" ]; then
             reason="auto-paused"
             rounds_used="${ROUND_ORDINAL:-}"
+          elif [ "$SKIP_REASON" = "paused-by-request" ]; then
+            reason="paused-by-request"
           elif [ "$SKIP_REASON" = "trivial" ]; then
             reason="skip-trivial"
           elif [ "$SKIP_REASON" = "superseded" ]; then

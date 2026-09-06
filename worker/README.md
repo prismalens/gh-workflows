@@ -96,7 +96,7 @@ Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_
 #### `lane_event`
 - **Required**:
   - `repository` (TEXT)
-  - `reason` (TEXT, must be exactly one of `no-token`, `auto-paused`, `fork-head`, `skip-author`)
+  - `reason` (TEXT, must be exactly one of `no-token`, `auto-paused`, `paused-by-request`, `fork-head`, `skip-author`)
   - `run_id` (INTEGER, finite number)
   - `run_attempt` (INTEGER, finite number)
 - **Optional**:
@@ -112,6 +112,35 @@ Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_
   - `last_seen_at` / `recorded_at` (TEXT, ISO string, defaults to current time)
   - `run_url` (TEXT)
   - `lane_version` (TEXT)
+
+---
+
+## PR State Ingest (`POST /pr-state`) (#136)
+
+Ingests current pull request facts into the `prs` table, authenticated with `Authorization: Bearer <REVIEW_TELEMETRY_TOKEN>`.
+
+### Request Body
+
+- **Required**:
+  - `repository` (TEXT, capped to 512): `owner/repo` string.
+  - `pr_number` (INTEGER): Pull request number.
+  - `source` (TEXT): Exactly one of `round`, `hook`, or `reconciler`.
+- **Optional**:
+  - `state` (TEXT): Validated against normalised set `open`, `closed`, `merged`.
+  - `title` (TEXT, capped to 512): Pull request title.
+  - `author` (TEXT, capped to 512): PR author login.
+  - `base_ref` (TEXT, capped to 512): PR base branch.
+  - `head_ref` (TEXT, capped to 512): PR head branch.
+  - `head_sha` (TEXT, capped to 512): PR head commit SHA.
+  - `merged_at` (TEXT, capped to 512): ISO 8601 merge timestamp.
+  - `closed_at` (TEXT, capped to 512): ISO 8601 close timestamp.
+  - `updated_at` (TEXT, capped to 512): ISO 8601 event timestamp from GitHub; falls back to receipt time if omitted.
+
+### Behaviour & Invariants
+
+- **Upsert on `(repository, pr_number)`**: An absent field leaves the stored value alone rather than nulling it. Only what the caller actually knows gets written.
+- **Monotonic `updated_at`**: `updated_at` records when the event occurred (from GitHub's `pull_request.updated_at`), falling back to receipt time if omitted.
+- **Stale-Write Protection**: A later write with an older `updated_at` cannot overwrite a newer stored row.
 
 ## Read Contract (v2)
 
@@ -233,6 +262,75 @@ Returns paginated lane lifecycle events from `lane_events` (skipped or non-execu
     }
   ],
   "next_cursor": "2026-08-31T14:20:00.000Z|123456"
+}
+```
+
+---
+
+### `GET /api/prs`
+
+Returns paginated pull request state records from `prs`.
+
+#### Query Parameters
+
+- `limit` (optional): Integer `1`..`1000` (default `100`).
+- `repository` (optional): Filter by exact repository string.
+- `state` (optional): Filter by state (`open`, `closed`, `merged`).
+- `cursor` (optional): Composite cursor `<updated_at>|<repository>|<pr_number>` for pagination.
+
+#### Columns
+
+- `repository`, `pr_number`, `state`, `title`, `author`, `base_ref`, `head_ref`, `head_sha`, `merged_at`, `closed_at`, `updated_at`, `source`.
+
+#### Response Shape
+
+```json
+{
+  "rows": [
+    {
+      "repository": "prismalens/gh-workflows",
+      "pr_number": 136,
+      "state": "open",
+      "title": "feat: a prs table",
+      "author": "alice",
+      "base_ref": "main",
+      "head_ref": "feat/prs-table",
+      "head_sha": "abc1234",
+      "merged_at": null,
+      "closed_at": null,
+      "updated_at": "2026-09-06T12:00:00.000Z",
+      "source": "hook"
+    }
+  ],
+  "next_cursor": "2026-09-06T12:00:00.000Z|prismalens/gh-workflows|136"
+}
+```
+
+---
+
+### `GET /api/accounted-runs`
+
+Programmatic read route for the scheduled telemetry reconciler (#87). Returns the distinct `run_id` values appearing in either `usage_records` or `lane_events` inside the requested window.
+
+#### Authentication
+
+Authenticated via `Authorization: Bearer <REVIEW_TELEMETRY_TOKEN>`, using the same shared secret as telemetry ingest.
+
+#### Query Parameters
+
+- `repository` (required): Filter by exact repository string (`owner/repo`).
+- `since` (required): ISO 8601 UTC timestamp lower bound on `recorded_at` (`recorded_at >= ?`).
+- `until` (required): ISO 8601 UTC timestamp upper bound on `recorded_at` (`recorded_at <= ?`).
+- Capped at a maximum window of 30 days.
+
+#### Response Shape
+
+```json
+{
+  "repository": "prismalens/gh-workflows",
+  "since": "2026-08-30T00:00:00Z",
+  "until": "2026-08-31T02:00:00Z",
+  "run_ids": [1001, 1002, 1003]
 }
 ```
 

@@ -175,7 +175,7 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
 
 
 def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude-sonnet-5",
-                   default_model="claude-sonnet-5", path_filters=None,
+                   default_model="claude-sonnet-5", escalation_paths=None, path_filters=None,
                    changed_files=None, repo="prismalens/test-repo", pr="42",
                    files_fail=False):
     with tempfile.TemporaryDirectory() as td:
@@ -191,6 +191,9 @@ def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude
         if changed_files is not None:
             files_json = json.dumps([{"filename": f} for f in changed_files])
 
+        effective_esc = escalation_paths if escalation_paths is not None else (path_filters if path_filters is not None else [])
+        effective_pf = path_filters if path_filters is not None else []
+
         env = dict(os.environ)
         env.update(
             PATH=f"{binp}:{env['PATH']}",
@@ -201,7 +204,8 @@ def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude
             BODY=body,
             ALIASES=aliases,
             DEFAULT_MODEL=default_model,
-            PATH_FILTERS=json.dumps(path_filters if path_filters is not None else []),
+            ESCALATION_PATHS=json.dumps(effective_esc),
+            PATH_FILTERS=json.dumps(effective_pf),
             FAKE_FILES_JSON=files_json,
             FAKE_FILES_FAIL="1" if files_fail else "0",
         )
@@ -281,8 +285,10 @@ review:
   skip_authors:
     - "renovate[bot]"
     - "custom-bot"
-  path_filters:
+  escalation_paths:
     - "packages/**"
+  path_filters:
+    - "dist/**"
 """
 
 VALID_CONFIG_WITH_UNWIRED_KEYS = """
@@ -461,7 +467,8 @@ def main():
     check("valid config overrides default_model to claude-opus-5", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
     check("valid config overrides auto_pause_rounds to 10", out.get("auto_pause_rounds") == "10", f"got {out.get('auto_pause_rounds')}")
     check("valid config overrides skip_authors", out.get("skip_authors") == "renovate[bot],custom-bot", f"got {out.get('skip_authors')}")
-    check("valid config sets path_filters", json.loads(out.get("path_filters", "[]")) == ["packages/**"], f"got {out.get('path_filters')}")
+    check("valid config sets escalation_paths", json.loads(out.get("escalation_paths", "[]")) == ["packages/**"], f"got {out.get('escalation_paths')}")
+    check("valid config sets path_filters", json.loads(out.get("path_filters", "[]")) == ["dist/**"], f"got {out.get('path_filters')}")
     check("valid config logs consumed keys", "review.default_model=claude-opus-5" in stdout and "review.auto_pause_rounds=10" in stdout, f"stdout: {stdout}")
     check("valid config produces no warning", "::warning::" not in stdout, f"stdout: {stdout}")
 
@@ -525,10 +532,10 @@ def main():
 
     print("\n=== Testing Model Escalation (Part B: #34) ===")
 
-    # 5. A changed file matching path_filters escalates to opus
+    # 5. A changed file matching escalation_paths escalates to opus
     rc, out, stdout, stderr = run_model_case(
         model_script,
-        path_filters=["packages/@prismalens/engine/**", "src/auth.ts"],
+        escalation_paths=["packages/@prismalens/engine/**", "src/auth.ts"],
         changed_files=["packages/@prismalens/engine/src/core.ts", "docs/readme.md"],
     )
     check("path match escalates to opus", rc == 0 and out.get("model") == "claude-opus-5", f"model={out.get('model')}")
@@ -537,15 +544,24 @@ def main():
     # 5b. Trailing /** matches directory recursively
     rc, out, stdout, stderr = run_model_case(
         model_script,
-        path_filters=["packages/engine/**"],
+        escalation_paths=["packages/engine/**"],
         changed_files=["packages/engine/a/b/c.py"],
     )
     check("trailing /** matches deep nested path", rc == 0 and out.get("model") == "claude-opus-5", f"model={out.get('model')}")
 
+    # 5c. path_filters without escalation_paths does NOT escalate to opus (#140, finding 3944010345)
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        path_filters=["package-lock.json"],
+        escalation_paths=[],
+        changed_files=["package-lock.json"],
+    )
+    check("path_filters alone does not escalate to opus", rc == 0 and out.get("model") == "claude-sonnet-5", f"model={out.get('model')}")
+
     # 6. A changed file not matching leaves default model
     rc, out, stdout, stderr = run_model_case(
         model_script,
-        path_filters=["packages/@prismalens/engine/**"],
+        escalation_paths=["packages/@prismalens/engine/**"],
         changed_files=["docs/readme.md", "packages/ui/button.tsx"],
     )
     check("non-matching files leave default model", rc == 0 and out.get("model") == "claude-sonnet-5", f"model={out.get('model')}")
@@ -555,7 +571,7 @@ def main():
     rc, out, stdout, stderr = run_model_case(
         model_script,
         body="@claude review --model sonnet",
-        path_filters=["packages/@prismalens/engine/**"],
+        escalation_paths=["packages/@prismalens/engine/**"],
         changed_files=["packages/@prismalens/engine/src/core.ts"],
     )
     check("summon --model override beats path match", rc == 0 and out.get("model") == "claude-sonnet-5", f"model={out.get('model')}")
@@ -565,7 +581,7 @@ def main():
     rc, out, stdout, stderr = run_model_case(
         model_script,
         body="@claude full review --model opus",
-        path_filters=["packages/@prismalens/engine/**"],
+        escalation_paths=["packages/@prismalens/engine/**"],
         changed_files=["docs/readme.md"],
     )
     check("summon --model opus selects opus", rc == 0 and out.get("model") == "claude-opus-5", f"model={out.get('model')}")
@@ -574,7 +590,7 @@ def main():
     # 8. Changed-files fetch failure warns, uses default model, and sets model_source
     rc, out, stdout, stderr = run_model_case(
         model_script,
-        path_filters=["packages/@prismalens/engine/**"],
+        escalation_paths=["packages/@prismalens/engine/**"],
         files_fail=True,
     )
     check("changed-files fetch failure exits 0", rc == 0, f"rc={rc}")
