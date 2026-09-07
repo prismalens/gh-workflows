@@ -16,6 +16,7 @@ Reusable workflow callees live in `.github/workflows/` and are invoked by consum
 
 - [`.github/workflows/claude-code-review.yml`](.github/workflows/claude-code-review.yml)
 - `.github/workflows/claude.yml`
+- [`.github/workflows/review-findings-sweep.yml`](.github/workflows/review-findings-sweep.yml) — the review-findings ingest sweep (`#47`)
 - `.github/workflows/dependabot-auto-merge.yml`
 - `.github/workflows/dependabot-auto-merge-caller.yml` — this repository's own caller stub for the auto-merge callee
 
@@ -125,6 +126,43 @@ jobs:
 9. **Admission is effective repository permission, not `author_association`**: Comment events in both lanes are admitted only when the acting account holds `admin` or `write` on the repository, checked live in the `admit` composite action. `author_association` is banned from admission: it is repo-scoped and payload-dependent, and it reported `CONTRIBUTOR` in the webhook for a maintainer whose REST record said `MEMBER`, so replies on `prismalens/prismalens` were never admitted. A failed check is red, never silently open and never silently closed. Story: `prismalens/gh-workflows#20`.
 
 Everything else about the review lane — inputs, org defaults (`.github/claude-review-defaults.yml`), per-repo configuration (`.github/claude-review.yml`), four-layer precedence, model escalation, summon grammar, incremental review, step summaries, liveness verdicts, thread resolution and fork handling — is read out of [`.github/workflows/claude-code-review.yml`](.github/workflows/claude-code-review.yml), which is the only source of truth for it. A prose copy of that behaviour used to live in `docs/review-lane.md`; it was deleted because it drifted, and its worked-example consumer stub had spent ten days telling new consumers to build the concurrency group that `prismalens/gh-workflows#12` exists to prevent. Read the workflow, and copy stubs from a repository that is running one.
+
+### Worked-Example Consumer Stub (Review Findings Sweep)
+
+[`.github/workflows/review-findings-sweep.yml`](.github/workflows/review-findings-sweep.yml) enumerates `claude[bot]` review threads with the default read-only `GITHUB_TOKEN` and POSTs them to the review-telemetry Worker's findings route (`#47`). It is a `workflow_call` callee, so a consumer needs its own scheduled caller stub. gh-workflows is excluded structurally by the callee's own job `if:` and never calls this workflow itself, because it hosts no Claude lane.
+
+```yaml
+# This is a managed caller stub.
+# Logic lives in prismalens/gh-workflows/.github/workflows/review-findings-sweep.yml.
+# Do not add logic here.
+
+name: Review Findings Sweep
+
+on:
+  schedule:
+    # Daily, off the hour on purpose: GitHub delays cron at peak hours (#44).
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      full_history:
+        description: 'Ignore the update window and sweep every pull request in this repository'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  sweep:
+    uses: prismalens/gh-workflows/.github/workflows/review-findings-sweep.yml@main
+    with:
+      full_history: ${{ inputs.full_history || false }}
+    # explicit mapping, not `secrets: inherit` — Sumit1993/mage-memory sits outside the
+    # prismalens org, and inherit does not cross that boundary (Stub Rule 3, above).
+    secrets:
+      REVIEW_TELEMETRY_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
+      REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+```
+
+Both secrets are `required: false` on the callee: a consumer that has not opted into review-findings ingest still runs the workflow, and the sweep step skips itself with a plain notice rather than failing the run, the same contract `claude-code-review.yml`'s own telemetry job already uses for `REVIEW_TELEMETRY_URL` / `REVIEW_TELEMETRY_TOKEN`.
 
 ---
 
