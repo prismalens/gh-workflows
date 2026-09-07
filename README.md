@@ -63,15 +63,18 @@ concurrency:
 
 jobs:
   claude:
-    # Verb exclusion: the review lane owns these two phrasings.
-    # `@claude full review` does not contain `@claude review` as a substring,
-    # so both checks are needed. `contains()` on a null body is false, so
-    # `issues` and `pull_request_review` events pass through untouched.
+    # Verb exclusion: the review lane owns all four of these phrasings, and its own
+    # caller `if:` admits exactly this list. Every one needs its own check, because
+    # none contains another as a substring — `@claude full review` does not contain
+    # `@claude review`. `contains()` on a null body is false, so `issues` and
+    # `pull_request_review` events pass through untouched.
     # Review bodies stay with the mention lane: no other lane subscribes to pull_request_review.
     if: >-
       !(
         contains(github.event.comment.body, '@claude review') ||
-        contains(github.event.comment.body, '@claude full review')
+        contains(github.event.comment.body, '@claude full review') ||
+        contains(github.event.comment.body, '@claude pause') ||
+        contains(github.event.comment.body, '@claude resume')
       )
     uses: prismalens/gh-workflows/.github/workflows/claude.yml@main
     # explicit mapping is the canon pattern — `inherit` does not cross ownership
@@ -91,7 +94,9 @@ jobs:
 1. **Permissions Union (incl. Announce Write Ceiling)**: Caller stubs declare permissions as the union of permissions needed by the lane logic, capped by the write access ceiling required for posting status comments or reviews.
 2. **Concurrency in Caller Only**: Concurrency must be declared at caller level only. A callee sharing the caller's concurrency group deadlocks the run ("deadlock detected for concurrency group").
 3. **Secrets Mapped Explicitly**: `secrets: inherit` does not cross repository owners (e.g. across orgs/users like `prismalens` vs `Sumit1993`). Secrets must be mapped explicitly across owner boundaries.
-4. **Mention Lane Excludes Owned Verbs**: The `claude.yml` caller stub must carry a caller-level `if:` excluding comment bodies that contain `@claude review` or `@claude full review`. Those verbs belong to the review lane; without the exclusion each such comment fires two lanes on the same PR. Exact expression: the Mention Lane worked example above.
+4. **Mention Lane Excludes Owned Verbs**: The `claude.yml` caller stub must carry a caller-level `if:` excluding comment bodies that contain `@claude review`, `@claude full review`, `@claude pause` or `@claude resume`. All four belong to the review lane; without the exclusion each such comment fires two lanes on the same PR. The list is not a judgement call — it is the same four literals the review lane's own caller `if:` admits, so a verb added there is added here in the same change. Exact expression: the Mention Lane worked example above.
+
+   The exclusion is a verb list and cannot cover the review lane's fifth admitted surface. That lane also takes **every** `pull_request_review_comment` on an open pull request, with no verb required, because an in-thread reply is what triggers a verification round. So a bare `@claude, what does this do?` left in a review thread still fires both lanes: a verify round that re-checks the unresolved threads, and a mention answer. Which lane should own that comment is an open question in [#160](https://github.com/prismalens/gh-workflows/issues/160) and is deliberately not answered here, because the two readings lead to different stubs and neither is recorded anywhere as intended.
 5. **Pin `branches` on `pull_request`**: Every stub that triggers on `pull_request` pins `branches: [main]`, so covering a future `release/*` branch is a decision someone makes, not an accident.
 6. **Comment Triggers Need a Concurrency Fallback and a Junk Group**: The moment a stub gains `issue_comment` / `pull_request_review_comment` triggers, two things become load-bearing in the group key. It must fall back to `github.event.issue.number`, because `github.event.pull_request.number` is empty on `issue_comment` and without the fallback the group collapses to the constant `claude-code-review-`: one global group in which any PR's summon cancels every other PR's in-flight run. And the lane's own emissions must divert to a per-run junk group, because concurrency is allocated at run creation, before any job `if:` runs, so the callee's admission gate cannot keep them out: a `claude[bot]` verdict comment took the pending seat and cancelled the queued human reply four times out of four (`prismalens/gh-workflows#12`). Both, together:
 

@@ -36,10 +36,31 @@ measurement; do not repeat that.
 spends a slot, and so does a push to an open one while the lane is unpaused**. Batching means
 batching before the push, not before a summon: by the time you would summon, the slot is gone.
 
+Measured 2026-09-07, because a peer session argued from the OSS tier's star threshold that
+opening a pull request here is free and the summon is what costs. It is not, and the star count
+is the wrong thing to read:
+
+| pull request | created | first `coderabbitai[bot]` comment | human summon first? |
+| --- | --- | --- | --- |
+| #158 | 08:50:53Z | 08:51:03Z | no |
+| #155 | 08:03:22Z | 08:04:55Z | no |
+| #142 | 16:12:33Z | 16:12:41Z | no; the `@coderabbitai review` came 93 minutes later |
+
+So settle this against comment timestamps on a recent pull request, never against
+`stargazerCount`. A lane that trusts the star threshold opens four pull requests believing all
+four are free and spends the slot on the first.
+
+One slot is worth far more than one change. CodeRabbit will take on the order of 150 files in a
+single review, so a batch of a dozen issues costs exactly what a typo fix costs. Size the batch
+by what reviews together coherently and by what is unblocked, never by what feels like a
+reasonable pull request.
+
 So:
 
 - Land related work as one pull request rather than a chain of small ones.
 - Batch every fix before you push. Never spend a slot on a commit you are about to amend.
+- Open it as a draft, keep pushing while the work continues, and mark it ready only when the
+  last item lands.
 - A push auto-pauses the lane. Once all fixes are in, re-request with a bare
   `@coderabbitai review`.
 
