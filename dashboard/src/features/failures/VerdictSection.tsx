@@ -15,7 +15,7 @@ import {
 import { Timestamp } from "@/components/Timestamp";
 import { Degraded } from "@/honesty/Degraded";
 import { linkableRange, type RangeKey } from "@/honesty/range";
-import type { VerdictState } from "@/honesty/verdict";
+import { ALL_VERDICT_KINDS, type VerdictState } from "@/honesty/verdict";
 import { formatCount } from "@/lib/format";
 import {
   getFieldDegradedState,
@@ -72,7 +72,7 @@ export function VerdictSection({ rows, now, range, repository }: VerdictSectionP
         <div>
           <CardTitle>1. Liveness verdicts</CardTitle>
           <p className="text-xs text-muted-foreground">
-            All eight verdict kinds, grouped under the four-state decode.
+            All {ALL_VERDICT_KINDS.length} verdict kinds, grouped under the four-state decode.
           </p>
         </div>
         <span className="tabular text-xs text-muted-foreground">

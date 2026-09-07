@@ -65,6 +65,24 @@ single review, so a batch of a dozen issues costs exactly what a typo fix costs.
 by what reviews together coherently and by what is unblocked, never by what feels like a
 reasonable pull request.
 
+### Batch the lanes too, not only the pull request
+
+A batch of a dozen issues is not a dispatch of a dozen lanes. One lane per issue re-reads the
+same repository a dozen times, and every one of those reads is paid for.
+
+- **Group issues that share a surface into one lane.** Issues touching the same files, or the
+  same subsystem, go out as one brief with a list. A lane that has already read
+  `claude-code-review.yml` to fix one thing in it is the cheapest possible place to fix the
+  second thing in it.
+- **Continue a lane rather than replacing it.** When follow-up work lands on a surface a lane
+  already holds, message that lane. It keeps its context, so the second task costs a fraction
+  of the first. Spawning a fresh agent for it pays the whole setup cost again for nothing.
+- **Split by file ownership, never by issue count.** Two lanes that cannot both edit the same
+  file is a real constraint. Two lanes because there happened to be two issue numbers is not.
+
+The exception is a lane that has gone wrong. A confused lane is not made less confused by more
+instructions, so start that one over rather than continuing it.
+
 So:
 
 - Land related work as one pull request rather than a chain of small ones.

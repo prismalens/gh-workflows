@@ -100,6 +100,8 @@ describe("the fixture table matches the Worker's paging contract", () => {
       run_url: null,
       rounds_used: null,
       lane_version: "v2.0.0",
+      reviewable_lines: null,
+      max_reviewable_lines: null,
     }));
     const laneApi = makeFixtureApi([], laneEvents);
 

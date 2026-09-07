@@ -96,6 +96,8 @@ function createSampleLaneEvents(): LaneEventRow[] {
       run_url: "https://github.com/prismalens/gh-workflows/actions/runs/101",
       rounds_used: null,
       lane_version: "v2.0.0",
+      reviewable_lines: null,
+      max_reviewable_lines: null,
     },
     {
       run_id: 102,
@@ -108,6 +110,8 @@ function createSampleLaneEvents(): LaneEventRow[] {
       run_url: "https://github.com/prismalens/gh-workflows/actions/runs/102",
       rounds_used: 5,
       lane_version: "v2.0.0",
+      reviewable_lines: null,
+      max_reviewable_lines: null,
     },
     {
       run_id: 103,
@@ -120,6 +124,22 @@ function createSampleLaneEvents(): LaneEventRow[] {
       run_url: "https://github.com/prismalens/gh-workflows/actions/runs/103",
       rounds_used: null,
       lane_version: "v2.0.0",
+      reviewable_lines: null,
+      max_reviewable_lines: null,
+    },
+    {
+      run_id: 104,
+      run_attempt: 1,
+      recorded_at: "2026-08-31T13:00:00.000Z",
+      repository: "prismalens/gh-workflows",
+      reason: "refused-size",
+      pr_number: 18,
+      head_sha: "fed4321",
+      run_url: "https://github.com/prismalens/gh-workflows/actions/runs/104",
+      rounds_used: null,
+      lane_version: "v2.0.0",
+      reviewable_lines: 9000,
+      max_reviewable_lines: 6000,
     },
   ];
 }
@@ -253,6 +273,8 @@ describe("/failures - Acceptance Criteria & Degraded States", () => {
         run_url: "https://github.com/prismalens/gh-workflows/actions/runs/201",
         rounds_used: null,
         lane_version: "v2.0.0",
+        reviewable_lines: null,
+        max_reviewable_lines: null,
       },
     ];
     const api = makeFixtureApi(createWave2CompleteRows(), laneEvents);
@@ -266,6 +288,21 @@ describe("/failures - Acceptance Criteria & Degraded States", () => {
     const footnote = within(eventsSection).getByTestId("fork-head-footnote");
     expect(footnote).toBeInTheDocument();
     expect(footnote.textContent).toContain(FORK_HEAD_FOOTNOTE);
+  });
+
+  it("a refused-size event renders its reviewable_lines and cap, other reasons render neither", async () => {
+    const api = makeFixtureApi(createWave2CompleteRows(), createSampleLaneEvents());
+    renderRoute({ path: "/failures", api });
+
+    const eventsSection = await screen.findByTestId("section-lane-events");
+    const refusedSizeRow = within(eventsSection).getByText("refused-size").closest("tr");
+    expect(refusedSizeRow).not.toBeNull();
+    expect(within(refusedSizeRow as HTMLElement).getByText(/9,000 reviewable lines/)).toBeInTheDocument();
+    expect(within(refusedSizeRow as HTMLElement).getByText(/6,000-line cap/)).toBeInTheDocument();
+
+    const draftRow = within(eventsSection).getByText("draft").closest("tr");
+    expect(draftRow).not.toBeNull();
+    expect(within(draftRow as HTMLElement).queryByText(/reviewable lines/)).not.toBeInTheDocument();
   });
 
   it("an empty range renders 'no rounds in range' and no numeric zero", async () => {
@@ -394,6 +431,14 @@ describe("failures unit aggregators and helpers", () => {
     const draft = laneSummaries.find((l) => l.reason === "draft");
     expect(draft?.count).toBe(1);
     expect(draft?.definition).toBe(LANE_EVENT_DEFINITIONS.draft);
+    // #105: a refused-size event carries its reviewable_lines / max_reviewable_lines counts;
+    // every other reason's counts stay null rather than reading as a zero-line cap.
+    const refusedSize = laneSummaries.find((l) => l.reason === "refused-size");
+    expect(refusedSize?.count).toBe(1);
+    expect(refusedSize?.latestReviewableLines).toBe(9000);
+    expect(refusedSize?.latestMaxReviewableLines).toBe(6000);
+    expect(draft?.latestReviewableLines).toBeNull();
+    expect(draft?.latestMaxReviewableLines).toBeNull();
   });
 });
 

@@ -756,6 +756,8 @@ async function handleLaneEvents(url, env) {
     "run_url",
     "rounds_used",
     "lane_version",
+    "reviewable_lines",
+    "max_reviewable_lines",
   ];
 
   let query = `SELECT

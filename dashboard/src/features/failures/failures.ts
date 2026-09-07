@@ -394,8 +394,7 @@ export const LANE_EVENT_DEFINITIONS: Record<LaneEventReasonKey, string> = {
   "paused-by-request": "Run skipped because the PR is paused by @claude pause",
   "refused-size":
     "Run refused because reviewable_lines exceeded the repository's max_reviewable_lines cap; " +
-    "nothing was posted. @claude full review overrides the cap for one round. The two counts are " +
-    "recorded on this event but not yet returned by the read API, so they cannot be shown here.",
+    "nothing was posted. @claude full review overrides the cap for one round.",
 };
 
 export const FORK_HEAD_FOOTNOTE =
@@ -409,6 +408,9 @@ export interface LaneEventRowSummary {
   sparkline: { counts: number[]; path: string };
   footnote?: string;
   matchingEvents: LaneEventRow[];
+  // Set only on the "refused-size" reason's most recent matching event; null everywhere else.
+  latestReviewableLines: number | null;
+  latestMaxReviewableLines: number | null;
 }
 
 export function summariseLaneEvents(
@@ -422,6 +424,7 @@ export function summariseLaneEvents(
       (acc, e) => (acc === null || e.recorded_at > acc ? e.recorded_at : acc),
       null,
     );
+    const latestEvent = latest === null ? null : (matching.find((e) => e.recorded_at === latest) ?? null);
 
     return {
       reason,
@@ -431,6 +434,8 @@ export function summariseLaneEvents(
       sparkline: buildSparkline(timestamps, now),
       footnote: reason === "fork-head" ? FORK_HEAD_FOOTNOTE : undefined,
       matchingEvents: matching,
+      latestReviewableLines: latestEvent?.reviewable_lines ?? null,
+      latestMaxReviewableLines: latestEvent?.max_reviewable_lines ?? null,
     };
   });
 }

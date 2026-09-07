@@ -64,6 +64,13 @@ export function LaneEventsSection({ events, now, range, repository }: LaneEvents
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   <div>{item.definition}</div>
+                  {item.latestReviewableLines !== null && item.latestMaxReviewableLines !== null && (
+                    <div className="tabular mt-1 text-[11px] text-foreground/80">
+                      Latest refusal: {formatCount(item.latestReviewableLines)} reviewable lines,
+                      {" "}
+                      {formatCount(item.latestMaxReviewableLines)}-line cap.
+                    </div>
+                  )}
                   {item.footnote && (
                     <div
                       className="mt-1 flex items-start gap-1 rounded bg-muted/40 p-1.5 text-[11px] text-foreground/80 leading-normal"

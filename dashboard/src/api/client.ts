@@ -316,6 +316,8 @@ export const REQUIRED_LANE_EVENT_KEYS = [
   "run_url",
   "rounds_used",
   "lane_version",
+  "reviewable_lines",
+  "max_reviewable_lines",
 ] as const;
 
 export function isLaneEventRow(row: unknown): row is LaneEventRow {

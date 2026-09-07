@@ -1851,6 +1851,47 @@ describe("Worker telemetry read API", () => {
       assert.equal(query.args[query.args.length - 1], 2);
     });
 
+    it("selects reviewable_lines and max_reviewable_lines so a refused-size round can show its counts (#105)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql, args) => {
+          if (sql.includes("FROM lane_events")) {
+            return {
+              results: [
+                {
+                  run_id: 1003,
+                  run_attempt: 1,
+                  recorded_at: "2026-08-31T16:00:00.000Z",
+                  repository: "prismalens/gh-workflows",
+                  reason: "refused-size",
+                  pr_number: 56,
+                  head_sha: "112233aabbcc",
+                  run_url: "https://github.com/prismalens/gh-workflows/actions/runs/1003",
+                  rounds_used: null,
+                  lane_version: "v2.0.0",
+                  reviewable_lines: 9000,
+                  max_reviewable_lines: 6000,
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/lane-events", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].reviewable_lines, 9000);
+      assert.equal(data.rows[0].max_reviewable_lines, 6000);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("reviewable_lines"));
+      assert.ok(query.sql.includes("max_reviewable_lines"));
+    });
+
     it("handles cursor pagination and rejects invalid cursor or limit", async () => {
       const helper = await getAccessHelper();
       const db = createFakeDb();

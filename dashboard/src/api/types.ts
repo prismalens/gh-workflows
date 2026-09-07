@@ -96,6 +96,8 @@ export interface LaneEventRow {
   run_url: string | null;
   rounds_used: number | null;
   lane_version: string | null;
+  reviewable_lines: number | null;
+  max_reviewable_lines: number | null;
 }
 
 export interface LaneEventsResponse {
