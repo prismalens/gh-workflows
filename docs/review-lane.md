@@ -261,7 +261,9 @@ never cancels a running round, and a push cancels whatever is in the group. The 
 cycle walks straight into this: fix, push, reply in thread, and the push kills the verify round
 the reply asked for. The reliable order is **fix, push, reply, then exactly one
 `@claude review` after the last push**. A round lost that way is reported as
-`verify-superseded`, distinct from a round that failed to post.
+`verify-superseded`, but only when `announce` can see that the head has actually moved. A
+cancelled `mutate` on an unmoved head is `verify-cancelled`, which names no cause, because a
+cancellation is not by itself evidence of what cancelled it.
 
 **The seat is held for up to thirty minutes.** `review` carries `timeout-minutes: 30` against a
 measured baseline of 5.03 minutes mean and 12.72 peak (#63). Past that a run is hung, and
@@ -325,7 +327,8 @@ The `announce` job upserts an advisory comment on the pull request timeline matc
 | `finished on <sha> (job result: X) but posted **nothing**` | No |
 | `re-checked open threads at <sha>: N resolved / M left open` | **No** — threads only, no code was read |
 | `ran a verification round on <sha> (mutate result: X) but posted **nothing**` | No |
-| `the verification round on <sha> was superseded by a newer push before it could post` | No — nothing failed; summon once after the last push |
+| `the verification round on <sha> was cancelled when the head moved to <sha>` | No — `cancel-in-progress` doing its job; summon once after the last push |
+| `the verification round on <sha> was cancelled before it posted a summary, and the head has not moved` | No — cause not recorded; read the run log |
 | `auto-paused after N automatic rounds at <sha> — re-request with \`@claude review\`.` | No |
 | `paused by request at <sha>; resume with \`@claude resume\`.` | No |
 | `not reviewed at <sha>: the pull request is a draft` | No |

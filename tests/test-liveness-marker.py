@@ -49,6 +49,9 @@ case "$args" in
     done
     exit 0 ;;
   *claude-review-liveness*)   printf '%s' "$FAKE_MARKER" ; exit 0 ;;
+  # Must precede the 'pulls/' case: the supersession probe is a pulls/ call whose jq
+  # asks for the current head, not for inline comments.
+  *".head.sha"*)              printf '%s' "$FAKE_CURRENT_HEAD"; exit 0 ;;
   *"pulls/"*)
     # When FAKE_INLINE_JSON is set, return the JSON and let --jq filter it.
     if [ -n "${FAKE_INLINE_JSON:-}" ]; then
@@ -79,7 +82,7 @@ exit 1
 def run_case(script, *, marker_body=None, inline=0, summary=0,
              event="pull_request", skip_reason="", result="success",
              mode="review", mutate_result="skipped", resolved="", open_="",
-             verify_summary="", inline_json="", draft=""):
+             verify_summary="", inline_json="", draft="", current_head=None):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
@@ -107,6 +110,8 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
             MUTATE_RESULT=mutate_result, RESOLVED=resolved, OPEN=open_,
             STARTED_AT="2026-01-01T00:00:00Z", RUN_URL="http://run",
             DRAFT=draft,
+            # The head the PR is on right now. Unchanged unless a case moves it.
+            FAKE_CURRENT_HEAD=(NEW if current_head is None else current_head),
         )
         p = subprocess.run(["bash", "-c", script], env=env,
                            capture_output=True, text=True)
@@ -132,6 +137,8 @@ def reader_rounds(line):
         shell=True, input=line, capture_output=True, text=True)
     return p.stdout.strip()
 
+
+MOVED = "c" * 40
 
 CASES = [
     # name,                              kwargs,                                          rounds, sha
@@ -192,13 +199,23 @@ CASES = [
     # Supersession by a newer push and a mutate that genuinely failed to post both leave
     # the round with no record, and the old text sent both readers to the run log.
     # Story: gh-workflows#149.
-    ("verify round superseded by a push",
+    ("verify cancelled, head moved: says so",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",
+                                              event="pull_request_review_comment",
+                                              mode="verify", mutate_result="cancelled",
+                                              verify_summary="",
+                                              current_head=MOVED),                        "2",  OLD,
+                                         lambda v: "head moved to" in v and MOVED[:8] in v
+                                                   and "run log" not in v),
+    # A cancelled mutate is not proof a push caused it, so with the head where the round
+    # left it the verdict says the cause is not recorded rather than inventing one.
+    ("verify cancelled, head unmoved: no cause claimed",
                                          dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",
                                               event="pull_request_review_comment",
                                               mode="verify", mutate_result="cancelled",
                                               verify_summary=""),                         "2",  OLD,
-                                         lambda v: "superseded by a newer push" in v
-                                                   and "run log" not in v),
+                                         lambda v: "cause is not recorded" in v
+                                                   and "superseded" not in v),
     ("verify round genuinely silent",    dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",
                                               event="pull_request_review_comment",
                                               mode="verify", mutate_result="failure",

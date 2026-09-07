@@ -32,6 +32,7 @@ export const VERDICT_KIND_MAP: Record<string, FourStateVerdict> = {
   "verify-superseded": "did-not-run",
   silent: "silent",
   "verify-silent": "silent",
+  "verify-cancelled": "silent",
 };
 
 export const ALL_VERDICT_KINDS = [
@@ -48,6 +49,7 @@ export const ALL_VERDICT_KINDS = [
   "silent",
   "verify-silent",
   "verify-superseded",
+  "verify-cancelled",
 ] as const;
 
 export type VerdictKind = (typeof ALL_VERDICT_KINDS)[number];
@@ -90,7 +92,13 @@ export const VERDICT_KIND_DEFINITIONS: Record<
   },
   "verify-superseded": {
     group: "did-not-run",
-    definition: "A newer push superseded the verification round before it posted. Nothing failed.",
+    definition:
+      "The head moved during the verification round, cancelling it by design before it posted.",
+  },
+  "verify-cancelled": {
+    group: "silent",
+    definition:
+      "The verification round was cancelled before posting a summary and the cause is not recorded.",
   },
   "no-token": {
     group: "did-not-run",
@@ -211,6 +219,7 @@ const VERDICT_KIND_BUCKET_MAP: Record<string, VerdictKindBucket> = {
   "no-new-commits": "did-not-run",
   silent: "silent",
   "verify-silent": "silent",
+  "verify-cancelled": "silent",
   error: "error",
 };
 
