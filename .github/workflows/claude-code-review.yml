@@ -2970,6 +2970,26 @@ jobs:
           # An impossible timestamp keeps the count honest (zero).
           [ -n "$STARTED_AT" ] || STARTED_AT="9999-01-01T00:00:00Z"
 
+          # Every read below goes through this. Under `set -e` a single transient GitHub
+          # API failure used to abort the step before the upsert, which left whatever a
+          # previous run wrote standing as the authoritative verdict: on mage-memory#206
+          # a successful review that posted 5 findings was described by a stale comment as
+          # "posted nothing", pointing at an older run. A stale confident verdict is worse
+          # than one that says the round could not report, so nothing here is allowed to
+          # kill the step. Story: gh-workflows#159.
+          gh_read() {
+            local out attempt=1
+            while [ "$attempt" -le 3 ]; do
+              if out=$(gh api "$@" 2>/dev/null); then
+                printf '%s' "$out"
+                return 0
+              fi
+              attempt=$((attempt + 1))
+              sleep "$attempt"
+            done
+            return 1
+          }
+
           # Prefix, not the whole marker: the marker now carries the round counter, and
           # pr-watch plus the operator match on this prefix. Story: prismalens/prismalens#403.
           prefix='<!-- claude-review-liveness'
@@ -2978,9 +2998,13 @@ jobs:
           # the author filter, any participant could pre-create a marker
           # comment and this job would PATCH — and thereby keep republishing
           # into — a comment it does not own.
-          found=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+          # A failed read here is not "no comment exists". Treating it as such would POST a
+          # second liveness comment beside the first, and the marker is singular by contract.
+          # So the two outcomes are kept apart: `marker_read` says whether we know.
+          marker_read=ok
+          found=$(gh_read "repos/$REPO/issues/$PR/comments" --paginate --jq \
             "[.[] | select(.user.login==\"github-actions[bot]\")
-                  | select(.body | startswith(\"$prefix\"))][0] // empty")
+                  | select(.body | startswith(\"$prefix\"))][0] // empty") || marker_read=failed
           existing=$(jq -r '.id // empty' <<< "${found:-null}")
           prev=$(jq -r '.body // ""' <<< "${found:-null}" \
             | head -1 | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
@@ -3052,11 +3076,20 @@ jobs:
             # A hardened verify round posts nothing as claude[bot] — `mutate` posts as
             # `github-actions[bot]` — so the claude[bot] count below would report a
             # working round as "posted nothing". Story: gh-workflows#20.
-            found_summary=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            summary_read=ok
+            found_summary=$(gh_read "repos/$REPO/issues/$PR/comments" --paginate --jq \
               "[.[] | select(.user.login==\"github-actions[bot]\")
                     | select(.created_at >= \"$STARTED_AT\")
-                    | select((.body | split(\"\n\")[0] | rtrimstr(\"\r\")) == \"## Code review — verification round\")][0] // empty")
-            if [ -n "$found_summary" ]; then
+                    | select((.body | split(\"\n\")[0] | rtrimstr(\"\r\")) == \"## Code review — verification round\")][0] // empty") \
+              || summary_read=failed
+            if [ "$summary_read" = "failed" ]; then
+              # An unread count is not a count of zero. Saying "posted nothing" here is the
+              # exact inversion #159 is about: the round may have re-checked every thread.
+              verdict="ran a verification round on \`$short\` and could not read back what it posted: \
+          the GitHub API did not answer after three attempts. This says nothing about whether threads \
+          were re-checked. Read the [run log]($RUN_URL) and the thread state directly."
+              verdict_kind="verify-unread"
+            elif [ -n "$found_summary" ]; then
               # "left open" alone reads the same whether the finding still stands or the
               # agent was blocked from looking. Only the first asks for a code change, so
               # the unverifiable ones are named separately. Story: #123.
@@ -3097,9 +3130,10 @@ jobs:
             # the comment was posted against and never moves. `commit_id` is
             # rewritten forward by GitHub and would count a prior head's
             # comments as this round's.
-            inline_raw=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate --jq \
+            counts_read=ok
+            inline_raw=$(gh_read "repos/$REPO/pulls/$PR/comments" --paginate --jq \
               "[.[] | select(.user.login==\"claude[bot]\")
-                    | select(.original_commit_id==\"$HEAD_SHA\") | .node_id // empty]")
+                    | select(.original_commit_id==\"$HEAD_SHA\") | .node_id // empty]") || counts_read=failed
             inline=$(jq -r 'if type == "array" then length elif type == "number" then . else (tonumber? // 0) end' <<< "${inline_raw:-0}" 2>/dev/null || echo 0)
             inline_nodes=$(jq -c 'if type == "array" then . else [] end' <<< "${inline_raw:-[]}" 2>/dev/null || echo "[]")
 
@@ -3111,10 +3145,10 @@ jobs:
             # reply landing mid-review must not be counted as review output.
             # This stays an advisory display, not evidence (#415): it reports
             # what was posted, it does not certify who read what.
-            summary_raw=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            summary_raw=$(gh_read "repos/$REPO/issues/$PR/comments" --paginate --jq \
               "[.[] | select(.user.login==\"claude[bot]\")
                     | select(.created_at >= \"$STARTED_AT\")
-                    | select(.body | startswith(\"## Code review\")) | .node_id // empty]")
+                    | select(.body | startswith(\"## Code review\")) | .node_id // empty]") || counts_read=failed
             summary=$(jq -r 'if type == "array" then length elif type == "number" then . else (tonumber? // 0) end' <<< "${summary_raw:-0}" 2>/dev/null || echo 0)
             summary_nodes=$(jq -c 'if type == "array" then . else [] end' <<< "${summary_raw:-[]}" 2>/dev/null || echo "[]")
 
@@ -3127,7 +3161,18 @@ jobs:
               model_info="with \`$MODEL\` (${MODEL_SOURCE:-default}) "
             fi
 
-            if [ "$((inline + summary))" -gt 0 ]; then
+            if [ "$counts_read" = "failed" ]; then
+              # The counts are what decide "posted nothing", and they are also what decides
+              # whether the baseline advances. An unread count must move neither. Reporting
+              # zero here would tell the operator their review vanished when it did not, and
+              # advancing the baseline on an unread count would swallow the commits for good.
+              # Story: gh-workflows#159.
+              verdict="finished on \`$short\` (job result: ${REVIEW_RESULT}) and this job could not read back \
+          what it posted: the GitHub API did not answer after three attempts. **This is not a report that the \
+          round posted nothing** — read the pull request's own comments, and the [run log]($RUN_URL). \
+          The review baseline was deliberately not moved, so the next round re-reviews this range."
+              verdict_kind="counts-unread"
+            elif [ "$((inline + summary))" -gt 0 ]; then
               if [ "$MODE" = "incremental" ] && [ -n "${RANGE_BASE:-}" ]; then
                 short_base=${RANGE_BASE:0:8}
                 verdict="reviewed \`$short\` (incremental from \`$short_base\`) ${model_info}and posted ${inline} inline / ${summary} summary comment(s)."
@@ -3156,6 +3201,53 @@ jobs:
             fi
           fi
 
+          # `24 resolved / 0 left open` reads as "reviewed" to anyone not holding the rule
+          # that `sha=` advances on posted review output only, so a verify round moves no
+          # baseline. On mage-memory#206 that combination let a head with 83 unreviewed added
+          # lines reach CLEAN with every thread resolved. Nothing in the lane compared the two
+          # SHAs, and both facts a reader needed lived in a skill in another repository.
+          # A correct state grows no caveat: when the head IS the baseline, nothing is added.
+          # Story: gh-workflows#150.
+          if [ -n "$reviewed_sha" ] && [ "$reviewed_sha" != "$HEAD_SHA" ]; then
+            # One attempt, not `gh_read`: the distance is a courtesy on top of a verdict that
+            # is already correct without it, and it must never slow the round down. If it does
+            # not answer, the gap is still stated, just without the number.
+            ahead=$(gh api "repos/$REPO/compare/${reviewed_sha}...${HEAD_SHA}" --jq '.ahead_by' 2>/dev/null) || ahead=""
+            case "${ahead:-}" in
+              ''|*[!0-9]*)
+                verdict="$verdict Last diff review was \`${reviewed_sha:0:8}\`, which is not this head."
+                ;;
+              *)
+                verdict="$verdict Last diff review was \`${reviewed_sha:0:8}\`, ${ahead} commit(s) back."
+                ;;
+            esac
+          fi
+
+          # A round that posted no review output must not replace a verdict that did, on the
+          # same head. The upsert is last-writer-wins, so an auto-paused or skipped round
+          # finishing after a real one overwrites information with the absence of it. The
+          # marker's `sha=` is the test and needs no new field: it advances on posted review
+          # output alone, so `sha=` equal to this head means a real review already reported
+          # here. This does not order two rounds in general, and does not claim to: it stops
+          # the one case where the replacement is strictly a loss. Story: gh-workflows#149.
+          # The outputs below are still published when the write is withheld: `lane-event`
+          # reads `round_ordinal` from them, and a withheld comment is not a skipped round.
+          withhold=0
+          case "${verdict_kind:-}" in
+            reviewed|reviewed-incremental|verify-rechecked|counts-unread|verify-unread)
+              ;;
+            # `no-new-commits` is the one skip whose meaning is "this head was already
+            # reviewed". It confirms the standing verdict rather than replacing it with the
+            # absence of one, so it is not the loss this guard exists to stop.
+            no-new-commits)
+              ;;
+            *)
+              if [ -n "$existing" ] && [ "$reviewed_sha" = "$HEAD_SHA" ]; then
+                withhold=1
+              fi
+              ;;
+          esac
+
           if [ -n "${GITHUB_OUTPUT:-}" ]; then
             delim="$(openssl rand -hex 16 2>/dev/null || echo "VERDICT_DELIM_${RANDOM}_$$")"
             {
@@ -3180,6 +3272,25 @@ jobs:
           marker="<!-- claude-review-liveness rounds=${rounds}${reviewed_sha:+ sha=${reviewed_sha}}${paused_flag} -->"
           body="$marker
           **Claude review lane** — [run]($RUN_URL): $verdict"
+
+          if [ "$withhold" = "1" ]; then
+            echo "::notice::liveness: not replacing the verdict on $short. A round that posted review" \
+                 "output already reported on this head, and this round (${verdict_kind:-unknown}) posted none."
+            echo "liveness: withheld (${verdict_kind:-unknown}) — a posted verdict already stands on $short"
+            exit 0
+          fi
+
+          # A failed marker read leaves `existing` empty for the wrong reason, and POSTing on
+          # that would put a second liveness comment beside the first. Refusing to write is
+          # correct, but refusing SILENTLY is the failure this whole step was rewritten for,
+          # so the verdict goes to the annotation stream and the job fails visibly.
+          # Story: gh-workflows#159.
+          if [ "$marker_read" = "failed" ]; then
+            echo "::error::liveness: could not read this pull request's comments after three attempts," \
+                 "so the verdict below was not posted and any comment already on the pull request is stale." \
+                 "Verdict for $short was: $verdict"
+            exit 1
+          fi
 
           if [ -n "$existing" ]; then
             gh api -X PATCH "repos/$REPO/issues/comments/$existing" -f body="$body" >/dev/null
@@ -3265,6 +3376,8 @@ jobs:
         needs.review.outputs.skip_reason == 'paused' ||
         needs.review.outputs.skip_reason == 'paused-by-request' ||
         needs.review.outputs.skip_reason == 'skipped-author' ||
+        needs.review.outputs.skip_reason == 'trivial' ||
+        needs.review.outputs.skip_reason == 'superseded' ||
         (
           needs.resolve.outputs.draft == 'true' &&
           needs.resolve.outputs.summon != 'none' &&
@@ -3311,6 +3424,11 @@ jobs:
             rounds_used="${ROUND_ORDINAL:-}"
           elif [ "$SKIP_REASON" = "paused-by-request" ]; then
             reason="paused-by-request"
+          # `trivial` and `superseded` are the two spend levers (#113, #114) and until #154
+          # the job gate never admitted them, so these two branches were unreachable and
+          # neither lever was visible in telemetry at all. A reader of the failures page
+          # could not tell "the size floor stopped four rounds this week" from "nothing was
+          # skipped". Ruled 2026-09-07: they are lane events. Story: gh-workflows#154.
           elif [ "$SKIP_REASON" = "trivial" ]; then
             reason="skip-trivial"
           elif [ "$SKIP_REASON" = "superseded" ]; then

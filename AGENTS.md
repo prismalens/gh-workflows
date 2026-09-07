@@ -50,6 +50,16 @@ So settle this against comment timestamps on a recent pull request, never agains
 `stargazerCount`. A lane that trusts the star threshold opens four pull requests believing all
 four are free and spends the slot on the first.
 
+**A draft is the exemption, and it is what makes batching practical.** `drafts` defaults to
+false under `auto_review`, and this repository does not set it, so opening a draft costs
+nothing and neither does any push to it. Measured on #161: CodeRabbit posted "Draft PR not
+reviewed" seventeen seconds after the draft was opened, with no review. The slot is spent when
+the pull request is marked ready.
+
+So the shape of a batched run is: open the draft first, push to it as often as the work wants,
+and mark it ready once, at the end. Nothing is saved by holding commits back before a push to
+a draft, which is the opposite of the rule for a pull request that is already ready.
+
 One slot is worth far more than one change. CodeRabbit will take on the order of 150 files in a
 single review, so a batch of a dozen issues costs exactly what a typo fix costs. Size the batch
 by what reviews together coherently and by what is unblocked, never by what feels like a
