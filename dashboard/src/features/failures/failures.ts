@@ -373,6 +373,7 @@ export const LANE_EVENT_REASONS = [
   "auto-paused",
   "fork-head",
   "skip-author",
+  "draft",
 ] as const;
 
 export type LaneEventReasonKey = (typeof LANE_EVENT_REASONS)[number];
@@ -383,6 +384,7 @@ export const LANE_EVENT_DEFINITIONS: Record<LaneEventReasonKey, string> = {
   "fork-head":
     "Run skipped on fork head (summon only; automatic fork PRs cannot authenticate to post lane events)",
   "skip-author": "Run skipped because PR author matches skip_authors configuration",
+  draft: "Summon on a draft pull request; nothing reviews a draft, so the run reviewed nothing",
 };
 
 export const FORK_HEAD_FOOTNOTE =

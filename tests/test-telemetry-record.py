@@ -9,7 +9,7 @@ Extracts the REAL shell bodies out of claude-code-review.yml and runs them again
    into the JSON payload without shell interpolation or code execution.
 4. verdict_kind produces each of the 8 allowed values across all announce branches.
 5. Non-2xx ingest responses and network failures leave the step exit code 0.
-6. lane-event body carries accepted reasons (no-token, auto-paused, skip-author, fork-head),
+6. lane-event body carries accepted reasons (no-token, auto-paused, skip-author, fork-head, draft),
    including rounds_used for auto-paused.
 7. Fork PR runs with empty token exit 0 with a warning and do not POST.
 8. Config resolution JSON is properly structured with sources and layer outcomes.
@@ -543,6 +543,9 @@ def main():
         ("auto-paused", {"SKIP_REASON": "paused", "ROUND_ORDINAL": "5", "IS_FORK": "false"}, "auto-paused", 5),
         ("skip-author", {"SKIP_REASON": "skipped-author", "IS_FORK": "false"}, "skip-author", None),
         ("fork-head (summon)", {"SKIP_REASON": "", "IS_FORK": "true", "INGEST_TOKEN": "valid-token"}, "fork-head", None),
+        # A summon on a draft: `review` never ran, so there is no skip_reason to read and
+        # the reason has to come from the job result plus the draft flag. Story: #153.
+        ("draft (summon)", {"SKIP_REASON": "", "IS_FORK": "false", "REVIEW_RESULT": "skipped", "DRAFT": "true"}, "draft", None),
     ]
     for case_name, env_over, want_reason, want_rounds in lane_event_cases:
         ret, payload, stdout, stderr = run_lane_event_step(lane_event_script, env_overrides=env_over)

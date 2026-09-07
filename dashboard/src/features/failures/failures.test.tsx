@@ -19,6 +19,7 @@ import {
   getFieldDegradedState,
   isLaneVersionAtLeast2,
   LANE_EVENT_REASONS,
+  LANE_EVENT_DEFINITIONS,
   LANE_TOO_OLD_COPY,
   MODEL_SOURCES,
   summariseConfigs,
@@ -56,7 +57,8 @@ function createWave2NullRows(count = 10): RoundRow[] {
 }
 
 function createWave2CompleteRows(): RoundRow[] {
-  const base = makeRounds({ count: 12, now });
+  // One row per kind, derived: a fixed count silently stops covering the newest kinds.
+  const base = makeRounds({ count: ALL_VERDICT_KINDS.length, now });
   return base.map((row, i) => {
     const verdictKind = ALL_VERDICT_KINDS[i % ALL_VERDICT_KINDS.length];
     const fallbackReason = i === 0 ? "unexpected-status-404" : i === 1 ? "unexpected-status-500" : i === 2 ? "no-baseline" : null;
@@ -105,6 +107,18 @@ function createSampleLaneEvents(): LaneEventRow[] {
       head_sha: "def5678",
       run_url: "https://github.com/prismalens/gh-workflows/actions/runs/102",
       rounds_used: 5,
+      lane_version: "v2.0.0",
+    },
+    {
+      run_id: 103,
+      run_attempt: 1,
+      recorded_at: "2026-08-31T12:00:00.000Z",
+      repository: "prismalens/gh-workflows",
+      reason: "draft",
+      pr_number: 16,
+      head_sha: "9ab0cde",
+      run_url: "https://github.com/prismalens/gh-workflows/actions/runs/103",
+      rounds_used: null,
       lane_version: "v2.0.0",
     },
   ];
@@ -184,7 +198,7 @@ describe("/failures - Acceptance Criteria & Degraded States", () => {
     const verdictSection = await screen.findByTestId("section-verdicts");
     expect(within(verdictSection).getByText("1. Liveness verdicts")).toBeInTheDocument();
 
-    // All 8 verdict kinds must be present as rows
+    // Every verdict kind must be present as a row, definition included.
     for (const kind of ALL_VERDICT_KINDS) {
       expect(within(verdictSection).getAllByText(kind).length).toBeGreaterThan(0);
       const info = VERDICT_KIND_DEFINITIONS[kind];
@@ -326,10 +340,12 @@ describe("failures unit aggregators and helpers", () => {
     expect(getFieldDegradedState(createWave2CompleteRows(), "verdict_kind")).toBe("recorded");
   });
 
-  it("summarises verdicts across all eight kinds", () => {
+  it("summarises verdicts across every kind the lane emits", () => {
     const rows = createWave2CompleteRows();
     const verdicts = summariseVerdicts(rows, now);
-    expect(verdicts).toHaveLength(8);
+    // Derived, not a literal: the lane grows verdict kinds and a hard-coded count makes
+    // that a test edit rather than a check. The drift guard is tests/test-verdict-kind-drift.py.
+    expect(verdicts).toHaveLength(ALL_VERDICT_KINDS.length);
     expect(verdicts.map((v) => v.kind)).toEqual([...ALL_VERDICT_KINDS]);
   });
 
@@ -365,13 +381,19 @@ describe("failures unit aggregators and helpers", () => {
   });
 
   it("summarises lane events including footnote for fork-head", () => {
-    expect(LANE_EVENT_REASONS).toHaveLength(4);
+    // Derived, not a literal: the lane grows reasons and a hard-coded count turns that
+    // into a test edit rather than a check.
     const events = createSampleLaneEvents();
     const laneSummaries = summariseLaneEvents(events, now);
-    expect(laneSummaries).toHaveLength(4);
+    expect(laneSummaries).toHaveLength(LANE_EVENT_REASONS.length);
     const forkHead = laneSummaries.find((l) => l.reason === "fork-head");
     expect(forkHead?.count).toBe(0);
     expect(forkHead?.footnote).toBe(FORK_HEAD_FOOTNOTE);
+    // A count-only assertion passes while a new reason carries the wrong definition or
+    // never matches its own events, so each reason is checked against a real row.
+    const draft = laneSummaries.find((l) => l.reason === "draft");
+    expect(draft?.count).toBe(1);
+    expect(draft?.definition).toBe(LANE_EVENT_DEFINITIONS.draft);
   });
 });
 
