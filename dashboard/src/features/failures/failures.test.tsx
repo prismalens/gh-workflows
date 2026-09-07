@@ -326,10 +326,12 @@ describe("failures unit aggregators and helpers", () => {
     expect(getFieldDegradedState(createWave2CompleteRows(), "verdict_kind")).toBe("recorded");
   });
 
-  it("summarises verdicts across all eight kinds", () => {
+  it("summarises verdicts across every kind the lane emits", () => {
     const rows = createWave2CompleteRows();
     const verdicts = summariseVerdicts(rows, now);
-    expect(verdicts).toHaveLength(8);
+    // Derived, not a literal: the lane grows verdict kinds and a hard-coded count makes
+    // that a test edit rather than a check. The drift guard is tests/test-verdict-kind-drift.py.
+    expect(verdicts).toHaveLength(ALL_VERDICT_KINDS.length);
     expect(verdicts.map((v) => v.kind)).toEqual([...ALL_VERDICT_KINDS]);
   });
 
@@ -365,10 +367,11 @@ describe("failures unit aggregators and helpers", () => {
   });
 
   it("summarises lane events including footnote for fork-head", () => {
-    expect(LANE_EVENT_REASONS).toHaveLength(4);
+    // Derived, not a literal: the lane grows reasons and a hard-coded count turns that
+    // into a test edit rather than a check.
     const events = createSampleLaneEvents();
     const laneSummaries = summariseLaneEvents(events, now);
-    expect(laneSummaries).toHaveLength(4);
+    expect(laneSummaries).toHaveLength(LANE_EVENT_REASONS.length);
     const forkHead = laneSummaries.find((l) => l.reason === "fork-head");
     expect(forkHead?.count).toBe(0);
     expect(forkHead?.footnote).toBe(FORK_HEAD_FOOTNOTE);

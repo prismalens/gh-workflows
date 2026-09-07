@@ -220,12 +220,14 @@ jobs:
 
   review:
     needs: resolve
-    # Drafts are declared-unfinished code: reviewing every push to one is pure spend.
-    # Only an explicit summon overrides that; fork heads never pass. Story: prismalens/prismalens#415.
+    # Drafts are declared-unfinished code and nothing reviews one, summons included: the
+    # lane takes the whole diff in one round once the PR is marked ready. `announce` still
+    # speaks on the summon path, which reaches this job and would otherwise spend a run in
+    # silence. Fork heads never pass. Stories: prismalens/prismalens#415, gh-workflows#153.
     if: >-
       needs.resolve.outputs.admitted == 'true' &&
       needs.resolve.outputs.same_repo == 'true' &&
-      (needs.resolve.outputs.summon != 'none' || needs.resolve.outputs.draft != 'true')
+      needs.resolve.outputs.draft != 'true'
     runs-on: ubuntu-latest
     # Measured baseline is 5.03 min mean, 12.72 peak. Past this a run is hung, and with
     # cancel-in-progress false for comment events it holds the PR's seat. Story: #63.
@@ -2447,7 +2449,7 @@ jobs:
         id: schema
         run: |
           set -euo pipefail
-          schema='{"type":"object","additionalProperties":false,"required":["verdicts"],"properties":{"verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["thread_id","verdict","sha","evidence"],"properties":{"thread_id":{"type":"string"},"verdict":{"type":"string","enum":["fixed","still_applies","cannot_verify"]},"sha":{"type":"string"},"evidence":{"type":"string","maxLength":300}}}}}}'
+          schema='{"type":"object","additionalProperties":false,"required":["verdicts"],"properties":{"verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["thread_id","path","verdict","sha","evidence"],"properties":{"thread_id":{"type":"string"},"path":{"type":"string"},"verdict":{"type":"string","enum":["fixed","still_applies","cannot_verify"]},"sha":{"type":"string"},"evidence":{"type":"string","maxLength":300}}}}}}'
           echo "json=$schema" >> "$GITHUB_OUTPUT"
 
       - name: Run Claude Code Verification Round
@@ -2470,11 +2472,14 @@ jobs:
 
             Emit one entry per thread through your structured output, and nothing else:
             - `thread_id`: the thread_id exactly as it appears in the file.
+            - `path`: the `path` of that same thread, copied verbatim from the file. Copy it, never derive it. It is checked against the live thread and a mismatch discards the entry, because an entry whose evidence describes a different thread posts a confident reply about the wrong finding.
             - `verdict`: `fixed` when the concern is addressed at the current head, `still_applies` when the finding still stands, `cannot_verify` when you could establish neither.
             - `sha`: the commit sha you judged against, 7 to 40 lowercase hex characters.
             - `evidence`: one short plain-text sentence, at most 300 characters, stating what you checked.
 
             Every thread in the file must have exactly one entry. Do not omit a thread you are unsure about — `cannot_verify` is what that case is for.
+
+            When a thread carries a reply from anyone other than the lane, that reply is the thing under test. A `still_applies` on such a thread must say which claim in the reply it rejects, and why the finding survives it. Restating the original finding is not an answer to a counter-argument: if you cannot engage what the reply actually says, the verdict is `cannot_verify`.
 
             This job holds no write access to GitHub. You cannot post comments, reply to threads, resolve threads, submit a review, or merge, and you must not try: replies, resolutions and this round's summary comment are posted by a separate deterministic job from the verdicts you emit.
 
@@ -2554,6 +2559,9 @@ jobs:
               sha = entry.get("sha")
               if not isinstance(sha, str) or not sha_pattern.match(sha):
                   errors.append(f"{thread_id}: sha {sha!r} does not match ^[0-9a-f]{{7,40}}$")
+              path = entry.get("path")
+              if not isinstance(path, str) or not path:
+                  errors.append(f"{thread_id}: path is missing or not a string")
               evidence = entry.get("evidence")
               if not isinstance(evidence, str) or len(evidence) > 300:
                   errors.append(f"{thread_id}: evidence is missing or longer than 300 characters")
@@ -2780,6 +2788,18 @@ jobs:
                   discarded += 1
                   continue
 
+              # The agent binds evidence to a thread_id itself and nothing downstream can
+              # re-derive that pairing, so a misaligned entry posts a confident reply about
+              # another thread's finding — three of them on mage-memory#206. The anchor is a
+              # field the agent copies, which is checkable. Two threads on one file stay
+              # indistinguishable; that residual is stated in #148.
+              claimed_path = entry.get("path")
+              live_path = live_threads[thread_id]["path"]
+              if claimed_path != live_path:
+                  print(f"::warning::Thread ID '{thread_id}' claims path '{claimed_path}' but the live thread is on '{live_path}'; discarding.")
+                  discarded += 1
+                  continue
+
               verdict = entry.get("verdict")
               if verdict not in TEMPLATES:
                   print(f"::warning::Thread ID '{thread_id}' has invalid verdict '{verdict}' (expected one of {', '.join(TEMPLATES)}); skipping.")
@@ -2887,7 +2907,19 @@ jobs:
   announce:
     name: Announce reviewer liveness
     needs: [resolve, review, mutate]
-    if: always() && needs.review.result != 'skipped'
+    # A summon on a draft passes the caller stub — `issue_comment` carries no
+    # `pull_request` object, so the stub's draft guard cannot see it — and then finds
+    # `review` skipped. Without the second clause the operator spends a run and the pull
+    # request says nothing. Automatic rounds and replies on a draft never reach this
+    # callee at all, so they are not this job's to answer. Story: gh-workflows#153.
+    if: >-
+      always() && (
+        needs.review.result != 'skipped' ||
+        (needs.resolve.outputs.draft == 'true' &&
+         needs.resolve.outputs.summon != 'none' &&
+         needs.resolve.outputs.admitted == 'true' &&
+         needs.resolve.outputs.same_repo == 'true')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -2911,6 +2943,7 @@ jobs:
           MODE: ${{ needs.review.outputs.mode }}
           SKIP_REASON: ${{ needs.review.outputs.skip_reason }}
           REVIEW_RESULT: ${{ needs.review.result }}
+          DRAFT: ${{ needs.resolve.outputs.draft }}
           MUTATE_RESULT: ${{ needs.mutate.result }}
           RESOLVED: ${{ needs.mutate.outputs.resolved }}
           OPEN: ${{ needs.mutate.outputs.open }}
@@ -2979,13 +3012,21 @@ jobs:
           summary_count=0
           comment_node_ids="[]"
 
-          if [ "$SKIP_REASON" = "paused-by-request" ]; then
+          # `review` reaches `skipped` only on the draft path here: this job's own `if`
+          # admits nothing else that could skip it. Nothing reviews a draft, summons
+          # included, so say so rather than leave a spent run silent. Story: #153.
+          if [ "$REVIEW_RESULT" = "skipped" ] && [ "${DRAFT:-}" = "true" ]; then
+            verdict="not reviewed at \`$short\`: the pull request is a draft, and nothing reviews a draft — \
+          summons included. Mark it ready for review and the lane takes the whole diff in one round."
+            verdict_kind="draft"
+          elif [ "$SKIP_REASON" = "paused-by-request" ]; then
             verdict="paused by request at \`$short\`; resume with \`@claude resume\`."
             verdict_kind="paused-by-request"
           elif [ "$SKIP_REASON" = "paused" ]; then
             # The `@claude review` text below cannot self-summon: GITHUB_TOKEN-authored events
             # never trigger workflows, and this upsert PATCHes rather than creating a comment.
-            verdict="auto-paused after ${rounds} automatic rounds at \`$short\` — re-request with \`@claude review\`."
+            verdict="auto-paused after ${rounds} automatic rounds at \`$short\` — re-request with \`@claude review\`. \
+          If you have already summoned, this verdict is replaced when that round finishes."
             verdict_kind="auto-paused"
           elif [ "$SKIP_REASON" = "trivial" ]; then
             verdict="did not run at \`$short\`: the diff is below this repo's \`min_diff_lines\` floor. \
@@ -3022,6 +3063,13 @@ jobs:
                 verdict="re-checked open threads at \`$short\`: ${RESOLVED:-0} resolved / ${OPEN:-0} left open."
               fi
               verdict_kind="verify-rechecked"
+            elif [ "${MUTATE_RESULT:-}" = "cancelled" ]; then
+              # A push supersedes the round a reply asked for, and the text below sent the
+              # reader to the run log hunting a tool denial. Supersession and failure read
+              # very differently and only one of them asks for anything. Story: #149.
+              verdict="the verification round on \`$short\` was superseded by a newer push before it could post. \
+          No thread was re-checked on the record, and nothing failed. Summon once with \`@claude review\` after your last push."
+              verdict_kind="verify-superseded"
             else
               verdict="ran a verification round on \`$short\` (mutate result: ${MUTATE_RESULT}) but posted **nothing**. \
           No thread was re-checked on the record. Read the [run log]($RUN_URL) for the cause."
@@ -3202,7 +3250,13 @@ jobs:
         needs.review.outputs.skip_reason == 'no-token' ||
         needs.review.outputs.skip_reason == 'paused' ||
         needs.review.outputs.skip_reason == 'paused-by-request' ||
-        needs.review.outputs.skip_reason == 'skipped-author'
+        needs.review.outputs.skip_reason == 'skipped-author' ||
+        (
+          needs.resolve.outputs.draft == 'true' &&
+          needs.resolve.outputs.summon != 'none' &&
+          needs.resolve.outputs.admitted == 'true' &&
+          needs.resolve.outputs.same_repo == 'true'
+        )
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -3213,6 +3267,9 @@ jobs:
           IS_FORK: >-
             ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) || (needs.resolve.outputs.admitted == 'true' && needs.resolve.outputs.same_repo == 'false') }}
           SKIP_REASON: ${{ needs.review.outputs.skip_reason }}
+          # `review` is skipped on the draft path, so it publishes no skip_reason to read.
+          DRAFT: ${{ needs.resolve.outputs.draft }}
+          REVIEW_RESULT: ${{ needs.review.result }}
           ROUND_ORDINAL: ${{ needs.announce.outputs.round_ordinal }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ needs.resolve.outputs.number || github.event.pull_request.number || github.event.issue.number }}
@@ -3230,6 +3287,11 @@ jobs:
           rounds_used=""
           if [ "$IS_FORK" = "true" ]; then
             reason="fork-head"
+          # A summon on a draft spends a run and reviews nothing, which is exactly a round
+          # that never happened. It carries no skip_reason because `review` never ran.
+          # Story: gh-workflows#153.
+          elif [ "${REVIEW_RESULT:-}" = "skipped" ] && [ "${DRAFT:-}" = "true" ]; then
+            reason="draft"
           elif [ "$SKIP_REASON" = "paused" ]; then
             reason="auto-paused"
             rounds_used="${ROUND_ORDINAL:-}"

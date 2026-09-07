@@ -79,7 +79,7 @@ exit 1
 def run_case(script, *, marker_body=None, inline=0, summary=0,
              event="pull_request", skip_reason="", result="success",
              mode="review", mutate_result="skipped", resolved="", open_="",
-             verify_summary="", inline_json=""):
+             verify_summary="", inline_json="", draft=""):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
@@ -106,6 +106,7 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
             SKIP_REASON=skip_reason, REVIEW_RESULT=result,
             MUTATE_RESULT=mutate_result, RESOLVED=resolved, OPEN=open_,
             STARTED_AT="2026-01-01T00:00:00Z", RUN_URL="http://run",
+            DRAFT=draft,
         )
         p = subprocess.run(["bash", "-c", script], env=env,
                            capture_output=True, text=True)
@@ -179,6 +180,36 @@ CASES = [
                                               inline=1),                                  "5",  NEW),
     ("legacy marker (no sha), nothing",  dict(marker_body="<!-- claude-review-liveness rounds=4 -->",
                                               inline=0, summary=0),                       "5",  None),
+    # Nothing reviews a draft, summons included, and a summon still reaches this job
+    # because `issue_comment` carries no `pull_request` object for the caller stub's
+    # guard to see. The counter and the baseline both hold: no round happened.
+    # Story: gh-workflows#153.
+    ("summon on a draft: says so, moves nothing",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=3 sha={OLD} -->",
+                                              event="issue_comment", result="skipped",
+                                              draft="true"),                              "3",  OLD,
+                                         lambda v: "is a draft" in v and "ready for review" in v),
+    # Supersession by a newer push and a mutate that genuinely failed to post both leave
+    # the round with no record, and the old text sent both readers to the run log.
+    # Story: gh-workflows#149.
+    ("verify round superseded by a push",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",
+                                              event="pull_request_review_comment",
+                                              mode="verify", mutate_result="cancelled",
+                                              verify_summary=""),                         "2",  OLD,
+                                         lambda v: "superseded by a newer push" in v
+                                                   and "run log" not in v),
+    ("verify round genuinely silent",    dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",
+                                              event="pull_request_review_comment",
+                                              mode="verify", mutate_result="failure",
+                                              verify_summary=""),                         "2",  OLD,
+                                         lambda v: "posted **nothing**" in v and "run log" in v),
+    # The auto-pause verdict names a remedy the operator may already have applied, and it
+    # is upserted in place, so for a minute it is the only thing visible. Story: #149.
+    ("auto-pause verdict says it is transient",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=5 sha={OLD} -->",
+                                              skip_reason="paused"),                      "5",  OLD,
+                                         lambda v: "already summoned" in v),
     # A verify round reviews no code, so the baseline must not move even though the round
     # posted output. Story: gh-workflows#20.
     ("verify round, summary posted",     dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",

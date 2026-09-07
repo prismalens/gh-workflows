@@ -23,16 +23,24 @@ on:
 # Concurrency lives in the caller ONLY: a callee sharing the caller's group
 # deadlocks the run ("deadlock detected for concurrency group").
 concurrency:
-  group: claude-code-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  # The lane's own emissions must never enter a real group. Concurrency is allocated at run
+  # creation, before any job `if:` runs, so the callee's admission gate cannot keep them out:
+  # a `claude[bot]` verdict comment took the pending seat and cancelled the queued human
+  # reply four times out of four. Story: prismalens/gh-workflows#12.
+  group: >-
+    ${{ (github.event.comment.user.type == 'Bot'
+         || (github.event_name == 'issue_comment' && !github.event.issue.pull_request))
+        && format('claude-code-review-junk-{0}', github.run_id)
+        || format('claude-code-review-{0}', github.event.pull_request.number || github.event.issue.number) }}
   # A summon never cancels an in-flight automatic round; it queues behind it.
   # A push still supersedes anything in the group, including a summon.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   review:
-    # Caller-side draft guard, scoped to automatic rounds: a `@claude review` summon
-    # is explicit intent and must reach a draft PR too.
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
+    # Caller-side draft guard: skip before the reusable workflow is even invoked
+    # (the callee carries a backstop guard; GitHub cannot filter drafts at the trigger).
+    if: github.event.pull_request.draft != true
     uses: prismalens/gh-workflows/.github/workflows/claude-code-review.yml@main
     # explicit mapping is the canon pattern — `inherit` does not cross ownership
     # boundaries and silently fails cross-owner consumers.
@@ -53,7 +61,14 @@ jobs:
 The concurrency group key resolves to the PR number on all three events:
 `github.event.pull_request.number` covers `pull_request` and
 `pull_request_review_comment`, and `github.event.issue.number` covers
-`issue_comment`.
+`issue_comment`. Everything the lane itself emits goes to a per-run junk group
+instead, which is what keeps its own verdict comment out of the seat a human
+reply is waiting for. See [Run scheduling](#run-scheduling) for what the group
+does once more than one event arrives at once.
+
+This example is the stub the consumers actually run, byte for byte in its
+concurrency and guard. Copy it as-is: a stub that predates a fix here
+reproduces the bug that fix closed.
 
 ## Review lane inputs
 
@@ -215,7 +230,56 @@ Bare PR comments, admitted accounts only: the summoning account must hold `admin
 | `@claude resume` | resume | Resumes a paused review lane on this pull request without immediately triggering a review. Clears `paused=1` from the liveness marker and resets the round counter so subsequent pushes trigger automatic rounds (#124). |
 | bare `@claude …` | mention | Anything not matching the verbs above. |
 
-Summons run on draft PRs (explicit intent overrides the draft skip) and reset the auto-pause counter to 0, but only when the round actually posted review output — the same evidence that advances `sha=`. `@claude pause` explicitly pauses the lane (setting `paused=1`), while `@claude resume` clears the pause state. Fork-head PRs stay refused even when summoned (v1) — they get the `<!-- claude-review-fork-notice -->` comment instead.
+Summons do not run on draft PRs: nothing reviews a draft, and the lane takes the whole diff in one round once the pull request is marked ready. A summon on a draft still reaches the callee, because `issue_comment` carries no `pull_request` object for the caller stub's guard to test, so it gets a `draft` verdict on the liveness comment rather than silence. Summons reset the auto-pause counter to 0, but only when the round actually posted review output — the same evidence that advances `sha=`. `@claude pause` explicitly pauses the lane (setting `paused=1`), while `@claude resume` clears the pause state. Fork-head PRs stay refused even when summoned (v1) — they get the `<!-- claude-review-fork-notice -->` comment instead.
+
+## Run scheduling
+
+How a run is allocated, and when one is cancelled by another. Every claim here is a
+condition in the caller stub above or in `claude-code-review.yml`, named so it can be
+re-checked; the incidents behind them are in #12, #63 and #149.
+
+**One seat, one waiting room.** All three events resolve to the group
+`claude-code-review-<pr>`. GitHub's own contract for that, under
+[`concurrency`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency):
+
+> This means that there can be at most one running job or workflow in a concurrency group at
+> any time. When a concurrent job or workflow is queued, if another job or workflow using the
+> same concurrency group in the repository is in progress, the queued job or workflow will be
+> `pending`. By default, any existing `pending` job or workflow in the same concurrency group
+> will be canceled and the new queued job or workflow will take its place.
+
+**So N replies fire N runs, and the middle ones die.** Each in-thread reply is a
+`pull_request_review_comment` run entering that one group. One holds the seat, one waits, and
+every later arrival evicts the one waiting. Those evicted runs conclude `cancelled` with zero
+jobs, which reads exactly like breakage and is not: one verify round re-checks *every*
+unresolved thread, so the survivor covers the threads the evicted runs would have. The cost is
+latency and invisibility, never coverage.
+
+**A push supersedes anything queued, summons included.** `cancel-in-progress` is
+`${{ github.event_name == 'pull_request' }}`, true only for pushes. A comment event therefore
+never cancels a running round, and a push cancels whatever is in the group. The common fix
+cycle walks straight into this: fix, push, reply in thread, and the push kills the verify round
+the reply asked for. The reliable order is **fix, push, reply, then exactly one
+`@claude review` after the last push**. A round lost that way is reported as
+`verify-superseded`, distinct from a round that failed to post.
+
+**The seat is held for up to thirty minutes.** `review` carries `timeout-minutes: 30` against a
+measured baseline of 5.03 minutes mean and 12.72 peak (#63). Past that a run is hung, and
+because `cancel-in-progress` is false for comment events nothing evicts it, so it holds the
+group's seat for the remainder while each arriving reply evicts the one pending behind it.
+
+**The lane's own comments never enter the group.** `github.event.comment.user.type == 'Bot'`,
+and an `issue_comment` on something that is not a pull request, both divert to
+`claude-code-review-junk-<run_id>`. Concurrency is allocated at run creation, before any job
+`if:` runs, so the callee's admission gate cannot keep them out and the group key has to
+(#12). A `cancelled` review-comment run with zero jobs is the pending-slot rule above, never
+evidence that a stub predates this fix.
+
+**Drafts.** Nothing reviews a draft, by any trigger. Automatic rounds and in-thread replies are
+stopped by the caller stub's guard, so no run is spent and nothing is posted. A summon reaches
+the callee, because `issue_comment` carries no `pull_request` object for that guard to test,
+and gets a `draft` verdict on the liveness comment rather than silence, plus a `draft` lane
+event, because a run that reviewed nothing is a round that never happened.
 
 ## Incremental review
 
@@ -261,10 +325,18 @@ The `announce` job upserts an advisory comment on the pull request timeline matc
 | `finished on <sha> (job result: X) but posted **nothing**` | No |
 | `re-checked open threads at <sha>: N resolved / M left open` | **No** — threads only, no code was read |
 | `ran a verification round on <sha> (mutate result: X) but posted **nothing**` | No |
+| `the verification round on <sha> was superseded by a newer push before it could post` | No — nothing failed; summon once after the last push |
 | `auto-paused after N automatic rounds at <sha> — re-request with \`@claude review\`.` | No |
 | `paused by request at <sha>; resume with \`@claude resume\`.` | No |
+| `not reviewed at <sha>: the pull request is a draft` | No |
+| `did not run at <sha>: the diff is below this repo's \`min_diff_lines\` floor` | No |
+| `did not run at <sha>: the head moved during the debounce window` | No |
 | `did not run at <sha>: no CLAUDE_CODE_OAUTH_TOKEN reached this lane` | No |
 | `no new commits since <sha> was last reviewed; nothing to re-review` | No |
+
+Each verdict carries a `verdict_kind` onto the telemetry row, and the dashboard buckets rounds
+by it. A kind the dashboard does not know is displayed as an error, so the two lists are held
+together by `tests/test-verdict-kind-drift.py` rather than by attention.
 
 The **Head reviewed?** column is the pre-merge test, and it exists because inference fails on
 the verification verdict: `8 resolved / 0 left open` reads like success while saying nothing
@@ -328,9 +400,22 @@ carries the weight alone. Same mechanism, different job, different load.
 
 ## Verification rounds (incremental re-review)
 
-Replies from a non-bot account to unresolved `claude[bot]` threads trigger a verify round: one verdict per open thread, then automated resolution via `resolveReviewThread`, templated replies on the threads that stay open, and a `## Code review — verification round` summary. The round reviews no new code. A delta review inside it would bypass the auto-pause counter, which comment events never read, so pushes are what get reviewed and `@claude review` is the remedy for a paused, cancelled, or draft head.
+Replies from a non-bot account to unresolved `claude[bot]` threads trigger a verify round: one verdict per open thread, then automated resolution via `resolveReviewThread`, templated replies on the threads that stay open, and a `## Code review — verification round` summary. The round reviews no new code. A delta review inside it would bypass the auto-pause counter, which comment events never read, so pushes are what get reviewed and `@claude review` is the remedy for a paused or cancelled head. A draft head has no remedy but marking it ready.
 
 Verdicts carry three states. `fixed` resolves the thread; `still_applies` and `cannot_verify` post a reply citing the sha and the evidence and leave it open.
+
+Each verdict also copies the thread's `path` as an anchor. `mutate` compares it against the live
+thread and discards the entry on a mismatch, counting it in the summary's discarded total. The
+agent binds its evidence to a `thread_id` itself and no later job can re-derive that pairing, so
+without the anchor a misaligned entry posts a confident reply about a different thread's finding,
+which is what happened three times on `Sumit1993/mage-memory#206` (#148). The anchor is a field
+the agent copies, never one it derives, because only a copy is checkable. Two open threads on one
+file remain indistinguishable to it; that residual is stated rather than closed.
+
+When a thread carries a reply from anyone but the lane, that reply is what the round is judging. A
+`still_applies` has to say which claim in the reply it rejects and why the finding survives it.
+Restating the original finding is not an answer to a counter-argument, and evidence that never
+engages the reply is a `cannot_verify`.
 
 ### The verify job's two walls
 

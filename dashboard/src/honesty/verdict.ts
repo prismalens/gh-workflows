@@ -25,6 +25,11 @@ export const VERDICT_KIND_MAP: Record<string, FourStateVerdict> = {
   "auto-paused": "did-not-run",
   "no-token": "did-not-run",
   "no-new-commits": "did-not-run",
+  "paused-by-request": "did-not-run",
+  "skipped-trivial": "did-not-run",
+  superseded: "did-not-run",
+  draft: "did-not-run",
+  "verify-superseded": "did-not-run",
   silent: "silent",
   "verify-silent": "silent",
 };
@@ -34,10 +39,15 @@ export const ALL_VERDICT_KINDS = [
   "reviewed-incremental",
   "verify-rechecked",
   "auto-paused",
+  "paused-by-request",
+  "skipped-trivial",
+  "superseded",
+  "draft",
   "no-token",
   "no-new-commits",
   "silent",
   "verify-silent",
+  "verify-superseded",
 ] as const;
 
 export type VerdictKind = (typeof ALL_VERDICT_KINDS)[number];
@@ -61,6 +71,26 @@ export const VERDICT_KIND_DEFINITIONS: Record<
   "auto-paused": {
     group: "did-not-run",
     definition: "Auto-paused after reaching the maximum automatic review rounds.",
+  },
+  "paused-by-request": {
+    group: "did-not-run",
+    definition: "Paused on purpose with @claude pause; resumes with @claude resume.",
+  },
+  "skipped-trivial": {
+    group: "did-not-run",
+    definition: "Diff below the repository's min_diff_lines floor; no review was attempted.",
+  },
+  superseded: {
+    group: "did-not-run",
+    definition: "The head moved during the debounce window, so this round would have read a stale diff.",
+  },
+  draft: {
+    group: "did-not-run",
+    definition: "The pull request is a draft. Nothing reviews a draft, summons included.",
+  },
+  "verify-superseded": {
+    group: "did-not-run",
+    definition: "A newer push superseded the verification round before it posted. Nothing failed.",
   },
   "no-token": {
     group: "did-not-run",
@@ -100,7 +130,8 @@ export const VERDICT_COPY: Record<VerdictState, { label: string; explain: string
   },
   "did-not-run": {
     label: "did-not-run",
-    explain: "The round did not execute (auto-paused, no token, or no new commits).",
+    explain:
+      "The round did not read the head: paused, below the size floor, superseded, a draft, tokenless, or nothing new to read.",
   },
   silent: {
     label: "silent",
@@ -171,6 +202,11 @@ const VERDICT_KIND_BUCKET_MAP: Record<string, VerdictKindBucket> = {
   clean: "reviewed",
   "verify-rechecked": "threads-only",
   "auto-paused": "did-not-run",
+  "paused-by-request": "did-not-run",
+  "skipped-trivial": "did-not-run",
+  superseded: "did-not-run",
+  draft: "did-not-run",
+  "verify-superseded": "did-not-run",
   "no-token": "did-not-run",
   "no-new-commits": "did-not-run",
   silent: "silent",
@@ -197,7 +233,8 @@ export const VERDICT_KIND_BUCKET_COPY: Record<
   },
   "did-not-run": {
     label: "did-not-run",
-    explain: "verdict_kind is auto-paused, no-token, or no-new-commits: the round did not execute.",
+    explain:
+      "verdict_kind names a round that did not read the head: paused, trivial, superseded, draft, tokenless, or no new commits.",
   },
   silent: {
     label: "silent",

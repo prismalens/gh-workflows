@@ -61,6 +61,12 @@ jobs:
       - name: Schema-to-code drift check
         run: python3 tests/test-schema-drift.py
 
+      # An unrecognised verdict_kind is bucketed as `error` by the dashboard, so a kind the
+      # lane emits and the dashboard has never heard of displays as a failed round. Three
+      # had already drifted that way. Story: #149, #153.
+      - name: Verdict kind drift check
+        run: python3 tests/test-verdict-kind-drift.py
+
       # Extracts and runs the real smoke test step out of deploy-worker.yml. Story: #84.
       - name: Deploy Worker post-deploy smoke test behaviour
         run: python3 tests/test-deploy-worker-smoke.py
