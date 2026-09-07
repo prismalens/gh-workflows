@@ -39,6 +39,23 @@ on:
           never skipped: asking for a review is asking for one. Story: #114.
         type: number
         default: 0
+      max_reviewable_lines:
+        description: >-
+          Refuse a round whose `reviewable_lines` (additions plus modified hunk lines,
+          after status and path filters) exceeds this cap. Posts nothing inline; the
+          liveness comment and telemetry record `refused-size` with both numbers.
+          0 disables the cap. `@claude full review` overrides it for that one round.
+          Story: #105.
+        type: number
+        default: 6000
+      max_file_lines:
+        description: >-
+          A single added or modified file above this many changed lines is listed in
+          the review manifest as `oversized` and treated like a path-filtered file:
+          excluded from `.claude-review.diff` and from `reviewable_lines`. 0 disables
+          the check. Story: #105.
+        type: number
+        default: 2000
       debounce_minutes:
         description: >-
           Wait this long before an automatic `pull_request` round starts, then re-read the
@@ -241,8 +258,15 @@ jobs:
     outputs:
       started_at: ${{ steps.clock.outputs.started_at }}
       mode: ${{ steps.mode.outputs.mode }}
-      skip_reason: ${{ steps.mode.outputs.skip_reason }}
+      # A round the manifest refused is reported the same way any other skip is:
+      # through this one output, so every downstream consumer (liveness, lane-event,
+      # auto-pause counting) needs no separate refusal channel. Story: #105.
+      skip_reason: ${{ (steps.manifest.outputs.refused == 'true' && 'refused-size') || steps.mode.outputs.skip_reason }}
       fallback_reason: ${{ steps.mode.outputs.fallback_reason }}
+      reviewable_lines: ${{ steps.manifest.outputs.reviewable_lines }}
+      max_reviewable_lines: ${{ steps.manifest.outputs.max_reviewable_lines }}
+      max_file_lines: ${{ steps.manifest.outputs.max_file_lines }}
+      size_override: ${{ steps.manifest.outputs.size_override }}
       range_base: ${{ steps.mode.outputs.range_base }}
       range_head: ${{ steps.mode.outputs.range_head }}
       range_base_short: ${{ steps.mode.outputs.range_base_short }}
@@ -278,6 +302,8 @@ jobs:
           INPUT_DEFAULT_MODEL: ${{ inputs.default_model }}
           INPUT_AUTO_PAUSE_ROUNDS: ${{ inputs.auto_pause_rounds }}
           INPUT_SKIP_AUTHORS: ${{ inputs.skip_authors }}
+          INPUT_MAX_REVIEWABLE_LINES: ${{ inputs.max_reviewable_lines }}
+          INPUT_MAX_FILE_LINES: ${{ inputs.max_file_lines }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -304,6 +330,8 @@ jobs:
           path_filters = []
           escalation_paths = []
           path_instructions = []
+          max_reviewable_lines = int(os.environ.get("INPUT_MAX_REVIEWABLE_LINES", 6000))
+          max_file_lines = int(os.environ.get("INPUT_MAX_FILE_LINES", 2000))
           # No workflow input backs this: it is an experiment handle read from the repo
           # config only, and absent means control. Story: #47 amendment.
           variant = ""
@@ -315,6 +343,8 @@ jobs:
               "escalation_paths": "workflow default",
               "path_filters": "workflow default",
               "path_instructions": "workflow default",
+              "max_reviewable_lines": "workflow default",
+              "max_file_lines": "workflow default",
               "variant": "control",
           }
 
@@ -329,6 +359,8 @@ jobs:
               "escalation_paths",
               "path_filters",
               "path_instructions",
+              "max_reviewable_lines",
+              "max_file_lines",
               "variant",
           }
           # Story: #47 amendment. An optional operator label for A/B comparison; empty is control.
@@ -392,6 +424,22 @@ jobs:
                           skip = review["skip_authors"]
                           if not isinstance(skip, list) or not all(isinstance(x, str) for x in skip):
                               errors.append(f"Invalid value for 'review.skip_authors' in {filename}: expected list of strings")
+
+                      if "max_reviewable_lines" in review:
+                          mrl = review["max_reviewable_lines"]
+                          if isinstance(mrl, bool) or not isinstance(mrl, int) or mrl < 0:
+                              errors.append(
+                                  f"Invalid value for 'review.max_reviewable_lines' in {filename}: {mrl!r}. "
+                                  f"Must be an integer >= 0 (0 disables the cap)"
+                              )
+
+                      if "max_file_lines" in review:
+                          mfl = review["max_file_lines"]
+                          if isinstance(mfl, bool) or not isinstance(mfl, int) or mfl < 0:
+                              errors.append(
+                                  f"Invalid value for 'review.max_file_lines' in {filename}: {mfl!r}. "
+                                  f"Must be an integer >= 0 (0 disables the check)"
+                              )
 
                       if "path_filters" in review:
                           filters = review["path_filters"]
@@ -552,6 +600,14 @@ jobs:
                                   skip_authors = ",".join(x.strip() for x in review["skip_authors"] if isinstance(x, str) and x.strip())
                                   sources["skip_authors"] = "org defaults"
                                   org_consumed.append(f"review.skip_authors={skip_authors}")
+                              if "max_reviewable_lines" in review:
+                                  max_reviewable_lines = review["max_reviewable_lines"]
+                                  sources["max_reviewable_lines"] = "org defaults"
+                                  org_consumed.append(f"review.max_reviewable_lines={max_reviewable_lines}")
+                              if "max_file_lines" in review:
+                                  max_file_lines = review["max_file_lines"]
+                                  sources["max_file_lines"] = "org defaults"
+                                  org_consumed.append(f"review.max_file_lines={max_file_lines}")
                               if "path_filters" in review:
                                   path_filters = review["path_filters"]
                                   sources["path_filters"] = "org defaults"
@@ -646,6 +702,14 @@ jobs:
                                   skip_authors = ",".join(x.strip() for x in review["skip_authors"] if isinstance(x, str) and x.strip())
                                   sources["skip_authors"] = "repo config"
                                   consumed.append(f"review.skip_authors={skip_authors}")
+                              if "max_reviewable_lines" in review:
+                                  max_reviewable_lines = review["max_reviewable_lines"]
+                                  sources["max_reviewable_lines"] = "repo config"
+                                  consumed.append(f"review.max_reviewable_lines={max_reviewable_lines}")
+                              if "max_file_lines" in review:
+                                  max_file_lines = review["max_file_lines"]
+                                  sources["max_file_lines"] = "repo config"
+                                  consumed.append(f"review.max_file_lines={max_file_lines}")
                               if "path_filters" in review:
                                   path_filters = review["path_filters"]
                                   sources["path_filters"] = "repo config"
@@ -697,6 +761,8 @@ jobs:
               "path_filters": path_filters,
               "path_instructions": path_instructions,
               "skip_authors": skip_authors,
+              "max_reviewable_lines": max_reviewable_lines,
+              "max_file_lines": max_file_lines,
           }
           config_hash = hashlib.sha256(
               json.dumps(resolved_config, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -709,6 +775,8 @@ jobs:
           print(f"  review.escalation_paths: {escalation_paths} (source: {sources['escalation_paths']})")
           print(f"  review.path_filters: {path_filters} (source: {sources['path_filters']})")
           print(f"  review.path_instructions: {len(path_instructions)} entries (source: {sources['path_instructions']})")
+          print(f"  review.max_reviewable_lines: {max_reviewable_lines} (source: {sources['max_reviewable_lines']})")
+          print(f"  review.max_file_lines: {max_file_lines} (source: {sources['max_file_lines']})")
           print(f"  review.variant: {variant or '(control)'} (source: {sources['variant']})")
           print(f"  config_hash: {config_hash}")
 
@@ -721,6 +789,8 @@ jobs:
                   f.write(f"escalation_paths={json.dumps(escalation_paths)}\n")
                   f.write(f"path_filters={json.dumps(path_filters)}\n")
                   f.write(f"path_instructions={json.dumps(path_instructions)}\n")
+                  f.write(f"max_reviewable_lines={max_reviewable_lines}\n")
+                  f.write(f"max_file_lines={max_file_lines}\n")
                   f.write(f"config_resolution={config_resolution}\n")
                   f.write(f"config_hash={config_hash}\n")
                   f.write(f"variant={variant}\n")
@@ -1114,6 +1184,275 @@ jobs:
         if: steps.mode.outputs.mode == 'incremental'
         run: cp /tmp/incremental-range.json "$GITHUB_WORKSPACE/.claude-incremental-range.json"
 
+      # The caller decides what is reviewable, never the agent (#105). Writes
+      # .claude-review-manifest.json (one entry per changed file: path, status,
+      # previous_path, additions, deletions, filtered_by, references) and
+      # .claude-review.diff (hunks for reviewable files only) into the checkout.
+      # Runs BEFORE "Filter review paths" because that step rewrites the incremental
+      # range file in place to drop excluded files, and the manifest needs every file,
+      # including the ones it will go on to mark filtered.
+      - name: Build review manifest
+        id: manifest
+        if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.resolve.outputs.number }}
+          MODE: ${{ steps.mode.outputs.mode }}
+          PATH_FILTERS: ${{ steps.config.outputs.path_filters }}
+          CONFIG_RESOLUTION: ${{ steps.config.outputs.config_resolution }}
+          MAX_REVIEWABLE_LINES: ${{ steps.config.outputs.max_reviewable_lines }}
+          MAX_FILE_LINES: ${{ steps.config.outputs.max_file_lines }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import fnmatch
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          # Kept in sync with "Filter review paths" by hand; the two steps read the
+          # same config output but fetch and classify the file list independently,
+          # so each is testable against its own stubbed `gh`. Story: #105.
+          DEFAULT_PATH_FILTERS = [
+              "package-lock.json",
+              "pnpm-lock.yaml",
+              "yarn.lock",
+              "Cargo.lock",
+              "poetry.lock",
+              "go.sum",
+              "dist/**",
+              "build/**",
+              "vendor/**",
+              "**/__snapshots__/**",
+              "*.min.js",
+              "*.min.css",
+              "**/node_modules/**",
+          ]
+
+          def matches_pattern(path: str, pattern: str) -> bool:
+              if pattern.endswith("/**"):
+                  prefix = pattern[:-3]
+                  if path == prefix or path.startswith(prefix + "/"):
+                      return True
+                  if fnmatch.fnmatch(path, pattern):
+                      return True
+              elif fnmatch.fnmatch(path, pattern):
+                  return True
+              return False
+
+          # Same override semantics as "Filter review paths" (#105): repo config or
+          # org defaults REPLACE the default list; anything else falls back to it.
+          config_resolution_raw = os.environ.get("CONFIG_RESOLUTION", "{}")
+          try:
+              config_res = json.loads(config_resolution_raw) if config_resolution_raw else {}
+              pf_source = config_res.get("sources", {}).get("path_filters", "workflow default")
+          except Exception:
+              pf_source = "workflow default"
+
+          raw_filters = os.environ.get("PATH_FILTERS", "")
+          if pf_source in ("repo config", "org defaults"):
+              try:
+                  path_filters = json.loads(raw_filters) if raw_filters else []
+              except Exception:
+                  path_filters = []
+          elif raw_filters and raw_filters not in ("[]", '""'):
+              try:
+                  path_filters = json.loads(raw_filters)
+              except Exception:
+                  path_filters = DEFAULT_PATH_FILTERS
+          else:
+              path_filters = DEFAULT_PATH_FILTERS
+
+          def as_int(raw, default=0):
+              raw = (raw or "").strip()
+              if not raw:
+                  return default
+              try:
+                  return int(float(raw))
+              except Exception:
+                  return default
+
+          max_reviewable_lines = as_int(os.environ.get("MAX_REVIEWABLE_LINES", ""), 6000)
+          max_file_lines = as_int(os.environ.get("MAX_FILE_LINES", ""), 2000)
+
+          mode = os.environ.get("MODE", "")
+          repo = os.environ.get("REPO", "")
+          pr = os.environ.get("PR", "")
+          is_incremental = (mode == "incremental")
+
+          files_data = []
+          if is_incremental:
+              range_file = None
+              for p in [pathlib.Path(".claude-incremental-range.json"), pathlib.Path("/tmp/incremental-range.json")]:
+                  if p.exists():
+                      range_file = p
+                      break
+              if range_file is not None:
+                  try:
+                      with open(range_file, "r", encoding="utf-8") as f:
+                          range_data = json.load(f)
+                      files_data = range_data.get("files", [])
+                  except Exception as e:
+                      print(f"::warning::Failed to read incremental range file for manifest: {e}")
+          else:
+              if repo and pr:
+                  cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--slurp"]
+                  res = subprocess.run(cmd, capture_output=True, text=True)
+                  if res.returncode == 0 and res.stdout.strip():
+                      try:
+                          pages = json.loads(res.stdout)
+                          files_data = [f for page in pages for f in page]
+                      except Exception as e:
+                          print(f"::warning::Failed to parse PR files JSON for manifest: {e}")
+                          raise SystemExit("Cannot build review manifest without the PR file list")
+                  else:
+                      err = res.stderr.strip() if res.stderr else f"exit code {res.returncode}"
+                      print(f"::error::Failed to list PR files for manifest: {err}")
+                      raise SystemExit(1)
+
+          STATUS_MAP = {
+              "added": "added",
+              "removed": "deleted",
+              "modified": "modified",
+              "renamed": "renamed",
+              "changed": "modified",
+              "copied": "modified",
+              "unchanged": "modified",
+          }
+
+          def git_grep_paths(needle: str):
+              if not needle:
+                  return []
+              try:
+                  res = subprocess.run(
+                      ["git", "grep", "-l", "-F", "--", needle],
+                      capture_output=True, text=True,
+                  )
+              except Exception:
+                  return []
+              # 0 = matches found, 1 = no matches. Anything else is a real error
+              # (not a repository, binary path confusion, etc.) and is treated as
+              # "could not determine", never as a silent empty list.
+              if res.returncode not in (0, 1):
+                  print(f"::warning::git grep failed for {needle!r}: {res.stderr.strip()}")
+                  return []
+              return [line.strip() for line in res.stdout.splitlines() if line.strip()]
+
+          def strip_extension(path: str) -> str:
+              base = path.rsplit("/", 1)[-1]
+              if "." in base:
+                  stem = base.rsplit(".", 1)[0]
+                  return path[: -(len(base))] + stem
+              return path
+
+          def compute_references(path: str):
+              if not path:
+                  return []
+              hits = set(git_grep_paths(path))
+              stripped = strip_extension(path)
+              if stripped != path:
+                  hits.update(git_grep_paths(stripped))
+              return sorted(hits)
+
+          manifest_entries = []
+          diff_parts = []
+          reviewable_lines_total = 0
+
+          for item in files_data:
+              if not isinstance(item, dict):
+                  continue
+              fname = item.get("filename", "")
+              raw_status = item.get("status", "modified")
+              status = STATUS_MAP.get(raw_status, "modified")
+              additions = item.get("additions", 0) or 0
+              deletions = item.get("deletions", 0) or 0
+              previous_path = item.get("previous_filename") or None
+              patch = item.get("patch")
+
+              # GitHub omits `patch` for binary content and for an unchanged rename
+              # alike; only the latter carries status "renamed", which is why that
+              # status is checked first and never reclassified as binary.
+              if patch is None and status != "renamed":
+                  status = "binary"
+
+              filtered_by = None
+              for pat in path_filters:
+                  if matches_pattern(fname, pat):
+                      filtered_by = pat
+                      break
+
+              references = []
+              if status == "deleted":
+                  references = compute_references(fname)
+              elif status == "renamed":
+                  references = compute_references(previous_path or fname)
+
+              reviewable_status = status in ("added", "modified") or (
+                  status == "renamed" and (additions > 0 or deletions > 0)
+              )
+              file_lines = additions + deletions
+
+              if filtered_by is None and reviewable_status and max_file_lines > 0 and file_lines > max_file_lines:
+                  filtered_by = "oversized"
+
+              counted = filtered_by is None and reviewable_status
+              if counted:
+                  reviewable_lines_total += file_lines
+
+              manifest_entries.append({
+                  "path": fname,
+                  "status": status,
+                  "previous_path": previous_path,
+                  "additions": additions,
+                  "deletions": deletions,
+                  "filtered_by": filtered_by,
+                  "references": references,
+              })
+
+              if counted and patch:
+                  diff_parts.append(f"diff --git a/{fname} b/{fname}\n--- a/{fname}\n+++ b/{fname}\n{patch}\n")
+
+          workspace = pathlib.Path(os.environ.get("GITHUB_WORKSPACE", "."))
+          manifest_path = workspace / ".claude-review-manifest.json"
+          diff_path = workspace / ".claude-review.diff"
+
+          with open(manifest_path, "w", encoding="utf-8") as f:
+              json.dump(manifest_entries, f, indent=2)
+              f.write("\n")
+
+          with open(diff_path, "w", encoding="utf-8") as f:
+              f.write("\n".join(diff_parts))
+              if diff_parts:
+                  f.write("\n")
+
+          # `@claude full review` is a person asking for this exact round anyway,
+          # so it overrides the cap for that one round (#105). The round is still
+          # counted as an override on the telemetry row so an operator repeatedly
+          # overriding a real problem stays visible.
+          override_active = (mode == "review-full")
+          would_refuse = max_reviewable_lines > 0 and reviewable_lines_total > max_reviewable_lines
+          refused = would_refuse and not override_active
+          size_override = would_refuse and override_active
+
+          print(
+              f"review manifest: {len(manifest_entries)} file(s), {reviewable_lines_total} reviewable "
+              f"line(s) (max_reviewable_lines={max_reviewable_lines or 'disabled'}, "
+              f"max_file_lines={max_file_lines or 'disabled'}), refused={refused}, size_override={size_override}"
+          )
+
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as f:
+                  f.write(f"reviewable_lines={reviewable_lines_total}\n")
+                  f.write(f"max_reviewable_lines={max_reviewable_lines}\n")
+                  f.write(f"max_file_lines={max_file_lines}\n")
+                  f.write(f"refused={'true' if refused else 'false'}\n")
+                  f.write(f"size_override={'true' if size_override else 'false'}\n")
+          PY
+
       # Default path filters exclude generated files, lockfiles, and build artifacts (#105).
       # Excluded files are subtracted from changed_files and diff_lines before telemetry is built.
       - name: Filter review paths
@@ -1414,7 +1753,9 @@ jobs:
       # and every PR. Amendment to #47, 2026-09-02.
       - name: Build the review prompt
         id: build-prompt
-        if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental'
+        if: >-
+          (steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental') &&
+          steps.manifest.outputs.refused != 'true'
         env:
           REPO: >-
             ${{ github.repository }}
@@ -1449,6 +1790,8 @@ jobs:
           **Agent assumptions (applies to all agents and subagents):**
           - All tools are functional and will work without error. Do not test tools or make exploratory calls. Make sure this is clear to every subagent that is launched.
           - Only call a tool if it is required to complete the task. Every tool call should have a clear purpose.
+
+          **What to read, and in what order (applies to all agents and subagents):** The caller has already decided what is reviewable and written it to the checkout. Read `.claude-review-manifest.json` in the repository root first — it lists every changed file, its status, and why any were excluded (a path filter name, `oversized`, or none). Then read `.claude-review.diff`, which contains hunks only for the files the manifest marks reviewable. Never run `gh pr diff` for the whole pull request; `gh pr diff <PR> -- <path>` for a single path stays allowed when an agent needs more context on one file. A file the manifest lists as filtered, oversized, binary, or deleted must never be treated as reviewed: for a deletion or a rename, the manifest's `references` list (where the old path still turns up in the repository) is the whole review for that entry, and an empty list is not itself a finding.
 
           To do this, follow these steps precisely:
 
@@ -1616,7 +1959,9 @@ jobs:
       # gh api, git, and test/lint runners to eliminate denied tool-call round trips. Story: #42.
       - name: Run Claude Code Review
         id: claude-review
-        if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental'
+        if: >-
+          (steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental') &&
+          steps.manifest.outputs.refused != 'true'
         uses: anthropics/claude-code-action@ef8bb1e43bf303cff727a1dd0b8837029fe982a2  # v1.0.215
         # Synchronous subagents required in print mode or the reviewer exits before its
         # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
@@ -1967,6 +2312,8 @@ jobs:
           ACTION_VERSION: ${{ env.ACTION_VERSION }}
           CONFIG_HASH: ${{ steps.config.outputs.config_hash }}
           VARIANT: ${{ steps.config.outputs.variant }}
+          REVIEWABLE_LINES: ${{ steps.manifest.outputs.reviewable_lines }}
+          SIZE_OVERRIDE: ${{ steps.manifest.outputs.size_override }}
         run: |
           set -uo pipefail
 
@@ -2039,6 +2386,8 @@ jobs:
             --arg action_version "${ACTION_VERSION:-}" \
             --arg config_hash "${CONFIG_HASH:-}" \
             --arg variant "${VARIANT:-}" \
+            --arg reviewable_lines "${REVIEWABLE_LINES:-}" \
+            --arg size_override "${SIZE_OVERRIDE:-}" \
             --arg agents "${AGENTS:-[]}" \
             --arg agents_status "${AGENTS_STATUS:-}" \
             '
@@ -2086,6 +2435,8 @@ jobs:
               action_version: (if $action_version == "" then null else $action_version end),
               config_hash: (if $config_hash == "" then null else $config_hash end),
               variant: (if $variant == "" then null else $variant end),
+              reviewable_lines: num($reviewable_lines),
+              size_override: (if $size_override == "true" then 1 elif $size_override == "false" then 0 else null end),
               per_model_usage: ((.modelUsage // {}) | tojson),
               subagent_stats: (if .subagent_stats == null then null else (.subagent_stats | tojson) end),
               agents: (if $agents == "" or $agents == "null" then [] else (try ($agents | fromjson) catch []) end),
@@ -2959,6 +3310,8 @@ jobs:
           RANGE_HEAD: ${{ needs.review.outputs.range_head }}
           MODEL: ${{ needs.review.outputs.model }}
           MODEL_SOURCE: ${{ needs.review.outputs.model_source }}
+          REVIEWABLE_LINES: ${{ needs.review.outputs.reviewable_lines }}
+          MAX_REVIEWABLE_LINES: ${{ needs.review.outputs.max_reviewable_lines }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -3074,6 +3427,11 @@ jobs:
           elif [ "$SKIP_REASON" = "no-new-commits" ]; then
             verdict="no new commits since \`$short\` was last reviewed; nothing to re-review."
             verdict_kind="no-new-commits"
+          elif [ "$SKIP_REASON" = "refused-size" ]; then
+            verdict="refused at \`$short\`: \`${REVIEWABLE_LINES:-0}\` reviewable line(s), above the \
+          \`max_reviewable_lines\` cap of \`${MAX_REVIEWABLE_LINES:-0}\`. Nothing was posted. \
+          **This head has no machine review on record.** \`@claude full review\` overrides the cap for one round."
+            verdict_kind="refused-size"
           elif [ "$MODE" = "verify" ]; then
             # A hardened verify round posts nothing as claude[bot] — `mutate` posts as
             # `github-actions[bot]` — so the claude[bot] count below would report a
@@ -3380,6 +3738,7 @@ jobs:
         needs.review.outputs.skip_reason == 'skipped-author' ||
         needs.review.outputs.skip_reason == 'trivial' ||
         needs.review.outputs.skip_reason == 'superseded' ||
+        needs.review.outputs.skip_reason == 'refused-size' ||
         (
           needs.resolve.outputs.draft == 'true' &&
           needs.resolve.outputs.summon != 'none' &&
@@ -3406,6 +3765,8 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REVIEWABLE_LINES: ${{ needs.review.outputs.reviewable_lines }}
+          MAX_REVIEWABLE_LINES: ${{ needs.review.outputs.max_reviewable_lines }}
           INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
           INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
           LANE_VERSION: ${{ env.LANE_VERSION }}
@@ -3439,6 +3800,8 @@ jobs:
             reason="skip-author"
           elif [ "$SKIP_REASON" = "no-token" ]; then
             reason="no-token"
+          elif [ "$SKIP_REASON" = "refused-size" ]; then
+            reason="refused-size"
           # no-new-commits is deliberately NOT a lane event: nothing was skipped, there was simply nothing to review.
           fi
 
@@ -3474,6 +3837,8 @@ jobs:
             --arg head_sha "${HEAD_SHA:-}" \
             --arg rounds_used "${rounds_used:-}" \
             --arg lane_version "${LANE_VERSION:-}" \
+            --arg reviewable_lines "${REVIEWABLE_LINES:-}" \
+            --arg max_reviewable_lines "${MAX_REVIEWABLE_LINES:-}" \
             '
             def str_val(s): if s == "" then null else s end;
             def num_val(s): if s == "" then null else (s | tonumber? // null) end;
@@ -3488,7 +3853,9 @@ jobs:
               pr_number: num_val($pr),
               head_sha: str_val($head_sha),
               rounds_used: num_val($rounds_used),
-              lane_version: str_val($lane_version)
+              lane_version: str_val($lane_version),
+              reviewable_lines: num_val($reviewable_lines),
+              max_reviewable_lines: num_val($max_reviewable_lines)
             }
           ')
 

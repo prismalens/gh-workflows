@@ -56,6 +56,8 @@ USAGE_RECORDS_READ_ALLOWLIST = {
     "config_hash":      "Variant identity component (#47); not yet surfaced in dashboard read API",
     "variant":          "Variant identity operator label (#47); not yet surfaced in dashboard read API",
     "variant_key":      "Variant identity grouping key (#47); not yet surfaced in dashboard read API",
+    "reviewable_lines": "Review manifest unit (#105); not yet surfaced in dashboard read API",
+    "size_override":    "Whether @claude full review bypassed max_reviewable_lines (#105); not yet surfaced in dashboard read API",
 }
 
 

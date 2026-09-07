@@ -50,6 +50,8 @@ const NUMERIC_FIELDS = [
   "inline_count",
   "summary_count",
   "round_ordinal",
+  "reviewable_lines",
+  "size_override",
 ];
 
 const STRING_FIELDS = [
@@ -88,11 +90,14 @@ const VALID_LANE_EVENT_REASONS = new Set([
   "paused-by-request", // #124, finding 3944010353
   "fork-head",
   "skip-author",
+  "refused-size", // #105: reviewable_lines exceeded max_reviewable_lines, nothing posted
 ]);
 
 const LANE_EVENT_NUMERIC_FIELDS = [
   "pr_number",
   "rounds_used",
+  "reviewable_lines",
+  "max_reviewable_lines",
 ];
 
 const LANE_EVENT_STRING_FIELDS = [
@@ -1274,13 +1279,16 @@ async function handleIngest(request, env) {
           config_hash,
           variant,
           variant_key,
-          agents_status
+          agents_status,
+          reviewable_lines,
+          size_override
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
           ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
           ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
-          ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49
+          ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
+          ?51
         )
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
@@ -1332,7 +1340,9 @@ async function handleIngest(request, env) {
         payload.config_hash ?? null,
         payload.variant ?? null,
         variantKey,
-        payload.agents_status ?? null
+        payload.agents_status ?? null,
+        payload.reviewable_lines ?? null,
+        payload.size_override ?? null
       );
 
       const agentStmts = [];
@@ -1458,8 +1468,10 @@ async function handleIngest(request, env) {
           head_sha,
           run_url,
           rounds_used,
-          lane_version
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+          lane_version,
+          reviewable_lines,
+          max_reviewable_lines
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
         ON CONFLICT(run_id, run_attempt) DO NOTHING`
       ).bind(
         payload.run_id,
@@ -1471,7 +1483,9 @@ async function handleIngest(request, env) {
         payload.head_sha ?? null,
         payload.run_url ?? null,
         payload.rounds_used ?? null,
-        payload.lane_version ?? null
+        payload.lane_version ?? null,
+        payload.reviewable_lines ?? null,
+        payload.max_reviewable_lines ?? null
       ).run();
     } catch {
       return new Response(null, { status: 500 });

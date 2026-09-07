@@ -377,6 +377,7 @@ export const LANE_EVENT_REASONS = [
   "skip-trivial",
   "superseded",
   "paused-by-request",
+  "refused-size",
 ] as const;
 
 export type LaneEventReasonKey = (typeof LANE_EVENT_REASONS)[number];
@@ -391,6 +392,10 @@ export const LANE_EVENT_DEFINITIONS: Record<LaneEventReasonKey, string> = {
   "skip-trivial": "Run skipped because the diff is below the repository's min_diff_lines floor",
   superseded: "Run skipped because the head moved during the debounce window",
   "paused-by-request": "Run skipped because the PR is paused by @claude pause",
+  "refused-size":
+    "Run refused because reviewable_lines exceeded the repository's max_reviewable_lines cap; " +
+    "nothing was posted. @claude full review overrides the cap for one round. The two counts are " +
+    "recorded on this event but not yet returned by the read API, so they cannot be shown here.",
 };
 
 export const FORK_HEAD_FOOTNOTE =

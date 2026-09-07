@@ -279,7 +279,7 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 49);
+      assert.equal(query.args.length, 51);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
@@ -319,6 +319,11 @@ describe("Worker telemetry ingest", () => {
       const expectedVariantKey = await computeVariantKey(null, "claude-3-7-sonnet", null, null, "review");
       assert.equal(query.args[47], expectedVariantKey);
       assert.match(query.args[47], /^[0-9a-f]{64}$/);
+
+      // reviewable_lines (49) and size_override (50) are the #105 manifest fields;
+      // a v1 payload predates them and binds NULL for both.
+      assert.equal(query.args[49], null);
+      assert.equal(query.args[50], null);
     });
 
     it("inserts a full v2 payload and binds every new column with given values", async () => {
@@ -996,11 +1001,47 @@ describe("Worker telemetry ingest", () => {
         "https://github.com/prismalens/gh-workflows/actions/runs/123456",
         3,
         "v2.0.0",
+        // reviewable_lines / max_reviewable_lines (#105): null on a payload that
+        // predates the review manifest cap.
+        null,
+        null,
       ]);
     });
 
-    it("supports all five valid reasons: no-token, auto-paused, paused-by-request, fork-head, skip-author", async () => {
-      const reasons = ["no-token", "auto-paused", "paused-by-request", "fork-head", "skip-author"];
+    it("inserts a refused-size lane event with reviewable_lines and max_reviewable_lines", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const laneEventPayload = {
+        event_kind: "lane_event",
+        run_id: 654321,
+        run_attempt: 1,
+        recorded_at: "2026-09-07T09:00:00.000Z",
+        repository: "prismalens/gh-workflows",
+        reason: "refused-size",
+        pr_number: 105,
+        head_sha: "00112233445566778899aabbccddeeff0011223",
+        run_url: "https://github.com/prismalens/gh-workflows/actions/runs/654321",
+        reviewable_lines: 9000,
+        max_reviewable_lines: 6000,
+        lane_version: "v2.1.0",
+      };
+
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: laneEventPayload,
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+
+      const query = db.queries[0];
+      assert.equal(query.args[4], "refused-size");
+      assert.equal(query.args[10], 9000);
+      assert.equal(query.args[11], 6000);
+    });
+
+    it("supports all six valid reasons: no-token, auto-paused, paused-by-request, fork-head, skip-author, refused-size", async () => {
+      const reasons = ["no-token", "auto-paused", "paused-by-request", "fork-head", "skip-author", "refused-size"];
       for (const reason of reasons) {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };

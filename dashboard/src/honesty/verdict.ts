@@ -33,6 +33,7 @@ export const VERDICT_KIND_MAP: Record<string, VerdictState> = {
   "skipped-trivial": "did-not-run",
   superseded: "did-not-run",
   draft: "did-not-run",
+  "refused-size": "did-not-run",
   "verify-superseded": "did-not-run",
   silent: "silent",
   "verify-silent": "silent",
@@ -50,6 +51,7 @@ export const ALL_VERDICT_KINDS = [
   "skipped-trivial",
   "superseded",
   "draft",
+  "refused-size",
   "no-token",
   "no-new-commits",
   "silent",
@@ -97,6 +99,13 @@ export const VERDICT_KIND_DEFINITIONS: Record<
   draft: {
     group: "did-not-run",
     definition: "The pull request is a draft. Nothing reviews a draft, summons included.",
+  },
+  "refused-size": {
+    group: "did-not-run",
+    definition:
+      "The diff's reviewable_lines exceeded the repository's max_reviewable_lines cap, so the " +
+      "round refused and posted nothing. That is the size cap working, not a failure, and this " +
+      "head has no machine review on record. @claude full review overrides the cap for one round.",
   },
   "verify-superseded": {
     group: "did-not-run",
@@ -235,6 +244,7 @@ const VERDICT_KIND_BUCKET_MAP: Record<string, VerdictKindBucket> = {
   "skipped-trivial": "did-not-run",
   superseded: "did-not-run",
   draft: "did-not-run",
+  "refused-size": "did-not-run",
   "verify-superseded": "did-not-run",
   "no-token": "did-not-run",
   "no-new-commits": "did-not-run",
