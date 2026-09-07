@@ -84,6 +84,12 @@ jobs:
       - name: Review manifest behaviour
         run: python3 tests/test-review-manifest.py
 
+      # Extracts and runs the real 'Build review context' script out of
+      # claude-code-review.yml: profile, issues, ci_failures, dependencies, and
+      # tool_findings. Stories: #143, #144, #145, #146, #147.
+      - name: Review context behaviour
+        run: python3 tests/test-review-context.py
+
       # Version pinned: an actionlint release must not turn a green branch red on its own.
       - name: actionlint
         run: |

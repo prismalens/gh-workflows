@@ -152,7 +152,10 @@ exit 1
 
 
 def by_path(manifest, path):
-    return next((e for e in manifest if e["path"] == path), None)
+    # The manifest is {"files": [...], "context": {...}} (#143-#147); this step only
+    # ever writes "files" and leaves "context" as the empty placeholder for the next
+    # step ("Build review context") to fill in.
+    return next((e for e in manifest["files"] if e["path"] == path), None)
 
 
 def main():
