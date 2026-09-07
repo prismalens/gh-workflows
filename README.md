@@ -14,7 +14,7 @@ Reusable workflow callees live in `.github/workflows/` and are invoked by consum
 
 ### Callees
 
-- [`.github/workflows/claude-code-review.yml`](.github/workflows/claude-code-review.yml) — behaviour: [docs/review-lane.md](docs/review-lane.md)
+- [`.github/workflows/claude-code-review.yml`](.github/workflows/claude-code-review.yml)
 - `.github/workflows/claude.yml`
 - `.github/workflows/dependabot-auto-merge.yml`
 - `.github/workflows/dependabot-auto-merge-caller.yml` — this repository's own caller stub for the auto-merge callee
@@ -93,11 +93,33 @@ jobs:
 3. **Secrets Mapped Explicitly**: `secrets: inherit` does not cross repository owners (e.g. across orgs/users like `prismalens` vs `Sumit1993`). Secrets must be mapped explicitly across owner boundaries.
 4. **Mention Lane Excludes Owned Verbs**: The `claude.yml` caller stub must carry a caller-level `if:` excluding comment bodies that contain `@claude review` or `@claude full review`. Those verbs belong to the review lane; without the exclusion each such comment fires two lanes on the same PR. Exact expression: the Mention Lane worked example above.
 5. **Pin `branches` on `pull_request`**: Every stub that triggers on `pull_request` pins `branches: [main]`, so covering a future `release/*` branch is a decision someone makes, not an accident.
-6. **Comment Triggers Need a Concurrency Fallback**: The moment a stub gains `issue_comment` / `pull_request_review_comment` triggers, its concurrency group key must fall back to `github.event.issue.number` — `${{ github.event.pull_request.number || github.event.issue.number }}`. `github.event.pull_request.number` is empty on `issue_comment`, so without the fallback the group collapses to the constant `claude-code-review-`: one global group in which any PR's summon cancels every other PR's in-flight run.
-7. **Cancel Automatic Rounds Only**: On a lane that takes both `pull_request` and comment triggers, use `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`: a summon never cancels an in-flight automatic round; it queues behind it. A push still supersedes anything in the group, including a summon.
-8. **Admission is effective repository permission, not `author_association`**: Comment events in both lanes are admitted only when the acting account holds `admin` or `write` on the repository, checked live in the `admit` composite action. `author_association` is banned from admission: it is repo-scoped and payload-dependent, and it reported `CONTRIBUTOR` in the webhook for a maintainer whose REST record said `MEMBER`, so replies on `prismalens/prismalens` were never admitted. A failed check is red, never silently open and never silently closed. Story: `prismalens/gh-workflows#20`.
+6. **Comment Triggers Need a Concurrency Fallback and a Junk Group**: The moment a stub gains `issue_comment` / `pull_request_review_comment` triggers, two things become load-bearing in the group key. It must fall back to `github.event.issue.number`, because `github.event.pull_request.number` is empty on `issue_comment` and without the fallback the group collapses to the constant `claude-code-review-`: one global group in which any PR's summon cancels every other PR's in-flight run. And the lane's own emissions must divert to a per-run junk group, because concurrency is allocated at run creation, before any job `if:` runs, so the callee's admission gate cannot keep them out: a `claude[bot]` verdict comment took the pending seat and cancelled the queued human reply four times out of four (`prismalens/gh-workflows#12`). Both, together:
 
-See [docs/review-lane.md](docs/review-lane.md) for review lane inputs, org defaults (`.github/claude-review-defaults.yml`), per-repo configuration (`.github/claude-review.yml`), four-layer precedence, model escalation, consumer stub configuration, summon grammar, incremental review, step summaries, thread resolution, and fork handling.
+   ```yaml
+   group: >-
+     ${{ (github.event.comment.user.type == 'Bot'
+          || (github.event_name == 'issue_comment' && !github.event.issue.pull_request))
+         && format('claude-code-review-junk-{0}', github.run_id)
+         || format('claude-code-review-{0}', github.event.pull_request.number || github.event.issue.number) }}
+   ```
+
+   Copy the group and the guard from a consumer stub that is already running, never from prose. A stub written from a description reproduces whatever the description last forgot.
+7. **Cancel Automatic Rounds Only**: On a lane that takes both `pull_request` and comment triggers, use `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`: a summon never cancels an in-flight automatic round; it queues behind it. A push still supersedes anything in the group, including a summon.
+
+   What that group does under load is the rest of the scheduling contract, and every part of it is a condition in the stub above or in `claude-code-review.yml`. GitHub's own wording, under [`concurrency`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency): "there can be at most one running job or workflow in a concurrency group at any time... any existing `pending` job or workflow in the same concurrency group will be canceled and the new queued job or workflow will take its place."
+
+   So one seat and one waiting room. N in-thread replies fire N runs into that group, and every arrival after the second evicts the one waiting; those runs conclude `cancelled` with zero jobs, which reads like breakage and is not, because one verify round re-checks every unresolved thread and the survivor covers what the evicted runs would have. The cost is latency and invisibility, never coverage. A push supersedes anything queued, summons included, so the common cycle of fix, push, reply kills the round the reply asked for: the reliable order is fix, push, reply, then exactly one `@claude review` after the last push. And the seat is held for up to `timeout-minutes: 30` against a measured 5.03 minute mean and 12.72 peak (`prismalens/gh-workflows#63`), during which nothing evicts a hung run because `cancel-in-progress` is false for comment events.
+8. **Nothing Reviews a Draft, By Any Trigger**: The review stub carries a bare
+   `if: github.event.pull_request.draft != true`, not a form scoped to `pull_request`. The two
+   comment events differ under it and the difference is the whole rule. `pull_request_review_comment`
+   carries a `pull_request` object, so a reply on a draft is stopped at the stub and no run is
+   spent. `issue_comment` does not, so `.draft` is null and a summon reaches the callee, which
+   skips its own `review` job on the same fact and answers with a `draft` verdict on the liveness
+   comment rather than silence. Marking the pull request ready is what collects the work, and the
+   lane then takes the whole diff in one round. Story: `prismalens/gh-workflows#153`.
+9. **Admission is effective repository permission, not `author_association`**: Comment events in both lanes are admitted only when the acting account holds `admin` or `write` on the repository, checked live in the `admit` composite action. `author_association` is banned from admission: it is repo-scoped and payload-dependent, and it reported `CONTRIBUTOR` in the webhook for a maintainer whose REST record said `MEMBER`, so replies on `prismalens/prismalens` were never admitted. A failed check is red, never silently open and never silently closed. Story: `prismalens/gh-workflows#20`.
+
+Everything else about the review lane — inputs, org defaults (`.github/claude-review-defaults.yml`), per-repo configuration (`.github/claude-review.yml`), four-layer precedence, model escalation, summon grammar, incremental review, step summaries, liveness verdicts, thread resolution and fork handling — is read out of [`.github/workflows/claude-code-review.yml`](.github/workflows/claude-code-review.yml), which is the only source of truth for it. A prose copy of that behaviour used to live in `docs/review-lane.md`; it was deleted because it drifted, and its worked-example consumer stub had spent ten days telling new consumers to build the concurrency group that `prismalens/gh-workflows#12` exists to prevent. Read the workflow, and copy stubs from a repository that is running one.
 
 ---
 

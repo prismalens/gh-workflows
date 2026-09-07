@@ -43,13 +43,11 @@ reviews:
         names pinned in rulesets. Flag any change that would alter a check run name.
     - path: "README.md"
       instructions: >-
-        This README documents workflow behaviour that consumers rely on. If the PR changes
-        a workflow input, default, trigger, marker format, label name or job topology, the
-        README must be updated in the same PR. Name the specific stale passage.
-    - path: "docs/review-lane.md"
-      instructions: >-
-        This document details review lane workflow behaviour that consumers rely on. If the PR
-        changes a workflow input, default, trigger, marker format, label name or job topology,
-        docs/review-lane.md must be updated in the same PR. Name the specific stale passage.
+        This README is the only prose record of workflow behaviour that consumers rely on;
+        the prose copy in docs/review-lane.md was deleted because it drifted. If the PR
+        changes a workflow input, default, trigger, marker format, label name, job topology,
+        concurrency group or scheduling behaviour, the README must be updated in the same PR.
+        Name the specific stale passage. Flag any stub YAML in the README that no longer
+        matches the stubs the consumer repositories actually run.
 chat:
   allow_non_org_members: false
