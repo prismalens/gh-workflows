@@ -1,8 +1,8 @@
 import type { LaneEventRow, RoundRow } from "@/api/types";
 import {
   ALL_VERDICT_KINDS,
-  type FourStateVerdict,
   type VerdictKind,
+  type VerdictState,
   VERDICT_KIND_DEFINITIONS,
 } from "@/honesty/verdict";
 
@@ -81,7 +81,7 @@ export function buildSparkline(
 
 export interface VerdictRowSummary {
   kind: VerdictKind;
-  group: FourStateVerdict;
+  group: VerdictState;
   definition: string;
   count: number;
   lastSeen: string | null;
@@ -374,6 +374,9 @@ export const LANE_EVENT_REASONS = [
   "fork-head",
   "skip-author",
   "draft",
+  "skip-trivial",
+  "superseded",
+  "paused-by-request",
 ] as const;
 
 export type LaneEventReasonKey = (typeof LANE_EVENT_REASONS)[number];
@@ -385,6 +388,9 @@ export const LANE_EVENT_DEFINITIONS: Record<LaneEventReasonKey, string> = {
     "Run skipped on fork head (summon only; automatic fork PRs cannot authenticate to post lane events)",
   "skip-author": "Run skipped because PR author matches skip_authors configuration",
   draft: "Summon on a draft pull request; nothing reviews a draft, so the run reviewed nothing",
+  "skip-trivial": "Run skipped because the diff is below the repository's min_diff_lines floor",
+  superseded: "Run skipped because the head moved during the debounce window",
+  "paused-by-request": "Run skipped because the PR is paused by @claude pause",
 };
 
 export const FORK_HEAD_FOOTNOTE =
