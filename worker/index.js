@@ -128,6 +128,53 @@ const PR_STRING_FIELDS = [
   "updated_at", // #136, finding 3944010389
 ];
 
+// #47: exactly the ruled schema, plus row_set_incomplete (the sweep-pagination flag the
+// schema amendment predates). Any field the sweep sends outside this list is ignored, never
+// stored, which is what keeps a severity or lane column from ever reaching this table.
+const FINDING_STRING_FIELDS = [
+  "thread_node_id",
+  "repository",
+  "path",
+  "resolved_by_login",
+  "thread_created_at",
+  "header_raw",
+  "body_excerpt",
+  "diff_hunk",
+  "human_reply_sha",
+  "fix_sha",
+  "fix_sha_source",
+  "verify_verdict",
+  "head_sha_reviewed",
+  "last_swept_at",
+];
+
+const FINDING_INTEGER_FIELDS = [
+  "pr_number",
+  "original_line",
+  "line",
+  "is_resolved",
+  "is_outdated",
+  "human_reply_count",
+  "row_set_incomplete",
+];
+
+// Nullable per the schema amendment; every other field in FINDING_STRING_FIELDS is required.
+const FINDING_NULLABLE_STRING_FIELDS = new Set([
+  "path",
+  "resolved_by_login",
+  "header_raw",
+  "human_reply_sha",
+  "fix_sha",
+  "fix_sha_source",
+  "verify_verdict",
+]);
+
+// Nullable per the schema amendment; every other field in FINDING_INTEGER_FIELDS is required.
+const FINDING_NULLABLE_INTEGER_FIELDS = new Set(["original_line", "line"]);
+
+const VALID_FIX_SHA_SOURCES = new Set(["verify_table", "human_reply"]);
+const VALID_VERIFY_VERDICTS = new Set(["fixed", "still_applies", "cannot_verify"]);
+
 function truncateString(val, maxLen = 512) {
   if (typeof val !== "string") {
     return null;
@@ -1692,6 +1739,204 @@ async function handlePrState(request, env) {
   return new Response(null, { status: 204 });
 }
 
+// One finding's shape check. Returns an error string, or null when the finding is well-formed.
+// Fields outside FINDING_STRING_FIELDS / FINDING_INTEGER_FIELDS are read nowhere below, which is
+// how an unrecognised field (a severity, a lane) is ignored rather than stored (#47).
+function validateFinding(finding) {
+  if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+    return "finding is not an object";
+  }
+
+  for (const field of FINDING_STRING_FIELDS) {
+    const val = finding[field];
+    const nullable = FINDING_NULLABLE_STRING_FIELDS.has(field);
+    if (val === undefined || val === null) {
+      if (!nullable) {
+        return `missing ${field}`;
+      }
+      continue;
+    }
+    if (typeof val !== "string") {
+      return `invalid ${field}`;
+    }
+  }
+
+  for (const field of FINDING_INTEGER_FIELDS) {
+    const val = finding[field];
+    const nullable = FINDING_NULLABLE_INTEGER_FIELDS.has(field);
+    if (val === undefined || val === null) {
+      if (!nullable) {
+        return `missing ${field}`;
+      }
+      continue;
+    }
+    if (typeof val !== "number" || !Number.isInteger(val)) {
+      return `invalid ${field}`;
+    }
+  }
+
+  if (finding.thread_node_id.trim().length === 0) {
+    return "empty thread_node_id";
+  }
+
+  if (finding.fix_sha_source != null && !VALID_FIX_SHA_SOURCES.has(finding.fix_sha_source)) {
+    return "invalid fix_sha_source";
+  }
+
+  if (finding.verify_verdict != null && !VALID_VERIFY_VERDICTS.has(finding.verify_verdict)) {
+    return "invalid verify_verdict";
+  }
+
+  return null;
+}
+
+async function handleFindings(request, env) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+
+  const token = env?.REVIEW_TELEMETRY_TOKEN;
+  const authHeader = request.headers.get("authorization");
+  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
+    return new Response(null, { status: 401 });
+  }
+
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null) {
+    const length = parseInt(contentLength, 10);
+    if (Number.isNaN(length) || length > MAX_INGEST_BYTES) {
+      return new Response(null, { status: 413 });
+    }
+  }
+
+  let rawBody;
+  try {
+    rawBody = await readBoundedText(request, MAX_INGEST_BYTES);
+  } catch {
+    return new Response(null, { status: 400 });
+  }
+
+  if (rawBody === null) {
+    return new Response(null, { status: 413 });
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {
+    return new Response(null, { status: 400 });
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return new Response(null, { status: 400 });
+  }
+
+  if (!Array.isArray(payload.findings)) {
+    return new Response(JSON.stringify({ error: "missing or invalid findings array" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  for (const finding of payload.findings) {
+    const error = validateFinding(finding);
+    if (error) {
+      return new Response(JSON.stringify({ error }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
+  if (payload.findings.length === 0) {
+    return new Response(null, { status: 204 });
+  }
+
+  const stmt = env.DB.prepare(
+    `INSERT INTO review_findings (
+      thread_node_id,
+      repository,
+      pr_number,
+      path,
+      original_line,
+      line,
+      is_resolved,
+      is_outdated,
+      resolved_by_login,
+      thread_created_at,
+      header_raw,
+      body_excerpt,
+      diff_hunk,
+      human_reply_count,
+      human_reply_sha,
+      fix_sha,
+      fix_sha_source,
+      verify_verdict,
+      head_sha_reviewed,
+      last_swept_at,
+      row_set_incomplete
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+    -- A thread is mutable state, not an immutable event (#47): every column is overwritten
+    -- from the latest sweep pass rather than only filled in when currently null, so a newly
+    -- resolved thread or an edited comment settles here on the very next sweep.
+    ON CONFLICT(thread_node_id) DO UPDATE SET
+      repository = excluded.repository,
+      pr_number = excluded.pr_number,
+      path = excluded.path,
+      original_line = excluded.original_line,
+      line = excluded.line,
+      is_resolved = excluded.is_resolved,
+      is_outdated = excluded.is_outdated,
+      resolved_by_login = excluded.resolved_by_login,
+      thread_created_at = excluded.thread_created_at,
+      header_raw = excluded.header_raw,
+      body_excerpt = excluded.body_excerpt,
+      diff_hunk = excluded.diff_hunk,
+      human_reply_count = excluded.human_reply_count,
+      human_reply_sha = excluded.human_reply_sha,
+      fix_sha = excluded.fix_sha,
+      fix_sha_source = excluded.fix_sha_source,
+      verify_verdict = excluded.verify_verdict,
+      head_sha_reviewed = excluded.head_sha_reviewed,
+      last_swept_at = excluded.last_swept_at,
+      row_set_incomplete = excluded.row_set_incomplete`
+  );
+
+  const stmts = payload.findings.map((finding) =>
+    stmt.bind(
+      finding.thread_node_id,
+      truncateString(finding.repository, 512),
+      finding.pr_number,
+      truncateString(finding.path, 1024),
+      finding.original_line ?? null,
+      finding.line ?? null,
+      finding.is_resolved,
+      finding.is_outdated,
+      truncateString(finding.resolved_by_login, 512),
+      truncateString(finding.thread_created_at, 512),
+      truncateString(finding.header_raw, 1024),
+      truncateString(finding.body_excerpt, 8192),
+      truncateString(finding.diff_hunk, 8192),
+      finding.human_reply_count,
+      truncateString(finding.human_reply_sha, 128),
+      truncateString(finding.fix_sha, 128),
+      finding.fix_sha_source ?? null,
+      finding.verify_verdict ?? null,
+      truncateString(finding.head_sha_reviewed, 128),
+      truncateString(finding.last_swept_at, 512),
+      finding.row_set_incomplete
+    )
+  );
+
+  try {
+    await env.DB.batch(stmts);
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+
+  return new Response(null, { status: 204 });
+}
+
 async function handleGetChanges(url, env) {
   const searchParams = url.searchParams;
   let limit = 100;
@@ -1929,6 +2174,10 @@ export default {
 
     if (method === "POST" && pathname === "/pr-state") {
       return handlePrState(request, env);
+    }
+
+    if (method === "POST" && pathname === "/ingest/findings") {
+      return handleFindings(request, env);
     }
 
     if (

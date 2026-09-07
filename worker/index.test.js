@@ -2795,6 +2795,160 @@ describe("Worker telemetry read API", () => {
       });
     });
 
+    describe("POST /ingest/findings (#47)", () => {
+      function sampleFinding(overrides = {}) {
+        return {
+          thread_node_id: "PRRT_1",
+          repository: "prismalens/example",
+          pr_number: 42,
+          path: "worker/index.js",
+          original_line: 100,
+          line: 100,
+          is_resolved: 0,
+          is_outdated: 0,
+          resolved_by_login: null,
+          thread_created_at: "2026-09-01T00:00:00Z",
+          header_raw: "Bug",
+          body_excerpt: "This looks off.",
+          diff_hunk: "@@ -1,3 +1,3 @@",
+          human_reply_count: 0,
+          human_reply_sha: null,
+          fix_sha: null,
+          fix_sha_source: null,
+          verify_verdict: null,
+          head_sha_reviewed: "abc1234",
+          last_swept_at: "2026-09-01T01:00:00Z",
+          row_set_incomplete: 0,
+          ...overrides,
+        };
+      }
+
+      it("returns 401 when authorization header is missing", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", { body: { findings: [sampleFinding()] } });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 401);
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("returns 401 when the token is wrong", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: "Bearer wrong-token" },
+          body: { findings: [sampleFinding()] },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 401);
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("upserts on conflict rather than ignoring it", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: { findings: [sampleFinding({ is_resolved: 1, resolved_by_login: "github-actions[bot]" })] },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 204);
+
+        assert.equal(db.queries.length, 1);
+        const insertQuery = db.queries[0];
+        assert.ok(insertQuery.sql.includes("INSERT INTO review_findings"));
+        // The write verb differs from usage_records deliberately (#47): a thread is mutable
+        // state, so this is DO UPDATE, never DO NOTHING, and every column overwrites rather
+        // than only filling in a null.
+        assert.ok(insertQuery.sql.includes("ON CONFLICT(thread_node_id) DO UPDATE SET"));
+        assert.ok(!insertQuery.sql.includes("DO NOTHING"));
+        assert.ok(insertQuery.sql.includes("is_resolved = excluded.is_resolved"));
+        assert.ok(insertQuery.sql.includes("resolved_by_login = excluded.resolved_by_login"));
+        assert.equal(insertQuery.args[0], "PRRT_1");
+        assert.equal(insertQuery.args[6], 1); // is_resolved
+        assert.equal(insertQuery.args[8], "github-actions[bot]"); // resolved_by_login
+      });
+
+      it("writes a batch of several findings in full", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const findings = [
+          sampleFinding({ thread_node_id: "PRRT_1" }),
+          sampleFinding({ thread_node_id: "PRRT_2" }),
+          sampleFinding({ thread_node_id: "PRRT_3" }),
+        ];
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: { findings },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 204);
+
+        assert.equal(db.queries.length, 3);
+        assert.deepEqual(
+          db.queries.map((q) => q.args[0]),
+          ["PRRT_1", "PRRT_2", "PRRT_3"]
+        );
+      });
+
+      it("ignores a field outside the schema rather than storing it", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: {
+            findings: [
+              sampleFinding({ severity: "high", addressed: true, lane: "claude" }),
+            ],
+          },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 204);
+
+        const insertQuery = db.queries[0];
+        assert.ok(!insertQuery.sql.includes("severity"));
+        assert.ok(!insertQuery.sql.includes("addressed"));
+        assert.ok(!insertQuery.sql.toLowerCase().includes("lane"));
+        assert.ok(!insertQuery.args.includes("high"));
+      });
+
+      it("rejects a finding missing a required field", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: { findings: [sampleFinding({ thread_node_id: undefined })] },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("rejects an invalid fix_sha_source", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: { findings: [sampleFinding({ fix_sha: "abc1234", fix_sha_source: "regex_guess" })] },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        const data = await res.json();
+        assert.equal(data.error, "invalid fix_sha_source");
+      });
+
+      it("returns 400 when findings is missing or not an array", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: {},
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      });
+    });
+
     describe("GET /api/prs (Read Route & Pagination)", () => {
       it("returns 403 when Cf-Access-Jwt-Assertion header is missing", async () => {
         const helper = await getAccessHelper();
