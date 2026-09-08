@@ -5,6 +5,7 @@ import {
   lookupRound,
   MAX_LIMIT,
   MAX_LIMIT_WITH_BLOBS,
+  type FindingsQuery,
   type LaneEventsQuery,
   type PrsQuery,
   type RunsQuery,
@@ -199,6 +200,31 @@ export function usePRsQuery(filters: PRsFilters = {}) {
   return useQuery({
     queryKey: ["prs", query],
     queryFn: () => api.fetchPRs(query),
+    staleTime: 30_000,
+  });
+}
+
+export interface FindingsFilters {
+  repository?: string;
+  prNumber?: number;
+}
+
+/**
+ * One page of up to MAX_LIMIT review_findings rows, newest first (#111's table
+ * contract: no page walking). A PR-scoped panel (#75) passes prNumber to narrow
+ * the same query rather than filtering client-side over an unscoped fetch.
+ */
+export function useFindingsQuery(filters: FindingsFilters = {}) {
+  const api = useApi();
+  const query: FindingsQuery = {
+    limit: MAX_LIMIT,
+    ...(filters.repository ? { repository: filters.repository } : {}),
+    ...(filters.prNumber ? { pr_number: filters.prNumber } : {}),
+  };
+
+  return useQuery({
+    queryKey: ["findings", query],
+    queryFn: () => api.fetchFindings(query),
     staleTime: 30_000,
   });
 }

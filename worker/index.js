@@ -1790,7 +1790,7 @@ function validateFinding(finding) {
   return null;
 }
 
-async function handleFindings(request, env) {
+async function handleIngestFindings(request, env) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
   }
@@ -1935,6 +1935,124 @@ async function handleFindings(request, env) {
   }
 
   return new Response(null, { status: 204 });
+}
+
+// Read route for review_findings (#111, #75). Same shape as handleLaneEvents/handlePrs:
+// explicit column list, cursor pagination, verifyAccess auth applied by the caller. Newest
+// first by thread_created_at, so a findings inbox and a PR-scoped panel are the same query
+// with an added pr_number filter, per #111's table contract (up to 1000 rows, no page walking).
+async function handleFindings(url, env) {
+  const searchParams = url.searchParams;
+  let limit = 1000;
+  const limitParam = searchParams.get("limit");
+  if (limitParam !== null) {
+    if (!/^[1-9]\d*$/.test(limitParam)) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const parsedLimit = Number(limitParam);
+    if (parsedLimit > 1000) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    limit = parsedLimit;
+  }
+
+  const conditions = [];
+  const bindings = [];
+
+  const repository = searchParams.get("repository");
+  if (repository !== null) {
+    conditions.push("repository = ?");
+    bindings.push(repository);
+  }
+
+  const prNumberParam = searchParams.get("pr_number");
+  if (prNumberParam !== null) {
+    if (!/^[1-9]\d*$/.test(prNumberParam)) {
+      return new Response(JSON.stringify({ error: "invalid pr_number" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    conditions.push("pr_number = ?");
+    bindings.push(Number(prNumberParam));
+  }
+
+  const cursor = searchParams.get("cursor");
+  if (cursor !== null) {
+    const pipeIndex = cursor.lastIndexOf("|");
+    if (pipeIndex === -1) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const cursorCreatedAt = cursor.slice(0, pipeIndex);
+    const cursorThreadNodeId = cursor.slice(pipeIndex + 1);
+    if (!cursorCreatedAt || !cursorThreadNodeId) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    conditions.push("(thread_created_at < ? OR (thread_created_at = ? AND thread_node_id < ?))");
+    bindings.push(cursorCreatedAt, cursorCreatedAt, cursorThreadNodeId);
+  }
+
+  const columns = [
+    "thread_node_id",
+    "repository",
+    "pr_number",
+    "path",
+    "original_line",
+    "line",
+    "is_resolved",
+    "is_outdated",
+    "resolved_by_login",
+    "thread_created_at",
+    "header_raw",
+    "body_excerpt",
+    "diff_hunk",
+    "human_reply_count",
+    "human_reply_sha",
+    "fix_sha",
+    "fix_sha_source",
+    "verify_verdict",
+    "head_sha_reviewed",
+    "last_swept_at",
+    "row_set_incomplete",
+  ];
+
+  let query = `SELECT
+    ${columns.join(",\n    ")}
+  FROM review_findings`;
+
+  if (conditions.length > 0) {
+    query += ` WHERE ${conditions.join(" AND ")}`;
+  }
+
+  query += ` ORDER BY thread_created_at DESC, thread_node_id DESC LIMIT ?`;
+  bindings.push(limit);
+
+  const { results } = await env.DB.prepare(query).bind(...bindings).all();
+  const rows = results ?? [];
+  const nextCursor =
+    rows.length === limit && rows.length > 0
+      ? `${rows[rows.length - 1].thread_created_at}|${rows[rows.length - 1].thread_node_id}`
+      : null;
+
+  return new Response(
+    JSON.stringify({
+      rows,
+      next_cursor: nextCursor,
+    }),
+    { headers: READ_HEADERS }
+  );
 }
 
 async function handleGetChanges(url, env) {
@@ -2177,7 +2295,7 @@ export default {
     }
 
     if (method === "POST" && pathname === "/ingest/findings") {
-      return handleFindings(request, env);
+      return handleIngestFindings(request, env);
     }
 
     if (
@@ -2193,7 +2311,8 @@ export default {
         pathname === "/api/runs" ||
         pathname === "/api/lane-events" ||
         pathname === "/api/round-agents" ||
-        pathname === "/api/prs")
+        pathname === "/api/prs" ||
+        pathname === "/api/findings")
     ) {
       const authError = await verifyAccess(request, env);
       if (authError) {
@@ -2213,6 +2332,9 @@ export default {
       }
       if (pathname === "/api/prs") {
         return handlePrs(url, env);
+      }
+      if (pathname === "/api/findings") {
+        return handleFindings(url, env);
       }
     }
 

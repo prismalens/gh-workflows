@@ -1,6 +1,8 @@
 import type {
   ChangeRow,
   ChangesResponse,
+  FindingRow,
+  FindingsResponse,
   LaneEventRow,
   LaneEventsResponse,
   PrRow,
@@ -66,6 +68,13 @@ export interface PrsQuery {
   cursor?: string;
 }
 
+export interface FindingsQuery {
+  limit?: number;
+  repository?: string;
+  pr_number?: number;
+  cursor?: string;
+}
+
 /** The Worker caps limit at 1000, and at 50 once include=blobs is set. */
 export const MAX_LIMIT = 1000;
 export const MAX_LIMIT_WITH_BLOBS = 50;
@@ -112,6 +121,17 @@ export function prsUrl(query: PrsQuery = {}): string {
   }
   const qs = params.toString();
   return qs ? `/api/prs?${qs}` : "/api/prs";
+}
+
+export function findingsUrl(query: FindingsQuery = {}): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  const qs = params.toString();
+  return qs ? `/api/findings?${qs}` : "/api/findings";
 }
 
 export function roundAgentsUrl(sessionId: string): string {
@@ -466,6 +486,51 @@ export function isPrsResponse(value: unknown): value is PrsResponse {
   );
 }
 
+export const REQUIRED_FINDING_KEYS = [
+  "thread_node_id",
+  "repository",
+  "pr_number",
+  "path",
+  "original_line",
+  "line",
+  "is_resolved",
+  "is_outdated",
+  "resolved_by_login",
+  "thread_created_at",
+  "header_raw",
+  "body_excerpt",
+  "diff_hunk",
+  "human_reply_count",
+  "human_reply_sha",
+  "fix_sha",
+  "fix_sha_source",
+  "verify_verdict",
+  "head_sha_reviewed",
+  "last_swept_at",
+  "row_set_incomplete",
+] as const;
+
+export function isFindingRow(row: unknown): row is FindingRow {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  return (
+    REQUIRED_FINDING_KEYS.every((key) => key in r) &&
+    typeof r.thread_node_id === "string" &&
+    typeof r.repository === "string" &&
+    typeof r.pr_number === "number"
+  );
+}
+
+export function isFindingsResponse(value: unknown): value is FindingsResponse {
+  if (!value || typeof value !== "object") return false;
+  const { rows, next_cursor } = value as { rows?: unknown; next_cursor?: unknown };
+  return (
+    Array.isArray(rows) &&
+    rows.every(isFindingRow) &&
+    (next_cursor === null || next_cursor === undefined || typeof next_cursor === "string")
+  );
+}
+
 export interface TelemetryApi {
   fetchRuns(query?: RunsQuery): Promise<RunsResponse>;
   fetchSummary(): Promise<SummaryResponse>;
@@ -473,6 +538,7 @@ export interface TelemetryApi {
   fetchChanges(query?: ChangesQuery): Promise<ChangesResponse>;
   fetchRoundAgents(sessionId: string): Promise<RoundAgentsResponse>;
   fetchPRs(query?: PrsQuery): Promise<PrsResponse>;
+  fetchFindings(query?: FindingsQuery): Promise<FindingsResponse>;
   /** Set only by the fixture table, so the UI can say the rounds are invented. */
   readonly fixtures?: boolean;
 }
@@ -485,6 +551,7 @@ export const httpApi: TelemetryApi = {
   fetchRoundAgents: (sessionId: string) =>
     getJson(roundAgentsUrl(sessionId), isRoundAgentsResponse),
   fetchPRs: (query = {}) => getJson(prsUrl(query), isPrsResponse),
+  fetchFindings: (query = {}) => getJson(findingsUrl(query), isFindingsResponse),
 };
 
 /**

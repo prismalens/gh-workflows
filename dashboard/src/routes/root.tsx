@@ -62,6 +62,16 @@ function RootLayout() {
                 {item.label}
               </Link>
             ))}
+            {/* /findings has its own search schema (no `range`), so it sits outside the
+                shared-search NAV map rather than forcing a range key it does not use. */}
+            <Link
+              to="/findings"
+              search={{}}
+              className="hover:text-foreground"
+              activeProps={{ className: "text-foreground" }}
+            >
+              Findings
+            </Link>
           </nav>
           <span className="ml-auto text-xs text-muted-foreground">
             Review round telemetry, prismalens/gh-workflows

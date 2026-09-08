@@ -3104,6 +3104,176 @@ describe("Worker telemetry read API", () => {
         assert.equal(query.args[3], 136);
       });
     });
+
+    describe("GET /api/findings (Read Route & Pagination, #111)", () => {
+      function sampleFindingRow(overrides = {}) {
+        return {
+          thread_node_id: "PRRT_1",
+          repository: "prismalens/gh-workflows",
+          pr_number: 111,
+          path: "worker/index.js",
+          original_line: 42,
+          line: 42,
+          is_resolved: 0,
+          is_outdated: 0,
+          resolved_by_login: null,
+          thread_created_at: "2026-09-06T12:00:00.000Z",
+          header_raw: "Bug",
+          body_excerpt: "This looks off.",
+          diff_hunk: "@@ -1,3 +1,3 @@",
+          human_reply_count: 0,
+          human_reply_sha: null,
+          fix_sha: null,
+          fix_sha_source: null,
+          verify_verdict: null,
+          head_sha_reviewed: "abc1234",
+          last_swept_at: "2026-09-06T13:00:00.000Z",
+          row_set_incomplete: 0,
+          ...overrides,
+        };
+      }
+
+      it("returns 403 when Cf-Access-Jwt-Assertion header is missing", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const req = makeRequest("/api/findings", { method: "GET" });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 403);
+      });
+
+      it("returns rows and next_cursor with Access auth, using the exact column list", async () => {
+        const helper = await getAccessHelper();
+        const sampleRows = [sampleFindingRow()];
+        const db = createFakeDb({
+          handler: (sql) => {
+            if (sql.includes("FROM review_findings")) {
+              return { results: sampleRows };
+            }
+            return null;
+          },
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/findings?limit=1", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+
+        const data = await res.json();
+        assert.equal(data.rows.length, 1);
+        assert.equal(data.rows[0].thread_node_id, "PRRT_1");
+        assert.equal(data.rows[0].repository, "prismalens/gh-workflows");
+        assert.equal(data.rows[0].pr_number, 111);
+        assert.equal(data.next_cursor, "2026-09-06T12:00:00.000Z|PRRT_1");
+
+        const query = db.queries[0];
+        assert.ok(
+          query.sql.includes("ORDER BY thread_created_at DESC, thread_node_id DESC LIMIT ?")
+        );
+        assert.ok(!query.sql.toLowerCase().includes("severity"));
+        assert.equal(query.args[query.args.length - 1], 1);
+      });
+
+      it("filters by repository", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest(
+          "/api/findings?repository=prismalens/gh-workflows",
+          helper.jwt
+        );
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+
+        const query = db.queries[0];
+        assert.ok(query.sql.includes("repository = ?"));
+        assert.equal(query.args[0], "prismalens/gh-workflows");
+      });
+
+      it("filters by repository and pr_number together, for a PR-scoped panel (#75)", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest(
+          "/api/findings?repository=prismalens/gh-workflows&pr_number=111",
+          helper.jwt
+        );
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+
+        const query = db.queries[0];
+        assert.ok(query.sql.includes("repository = ? AND pr_number = ?"));
+        assert.equal(query.args[0], "prismalens/gh-workflows");
+        assert.equal(query.args[1], 111);
+      });
+
+      it("rejects an invalid pr_number", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/findings?pr_number=abc", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        const data = await res.json();
+        assert.equal(data.error, "invalid pr_number");
+      });
+
+      it("rejects invalid limit and a limit above 1000", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        assert.equal(
+          (await worker.fetch(makeAuthenticatedRequest("/api/findings?limit=0", helper.jwt), env))
+            .status,
+          400
+        );
+        assert.equal(
+          (
+            await worker.fetch(
+              makeAuthenticatedRequest("/api/findings?limit=1001", helper.jwt),
+              env
+            )
+          ).status,
+          400
+        );
+      });
+
+      it("handles cursor pagination and rejects a cursor with no pipe", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+
+        const badCursorReq = makeAuthenticatedRequest("/api/findings?cursor=no-pipe", helper.jwt);
+        assert.equal((await worker.fetch(badCursorReq, env)).status, 400);
+
+        const cursorReq = makeAuthenticatedRequest(
+          "/api/findings?cursor=2026-09-06T12:00:00.000Z|PRRT_1",
+          helper.jwt
+        );
+        const res = await worker.fetch(cursorReq, env);
+        assert.equal(res.status, 200);
+
+        const query = db.queries[0];
+        assert.ok(
+          query.sql.includes(
+            "(thread_created_at < ? OR (thread_created_at = ? AND thread_node_id < ?))"
+          )
+        );
+        assert.equal(query.args[0], "2026-09-06T12:00:00.000Z");
+        assert.equal(query.args[1], "2026-09-06T12:00:00.000Z");
+        assert.equal(query.args[2], "PRRT_1");
+      });
+
+      it("defaults the limit to 1000, matching #111's no-page-walking contract", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/findings", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const query = db.queries[0];
+        assert.equal(query.args[query.args.length - 1], 1000);
+      });
+    });
   });
 
   describe("GET /api/accounted-runs (#87)", () => {

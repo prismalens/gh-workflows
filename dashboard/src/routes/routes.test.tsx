@@ -1256,6 +1256,67 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(screen.getByTestId("report-tabs")).toBeInTheDocument();
   });
 
+  it("renders live findings on the detail page's findings tab, scoped to this PR (#75, #111)", async () => {
+    const known = fourStateRounds[3]; // PR 204 (reviewed)
+    const [owner, repo] = known.repository.split("/");
+    const findingsApi = makeFixtureApi(fourStateRounds, [], [], [], [], [
+      {
+        thread_node_id: "PRRT_scoped",
+        repository: known.repository,
+        pr_number: known.pr_number!,
+        path: "worker/index.js",
+        original_line: 5,
+        line: 5,
+        is_resolved: 1,
+        is_outdated: 0,
+        resolved_by_login: "alice",
+        thread_created_at: "2026-09-01T00:00:00.000Z",
+        header_raw: "Scoped finding",
+        body_excerpt: "detail",
+        diff_hunk: "@@ -1,1 +1,1 @@",
+        human_reply_count: 1,
+        human_reply_sha: null,
+        fix_sha: "cafefeed",
+        fix_sha_source: "human_reply",
+        verify_verdict: null,
+        head_sha_reviewed: known.head_sha,
+        last_swept_at: "2026-09-01T01:00:00.000Z",
+        row_set_incomplete: 0,
+      },
+      // A finding on a different PR must not leak into this PR's tab.
+      {
+        thread_node_id: "PRRT_other",
+        repository: known.repository,
+        pr_number: (known.pr_number ?? 0) + 999,
+        path: null,
+        original_line: null,
+        line: null,
+        is_resolved: 0,
+        is_outdated: 0,
+        resolved_by_login: null,
+        thread_created_at: "2026-09-01T00:00:00.000Z",
+        header_raw: "Other PR finding",
+        body_excerpt: null,
+        diff_hunk: null,
+        human_reply_count: 0,
+        human_reply_sha: null,
+        fix_sha: null,
+        fix_sha_source: null,
+        verify_verdict: null,
+        head_sha_reviewed: null,
+        last_swept_at: null,
+        row_set_incomplete: 0,
+      },
+    ]);
+
+    renderRoute({ path: `/prs/${owner}/${repo}/${known.pr_number}`, api: findingsApi });
+    await screen.findByText(new RegExp(`PR #${known.pr_number}`));
+
+    expect(await screen.findByText("Scoped finding")).toBeInTheDocument();
+    expect(screen.getByTestId("fix-cited-badge")).toBeInTheDocument();
+    expect(screen.queryByText("Other PR finding")).not.toBeInTheDocument();
+  });
+
   it("renders copyable unblock hint for amber/red states on detail route", async () => {
     const amber = fourStateRounds[1]; // PR 202 (auto-paused)
     const [owner, repo] = amber.repository.split("/");
@@ -1525,19 +1586,27 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     ];
     const configApi = makeFixtureApi(configRounds);
 
-    // Default model source: no match, unavailable limit, unavailable skip author
+    // Default model source: no match; auto-pause and skip-author name the field
+    // rather than saying "unavailable" (#75's 2026-09-06 ruling: no config_effective
+    // column exists yet, so both are "not recorded on this round").
     renderRoute({ path: `/prs/${owner}/${repo}/501`, api: configApi });
     const cardDefault = await screen.findByTestId("config-in-effect-card");
-    expect(within(cardDefault).getByText("automatic-round limit unavailable")).toBeInTheDocument();
+    expect(
+      within(cardDefault).getByText("auto_pause_rounds: not recorded on this round"),
+    ).toBeInTheDocument();
     expect(within(cardDefault).getByText("no match")).toBeInTheDocument();
-    expect(within(cardDefault).getByText("unavailable")).toBeInTheDocument();
+    expect(
+      within(cardDefault).getByText("skip_authors: not recorded on this round"),
+    ).toBeInTheDocument();
 
     // Escalated model source: path match is proven (both directions proven)
     cleanup();
     renderRoute({ path: `/prs/${owner}/${repo}/502`, api: configApi });
     const cardEscalated = await screen.findByTestId("config-in-effect-card");
     expect(within(cardEscalated).getByText("match")).toBeInTheDocument();
-    expect(within(cardEscalated).getByText("unavailable")).toBeInTheDocument();
+    expect(
+      within(cardEscalated).getByText("skip_authors: not recorded on this round"),
+    ).toBeInTheDocument();
   });
 
   it("handles clipboard success and failure without unhandled rejections (finding 3943781302)", async () => {
