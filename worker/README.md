@@ -94,11 +94,17 @@ Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_
   - `pr_head_ref` (TEXT, capped to 512): Pull request head branch name (#72).
   - `agents_status` (TEXT): Rollup outcome for the round's agent fan-out, distinct from an empty
     `agents` array (#89).
+- **Wave 3 Additions**:
+  - `reviewable_lines` (INTEGER): Reviewable lines this round covered — additions plus modified hunk lines, after path and file-size filtering (#105). Ingested and stored; not yet in the `GET /api/runs` response (allowlisted in `tests/test-schema-drift.py`).
+  - `size_override` (INTEGER): 1 when `@claude full review` ran a round that would otherwise have exceeded `max_reviewable_lines`; absent otherwise (#105). Same not-yet-exposed status as `reviewable_lines`.
+  - `level` (TEXT): Review effort level the lane resolved for the round (#101). Stored as-is; the worker does not enum it, so a value the workflow schema does not yet accept for this release still stores cleanly.
+  - `level_source` (TEXT): `config` or `escalation` — whether `level` came from resolved config or was floored by an `escalation_paths` match (#101).
+  - `config_effective` (TEXT, JSON object): `{key: {value, layer}}` for every config key the lane resolved on this round, `layer` one of `workflow`/`org`/`repo`/`summon` (#75). Validated the same as `config_resolution`: must be a JSON object, or a string that parses to one; absent/`null` stores `NULL`; anything else is a 400 (#98).
 
 #### `lane_event`
 - **Required**:
   - `repository` (TEXT)
-  - `reason` (TEXT, must be exactly one of `no-token`, `auto-paused`, `paused-by-request`, `fork-head`, `skip-author`)
+  - `reason` (TEXT, must be exactly one of `no-token`, `auto-paused`, `paused-by-request`, `fork-head`, `skip-author`, `refused-size`)
   - `run_id` (INTEGER, finite number)
   - `run_attempt` (INTEGER, finite number)
 - **Optional**:
@@ -108,6 +114,9 @@ Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_
   - `run_url` (TEXT)
   - `rounds_used` (INTEGER)
   - `lane_version` (TEXT)
+  - `reviewable_lines` (INTEGER): Reviewable-line count on a `refused-size` event (#105).
+  - `max_reviewable_lines` (INTEGER): The cap that count was checked against (#105).
+  - `actor` (TEXT): The login that issued `@claude pause`, read from the event payload, never from comment text. Null on every reason but `paused-by-request` (#124).
 
 #### `canary`
 - **Optional**:
@@ -143,6 +152,24 @@ Ingests current pull request facts into the `prs` table, authenticated with `Aut
 - **Upsert on `(repository, pr_number)`**: An absent field leaves the stored value alone rather than nulling it. Only what the caller actually knows gets written.
 - **Monotonic `updated_at`**: `updated_at` records when the event occurred (from GitHub's `pull_request.updated_at`), falling back to receipt time if omitted.
 - **Stale-Write Protection**: A later write with an older `updated_at` cannot overwrite a newer stored row.
+
+## Review Findings Ingest (`POST /ingest/findings`) (#47, #111)
+
+Ingests `claude[bot]` review threads swept from consumer repositories into `review_findings`, authenticated with `Authorization: Bearer <REVIEW_TELEMETRY_TOKEN>` and rate-limited like every other ingest route. The caller is `review-findings-sweep.yml`; gh-workflows itself is never a source, since it hosts no Claude lane.
+
+### Request Body
+
+`{"findings": [...]}` — an array of finding objects, validated individually; the whole request is rejected on the first invalid one. An empty array is accepted and returns 204 with nothing written.
+
+Per finding:
+- **Required**: `thread_node_id` (TEXT, non-empty — the primary key), `repository` (TEXT), `pr_number` (INTEGER), `thread_created_at` (TEXT), `body_excerpt` (TEXT), `diff_hunk` (TEXT), `is_resolved` (INTEGER), `is_outdated` (INTEGER), `human_reply_count` (INTEGER), `head_sha_reviewed` (TEXT), `last_swept_at` (TEXT), `row_set_incomplete` (INTEGER). These are required at the application layer even though several are nullable in the schema itself (migration 0009) — the sweep is expected to always know them.
+- **Optional / nullable**: `path` (TEXT, capped 1024), `original_line` (INTEGER), `line` (INTEGER), `resolved_by_login` (TEXT, capped 512), `header_raw` (TEXT, capped 1024), `human_reply_sha` (TEXT, capped 128), `fix_sha` (TEXT, capped 128), `fix_sha_source` (TEXT, must be `verify_table` or `human_reply` when present), `verify_verdict` (TEXT, must be `fixed`, `still_applies` or `cannot_verify` when present).
+
+### Behaviour & Invariants
+
+- **Upsert on `thread_node_id`**: A thread is mutable state, not an immutable event. Every column is overwritten from the latest sweep pass rather than only filled in when null, so an edited comment or a newly-resolved thread settles here on the very next sweep.
+- **No severity, no `addressed` boolean, no lane column**: Only the Claude lane is ever swept, so nothing here distinguishes lanes and no CodeRabbit row can land in this table.
+- **`row_set_incomplete`**: Set by the sweep when a GraphQL throttle stopped its pagination partway through a pull request, so that PR's rows are known partial rather than silently read as a complete sweep.
 
 ## Read Contract (v2)
 
@@ -214,9 +241,11 @@ Returns paginated telemetry review rounds from `usage_records`.
 - **Default Response**:
   - v1 columns: `session_id`, `recorded_at`, `repository`, `pr_number`, `pr_url`, `head_sha`, `run_id`, `run_attempt`, `run_url`, `round_type`, `model`, `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `total_cost_usd`, `duration_ms`, `duration_api_ms`, `num_turns`, `permission_denials`, `changed_files`, `diff_lines`.
   - 16 Wave 2 columns: `lane_version`, `verdict_kind`, `inline_count`, `summary_count`, `round_ordinal`, `fallback_reason`, `range_base`, `range_head`, `model_source`, `job_conclusion`, `pr_title`, `pr_author`, `pr_state`, `pr_base_ref`, `pr_head_ref`, `agents_status`.
+  - 2 Wave 3 columns: `level`, `level_source`. `reviewable_lines` and `size_override` are ingested (see the `usage_record` field spec above) but not yet selected here — allowlisted in `tests/test-schema-drift.py` as not yet surfaced.
 - **Behind `include=blobs`**:
   - v1 blobs: `per_model_usage`, `subagent_stats`, `raw_result`.
   - Wave 2 blobs: `verdict_text`, `comment_node_ids`, `config_resolution`.
+  - Wave 3 blob: `config_effective`.
 
 #### Response Shape
 
@@ -243,7 +272,7 @@ Returns paginated lane lifecycle events from `lane_events` (skipped or non-execu
 
 #### Columns
 
-- `run_id`, `run_attempt`, `recorded_at`, `repository`, `reason`, `pr_number`, `head_sha`, `run_url`, `rounds_used`, `lane_version`.
+- `run_id`, `run_attempt`, `recorded_at`, `repository`, `reason`, `pr_number`, `head_sha`, `run_url`, `rounds_used`, `lane_version`, `reviewable_lines`, `max_reviewable_lines`, `actor`.
 
 #### Response Shape
 
@@ -260,10 +289,39 @@ Returns paginated lane lifecycle events from `lane_events` (skipped or non-execu
       "head_sha": "aabbccddeeff00112233445566778899aabbccdd",
       "run_url": "https://github.com/prismalens/gh-workflows/actions/runs/123456",
       "rounds_used": 3,
-      "lane_version": "v2.0.0"
+      "lane_version": "v2.0.0",
+      "reviewable_lines": null,
+      "max_reviewable_lines": null,
+      "actor": null
     }
   ],
   "next_cursor": "2026-08-31T14:20:00.000Z|123456"
+}
+```
+
+---
+
+### `GET /api/findings`
+
+Returns paginated `claude[bot]` review findings from `review_findings`, newest first by `thread_created_at` (#111, #75). Same shape family as `GET /api/lane-events`: explicit column list, cursor pagination, `verifyAccess` applied by the caller. A findings inbox and a PR-scoped panel are the same query with `pr_number` added.
+
+#### Query Parameters
+
+- `limit` (optional): Integer `1`..`1000` (default `1000`).
+- `repository` (optional): Filter by exact repository string.
+- `pr_number` (optional): Filter by exact pull request number.
+- `cursor` (optional): Composite cursor `<thread_created_at>|<thread_node_id>` for pagination.
+
+#### Columns
+
+Every `review_findings` column (`tests/test-schema-drift.py`'s `REVIEW_FINDINGS_READ_ALLOWLIST` is deliberately empty, so a migration that adds one and forgets the `SELECT` fails CI): `thread_node_id`, `repository`, `pr_number`, `path`, `original_line`, `line`, `is_resolved`, `is_outdated`, `resolved_by_login`, `thread_created_at`, `header_raw`, `body_excerpt`, `diff_hunk`, `human_reply_count`, `human_reply_sha`, `fix_sha`, `fix_sha_source`, `verify_verdict`, `head_sha_reviewed`, `last_swept_at`, `row_set_incomplete`.
+
+#### Response Shape
+
+```json
+{
+  "rows": [ ... ],
+  "next_cursor": "2026-08-31T14:20:00.000Z|PRRT_kwABC123"
 }
 ```
 

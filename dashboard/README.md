@@ -2,11 +2,19 @@
 
 The review telemetry viewing layer for `prismalens/gh-workflows`. A Vite + React SPA served by
 the telemetry Worker in `../worker` through its `[assets]` binding, reading the Worker's
-`GET /api/summary`, `GET /api/runs`, `GET /api/lane-events`, `GET /api/changes` and
-`GET /api/round-agents` routes behind Cloudflare Access.
+`GET /api/summary`, `GET /api/runs`, `GET /api/lane-events`, `GET /api/changes`,
+`GET /api/round-agents`, `GET /api/prs` and `GET /api/findings` routes behind Cloudflare Access.
 
-Seven routes ship: `/` overview, `/rounds`, `/rounds/$sessionId`, `/repos`, `/failures`, `/prs`
-and `/prs/$owner/$repo/$number`. Compare was refused (#119).
+Eight routes ship: `/` overview, `/rounds`, `/rounds/$sessionId`, `/repos`, `/failures`, `/prs`,
+`/prs/$owner/$repo/$number` and `/findings`. Compare was refused (#119).
+
+`/findings` reads `GET /api/findings` (joined against `GET /api/prs` for PR state) and sorts each
+open review thread into one of four fates: `never-answered`, `pushback-open`,
+`resolved-by-human`, `self-graded`. `self-graded` is deliberately the only fate that can describe
+a resolved thread with no human on record — the lane resolves its own threads through the
+workflow token and its own verify round, and neither is independent confirmation. A `fix-cited`
+badge is filtered alongside the four fates as one chip group, but is not itself a fate: it marks
+whether a commit SHA is on record for the fix, independent of who resolved the thread.
 
 The overview's altitude is a ruling, not a layout preference. The first screenful is throughput
 and adoption: the activity band, then the verdict strip directly under it, because the strip is
