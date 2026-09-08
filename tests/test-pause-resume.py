@@ -9,6 +9,10 @@ Extracts REAL shell bodies out of claude-code-review.yml and runs them against f
 5. Liveness marker persists paused=1 on push, and clears it on explicit summon.
 6. Lane event payload carries reason "paused-by-request".
 7. Admission requirement: non-member comment is refused by admission gate.
+8. paused_by (#124) is read from ACTOR_LOGIN (the event payload), not the comment body,
+   and lands in the marker and the lane event's actor field.
+9. A second @claude pause on an already-paused PR does not overwrite the recorded actor.
+10. @claude resume clears both paused=1 and paused_by from the marker.
 
 Run: python3 tests/test-pause-resume.py
 """
@@ -147,7 +151,7 @@ def run_mode_step(script, *, event="pull_request", summon="none", fake_liveness=
 
 
 def run_announce_step(script, *, marker_body=None, skip_reason="", event="pull_request",
-                      mode="review", result="success", head_sha=NEW):
+                      mode="review", result="success", head_sha=NEW, actor_login=""):
     cleanup_tmp()
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -189,6 +193,7 @@ def run_announce_step(script, *, marker_body=None, skip_reason="", event="pull_r
                 MODEL="claude-sonnet-5",
                 MODEL_SOURCE="default",
                 RUN_URL="https://github.com/prismalens/test-repo/actions/runs/124",
+                ACTOR_LOGIN=actor_login,
             )
 
             p = subprocess.run(["bash", "-c", script], env=env,
@@ -210,7 +215,7 @@ def run_announce_step(script, *, marker_body=None, skip_reason="", event="pull_r
         cleanup_tmp()
 
 
-def run_lane_event_step(script, *, skip_reason=""):
+def run_lane_event_step(script, *, skip_reason="", actor=""):
     cleanup_tmp()
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -238,6 +243,7 @@ def run_lane_event_step(script, *, skip_reason=""):
                 INGEST_URL="https://telemetry.prismalens.dev/ingest",
                 INGEST_TOKEN="secret-token-xyz",
                 LANE_VERSION="2",
+                ACTOR=actor,
             )
 
             p = subprocess.run(["bash", "-c", script], env=env,
@@ -404,6 +410,110 @@ def main():
         if payload.get("reason") != "paused-by-request":
             fails.append(f"case 7: want reason=paused-by-request, got {payload.get('reason')!r}")
         print("  ok    lane_event row emitted with reason paused-by-request")
+
+    # -------------------------------------------------------------
+    # 8. A fresh pause records the actor from ACTOR_LOGIN (event payload), not the body
+    # -------------------------------------------------------------
+    rc, body, outs, err = run_announce_step(
+        announce_script,
+        marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} -->",  # not yet paused
+        skip_reason="paused-by-request",
+        event="issue_comment",
+        head_sha=NEW,
+        actor_login="alice",
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0:
+        fails.append(f"case 8: announce exited {rc}: {err}")
+    elif outs.get("paused_by") != "alice":
+        fails.append(f"case 8: want output paused_by=alice, got {outs.get('paused_by')!r}")
+    elif "paused_by=alice" not in marker_line:
+        fails.append(f"case 8: paused_by=alice missing from marker: {marker_line!r}")
+    else:
+        print("  ok    fresh pause records paused_by from ACTOR_LOGIN (event payload, never the body)")
+
+    # -------------------------------------------------------------
+    # 9. A second @claude pause on an already-paused PR keeps the original actor
+    # -------------------------------------------------------------
+    rc, body, outs, err = run_announce_step(
+        announce_script,
+        marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 paused_by=alice -->",
+        skip_reason="paused-by-request",
+        event="issue_comment",
+        head_sha=NEW,
+        actor_login="mallory",  # a different commenter re-pausing an already-paused PR
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0:
+        fails.append(f"case 9: announce exited {rc}: {err}")
+    elif outs.get("paused_by") != "alice":
+        fails.append(f"case 9: second pause overwrote the actor: want alice, got {outs.get('paused_by')!r}")
+    elif "paused_by=mallory" in marker_line:
+        fails.append(f"case 9: second pause wrote the new commenter into the marker: {marker_line!r}")
+    else:
+        print("  ok    second @claude pause on an already-paused PR is a no-op on the actor")
+
+    # A push while already paused (no comment, so no ACTOR_LOGIN) also keeps the actor.
+    rc, body, outs, err = run_announce_step(
+        announce_script,
+        marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 paused_by=alice -->",
+        skip_reason="paused-by-request",
+        event="pull_request",
+        head_sha=NEW,
+        actor_login="",
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0 or "paused_by=alice" not in marker_line:
+        fails.append(f"case 9b: push to already-paused PR lost the actor: {marker_line!r}")
+    else:
+        print("  ok    push to an already-paused PR keeps paused_by across the push")
+
+    # -------------------------------------------------------------
+    # 10. @claude resume clears both paused=1 and paused_by from the marker
+    # -------------------------------------------------------------
+    rc, body, outs, err = run_announce_step(
+        announce_script,
+        marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 paused_by=alice -->",
+        skip_reason="",  # review ran successfully
+        event="issue_comment",
+        mode="review",
+        result="success",
+        head_sha=NEW,
+        actor_login="alice",
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0:
+        fails.append(f"case 10: announce exited {rc}: {err}")
+    elif "paused=1" in marker_line or "paused_by=" in marker_line:
+        fails.append(f"case 10: resume did not clear paused=1/paused_by: {marker_line!r}")
+    elif outs.get("paused_by", "") != "":
+        fails.append(f"case 10: resume left a non-empty paused_by output: {outs.get('paused_by')!r}")
+    else:
+        print("  ok    @claude resume clears both paused=1 and paused_by from the marker")
+
+    # -------------------------------------------------------------
+    # 11. Lane event carries the actor on a paused-by-request skip
+    # -------------------------------------------------------------
+    rc, payload, err = run_lane_event_step(lane_event_script, skip_reason="paused-by-request", actor="alice")
+    if rc != 0:
+        fails.append(f"case 11: lane-event exited {rc}: {err}")
+    elif not isinstance(payload, dict):
+        fails.append(f"case 11: payload not dict: {payload}")
+    elif payload.get("actor") != "alice":
+        fails.append(f"case 11: want actor=alice, got {payload.get('actor')!r}")
+    else:
+        print("  ok    lane_event row carries actor=alice on a paused-by-request skip")
+
+    # An unrelated skip reason (no announce-side pause) carries no actor at all.
+    rc, payload, err = run_lane_event_step(lane_event_script, skip_reason="skipped-author", actor="")
+    if rc != 0:
+        fails.append(f"case 11b: lane-event exited {rc}: {err}")
+    elif not isinstance(payload, dict):
+        fails.append(f"case 11b: payload not dict: {payload}")
+    elif payload.get("actor") is not None:
+        fails.append(f"case 11b: want actor=null on skip-author, got {payload.get('actor')!r}")
+    else:
+        print("  ok    lane_event row carries actor=null on a non-pause skip")
 
     print()
     if fails:

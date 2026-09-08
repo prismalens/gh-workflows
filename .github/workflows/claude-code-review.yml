@@ -4089,6 +4089,7 @@ jobs:
       summary_count: ${{ steps.liveness.outputs.summary_count }}
       comment_node_ids: ${{ steps.liveness.outputs.comment_node_ids }}
       round_ordinal: ${{ steps.liveness.outputs.round_ordinal }}
+      paused_by: ${{ steps.liveness.outputs.paused_by }}
     steps:
       - name: Upsert liveness comment
         id: liveness
@@ -4096,6 +4097,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ needs.resolve.outputs.number }}
+          # Actor for a manual pause (#124): read from the event payload, never the comment
+          # body. Empty on pull_request events and any comment event other than a fresh pause.
+          ACTOR_LOGIN: ${{ github.event.comment.user.login }}
           HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
           EVENT_NAME: ${{ github.event_name }}
           MODE: ${{ needs.review.outputs.mode }}
@@ -4169,6 +4173,9 @@ jobs:
           prev_paused=$(jq -r '.body // ""' <<< "${found:-null}" \
             | head -1 | grep -oE 'paused=[0-9]+' | head -1 | cut -d= -f2 || true)
           prev_paused=${prev_paused:-0}
+          # Who paused it (#124): a login is [A-Za-z0-9-]+, so this cannot swallow a later field.
+          prev_paused_by=$(jq -r '.body // ""' <<< "${found:-null}" \
+            | head -1 | grep -oE 'paused_by=[A-Za-z0-9-]+' | head -1 | cut -d= -f2 || true)
 
           # Baseline head for the future incremental range. Absent on markers written before
           # this field existed, and on PRs no review has ever posted on — both mean "no
@@ -4190,6 +4197,21 @@ jobs:
             is_paused=1
           elif [ "$EVENT_NAME" = "pull_request" ] && [ "$prev_paused" = "1" ]; then
             is_paused=1
+          fi
+
+          # Who paused it (#124): recorded once, at pause time, and never updated after.
+          # prev_paused=1 means the PR was already paused coming into this run — a push
+          # while paused, or a second `@claude pause` — so the existing actor carries
+          # forward unchanged rather than a no-op summon (or no actor at all, on a push)
+          # overwriting it. Only a fresh pause (prev_paused=0) records the current
+          # commenter, straight from the event payload, never the comment body.
+          paused_by=""
+          if [ "$is_paused" = "1" ]; then
+            if [ "$prev_paused" = "1" ]; then
+              paused_by="$prev_paused_by"
+            else
+              paused_by="${ACTOR_LOGIN:-}"
+            fi
           fi
 
           verdict_kind=""
@@ -4429,12 +4451,16 @@ jobs:
               echo "summary_count=${summary_count}"
               echo "comment_node_ids=${comment_node_ids}"
               echo "round_ordinal=${rounds}"
+              echo "paused_by=${paused_by}"
             } >> "$GITHUB_OUTPUT"
           fi
 
           paused_flag=""
           if [ "$is_paused" = "1" ]; then
             paused_flag=" paused=1"
+            if [ -n "$paused_by" ]; then
+              paused_flag="${paused_flag} paused_by=${paused_by}"
+            fi
           fi
 
           # `sha=` is omitted entirely when there is no baseline, so markers on never-reviewed
@@ -4577,6 +4603,8 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REVIEWABLE_LINES: ${{ needs.review.outputs.reviewable_lines }}
           MAX_REVIEWABLE_LINES: ${{ needs.review.outputs.max_reviewable_lines }}
+          # Set only when this event is the pause (#124); empty on every other reason.
+          ACTOR: ${{ needs.announce.outputs.paused_by }}
           INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
           INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
           LANE_VERSION: ${{ env.LANE_VERSION }}
@@ -4649,6 +4677,7 @@ jobs:
             --arg lane_version "${LANE_VERSION:-}" \
             --arg reviewable_lines "${REVIEWABLE_LINES:-}" \
             --arg max_reviewable_lines "${MAX_REVIEWABLE_LINES:-}" \
+            --arg actor "${ACTOR:-}" \
             '
             def str_val(s): if s == "" then null else s end;
             def num_val(s): if s == "" then null else (s | tonumber? // null) end;
@@ -4665,7 +4694,8 @@ jobs:
               rounds_used: num_val($rounds_used),
               lane_version: str_val($lane_version),
               reviewable_lines: num_val($reviewable_lines),
-              max_reviewable_lines: num_val($max_reviewable_lines)
+              max_reviewable_lines: num_val($max_reviewable_lines),
+              actor: str_val($actor)
             }
           ')
 
