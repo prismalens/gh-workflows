@@ -39,6 +39,8 @@ function formatRawVerdict(round: RoundRow): string {
       return `re-checked open threads at ${sha}`;
     case "auto-paused":
       return `auto-paused: maximum automatic review rounds reached`;
+    case "paused-by-request":
+      return `paused-by-request: paused on purpose with @claude pause`;
     case "no-token":
       return `skipped execution: no OAuth token reached this lane`;
     case "no-new-commits":
@@ -99,6 +101,7 @@ export function decodeHeadStatus(round: RoundRow | undefined): HeadStatus {
   // 2. Did-not-run cases: head was not reviewed
   if (
     round.verdict_kind === "auto-paused" ||
+    round.verdict_kind === "paused-by-request" ||
     round.verdict_kind === "no-token" ||
     round.verdict_kind === "no-new-commits"
   ) {
@@ -116,6 +119,21 @@ export function decodeHeadStatus(round: RoundRow | undefined): HeadStatus {
         headRead: false,
         rawVerdict,
         copyableHint: "@claude review",
+      };
+    }
+    if (round.verdict_kind === "paused-by-request") {
+      // A summon does not clear a manual pause (#124's design), so the unblock hint here
+      // must not be "@claude review" — that would tell the reader to do something that
+      // cannot work. Only @claude resume clears it. `actor` lives on lane_events, not on
+      // this round, so the sentence names the fact without naming who paused it.
+      return {
+        state: "did-not-run",
+        label: "paused-by-request",
+        sentence: `Head ${sha}: not reviewed — a person paused the lane on this pull request on purpose.`,
+        explain: "Paused with @claude pause. Unlike an automatic pause, a summon does not clear this.",
+        headRead: false,
+        rawVerdict,
+        copyableHint: "@claude resume",
       };
     }
     if (round.verdict_kind === "no-token") {

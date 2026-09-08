@@ -1334,6 +1334,33 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(screen.getByRole("button", { name: /copy/i })).toBeInTheDocument();
   });
 
+  it("a paused-by-request head renders a distinct sentence and an @claude resume hint, not @claude review (#124)", async () => {
+    const [owner, repo] = baseRound.repository.split("/");
+    const pausedRound = {
+      ...baseRound,
+      session_id: "pr-paused-by-request",
+      pr_number: 521,
+      pr_title: "PR paused on purpose",
+      verdict_kind: "paused-by-request",
+      round_type: "full",
+      job_conclusion: "success",
+    };
+    const api = makeFixtureApi([pausedRound]);
+
+    renderRoute({ path: `/prs/${owner}/${repo}/521`, api });
+
+    expect(await screen.findByText(/PR #521/)).toBeInTheDocument();
+    const banner = screen.getByTestId("head-banner");
+    expect(banner).toHaveTextContent(/not reviewed/i);
+    expect(banner).toHaveTextContent(/paused the lane.*on purpose/i);
+    // Must not read as the round-budget message auto-paused uses.
+    expect(banner).not.toHaveTextContent(/maximum automatic review rounds/i);
+
+    const hint = screen.getByTestId("unblock-hint");
+    expect(hint).toHaveTextContent("@claude resume");
+    expect(hint).not.toHaveTextContent("@claude review");
+  });
+
   it("shows an empty state rather than crashing for an unknown PR", async () => {
     renderRoute({
       path: "/prs/prismalens/prismalens/99999",
