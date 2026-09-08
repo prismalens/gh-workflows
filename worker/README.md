@@ -104,7 +104,7 @@ Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_
 #### `lane_event`
 - **Required**:
   - `repository` (TEXT)
-  - `reason` (TEXT, must be exactly one of `no-token`, `auto-paused`, `paused-by-request`, `fork-head`, `skip-author`, `refused-size`)
+  - `reason` (TEXT, must be exactly one of `no-token`, `auto-paused`, `paused-by-request`, `fork-head`, `skip-author`, `refused-size`, `draft`, `skip-trivial`, `superseded`)
   - `run_id` (INTEGER, finite number)
   - `run_attempt` (INTEGER, finite number)
 - **Optional**:
