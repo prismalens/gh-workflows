@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -129,6 +129,43 @@ describe("a thin range renders rows, not aggregates", () => {
   it("says no rounds in range on an empty window", () => {
     render(<TileStrip n={0} windowLabel="the last 30 days" children={null} />);
     expect(screen.getByText("No rounds in range")).toBeInTheDocument();
+  });
+
+  it("a caller counting something other than rounds must not inherit round-only copy (#75 path_instructions)", () => {
+    // Without a unit override this asserted "No rounds in range" for a strip that was
+    // never counting rounds - a label the underlying rows (findings, here) cannot support.
+    render(
+      <TileStrip
+        n={0}
+        windowLabel="the last 30 days"
+        unit="findings"
+        emptyExplanation="This is an absence of findings, not proof every review was clean."
+        children={null}
+      />,
+    );
+    expect(screen.getByText("No findings in range")).toBeInTheDocument();
+    expect(screen.getByText(/not proof every review was clean/)).toBeInTheDocument();
+    expect(screen.queryByText(/No rounds in range/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/a run that cost nothing/)).not.toBeInTheDocument();
+
+    cleanup();
+    render(
+      <TileStrip n={4} windowLabel="the last 7 days" unit="findings">
+        <Tile label="Mean wall clock" metric={meanMetric(seq(4))} format={formatDuration} />
+      </TileStrip>,
+    );
+    expect(screen.getByText(/4 findings over the last 7 days/)).toBeInTheDocument();
+    expect(screen.getByText(/withheld under 10 findings/)).toBeInTheDocument();
+    expect(screen.queryByText(/rounds/)).not.toBeInTheDocument();
+
+    // Singular: 1 finding, not 1 findings.
+    cleanup();
+    render(
+      <TileStrip n={1} windowLabel="today" unit="findings">
+        <Tile label="Mean wall clock" metric={meanMetric(seq(1))} format={formatDuration} />
+      </TileStrip>,
+    );
+    expect(screen.getByText(/1 finding over today/)).toBeInTheDocument();
   });
 });
 

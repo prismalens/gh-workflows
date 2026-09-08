@@ -28,13 +28,24 @@ export interface FindingsTableProps {
   rows: FindingRow[];
   /** PR keys whose sweep was cut short by a throttle; annotated per row (#111). */
   incompletePrKeys: Set<string>;
+  /**
+   * The empty-state message. Defaults to the inbox's own copy, which is honest only where
+   * fate/search/repository filters actually narrowed the rows. A caller with no filters (the
+   * PR detail page's findings tab) must say so instead - "no findings match the selected
+   * filters" would assert filters that were never applied, over a possibly-unswept PR.
+   */
+  emptyMessage?: string;
 }
 
-export function FindingsTable({ rows, incompletePrKeys }: FindingsTableProps) {
+export function FindingsTable({
+  rows,
+  incompletePrKeys,
+  emptyMessage = "No findings match the selected filters.",
+}: FindingsTableProps) {
   if (rows.length === 0) {
     return (
       <p className="rounded-md border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
-        No findings match the selected filters.
+        {emptyMessage}
       </p>
     );
   }
@@ -99,7 +110,7 @@ export function FindingsTable({ rows, incompletePrKeys }: FindingsTableProps) {
                     rel="noreferrer"
                     className="inline-flex items-center gap-0.5 text-primary hover:underline whitespace-nowrap"
                   >
-                    Open thread on GitHub <ExternalLink className="size-3" />
+                    View PR files on GitHub <ExternalLink className="size-3" />
                   </a>
                 </TableCell>
               </TableRow>

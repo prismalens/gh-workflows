@@ -1317,6 +1317,24 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(screen.queryByText("Other PR finding")).not.toBeInTheDocument();
   });
 
+  it("a PR with zero findings says so plainly on its findings tab, not as filters excluding rows (this pass)", async () => {
+    const known = fourStateRounds[3]; // PR 204 (reviewed)
+    const [owner, repo] = known.repository.split("/");
+    // No findings at all in the store: this tab has no filter UI, so the generic inbox
+    // empty-state copy ("no findings match the selected filters") would assert filters
+    // that were never offered here, over a PR that may simply never have been swept.
+    const findingsApi = makeFixtureApi(fourStateRounds, [], [], [], [], []);
+
+    renderRoute({ path: `/prs/${owner}/${repo}/${known.pr_number}`, api: findingsApi });
+    await screen.findByText(new RegExp(`PR #${known.pr_number}`));
+
+    expect(
+      await screen.findByText(/No findings recorded for this pull request/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/not proof this pull request was clean/)).toBeInTheDocument();
+    expect(screen.queryByText(/No findings match the selected filters/)).not.toBeInTheDocument();
+  });
+
   it("renders copyable unblock hint for amber/red states on detail route", async () => {
     const amber = fourStateRounds[1]; // PR 202 (auto-paused)
     const [owner, repo] = amber.repository.split("/");

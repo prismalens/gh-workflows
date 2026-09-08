@@ -28,7 +28,12 @@ export function FindingsTiles({ rows, prs, windowLabel }: FindingsTilesProps) {
   const latency = reviewToMergeLatencyMetric(rows, prs);
 
   return (
-    <TileStrip n={rows.length} windowLabel={windowLabel}>
+    <TileStrip
+      n={rows.length}
+      windowLabel={windowLabel}
+      unit="findings"
+      emptyExplanation="This is an absence of findings, not proof that every reviewed pull request here was clean."
+    >
       <Tile
         label="Precise-attribution rate"
         metric={attribution}

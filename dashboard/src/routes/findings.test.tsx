@@ -75,11 +75,26 @@ describe("/findings: the inbox", () => {
     expect(within(strip).getByText("10.0%")).toBeInTheDocument();
   });
 
-  it("withholds tiles for a table below the sparse-range threshold", async () => {
+  it("withholds tiles for a table below the sparse-range threshold, naming findings, not rounds", async () => {
     const rows = [finding({ thread_node_id: "PRRT_only" })];
     renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
     expect(await screen.findByText(/the table below is the summary/)).toBeInTheDocument();
     expect(screen.queryByTestId("tile-strip")).not.toBeInTheDocument();
+    // #75 path_instructions: a label must be backed by what it counts. This strip counts
+    // findings, so its copy must not borrow the rounds-flavored wording from the overview page.
+    expect(screen.getByText(/1 finding over/)).toBeInTheDocument();
+    expect(screen.getByText(/withheld under 10 findings/)).toBeInTheDocument();
+    expect(screen.queryByText(/rounds/)).not.toBeInTheDocument();
+  });
+
+  it("a repository with zero findings says so as an absence of findings, never as 'no rounds in range' (finding this pass)", async () => {
+    // A repository can be reviewed cleanly for a long time, or never swept at all; either way
+    // zero finding rows is not zero rounds, and the copy must not assert the wrong absence.
+    renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], []) });
+    expect(await screen.findByText(/No findings in range/)).toBeInTheDocument();
+    expect(screen.getByText(/not proof that every reviewed pull request here was clean/)).toBeInTheDocument();
+    expect(screen.queryByText(/No rounds in range/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/a run that cost nothing/)).not.toBeInTheDocument();
   });
 
   it("renders a fate chip per row and never colours self-graded green", async () => {
@@ -102,16 +117,21 @@ describe("/findings: the inbox", () => {
     expect(human).toBeTruthy();
   });
 
-  it("marks a fix_sha citation and shows body/path detail with an outbound thread link", async () => {
+  it("marks a fix_sha citation and shows body/path detail with an outbound link that does not overclaim (this pass)", async () => {
     const rows = [finding({ fix_sha: "deadbee", fix_sha_source: "verify_table" })];
     renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
     expect(await screen.findByTestId("fix-cited-badge")).toBeInTheDocument();
     expect(screen.getByText("Off-by-one")).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: /Open thread on GitHub/ });
+    // The URL is the PR's files tab - review_findings stores no thread URL and the
+    // GraphQL thread id has no REST equivalent (#111), so the link cannot open the
+    // specific thread. "Open thread on GitHub" asserted a specificity this row cannot
+    // support; the label must not claim more than the href delivers.
+    const link = screen.getByRole("link", { name: /View PR files on GitHub/ });
     expect(link).toHaveAttribute(
       "href",
       "https://github.com/prismalens/gh-workflows/pull/1/files",
     );
+    expect(screen.queryByText(/Open thread on GitHub/)).not.toBeInTheDocument();
   });
 
   it("surfaces a partial sweep on a pull request whose row_set_incomplete is set", async () => {
@@ -138,12 +158,39 @@ describe("/findings: the inbox", () => {
       within(list).getByText(/marked this fixed, but the thread is still open/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/divergence.*rate/i)).not.toBeInTheDocument();
+    // Same overclaim as the findings table (this pass): the link is the PR's files
+    // tab, never a specific thread, so the label must not say "thread".
+    const link = within(list).getByRole("link", { name: /View PR files on GitHub/ });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://github.com/prismalens/gh-workflows/pull/2/files",
+    );
   });
 
   it("shows the no-divergence alert when every verdict agrees with GitHub", async () => {
     const rows = [finding({ verify_verdict: "fixed", is_resolved: 1 })];
     renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
     expect(await screen.findByTestId("divergence-empty")).toBeInTheDocument();
+  });
+
+  it("with zero findings and no filter selected, says so as an empty window, never as filters excluding rows (this pass)", async () => {
+    renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], []) });
+    expect(
+      await screen.findByText(/No findings recorded in the loaded window/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/not proof every reviewed pull request here was clean/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No findings match the selected filters/)).not.toBeInTheDocument();
+  });
+
+  it("with a fate filter selected that matches nothing, still blames the selected filters", async () => {
+    const rows = [finding({ thread_node_id: "PRRT_only", is_resolved: 0, human_reply_count: 0 })];
+    renderRoute({ path: "/findings?fate=resolved-by-human", api: makeFixtureApi([], [], [], [], [], rows) });
+    expect(await screen.findByText("No findings match the selected filters.")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/No findings recorded in the loaded window/),
+    ).not.toBeInTheDocument();
   });
 
   it("filters the table by the fate chip", async () => {

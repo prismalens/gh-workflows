@@ -302,7 +302,11 @@ export function ReportTabs({ pr }: { pr: PRSummary }) {
               ) : findings.isError ? (
                 <QueryError error={findings.error} title="Could not load findings" />
               ) : (
-                <FindingsTable rows={findingRows} incompletePrKeys={incomplete} />
+                <FindingsTable
+                  rows={findingRows}
+                  incompletePrKeys={incomplete}
+                  emptyMessage="No findings recorded for this pull request. This is an absence of findings, not proof this pull request was clean."
+                />
               )}
             </div>
           )}

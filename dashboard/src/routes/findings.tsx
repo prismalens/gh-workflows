@@ -205,7 +205,19 @@ function FindingsPage() {
               />
             </div>
 
-            <FindingsTable rows={pageRows} incompletePrKeys={incomplete} />
+            <FindingsTable
+              rows={pageRows}
+              incompletePrKeys={incomplete}
+              // "No findings match the selected filters" is only true when a fate or search
+              // filter actually narrowed the rows. With neither active, an empty result is an
+              // empty window, not a filter excluding anything (finding this pass).
+              emptyMessage={
+                isFiltered
+                  ? undefined
+                  : "No findings recorded in the loaded window. This is an absence of findings, " +
+                    "not proof every reviewed pull request here was clean."
+              }
+            />
 
             <TablePager
               page={page}

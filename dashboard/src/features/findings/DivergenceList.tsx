@@ -72,7 +72,7 @@ export function DivergenceList({ rows }: { rows: FindingRow[] }) {
                     rel="noreferrer"
                     className="inline-flex items-center gap-0.5 text-primary hover:underline whitespace-nowrap"
                   >
-                    Open thread on GitHub <ExternalLink className="size-3" />
+                    View PR files on GitHub <ExternalLink className="size-3" />
                   </a>
                 </TableCell>
               </TableRow>
