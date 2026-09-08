@@ -279,7 +279,7 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 52);
+      assert.equal(query.args.length, 54);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
@@ -327,6 +327,10 @@ describe("Worker telemetry ingest", () => {
 
       // config_effective (51) is the #75 field; a v1 payload predates it too.
       assert.equal(query.args[51], null);
+
+      // level (52) and level_source (53) are the #101 fields; a v1 payload predates them too.
+      assert.equal(query.args[52], null);
+      assert.equal(query.args[53], null);
     });
 
     it("inserts a full v2 payload and binds every new column with given values", async () => {
@@ -681,7 +685,9 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /config_effective/);
-      assert.equal(query.args[query.args.length - 1], JSON.stringify(configEffective));
+      // config_effective sits 3 params before the end: level and level_source (#101)
+      // were appended after it.
+      assert.equal(query.args[query.args.length - 3], JSON.stringify(configEffective));
     });
 
     it("stores null for config_effective when the payload omits it (#75)", async () => {
@@ -698,7 +704,61 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 3], null);
+    });
+
+    it("stores level and level_source for a v2 payload that sets them (#101)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-level-1",
+          repository: "prismalens/gh-workflows",
+          level: "high",
+          level_source: "repo",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 2], "high");
+      assert.equal(query.args[query.args.length - 1], "repo");
+    });
+
+    it("stores null for level and level_source when the payload omits them (#101)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-level-absent",
+          repository: "prismalens/gh-workflows",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 2], null);
       assert.equal(query.args[query.args.length - 1], null);
+    });
+
+    it("returns 400 when level or level_source is not a string", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-level-bad",
+          repository: "prismalens/gh-workflows",
+          level: 3,
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      assert.equal(db.queries.length, 0);
     });
   });
 
@@ -1704,6 +1764,45 @@ describe("Worker telemetry read API", () => {
       assert.ok(!query.sql.includes("subagent_stats"));
       assert.ok(!query.sql.includes("raw_result"));
       assert.ok(!query.sql.includes("config_effective"));
+    });
+
+    it("selects level and level_source in the default response, unconditionally like model_source (#101)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return {
+              results: [
+                {
+                  session_id: "s-level-read-1",
+                  level: "high",
+                  level_source: "escalation",
+                },
+                {
+                  session_id: "s-level-read-2",
+                  level: null,
+                  level_source: null,
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/runs", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].level, "high");
+      assert.equal(data.rows[0].level_source, "escalation");
+      assert.equal(data.rows[1].level, null);
+      assert.equal(data.rows[1].level_source, null);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("level"));
+      assert.ok(query.sql.includes("level_source"));
     });
 
     it("returns config_effective only under include=blobs, preserving an unknown config key (#75)", async () => {

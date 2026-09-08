@@ -79,6 +79,11 @@ const STRING_FIELDS = [
   "config_hash",
   "variant",
   "agents_status",
+  // #101: review effort level, orthogonal to model. Not enumed here; low is
+  // schema-rejected in the workflow for this release, not the worker, so a
+  // later release enabling it needs no worker change.
+  "level",
+  "level_source",
 ];
 
 const JSON_ARRAY_FIELDS = ["comment_node_ids"];
@@ -695,6 +700,8 @@ async function handleRuns(url, env) {
     "pr_base_ref",
     "pr_head_ref",
     "agents_status",
+    "level",
+    "level_source",
   ];
   if (includeBlobs) {
     columns.push(
@@ -1338,14 +1345,16 @@ async function handleIngest(request, env) {
           agents_status,
           reviewable_lines,
           size_override,
-          config_effective
+          config_effective,
+          level,
+          level_source
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
           ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
           ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
           ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
-          ?51, ?52
+          ?51, ?52, ?53, ?54
         )
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
@@ -1400,7 +1409,9 @@ async function handleIngest(request, env) {
         payload.agents_status ?? null,
         payload.reviewable_lines ?? null,
         payload.size_override ?? null,
-        serializeJson(payload.config_effective, null)
+        serializeJson(payload.config_effective, null),
+        payload.level ?? null,
+        payload.level_source ?? null
       );
 
       const agentStmts = [];
