@@ -1,8 +1,17 @@
-import type { ChangesQuery, LaneEventsQuery, PrsQuery, RunsQuery, TelemetryApi } from "@/api/client";
+import type {
+  ChangesQuery,
+  FindingsQuery,
+  LaneEventsQuery,
+  PrsQuery,
+  RunsQuery,
+  TelemetryApi,
+} from "@/api/client";
 import { MAX_LIMIT_WITH_BLOBS } from "@/api/client";
 import type {
   ChangeRow,
   ChangesResponse,
+  FindingRow,
+  FindingsResponse,
   LaneEventRow,
   LaneEventsResponse,
   PrRow,
@@ -23,6 +32,7 @@ const BLOB_COLUMNS = [
   "verdict_text",
   "comment_node_ids",
   "config_resolution",
+  "config_effective",
 ] as const;
 
 /**
@@ -40,6 +50,7 @@ export function makeFixtureApi(
   // default, so every existing caller that passes its own rows keeps today's
   // fallback-only behaviour (#141).
   prs: PrRow[] = rows === FIXTURE_ROUNDS ? FIXTURE_PRS : [],
+  findings: FindingRow[] = [],
 ): TelemetryApi {
   const sorted = [...rows].sort((a, b) => {
     const byTime = b.recorded_at.localeCompare(a.recorded_at);
@@ -61,6 +72,11 @@ export function makeFixtureApi(
   const sortedChanges = [...changes].sort((a, b) => {
     const byTime = b.at.localeCompare(a.at);
     return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
+  });
+
+  const sortedFindings = [...findings].sort((a, b) => {
+    const byTime = (b.thread_created_at ?? "").localeCompare(a.thread_created_at ?? "");
+    return byTime !== 0 ? byTime : b.thread_node_id.localeCompare(a.thread_node_id);
   });
 
   return {
@@ -257,6 +273,32 @@ export function makeFixtureApi(
         next_cursor:
           page.length === limit && last
             ? `${last.updated_at}|${last.repository}|${last.pr_number}`
+            : null,
+      };
+    },
+
+    async fetchFindings(query: FindingsQuery = {}): Promise<FindingsResponse> {
+      let filtered = sortedFindings;
+      if (query.repository) filtered = filtered.filter((r) => r.repository === query.repository);
+      if (query.pr_number) filtered = filtered.filter((r) => r.pr_number === query.pr_number);
+      if (query.cursor) {
+        const pipe = query.cursor.lastIndexOf("|");
+        const cursorAt = query.cursor.slice(0, pipe);
+        const cursorId = query.cursor.slice(pipe + 1);
+        filtered = filtered.filter(
+          (r) =>
+            (r.thread_created_at ?? "") < cursorAt ||
+            ((r.thread_created_at ?? "") === cursorAt && r.thread_node_id < cursorId),
+        );
+      }
+      const limit = query.limit ?? 1000;
+      const page = filtered.slice(0, limit);
+      const last = page[page.length - 1];
+      return {
+        rows: page,
+        next_cursor:
+          page.length === limit && last
+            ? `${last.thread_created_at ?? ""}|${last.thread_node_id}`
             : null,
       };
     },

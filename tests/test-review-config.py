@@ -10,6 +10,8 @@ stubbed `gh`, verifying:
 5. A changed file matching path_filters escalates to opus.
 6. A changed file not matching leaves the default model.
 7. A summon `--model` override beats a path match (precedence rule).
+8. config_effective (#75) carries a {value, layer} entry per resolved key, layer matching
+   whichever of workflow/org/repo actually supplied it, with no hardcoded key list.
 
 Run: python3 tests/test-review-config.py
 """
@@ -177,7 +179,7 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
 def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude-sonnet-5",
                    default_model="claude-sonnet-5", escalation_paths=None, path_filters=None,
                    changed_files=None, repo="prismalens/test-repo", pr="42",
-                   files_fail=False):
+                   files_fail=False, config_level="medium"):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
@@ -208,6 +210,7 @@ def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude
             PATH_FILTERS=json.dumps(effective_pf),
             FAKE_FILES_JSON=files_json,
             FAKE_FILES_FAIL="1" if files_fail else "0",
+            CONFIG_LEVEL=config_level,
         )
 
         p = subprocess.run(["bash", "-c", script], env=env,
@@ -317,6 +320,21 @@ review:
   default_model: "gpt-4"
 """
 
+# #101 ruling: 'low' is schema-rejected for this release, not merely an arbitrary
+# invalid string — this fixture proves that specific, deliberate rejection.
+MALFORMED_LEVEL_LOW = """
+version: 1
+review:
+  level: "low"
+"""
+
+VALID_CONFIG_LEVEL_HIGH = """
+version: 1
+
+review:
+  level: "high"
+"""
+
 MALFORMED_YAML_SYNTAX = """
 version: 1
 review: [invalid
@@ -338,6 +356,13 @@ review:
     - "org-bot"
   path_filters:
     - "org-core/**"
+"""
+
+ORG_CONFIG_LEVEL_HIGH = """
+version: 1
+
+review:
+  level: "high"
 """
 
 REPO_CONFIG_PARTIAL = """
@@ -390,6 +415,8 @@ def main():
     check("org absent and repo absent: applies empty path_filters", json.loads(out.get("path_filters", "null")) == [], f"got {out.get('path_filters')}")
     check("org absent and repo absent: produces no warning", "::warning::" not in stdout and "::warning::" not in stderr, f"stdout: {stdout}")
     check("org absent and repo absent: logs workflow default sources", "review.default_model: claude-sonnet-5 (source: workflow default)" in stdout, f"stdout: {stdout}")
+    check("org absent and repo absent: applies level default of medium (#101)", out.get("level") == "medium", f"got {out.get('level')}")
+    check("org absent and repo absent: logs level workflow default source", "review.level: medium (source: workflow default)" in stdout, f"stdout: {stdout}")
 
     # 2. Org defaults present, repo config absent: org values apply
     rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, is_404=True)
@@ -400,6 +427,12 @@ def main():
     check("org present and repo absent: applies org path_filters", json.loads(out.get("path_filters", "[]")) == ["org-core/**"], f"got {out.get('path_filters')}")
     check("org present and repo absent: logs org defaults source", "review.default_model: claude-opus-5 (source: org defaults)" in stdout, f"stdout: {stdout}")
     check("org present and repo absent: produces no warning", "::warning::" not in stdout, f"stdout: {stdout}")
+
+    # 2b. review.level (#101): org layer accepts 'high' the same way as any other key.
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_LEVEL_HIGH, is_404=True)
+    check("level: org defaults exits 0", rc == 0, f"rc={rc}")
+    check("level: org defaults sets level to high", out.get("level") == "high", f"got {out.get('level')}")
+    check("level: org defaults logs its source", "review.level: high (source: org defaults)" in stdout, f"stdout: {stdout}")
 
     # 3. Both present: repo wins key by key, and a key set only in org defaults still applies
     rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, config_yaml=REPO_CONFIG_PARTIAL)
@@ -415,10 +448,41 @@ def main():
           "review.path_filters: ['org-core/**'] (source: org defaults)" in stdout,
           f"stdout: {stdout}")
 
+    # 3b. config_effective (#75): one {value, layer} entry per key config_hash hashes,
+    # a layer per source actually resolved (repo/org/workflow all exercised at once here),
+    # and no hardcoded key list — a new resolved_config key needs no change to this step.
+    config_effective = json.loads(out.get("config_effective", "{}"))
+    check("config_effective is a non-empty object", isinstance(config_effective, dict) and config_effective, f"got {config_effective!r}")
+    check("config_effective repo-sourced default_model carries layer=repo",
+          config_effective.get("default_model") == {"value": "claude-sonnet-5", "layer": "repo"},
+          f"got {config_effective.get('default_model')!r}")
+    check("config_effective repo-sourced auto_pause_rounds carries layer=repo and an int value",
+          config_effective.get("auto_pause_rounds") == {"value": 3, "layer": "repo"},
+          f"got {config_effective.get('auto_pause_rounds')!r}")
+    check("config_effective org-sourced skip_authors carries layer=org",
+          config_effective.get("skip_authors") == {"value": "org-bot", "layer": "org"},
+          f"got {config_effective.get('skip_authors')!r}")
+    check("config_effective org-sourced path_filters carries layer=org",
+          config_effective.get("path_filters") == {"value": ["org-core/**"], "layer": "org"},
+          f"got {config_effective.get('path_filters')!r}")
+    check("config_effective unset max_reviewable_lines carries layer=workflow (not 'unavailable')",
+          config_effective.get("max_reviewable_lines") == {"value": 6000, "layer": "workflow"},
+          f"got {config_effective.get('max_reviewable_lines')!r}")
+    check("config_effective carries every key config_hash hashes, no more and no less",
+          set(config_effective.keys()) == {
+              "default_model", "auto_pause_rounds", "skip_authors", "escalation_paths",
+              "path_filters", "path_instructions", "max_reviewable_lines", "max_file_lines",
+              "language_map", "tool_findings", "issue_context_byte_budget",
+              "issue_context_total_byte_budget", "level",
+          },
+          f"got keys {sorted(config_effective.keys())}")
+    check("config_effective excludes variant, same as config_hash", "variant" not in config_effective, f"got keys {sorted(config_effective.keys())}")
+
     # 4. Malformed org defaults: warns, ignored, workflow defaults apply, and run continues
     for label, malformed_yaml, expected_err_sub in [
         ("unknown key", MALFORMED_UNKNOWN_KEY, "Unknown configuration key 'unknown_key'"),
         ("invalid model", MALFORMED_INVALID_MODEL, "Invalid value for 'review.default_model'"),
+        ("level low, schema-rejected this release (#101)", MALFORMED_LEVEL_LOW, "Invalid value for 'review.level'"),
         ("yaml syntax error", MALFORMED_YAML_SYNTAX, "Malformed YAML"),
     ]:
         rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=malformed_yaml, is_404=True)
@@ -447,6 +511,7 @@ def main():
     for label, malformed_yaml, expected_err_sub in [
         ("unknown key", MALFORMED_UNKNOWN_KEY, "Unknown configuration key 'unknown_key'"),
         ("invalid model", MALFORMED_INVALID_MODEL, "Invalid value for 'review.default_model'"),
+        ("level low, schema-rejected this release (#101)", MALFORMED_LEVEL_LOW, "Invalid value for 'review.level'"),
         ("yaml syntax error", MALFORMED_YAML_SYNTAX, "Malformed YAML"),
     ]:
         rc, out, stdout, stderr = run_config_case(config_script, config_yaml=malformed_yaml)
@@ -471,6 +536,14 @@ def main():
     check("valid config sets path_filters", json.loads(out.get("path_filters", "[]")) == ["dist/**"], f"got {out.get('path_filters')}")
     check("valid config logs consumed keys", "review.default_model=claude-opus-5" in stdout and "review.auto_pause_rounds=10" in stdout, f"stdout: {stdout}")
     check("valid config produces no warning", "::warning::" not in stdout, f"stdout: {stdout}")
+
+    # 3c. review.level (#101): repo config accepts 'high' through the same base-not-head
+    # path as every other key (schema, repo layer, resolved_config, step outputs).
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_LEVEL_HIGH)
+    check("level: repo config exits 0", rc == 0, f"rc={rc}")
+    check("level: repo config sets level to high", out.get("level") == "high", f"got {out.get('level')}")
+    check("level: repo config logs its source", "review.level: high (source: repo config)" in stdout, f"stdout: {stdout}")
+    check("level: repo config produces no warning", "::warning::" not in stdout, f"stdout: {stdout}")
 
     rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_WITH_UNWIRED_KEYS)
     check("valid config with unwired keys exits 0", rc == 0, f"rc={rc}")
@@ -597,6 +670,62 @@ def main():
     check("changed-files fetch failure uses default model", out.get("model") == "claude-sonnet-5", f"model={out.get('model')}")
     check("changed-files fetch failure reports model_source=default (changed-files fetch failed)", out.get("model_source") == "default (changed-files fetch failed)", f"source={out.get('model_source')}")
     check("changed-files fetch failure emits warning naming command and stderr", "::warning::" in stdout and "repos/prismalens/test-repo/pulls/42/files" in stdout and "500 Internal Server Error" in stdout, f"stdout={stdout!r}")
+
+    print("\n=== Testing review.level escalation floor (#101 ruling) ===")
+
+    # 9. No path match: level passes through unchanged, level_source=config
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        escalation_paths=["packages/@prismalens/engine/**"],
+        changed_files=["docs/readme.md"],
+        config_level="medium",
+    )
+    check("no path match: level unchanged", rc == 0 and out.get("level") == "medium", f"level={out.get('level')}")
+    check("no path match: level_source=config", out.get("level_source") == "config", f"source={out.get('level_source')}")
+
+    # 10. Path match with level already medium: floor is a no-op on the value, but the
+    # source still says escalation happened (mirrors model_source's own behavior).
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        escalation_paths=["packages/@prismalens/engine/**"],
+        changed_files=["packages/@prismalens/engine/src/core.ts"],
+        config_level="medium",
+    )
+    check("path match at medium: level stays medium", rc == 0 and out.get("level") == "medium", f"level={out.get('level')}")
+    check("path match at medium: level_source=escalation", out.get("level_source") == "escalation", f"source={out.get('level_source')}")
+
+    # 11. Path match with level already high: the floor never lowers it (never a ceiling).
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        escalation_paths=["packages/@prismalens/engine/**"],
+        changed_files=["packages/@prismalens/engine/src/core.ts"],
+        config_level="high",
+    )
+    check("path match at high: level stays high (floor, never a ceiling)", rc == 0 and out.get("level") == "high", f"level={out.get('level')}")
+    check("path match at high: level_source=escalation", out.get("level_source") == "escalation", f"source={out.get('level_source')}")
+
+    # 12. The floor applies regardless of a --model summon: level and model are
+    # orthogonal, so a model override must not also suppress the level floor.
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        body="@claude review --model sonnet",
+        escalation_paths=["packages/@prismalens/engine/**"],
+        changed_files=["packages/@prismalens/engine/src/core.ts"],
+        config_level="medium",
+    )
+    check("model summon does not gate the level floor: model honors summon", rc == 0 and out.get("model") == "claude-sonnet-5", f"model={out.get('model')}")
+    check("model summon does not gate the level floor: level still escalates", out.get("level") == "medium" and out.get("level_source") == "escalation", f"level={out.get('level')} source={out.get('level_source')}")
+
+    # 13. A changed-files fetch failure degrades the level floor the same way it
+    # degrades model escalation: fall back to the configured value, do not guess.
+    rc, out, stdout, stderr = run_model_case(
+        model_script,
+        escalation_paths=["packages/@prismalens/engine/**"],
+        files_fail=True,
+        config_level="medium",
+    )
+    check("fetch failure: level falls back to configured value", rc == 0 and out.get("level") == "medium", f"level={out.get('level')}")
+    check("fetch failure: level_source=config (floor not applied blind)", out.get("level_source") == "config", f"source={out.get('level_source')}")
 
     print("\n=== Testing Path Instructions Configuration (#120) ===")
 

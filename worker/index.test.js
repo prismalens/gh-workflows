@@ -279,7 +279,7 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 49);
+      assert.equal(query.args.length, 54);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
@@ -319,6 +319,18 @@ describe("Worker telemetry ingest", () => {
       const expectedVariantKey = await computeVariantKey(null, "claude-3-7-sonnet", null, null, "review");
       assert.equal(query.args[47], expectedVariantKey);
       assert.match(query.args[47], /^[0-9a-f]{64}$/);
+
+      // reviewable_lines (49) and size_override (50) are the #105 manifest fields;
+      // a v1 payload predates them and binds NULL for both.
+      assert.equal(query.args[49], null);
+      assert.equal(query.args[50], null);
+
+      // config_effective (51) is the #75 field; a v1 payload predates it too.
+      assert.equal(query.args[51], null);
+
+      // level (52) and level_source (53) are the #101 fields; a v1 payload predates them too.
+      assert.equal(query.args[52], null);
+      assert.equal(query.args[53], null);
     });
 
     it("inserts a full v2 payload and binds every new column with given values", async () => {
@@ -475,6 +487,40 @@ describe("Worker telemetry ingest", () => {
       assert.equal(boundTitle, "T".repeat(512));
     });
 
+    it("never truncates a title mid-surrogate-pair, dropping the trailing emoji instead of a lone surrogate", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      // 511 plain chars + one emoji (2 UTF-16 units at positions 511-512) straddles the
+      // 512-char truncation boundary exactly.
+      const titleWithEmojiAtBoundary = "T".repeat(511) + "\u{1F600}";
+      assert.equal(titleWithEmojiAtBoundary.length, 513);
+
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "session-emoji-boundary",
+          repository: "prismalens/gh-workflows",
+          pr_title: titleWithEmojiAtBoundary,
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const boundTitle = db.queries[0].args[38];
+      // A naive slice(0, 512) would cut between the emoji's two UTF-16 units, leaving a
+      // lone high surrogate that has no valid UTF-8 encoding. The fix drops the whole
+      // emoji instead, so the stored value is 511 chars of plain text and contains no
+      // unpaired surrogate anywhere.
+      assert.equal(boundTitle, "T".repeat(511));
+      for (let i = 0; i < boundTitle.length; i++) {
+        const code = boundTitle.charCodeAt(i);
+        assert.ok(
+          !(code >= 0xd800 && code <= 0xdbff),
+          `found a lone high surrogate at index ${i}`
+        );
+      }
+    });
+
     it("truncates pr_author, pr_base_ref, and pr_head_ref to 512 characters", async () => {
       const db = createFakeDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
@@ -619,6 +665,134 @@ describe("Worker telemetry ingest", () => {
       const query = db.queries[0];
       assert.equal(query.args[30], payload.comment_node_ids);
       assert.equal(query.args[35], payload.config_resolution);
+    });
+
+    it("returns 400 when config_effective is not an object (#75)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+
+      const notJsonReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-bad-config-effective-1",
+          repository: "prismalens/gh-workflows",
+          config_effective: "not-json",
+        },
+      });
+      assert.equal((await worker.fetch(notJsonReq, env)).status, 400);
+
+      const wrongShapeReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-bad-config-effective-2",
+          repository: "prismalens/gh-workflows",
+          config_effective: ["not", "an", "object"],
+        },
+      });
+      assert.equal((await worker.fetch(wrongShapeReq, env)).status, 400);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("stores config_effective verbatim, including a config key the worker has never seen (#75)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const configEffective = {
+        auto_pause_rounds: { value: 8, layer: "repo" },
+        min_diff_lines: { value: 20, layer: "org" },
+        // A key the worker has no knowledge of. #75: never parsed, reshaped, or
+        // validated into a fixed key set, so a new lane config key needs no worker change.
+        a_brand_new_lane_config_key: { value: "shiny", layer: "summon" },
+      };
+      const payload = {
+        session_id: "s-config-effective-1",
+        repository: "prismalens/gh-workflows",
+        config_effective: configEffective,
+      };
+
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: payload,
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+
+      const query = db.queries[0];
+      assert.match(query.sql, /config_effective/);
+      // config_effective sits 3 params before the end: level and level_source (#101)
+      // were appended after it.
+      assert.equal(query.args[query.args.length - 3], JSON.stringify(configEffective));
+    });
+
+    it("stores null for config_effective when the payload omits it (#75)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-config-effective-absent",
+          repository: "prismalens/gh-workflows",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 3], null);
+    });
+
+    it("stores level and level_source for a v2 payload that sets them (#101)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-level-1",
+          repository: "prismalens/gh-workflows",
+          level: "high",
+          level_source: "repo",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 2], "high");
+      assert.equal(query.args[query.args.length - 1], "repo");
+    });
+
+    it("stores null for level and level_source when the payload omits them (#101)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-level-absent",
+          repository: "prismalens/gh-workflows",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 2], null);
+      assert.equal(query.args[query.args.length - 1], null);
+    });
+
+    it("returns 400 when level or level_source is not a string", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-level-bad",
+          repository: "prismalens/gh-workflows",
+          level: 3,
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      assert.equal(db.queries.length, 0);
     });
   });
 
@@ -996,11 +1170,59 @@ describe("Worker telemetry ingest", () => {
         "https://github.com/prismalens/gh-workflows/actions/runs/123456",
         3,
         "v2.0.0",
+        // reviewable_lines / max_reviewable_lines (#105): null on a payload that
+        // predates the review manifest cap.
+        null,
+        null,
+        // actor (#124): null on a payload that carries no pause actor.
+        null,
       ]);
     });
 
-    it("supports all five valid reasons: no-token, auto-paused, paused-by-request, fork-head, skip-author", async () => {
-      const reasons = ["no-token", "auto-paused", "paused-by-request", "fork-head", "skip-author"];
+    it("inserts a refused-size lane event with reviewable_lines and max_reviewable_lines", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const laneEventPayload = {
+        event_kind: "lane_event",
+        run_id: 654321,
+        run_attempt: 1,
+        recorded_at: "2026-09-07T09:00:00.000Z",
+        repository: "prismalens/gh-workflows",
+        reason: "refused-size",
+        pr_number: 105,
+        head_sha: "00112233445566778899aabbccddeeff0011223",
+        run_url: "https://github.com/prismalens/gh-workflows/actions/runs/654321",
+        reviewable_lines: 9000,
+        max_reviewable_lines: 6000,
+        lane_version: "v2.1.0",
+      };
+
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: laneEventPayload,
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+
+      const query = db.queries[0];
+      assert.equal(query.args[4], "refused-size");
+      assert.equal(query.args[10], 9000);
+      assert.equal(query.args[11], 6000);
+    });
+
+    it("supports all nine valid reasons: no-token, auto-paused, paused-by-request, fork-head, skip-author, refused-size, draft, skip-trivial, superseded (#154)", async () => {
+      const reasons = [
+        "no-token",
+        "auto-paused",
+        "paused-by-request",
+        "fork-head",
+        "skip-author",
+        "refused-size",
+        "draft",
+        "skip-trivial",
+        "superseded",
+      ];
       for (const reason of reasons) {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
@@ -1095,6 +1317,66 @@ describe("Worker telemetry ingest", () => {
       });
       const resMissingRepo = await worker.fetch(reqMissingRepo, env);
       assert.equal(resMissingRepo.status, 400);
+    });
+
+    it("stores actor as a login for a paused-by-request event (#124)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          event_kind: "lane_event",
+          run_id: 777,
+          run_attempt: 1,
+          repository: "prismalens/gh-workflows",
+          reason: "paused-by-request",
+          actor: "octocat",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 1], "octocat");
+    });
+
+    it("stores actor as null when the payload omits it (#124)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          event_kind: "lane_event",
+          run_id: 778,
+          run_attempt: 1,
+          repository: "prismalens/gh-workflows",
+          reason: "auto-paused",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 1], null);
+    });
+
+    it("returns 400 when actor is not a string", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          event_kind: "lane_event",
+          run_id: 779,
+          run_attempt: 1,
+          repository: "prismalens/gh-workflows",
+          reason: "paused-by-request",
+          actor: 12345,
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      assert.equal(db.queries.length, 0);
     });
   });
 
@@ -1525,9 +1807,95 @@ describe("Worker telemetry read API", () => {
       assert.ok(!query.sql.includes("per_model_usage"));
       assert.ok(!query.sql.includes("subagent_stats"));
       assert.ok(!query.sql.includes("raw_result"));
+      assert.ok(!query.sql.includes("config_effective"));
     });
 
-    it("includes all 6 blob columns when include=blobs and caps limit at 50", async () => {
+    it("selects level and level_source in the default response, unconditionally like model_source (#101)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return {
+              results: [
+                {
+                  session_id: "s-level-read-1",
+                  level: "high",
+                  level_source: "escalation",
+                },
+                {
+                  session_id: "s-level-read-2",
+                  level: null,
+                  level_source: null,
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/runs", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].level, "high");
+      assert.equal(data.rows[0].level_source, "escalation");
+      assert.equal(data.rows[1].level, null);
+      assert.equal(data.rows[1].level_source, null);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("level"));
+      assert.ok(query.sql.includes("level_source"));
+    });
+
+    it("returns config_effective only under include=blobs, preserving an unknown config key (#75)", async () => {
+      const helper = await getAccessHelper();
+      const configEffective = {
+        auto_pause_rounds: { value: 8, layer: "repo" },
+        a_brand_new_lane_config_key: { value: "shiny", layer: "summon" },
+      };
+
+      const dbNoBlobs = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return { results: [{ session_id: "s-cfg-1" }] };
+          }
+          return null;
+        },
+      });
+      const envNoBlobs = { ...helper.env, DB: dbNoBlobs };
+      const reqNoBlobs = makeAuthenticatedRequest("/api/runs", helper.jwt);
+      const resNoBlobs = await worker.fetch(reqNoBlobs, envNoBlobs);
+      const dataNoBlobs = await resNoBlobs.json();
+      assert.equal("config_effective" in dataNoBlobs.rows[0], false);
+
+      const dbBlobs = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return {
+              results: [
+                {
+                  session_id: "s-cfg-1",
+                  config_effective: JSON.stringify(configEffective),
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const envBlobs = { ...helper.env, DB: dbBlobs };
+      const reqBlobs = makeAuthenticatedRequest("/api/runs?include=blobs", helper.jwt);
+      const resBlobs = await worker.fetch(reqBlobs, envBlobs);
+      const dataBlobs = await resBlobs.json();
+      const stored = JSON.parse(dataBlobs.rows[0].config_effective);
+      assert.deepEqual(stored, configEffective);
+      assert.equal(stored.a_brand_new_lane_config_key.value, "shiny");
+      assert.equal(stored.a_brand_new_lane_config_key.layer, "summon");
+    });
+
+    it("includes all 7 blob columns when include=blobs and caps limit at 50", async () => {
       const helper = await getAccessHelper();
       const db = createFakeDb();
       const env = { ...helper.env, DB: db };
@@ -1542,6 +1910,7 @@ describe("Worker telemetry read API", () => {
       assert.ok(query.sql.includes("per_model_usage"));
       assert.ok(query.sql.includes("subagent_stats"));
       assert.ok(query.sql.includes("raw_result"));
+      assert.ok(query.sql.includes("config_effective"));
 
       // Limit bound is capped at 50
       assert.equal(query.args[query.args.length - 1], 50);
@@ -1808,6 +2177,99 @@ describe("Worker telemetry read API", () => {
       assert.ok(query.sql.includes("recorded_at <= ?"));
       assert.ok(query.sql.includes("ORDER BY recorded_at DESC, run_id DESC"));
       assert.equal(query.args[query.args.length - 1], 2);
+    });
+
+    it("selects reviewable_lines and max_reviewable_lines so a refused-size round can show its counts (#105)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql, args) => {
+          if (sql.includes("FROM lane_events")) {
+            return {
+              results: [
+                {
+                  run_id: 1003,
+                  run_attempt: 1,
+                  recorded_at: "2026-08-31T16:00:00.000Z",
+                  repository: "prismalens/gh-workflows",
+                  reason: "refused-size",
+                  pr_number: 56,
+                  head_sha: "112233aabbcc",
+                  run_url: "https://github.com/prismalens/gh-workflows/actions/runs/1003",
+                  rounds_used: null,
+                  lane_version: "v2.0.0",
+                  reviewable_lines: 9000,
+                  max_reviewable_lines: 6000,
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/lane-events", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].reviewable_lines, 9000);
+      assert.equal(data.rows[0].max_reviewable_lines, 6000);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("reviewable_lines"));
+      assert.ok(query.sql.includes("max_reviewable_lines"));
+    });
+
+    it("returns actor when set by a paused-by-request row, and null when the row carries none (#124)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql, args) => {
+          if (sql.includes("FROM lane_events")) {
+            return {
+              results: [
+                {
+                  run_id: 1004,
+                  run_attempt: 1,
+                  recorded_at: "2026-09-06T10:00:00.000Z",
+                  repository: "prismalens/gh-workflows",
+                  reason: "paused-by-request",
+                  pr_number: 57,
+                  head_sha: "aa11bb22cc33",
+                  run_url: "https://github.com/prismalens/gh-workflows/actions/runs/1004",
+                  rounds_used: 0,
+                  lane_version: "v2.1.0",
+                  actor: "octocat",
+                },
+                {
+                  run_id: 1003,
+                  run_attempt: 1,
+                  recorded_at: "2026-08-31T16:00:00.000Z",
+                  repository: "prismalens/gh-workflows",
+                  reason: "refused-size",
+                  pr_number: 56,
+                  head_sha: "112233aabbcc",
+                  run_url: "https://github.com/prismalens/gh-workflows/actions/runs/1003",
+                  rounds_used: null,
+                  lane_version: "v2.0.0",
+                  actor: null,
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/lane-events", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].actor, "octocat");
+      assert.equal(data.rows[1].actor, null);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("actor"));
     });
 
     it("handles cursor pagination and rejects invalid cursor or limit", async () => {
@@ -2713,6 +3175,189 @@ describe("Worker telemetry read API", () => {
       });
     });
 
+    describe("POST /ingest/findings (#47)", () => {
+      function sampleFinding(overrides = {}) {
+        return {
+          thread_node_id: "PRRT_1",
+          repository: "prismalens/example",
+          pr_number: 42,
+          path: "worker/index.js",
+          original_line: 100,
+          line: 100,
+          is_resolved: 0,
+          is_outdated: 0,
+          resolved_by_login: null,
+          thread_created_at: "2026-09-01T00:00:00Z",
+          header_raw: "Bug",
+          body_excerpt: "This looks off.",
+          diff_hunk: "@@ -1,3 +1,3 @@",
+          human_reply_count: 0,
+          human_reply_sha: null,
+          fix_sha: null,
+          fix_sha_source: null,
+          verify_verdict: null,
+          head_sha_reviewed: "abc1234",
+          last_swept_at: "2026-09-01T01:00:00Z",
+          row_set_incomplete: 0,
+          ...overrides,
+        };
+      }
+
+      it("returns 401 when authorization header is missing", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", { body: { findings: [sampleFinding()] } });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 401);
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("returns 401 when the token is wrong", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: "Bearer wrong-token" },
+          body: { findings: [sampleFinding()] },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 401);
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("upserts on conflict rather than ignoring it", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: { findings: [sampleFinding({ is_resolved: 1, resolved_by_login: "github-actions[bot]" })] },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 204);
+
+        assert.equal(db.queries.length, 1);
+        const insertQuery = db.queries[0];
+        assert.ok(insertQuery.sql.includes("INSERT INTO review_findings"));
+        // The write verb differs from usage_records deliberately (#47): a thread is mutable
+        // state, so this is DO UPDATE, never DO NOTHING, and every column overwrites rather
+        // than only filling in a null.
+        assert.ok(insertQuery.sql.includes("ON CONFLICT(thread_node_id) DO UPDATE SET"));
+        assert.ok(!insertQuery.sql.includes("DO NOTHING"));
+        assert.ok(insertQuery.sql.includes("is_resolved = excluded.is_resolved"));
+        assert.ok(insertQuery.sql.includes("resolved_by_login = excluded.resolved_by_login"));
+        assert.equal(insertQuery.args[0], "PRRT_1");
+        assert.equal(insertQuery.args[6], 1); // is_resolved
+        assert.equal(insertQuery.args[8], "github-actions[bot]"); // resolved_by_login
+      });
+
+      it("writes a batch of several findings in full", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const findings = [
+          sampleFinding({ thread_node_id: "PRRT_1" }),
+          sampleFinding({ thread_node_id: "PRRT_2" }),
+          sampleFinding({ thread_node_id: "PRRT_3" }),
+        ];
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: { findings },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 204);
+
+        assert.equal(db.queries.length, 3);
+        assert.deepEqual(
+          db.queries.map((q) => q.args[0]),
+          ["PRRT_1", "PRRT_2", "PRRT_3"]
+        );
+      });
+
+      it("never truncates body_excerpt mid-surrogate-pair, since a person's PR comment can carry any Unicode", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        // 8191 plain chars + one emoji (2 UTF-16 units at positions 8191-8192) straddles
+        // the 8192-char truncation boundary exactly.
+        const bodyWithEmojiAtBoundary = "x".repeat(8191) + "\u{1F600}";
+        assert.equal(bodyWithEmojiAtBoundary.length, 8193);
+
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: { findings: [sampleFinding({ body_excerpt: bodyWithEmojiAtBoundary })] },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 204);
+
+        const storedBody = db.queries[0].args[11];
+        // A naive slice(0, 8192) would cut between the emoji's two UTF-16 units, leaving a
+        // lone high surrogate with no valid UTF-8 encoding (D1 and any later TextEncoder
+        // pass would replace it with U+FFFD). The fix drops the whole emoji instead.
+        assert.equal(storedBody, "x".repeat(8191));
+        for (let i = 0; i < storedBody.length; i++) {
+          const code = storedBody.charCodeAt(i);
+          assert.ok(
+            !(code >= 0xd800 && code <= 0xdbff),
+            `found a lone high surrogate at index ${i}`
+          );
+        }
+      });
+
+      it("ignores a field outside the schema rather than storing it", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: {
+            findings: [
+              sampleFinding({ severity: "high", addressed: true, lane: "claude" }),
+            ],
+          },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 204);
+
+        const insertQuery = db.queries[0];
+        assert.ok(!insertQuery.sql.includes("severity"));
+        assert.ok(!insertQuery.sql.includes("addressed"));
+        assert.ok(!insertQuery.sql.toLowerCase().includes("lane"));
+        assert.ok(!insertQuery.args.includes("high"));
+      });
+
+      it("rejects a finding missing a required field", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: { findings: [sampleFinding({ thread_node_id: undefined })] },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        assert.equal(db.queries.length, 0);
+      });
+
+      it("rejects an invalid fix_sha_source", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: { findings: [sampleFinding({ fix_sha: "abc1234", fix_sha_source: "regex_guess" })] },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        const data = await res.json();
+        assert.equal(data.error, "invalid fix_sha_source");
+      });
+
+      it("returns 400 when findings is missing or not an array", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: {},
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      });
+    });
+
     describe("GET /api/prs (Read Route & Pagination)", () => {
       it("returns 403 when Cf-Access-Jwt-Assertion header is missing", async () => {
         const helper = await getAccessHelper();
@@ -2866,6 +3511,176 @@ describe("Worker telemetry read API", () => {
         assert.equal(query.args[1], "2026-09-06T12:00:00.000Z");
         assert.equal(query.args[2], "2026-09-06T12:00:00.000Z");
         assert.equal(query.args[3], 136);
+      });
+    });
+
+    describe("GET /api/findings (Read Route & Pagination, #111)", () => {
+      function sampleFindingRow(overrides = {}) {
+        return {
+          thread_node_id: "PRRT_1",
+          repository: "prismalens/gh-workflows",
+          pr_number: 111,
+          path: "worker/index.js",
+          original_line: 42,
+          line: 42,
+          is_resolved: 0,
+          is_outdated: 0,
+          resolved_by_login: null,
+          thread_created_at: "2026-09-06T12:00:00.000Z",
+          header_raw: "Bug",
+          body_excerpt: "This looks off.",
+          diff_hunk: "@@ -1,3 +1,3 @@",
+          human_reply_count: 0,
+          human_reply_sha: null,
+          fix_sha: null,
+          fix_sha_source: null,
+          verify_verdict: null,
+          head_sha_reviewed: "abc1234",
+          last_swept_at: "2026-09-06T13:00:00.000Z",
+          row_set_incomplete: 0,
+          ...overrides,
+        };
+      }
+
+      it("returns 403 when Cf-Access-Jwt-Assertion header is missing", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const req = makeRequest("/api/findings", { method: "GET" });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 403);
+      });
+
+      it("returns rows and next_cursor with Access auth, using the exact column list", async () => {
+        const helper = await getAccessHelper();
+        const sampleRows = [sampleFindingRow()];
+        const db = createFakeDb({
+          handler: (sql) => {
+            if (sql.includes("FROM review_findings")) {
+              return { results: sampleRows };
+            }
+            return null;
+          },
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/findings?limit=1", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+
+        const data = await res.json();
+        assert.equal(data.rows.length, 1);
+        assert.equal(data.rows[0].thread_node_id, "PRRT_1");
+        assert.equal(data.rows[0].repository, "prismalens/gh-workflows");
+        assert.equal(data.rows[0].pr_number, 111);
+        assert.equal(data.next_cursor, "2026-09-06T12:00:00.000Z|PRRT_1");
+
+        const query = db.queries[0];
+        assert.ok(
+          query.sql.includes("ORDER BY thread_created_at DESC, thread_node_id DESC LIMIT ?")
+        );
+        assert.ok(!query.sql.toLowerCase().includes("severity"));
+        assert.equal(query.args[query.args.length - 1], 1);
+      });
+
+      it("filters by repository", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest(
+          "/api/findings?repository=prismalens/gh-workflows",
+          helper.jwt
+        );
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+
+        const query = db.queries[0];
+        assert.ok(query.sql.includes("repository = ?"));
+        assert.equal(query.args[0], "prismalens/gh-workflows");
+      });
+
+      it("filters by repository and pr_number together, for a PR-scoped panel (#75)", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest(
+          "/api/findings?repository=prismalens/gh-workflows&pr_number=111",
+          helper.jwt
+        );
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+
+        const query = db.queries[0];
+        assert.ok(query.sql.includes("repository = ? AND pr_number = ?"));
+        assert.equal(query.args[0], "prismalens/gh-workflows");
+        assert.equal(query.args[1], 111);
+      });
+
+      it("rejects an invalid pr_number", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/findings?pr_number=abc", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+        const data = await res.json();
+        assert.equal(data.error, "invalid pr_number");
+      });
+
+      it("rejects invalid limit and a limit above 1000", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        assert.equal(
+          (await worker.fetch(makeAuthenticatedRequest("/api/findings?limit=0", helper.jwt), env))
+            .status,
+          400
+        );
+        assert.equal(
+          (
+            await worker.fetch(
+              makeAuthenticatedRequest("/api/findings?limit=1001", helper.jwt),
+              env
+            )
+          ).status,
+          400
+        );
+      });
+
+      it("handles cursor pagination and rejects a cursor with no pipe", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+
+        const badCursorReq = makeAuthenticatedRequest("/api/findings?cursor=no-pipe", helper.jwt);
+        assert.equal((await worker.fetch(badCursorReq, env)).status, 400);
+
+        const cursorReq = makeAuthenticatedRequest(
+          "/api/findings?cursor=2026-09-06T12:00:00.000Z|PRRT_1",
+          helper.jwt
+        );
+        const res = await worker.fetch(cursorReq, env);
+        assert.equal(res.status, 200);
+
+        const query = db.queries[0];
+        assert.ok(
+          query.sql.includes(
+            "(thread_created_at < ? OR (thread_created_at = ? AND thread_node_id < ?))"
+          )
+        );
+        assert.equal(query.args[0], "2026-09-06T12:00:00.000Z");
+        assert.equal(query.args[1], "2026-09-06T12:00:00.000Z");
+        assert.equal(query.args[2], "PRRT_1");
+      });
+
+      it("defaults the limit to 1000, matching #111's no-page-walking contract", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb();
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/findings", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const query = db.queries[0];
+        assert.equal(query.args[query.args.length - 1], 1000);
       });
     });
   });

@@ -1,9 +1,14 @@
-import { useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ExternalLink } from "lucide-react";
 
+import { parseConfigEffective, type ConfigEffectiveEntry } from "@/api/blobs";
+import { useFindingsQuery } from "@/api/queries";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { LoadingRows, QueryError } from "@/components/QueryState";
+import { FindingsTable } from "@/features/findings/FindingsTable";
+import { incompletePrKeys } from "@/features/findings/findings";
+import { Degraded } from "@/honesty/Degraded";
 import { formatDuration, formatUsd, shortSha } from "@/lib/format";
 import type { PRSummary } from "./prs";
 import { decodeHeadStatus } from "./headStatus";
@@ -50,33 +55,103 @@ export function HeadLadder({ pr }: { pr: PRSummary }) {
   );
 }
 
+/** Named up front because operators look for these two specifically; any other key the round
+ * resolved still renders below them, generically, sorted by key (#75). */
+const CURATED_CONFIG_FIELDS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "auto_pause_rounds", label: "auto-pause" },
+  { key: "skip_authors", label: "skip author" },
+];
+
+function formatConfigValue(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+/** One row: a resolved value and its layer, or the field named as not recorded. Values are
+ * lane-authored config, rendered as plain text with no markup (#75). */
+function ConfigEffectiveRow({
+  label,
+  configKey,
+  entry,
+}: {
+  label: string;
+  configKey: string;
+  entry: ConfigEffectiveEntry | undefined;
+}) {
+  return (
+    <Fragment>
+      <dt className="text-muted-foreground font-mono">{label}</dt>
+      <dd className="text-foreground" title={`field: ${configKey}`}>
+        {entry ? (
+          <>
+            <span>{formatConfigValue(entry.value)}</span>{" "}
+            <span className="text-muted-foreground">· {entry.layer}</span>
+          </>
+        ) : (
+          `${configKey}: not recorded on this round`
+        )}
+      </dd>
+    </Fragment>
+  );
+}
+
 export function ConfigInEffect({ pr }: { pr: PRSummary }) {
   const latest = pr.latestRound;
+  const configEffective = useMemo(() => parseConfigEffective(latest), [latest]);
+  const curatedKeys = useMemo(
+    () => new Set(CURATED_CONFIG_FIELDS.map((f) => f.key)),
+    [],
+  );
+  const otherEntries = useMemo(
+    () =>
+      configEffective
+        ? Object.entries(configEffective)
+            .filter(([key]) => !curatedKeys.has(key))
+            .sort(([a], [b]) => a.localeCompare(b))
+        : [],
+    [configEffective, curatedKeys],
+  );
+
   return (
     <Card data-testid="config-in-effect-card">
       <CardHeader className="py-3 px-4 border-b border-border/40">
         <CardTitle className="text-xs font-semibold">Config in effect</CardTitle>
       </CardHeader>
       <CardContent className="p-3 text-xs flex flex-col gap-2">
+        {configEffective === null && (
+          <Degraded
+            what="Config in effect"
+            reason="lane-did-not-send"
+            detail="This round has no config_effective at all: it predates the field (#75)."
+          />
+        )}
         <dl className="grid grid-cols-2 gap-y-1.5 text-xs">
           <dt className="text-muted-foreground">model</dt>
           <dd className="font-mono text-foreground">
             {latest.model ?? "—"} · {latest.model_source ?? "default"}
           </dd>
-          {/* Limit and author-skip decisions are not in this data model; match is proven only by model_source (findings 3943781307, 3943781310). */}
-          <dt className="text-muted-foreground">auto-pause</dt>
-          <dd className="text-foreground">
-            automatic-round limit unavailable
-          </dd>
+          {/* Path match is proven from model_source directly, not config_effective (findings 3943781307, 3943781310). */}
           <dt className="text-muted-foreground">path filter</dt>
           <dd className="text-foreground">
             {latest.model_source === "escalated by path match" ? "match" : "no match"}
           </dd>
-          <dt className="text-muted-foreground">skip author</dt>
-          <dd className="text-foreground">unavailable</dd>
+          {CURATED_CONFIG_FIELDS.map(({ key, label }) => (
+            <ConfigEffectiveRow
+              key={key}
+              label={label}
+              configKey={key}
+              entry={configEffective?.[key]}
+            />
+          ))}
+          {otherEntries.map(([key, entry]) => (
+            <ConfigEffectiveRow key={key} label={key} configKey={key} entry={entry} />
+          ))}
         </dl>
         <div className="pt-2 border-t border-border/30 text-[11px] text-muted-foreground">
-          each layer name comes from model_source on the round ·{" "}
+          each row's layer comes from config_effective on this round · a key the round does not
+          carry is named rather than called unavailable (#75) ·{" "}
           <Link to="/repos" className="text-primary hover:underline">
             repo config
           </Link>
@@ -117,6 +192,9 @@ export function PRTotals({ pr }: { pr: PRSummary }) {
 
 export function ReportTabs({ pr }: { pr: PRSummary }) {
   const [tab, setTab] = useState<"walkthrough" | "summary" | "findings">("findings");
+  const findings = useFindingsQuery({ repository: pr.repository, prNumber: pr.number });
+  const findingRows = findings.data?.rows ?? [];
+  const incomplete = useMemo(() => incompletePrKeys(findingRows), [findingRows]);
 
   return (
     <div className="flex flex-col gap-3" data-testid="report-tabs">
@@ -168,11 +246,6 @@ export function ReportTabs({ pr }: { pr: PRSummary }) {
             {tab === "summary" && "Summary comment"}
             {tab === "findings" && "Findings and their fate"}
           </CardTitle>
-          {tab === "findings" && (
-            <Badge variant="warning" className="text-[10px] px-2 py-0.5">
-              arrives with #111
-            </Badge>
-          )}
         </CardHeader>
         <CardContent className="p-4 text-xs flex flex-col gap-3">
           {tab === "walkthrough" && (
@@ -220,21 +293,20 @@ export function ReportTabs({ pr }: { pr: PRSummary }) {
           {tab === "findings" && (
             <div className="flex flex-col gap-2">
               <p className="text-muted-foreground">
-                Findings tracking is not enabled for this org yet. It ships with the daily sweep
-                (gh-workflows#47): each claude[bot] thread, its state, whether a human replied, and
-                the commit that followed. Until then, thread fates live on GitHub only.
+                PR-grain only, from the same read route the findings inbox uses (#111): not
+                attributed to a round, because that would need timestamp inference over
+                prose-adjacent data.
               </p>
-              {pr.url && (
-                <div>
-                  <a
-                    href={pr.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-primary hover:underline"
-                  >
-                    View review threads on GitHub <ExternalLink className="size-3" />
-                  </a>
-                </div>
+              {findings.isPending ? (
+                <LoadingRows rows={3} label="Loading findings for this pull request" />
+              ) : findings.isError ? (
+                <QueryError error={findings.error} title="Could not load findings" />
+              ) : (
+                <FindingsTable
+                  rows={findingRows}
+                  incompletePrKeys={incomplete}
+                  emptyMessage="No findings recorded for this pull request. This is an absence of findings, not proof this pull request was clean."
+                />
               )}
             </div>
           )}

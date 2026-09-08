@@ -50,6 +50,8 @@ const NUMERIC_FIELDS = [
   "inline_count",
   "summary_count",
   "round_ordinal",
+  "reviewable_lines",
+  "size_override",
 ];
 
 const STRING_FIELDS = [
@@ -77,10 +79,17 @@ const STRING_FIELDS = [
   "config_hash",
   "variant",
   "agents_status",
+  // #101: review effort level, orthogonal to model. Not enumed here; low is
+  // schema-rejected in the workflow for this release, not the worker, so a
+  // later release enabling it needs no worker change.
+  "level",
+  "level_source",
 ];
 
 const JSON_ARRAY_FIELDS = ["comment_node_ids"];
-const JSON_OBJECT_FIELDS = ["config_resolution"];
+// #75: config_effective is lane-authored config, stored as-is; never parsed into a
+// fixed key set, so a new config key needs no worker change.
+const JSON_OBJECT_FIELDS = ["config_resolution", "config_effective"];
 
 const VALID_LANE_EVENT_REASONS = new Set([
   "no-token",
@@ -88,11 +97,17 @@ const VALID_LANE_EVENT_REASONS = new Set([
   "paused-by-request", // #124, finding 3944010353
   "fork-head",
   "skip-author",
+  "refused-size", // #105: reviewable_lines exceeded max_reviewable_lines, nothing posted
+  "draft", // #153: a summon on a draft spends a run and reviews nothing
+  "skip-trivial", // #154: min_diff_lines floor
+  "superseded", // #154: debounce_minutes lever
 ]);
 
 const LANE_EVENT_NUMERIC_FIELDS = [
   "pr_number",
   "rounds_used",
+  "reviewable_lines",
+  "max_reviewable_lines",
 ];
 
 const LANE_EVENT_STRING_FIELDS = [
@@ -100,6 +115,9 @@ const LANE_EVENT_STRING_FIELDS = [
   "head_sha",
   "run_url",
   "lane_version",
+  // #124: the login that issued @claude pause, read by the lane from the event
+  // payload rather than comment text. Null on every reason but paused-by-request.
+  "actor",
 ];
 
 const CANARY_STRING_FIELDS = [
@@ -123,11 +141,71 @@ const PR_STRING_FIELDS = [
   "updated_at", // #136, finding 3944010389
 ];
 
+// #47: exactly the ruled schema, plus row_set_incomplete (the sweep-pagination flag the
+// schema amendment predates). Any field the sweep sends outside this list is ignored, never
+// stored, which is what keeps a severity or lane column from ever reaching this table.
+const FINDING_STRING_FIELDS = [
+  "thread_node_id",
+  "repository",
+  "path",
+  "resolved_by_login",
+  "thread_created_at",
+  "header_raw",
+  "body_excerpt",
+  "diff_hunk",
+  "human_reply_sha",
+  "fix_sha",
+  "fix_sha_source",
+  "verify_verdict",
+  "head_sha_reviewed",
+  "last_swept_at",
+];
+
+const FINDING_INTEGER_FIELDS = [
+  "pr_number",
+  "original_line",
+  "line",
+  "is_resolved",
+  "is_outdated",
+  "human_reply_count",
+  "row_set_incomplete",
+];
+
+// Nullable per the schema amendment; every other field in FINDING_STRING_FIELDS is required.
+const FINDING_NULLABLE_STRING_FIELDS = new Set([
+  "path",
+  "resolved_by_login",
+  "header_raw",
+  "human_reply_sha",
+  "fix_sha",
+  "fix_sha_source",
+  "verify_verdict",
+]);
+
+// Nullable per the schema amendment; every other field in FINDING_INTEGER_FIELDS is required.
+const FINDING_NULLABLE_INTEGER_FIELDS = new Set(["original_line", "line"]);
+
+const VALID_FIX_SHA_SOURCES = new Set(["verify_table", "human_reply"]);
+const VALID_VERIFY_VERDICTS = new Set(["fixed", "still_applies", "cannot_verify"]);
+
 function truncateString(val, maxLen = 512) {
   if (typeof val !== "string") {
     return null;
   }
-  return val.length > maxLen ? val.slice(0, maxLen) : val;
+  if (val.length <= maxLen) {
+    return val;
+  }
+  let end = maxLen;
+  // A cut exactly between a surrogate pair leaves a lone high surrogate, which has no
+  // valid UTF-8 encoding: D1's bind and any later TextEncoder pass replace it with U+FFFD
+  // rather than throw, silently corrupting the last character. header_raw/body_excerpt/
+  // diff_hunk (#47) are PR comment text a person wrote and can contain any Unicode,
+  // including astral characters (emoji) that land on this boundary by chance.
+  const code = val.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) {
+    end -= 1;
+  }
+  return val.slice(0, end);
 }
 
 function toIntegerOrNull(val) {
@@ -638,6 +716,8 @@ async function handleRuns(url, env) {
     "pr_base_ref",
     "pr_head_ref",
     "agents_status",
+    "level",
+    "level_source",
   ];
   if (includeBlobs) {
     columns.push(
@@ -646,7 +726,8 @@ async function handleRuns(url, env) {
       "raw_result",
       "verdict_text",
       "comment_node_ids",
-      "config_resolution"
+      "config_resolution",
+      "config_effective"
     );
   }
 
@@ -751,6 +832,9 @@ async function handleLaneEvents(url, env) {
     "run_url",
     "rounds_used",
     "lane_version",
+    "reviewable_lines",
+    "max_reviewable_lines",
+    "actor",
   ];
 
   let query = `SELECT
@@ -1274,13 +1358,19 @@ async function handleIngest(request, env) {
           config_hash,
           variant,
           variant_key,
-          agents_status
+          agents_status,
+          reviewable_lines,
+          size_override,
+          config_effective,
+          level,
+          level_source
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
           ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
           ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
-          ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49
+          ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
+          ?51, ?52, ?53, ?54
         )
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
@@ -1332,7 +1422,12 @@ async function handleIngest(request, env) {
         payload.config_hash ?? null,
         payload.variant ?? null,
         variantKey,
-        payload.agents_status ?? null
+        payload.agents_status ?? null,
+        payload.reviewable_lines ?? null,
+        payload.size_override ?? null,
+        serializeJson(payload.config_effective, null),
+        payload.level ?? null,
+        payload.level_source ?? null
       );
 
       const agentStmts = [];
@@ -1458,8 +1553,11 @@ async function handleIngest(request, env) {
           head_sha,
           run_url,
           rounds_used,
-          lane_version
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+          lane_version,
+          reviewable_lines,
+          max_reviewable_lines,
+          actor
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         ON CONFLICT(run_id, run_attempt) DO NOTHING`
       ).bind(
         payload.run_id,
@@ -1471,7 +1569,10 @@ async function handleIngest(request, env) {
         payload.head_sha ?? null,
         payload.run_url ?? null,
         payload.rounds_used ?? null,
-        payload.lane_version ?? null
+        payload.lane_version ?? null,
+        payload.reviewable_lines ?? null,
+        payload.max_reviewable_lines ?? null,
+        payload.actor ?? null
       ).run();
     } catch {
       return new Response(null, { status: 500 });
@@ -1674,6 +1775,322 @@ async function handlePrState(request, env) {
   }
 
   return new Response(null, { status: 204 });
+}
+
+// One finding's shape check. Returns an error string, or null when the finding is well-formed.
+// Fields outside FINDING_STRING_FIELDS / FINDING_INTEGER_FIELDS are read nowhere below, which is
+// how an unrecognised field (a severity, a lane) is ignored rather than stored (#47).
+function validateFinding(finding) {
+  if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+    return "finding is not an object";
+  }
+
+  for (const field of FINDING_STRING_FIELDS) {
+    const val = finding[field];
+    const nullable = FINDING_NULLABLE_STRING_FIELDS.has(field);
+    if (val === undefined || val === null) {
+      if (!nullable) {
+        return `missing ${field}`;
+      }
+      continue;
+    }
+    if (typeof val !== "string") {
+      return `invalid ${field}`;
+    }
+  }
+
+  for (const field of FINDING_INTEGER_FIELDS) {
+    const val = finding[field];
+    const nullable = FINDING_NULLABLE_INTEGER_FIELDS.has(field);
+    if (val === undefined || val === null) {
+      if (!nullable) {
+        return `missing ${field}`;
+      }
+      continue;
+    }
+    if (typeof val !== "number" || !Number.isInteger(val)) {
+      return `invalid ${field}`;
+    }
+  }
+
+  if (finding.thread_node_id.trim().length === 0) {
+    return "empty thread_node_id";
+  }
+
+  if (finding.fix_sha_source != null && !VALID_FIX_SHA_SOURCES.has(finding.fix_sha_source)) {
+    return "invalid fix_sha_source";
+  }
+
+  if (finding.verify_verdict != null && !VALID_VERIFY_VERDICTS.has(finding.verify_verdict)) {
+    return "invalid verify_verdict";
+  }
+
+  return null;
+}
+
+async function handleIngestFindings(request, env) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+
+  const token = env?.REVIEW_TELEMETRY_TOKEN;
+  const authHeader = request.headers.get("authorization");
+  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
+    return new Response(null, { status: 401 });
+  }
+
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null) {
+    const length = parseInt(contentLength, 10);
+    if (Number.isNaN(length) || length > MAX_INGEST_BYTES) {
+      return new Response(null, { status: 413 });
+    }
+  }
+
+  let rawBody;
+  try {
+    rawBody = await readBoundedText(request, MAX_INGEST_BYTES);
+  } catch {
+    return new Response(null, { status: 400 });
+  }
+
+  if (rawBody === null) {
+    return new Response(null, { status: 413 });
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {
+    return new Response(null, { status: 400 });
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return new Response(null, { status: 400 });
+  }
+
+  if (!Array.isArray(payload.findings)) {
+    return new Response(JSON.stringify({ error: "missing or invalid findings array" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  for (const finding of payload.findings) {
+    const error = validateFinding(finding);
+    if (error) {
+      return new Response(JSON.stringify({ error }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
+  if (payload.findings.length === 0) {
+    return new Response(null, { status: 204 });
+  }
+
+  const stmt = env.DB.prepare(
+    `INSERT INTO review_findings (
+      thread_node_id,
+      repository,
+      pr_number,
+      path,
+      original_line,
+      line,
+      is_resolved,
+      is_outdated,
+      resolved_by_login,
+      thread_created_at,
+      header_raw,
+      body_excerpt,
+      diff_hunk,
+      human_reply_count,
+      human_reply_sha,
+      fix_sha,
+      fix_sha_source,
+      verify_verdict,
+      head_sha_reviewed,
+      last_swept_at,
+      row_set_incomplete
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+    -- A thread is mutable state, not an immutable event (#47): every column is overwritten
+    -- from the latest sweep pass rather than only filled in when currently null, so a newly
+    -- resolved thread or an edited comment settles here on the very next sweep.
+    ON CONFLICT(thread_node_id) DO UPDATE SET
+      repository = excluded.repository,
+      pr_number = excluded.pr_number,
+      path = excluded.path,
+      original_line = excluded.original_line,
+      line = excluded.line,
+      is_resolved = excluded.is_resolved,
+      is_outdated = excluded.is_outdated,
+      resolved_by_login = excluded.resolved_by_login,
+      thread_created_at = excluded.thread_created_at,
+      header_raw = excluded.header_raw,
+      body_excerpt = excluded.body_excerpt,
+      diff_hunk = excluded.diff_hunk,
+      human_reply_count = excluded.human_reply_count,
+      human_reply_sha = excluded.human_reply_sha,
+      fix_sha = excluded.fix_sha,
+      fix_sha_source = excluded.fix_sha_source,
+      verify_verdict = excluded.verify_verdict,
+      head_sha_reviewed = excluded.head_sha_reviewed,
+      last_swept_at = excluded.last_swept_at,
+      row_set_incomplete = excluded.row_set_incomplete`
+  );
+
+  const stmts = payload.findings.map((finding) =>
+    stmt.bind(
+      finding.thread_node_id,
+      truncateString(finding.repository, 512),
+      finding.pr_number,
+      truncateString(finding.path, 1024),
+      finding.original_line ?? null,
+      finding.line ?? null,
+      finding.is_resolved,
+      finding.is_outdated,
+      truncateString(finding.resolved_by_login, 512),
+      truncateString(finding.thread_created_at, 512),
+      truncateString(finding.header_raw, 1024),
+      truncateString(finding.body_excerpt, 8192),
+      truncateString(finding.diff_hunk, 8192),
+      finding.human_reply_count,
+      truncateString(finding.human_reply_sha, 128),
+      truncateString(finding.fix_sha, 128),
+      finding.fix_sha_source ?? null,
+      finding.verify_verdict ?? null,
+      truncateString(finding.head_sha_reviewed, 128),
+      truncateString(finding.last_swept_at, 512),
+      finding.row_set_incomplete
+    )
+  );
+
+  try {
+    await env.DB.batch(stmts);
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+
+  return new Response(null, { status: 204 });
+}
+
+// Read route for review_findings (#111, #75). Same shape as handleLaneEvents/handlePrs:
+// explicit column list, cursor pagination, verifyAccess auth applied by the caller. Newest
+// first by thread_created_at, so a findings inbox and a PR-scoped panel are the same query
+// with an added pr_number filter, per #111's table contract (up to 1000 rows, no page walking).
+async function handleFindings(url, env) {
+  const searchParams = url.searchParams;
+  let limit = 1000;
+  const limitParam = searchParams.get("limit");
+  if (limitParam !== null) {
+    if (!/^[1-9]\d*$/.test(limitParam)) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const parsedLimit = Number(limitParam);
+    if (parsedLimit > 1000) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    limit = parsedLimit;
+  }
+
+  const conditions = [];
+  const bindings = [];
+
+  const repository = searchParams.get("repository");
+  if (repository !== null) {
+    conditions.push("repository = ?");
+    bindings.push(repository);
+  }
+
+  const prNumberParam = searchParams.get("pr_number");
+  if (prNumberParam !== null) {
+    if (!/^[1-9]\d*$/.test(prNumberParam)) {
+      return new Response(JSON.stringify({ error: "invalid pr_number" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    conditions.push("pr_number = ?");
+    bindings.push(Number(prNumberParam));
+  }
+
+  const cursor = searchParams.get("cursor");
+  if (cursor !== null) {
+    const pipeIndex = cursor.lastIndexOf("|");
+    if (pipeIndex === -1) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    const cursorCreatedAt = cursor.slice(0, pipeIndex);
+    const cursorThreadNodeId = cursor.slice(pipeIndex + 1);
+    if (!cursorCreatedAt || !cursorThreadNodeId) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    conditions.push("(thread_created_at < ? OR (thread_created_at = ? AND thread_node_id < ?))");
+    bindings.push(cursorCreatedAt, cursorCreatedAt, cursorThreadNodeId);
+  }
+
+  const columns = [
+    "thread_node_id",
+    "repository",
+    "pr_number",
+    "path",
+    "original_line",
+    "line",
+    "is_resolved",
+    "is_outdated",
+    "resolved_by_login",
+    "thread_created_at",
+    "header_raw",
+    "body_excerpt",
+    "diff_hunk",
+    "human_reply_count",
+    "human_reply_sha",
+    "fix_sha",
+    "fix_sha_source",
+    "verify_verdict",
+    "head_sha_reviewed",
+    "last_swept_at",
+    "row_set_incomplete",
+  ];
+
+  let query = `SELECT
+    ${columns.join(",\n    ")}
+  FROM review_findings`;
+
+  if (conditions.length > 0) {
+    query += ` WHERE ${conditions.join(" AND ")}`;
+  }
+
+  query += ` ORDER BY thread_created_at DESC, thread_node_id DESC LIMIT ?`;
+  bindings.push(limit);
+
+  const { results } = await env.DB.prepare(query).bind(...bindings).all();
+  const rows = results ?? [];
+  const nextCursor =
+    rows.length === limit && rows.length > 0
+      ? `${rows[rows.length - 1].thread_created_at}|${rows[rows.length - 1].thread_node_id}`
+      : null;
+
+  return new Response(
+    JSON.stringify({
+      rows,
+      next_cursor: nextCursor,
+    }),
+    { headers: READ_HEADERS }
+  );
 }
 
 async function handleGetChanges(url, env) {
@@ -1915,6 +2332,10 @@ export default {
       return handlePrState(request, env);
     }
 
+    if (method === "POST" && pathname === "/ingest/findings") {
+      return handleIngestFindings(request, env);
+    }
+
     if (
       method === "GET" &&
       (pathname === "/api/accounted-runs" || pathname === "/api/accounted-runs/")
@@ -1928,7 +2349,8 @@ export default {
         pathname === "/api/runs" ||
         pathname === "/api/lane-events" ||
         pathname === "/api/round-agents" ||
-        pathname === "/api/prs")
+        pathname === "/api/prs" ||
+        pathname === "/api/findings")
     ) {
       const authError = await verifyAccess(request, env);
       if (authError) {
@@ -1948,6 +2370,9 @@ export default {
       }
       if (pathname === "/api/prs") {
         return handlePrs(url, env);
+      }
+      if (pathname === "/api/findings") {
+        return handleFindings(url, env);
       }
     }
 

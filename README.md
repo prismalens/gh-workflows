@@ -16,6 +16,7 @@ Reusable workflow callees live in `.github/workflows/` and are invoked by consum
 
 - [`.github/workflows/claude-code-review.yml`](.github/workflows/claude-code-review.yml)
 - `.github/workflows/claude.yml`
+- [`.github/workflows/review-findings-sweep.yml`](.github/workflows/review-findings-sweep.yml) — the review-findings ingest sweep (`#47`)
 - `.github/workflows/dependabot-auto-merge.yml`
 - `.github/workflows/dependabot-auto-merge-caller.yml` — this repository's own caller stub for the auto-merge callee
 
@@ -63,15 +64,18 @@ concurrency:
 
 jobs:
   claude:
-    # Verb exclusion: the review lane owns these two phrasings.
-    # `@claude full review` does not contain `@claude review` as a substring,
-    # so both checks are needed. `contains()` on a null body is false, so
-    # `issues` and `pull_request_review` events pass through untouched.
+    # Verb exclusion: the review lane owns all four of these phrasings, and its own
+    # caller `if:` admits exactly this list. Every one needs its own check, because
+    # none contains another as a substring — `@claude full review` does not contain
+    # `@claude review`. `contains()` on a null body is false, so `issues` and
+    # `pull_request_review` events pass through untouched.
     # Review bodies stay with the mention lane: no other lane subscribes to pull_request_review.
     if: >-
       !(
         contains(github.event.comment.body, '@claude review') ||
-        contains(github.event.comment.body, '@claude full review')
+        contains(github.event.comment.body, '@claude full review') ||
+        contains(github.event.comment.body, '@claude pause') ||
+        contains(github.event.comment.body, '@claude resume')
       )
     uses: prismalens/gh-workflows/.github/workflows/claude.yml@main
     # explicit mapping is the canon pattern — `inherit` does not cross ownership
@@ -91,7 +95,9 @@ jobs:
 1. **Permissions Union (incl. Announce Write Ceiling)**: Caller stubs declare permissions as the union of permissions needed by the lane logic, capped by the write access ceiling required for posting status comments or reviews.
 2. **Concurrency in Caller Only**: Concurrency must be declared at caller level only. A callee sharing the caller's concurrency group deadlocks the run ("deadlock detected for concurrency group").
 3. **Secrets Mapped Explicitly**: `secrets: inherit` does not cross repository owners (e.g. across orgs/users like `prismalens` vs `Sumit1993`). Secrets must be mapped explicitly across owner boundaries.
-4. **Mention Lane Excludes Owned Verbs**: The `claude.yml` caller stub must carry a caller-level `if:` excluding comment bodies that contain `@claude review` or `@claude full review`. Those verbs belong to the review lane; without the exclusion each such comment fires two lanes on the same PR. Exact expression: the Mention Lane worked example above.
+4. **Mention Lane Excludes Owned Verbs**: The `claude.yml` caller stub must carry a caller-level `if:` excluding comment bodies that contain `@claude review`, `@claude full review`, `@claude pause` or `@claude resume`. All four belong to the review lane; without the exclusion each such comment fires two lanes on the same PR. The list is not a judgement call — it is the same four literals the review lane's own caller `if:` admits, so a verb added there is added here in the same change. Exact expression: the Mention Lane worked example above.
+
+   The exclusion is a verb list and cannot cover the review lane's fifth admitted surface. That lane also takes **every** `pull_request_review_comment` on an open pull request, with no verb required, because an in-thread reply is what triggers a verification round. So a bare `@claude, what does this do?` left in a review thread still fires both lanes: a verify round that re-checks the unresolved threads, and a mention answer. Which lane should own that comment is an open question in [#160](https://github.com/prismalens/gh-workflows/issues/160) and is deliberately not answered here, because the two readings lead to different stubs and neither is recorded anywhere as intended.
 5. **Pin `branches` on `pull_request`**: Every stub that triggers on `pull_request` pins `branches: [main]`, so covering a future `release/*` branch is a decision someone makes, not an accident.
 6. **Comment Triggers Need a Concurrency Fallback and a Junk Group**: The moment a stub gains `issue_comment` / `pull_request_review_comment` triggers, two things become load-bearing in the group key. It must fall back to `github.event.issue.number`, because `github.event.pull_request.number` is empty on `issue_comment` and without the fallback the group collapses to the constant `claude-code-review-`: one global group in which any PR's summon cancels every other PR's in-flight run. And the lane's own emissions must divert to a per-run junk group, because concurrency is allocated at run creation, before any job `if:` runs, so the callee's admission gate cannot keep them out: a `claude[bot]` verdict comment took the pending seat and cancelled the queued human reply four times out of four (`prismalens/gh-workflows#12`). Both, together:
 
@@ -118,8 +124,50 @@ jobs:
    comment rather than silence. Marking the pull request ready is what collects the work, and the
    lane then takes the whole diff in one round. Story: `prismalens/gh-workflows#153`.
 9. **Admission is effective repository permission, not `author_association`**: Comment events in both lanes are admitted only when the acting account holds `admin` or `write` on the repository, checked live in the `admit` composite action. `author_association` is banned from admission: it is repo-scoped and payload-dependent, and it reported `CONTRIBUTOR` in the webhook for a maintainer whose REST record said `MEMBER`, so replies on `prismalens/prismalens` were never admitted. A failed check is red, never silently open and never silently closed. Story: `prismalens/gh-workflows#20`.
+10. **Oversize Rounds Refuse, Never Trim**: A round whose reviewable lines (additions plus modified hunk lines, after path and file-size filtering) exceed the caller's `max_reviewable_lines` cap posts nothing inline. The liveness comment and the telemetry record both carry `refused-size` — with the reviewable-line count and the cap — in place of a review, and `@claude full review` overrides the cap for that one round. `max_file_lines` is the companion per-file cap: a single file above it is marked `oversized` in `.claude-review-manifest.json` and excluded from the diff and the line count, exactly like a path-filtered file. Both are `workflow_call` inputs with workflow defaults, overridable per repo in `.claude-review.yml`; 0 disables either cap. Story: #105.
+11. **Liveness Marker Records Who Paused**: An explicit `@claude pause` sets `paused=1` in the marker and now also `paused_by=<login>` beside it — the account that sent it. Recorded once, at the moment the pause takes effect, and carried forward unchanged by a later push or a repeated `@claude pause` while already paused. The automatic pause once `auto_pause_rounds` is reached (verdict `auto-paused`) is a different state and never sets `paused_by`; nobody requested it. Story: #124.
+12. **Review Context Reads Linked Issues and Failing CI Logs, All Untrusted**: Beyond the diff, a round resolves `Closes #N` / `Fixes #N` / `Refs #N` / bare `#N` in the PR body's first paragraph and reads each issue's title, body, labels and newest ruling-shaped comment; it also reads the tail of the log for any GitHub Actions check already failing on this head (a third-party check contributes only its name and conclusion, never output). Both are read into the prompt as UNTRUSTED EVIDENCE about the code, the same rule already applied to the PR body itself, never as instructions to the model. Stories: #143, #145.
+13. **`review.level` Sets Effort Per Round, Never Which Code Is Read**: A per-repo `.claude-review.yml` key, resolved through the same precedence as every other config value. Workflow default is `medium`, which is byte-identical to the review lane's behaviour before this key existed. `high` runs six review agents instead of four (two extra Opus agents: cross-boundary interaction with unchanged code, and contracts/schemas). `medium` and `high` are the only accepted values this release; `low` is schema-rejected on purpose, so a knob that could lower review depth is not reachable yet. A changed file matching `escalation_paths` floors the round at `medium` — never a ceiling — recorded as `level_source: escalation` (`config` otherwise) alongside `level` in the telemetry record. Level is orthogonal to model: a `--model` summon never changes it, and there is no summon-side override. It has no effect on `max_reviewable_lines` or `refused-size`, and it does not run on a verify round. Story: #101.
+14. **A Skip Never Overwrites a Real Verdict on the Same Head**: The liveness comment is upserted, so on its own an auto-paused or otherwise-skipped round finishing after a real review would replace it with the absence of one — the last writer wins on comment ordering, not on which run actually knows more. The marker's `sha=` is the test: it only ever advances on posted review output, so `sha=` equal to the round's own head means a real verdict already stands there, and the write is withheld. This does not order two rounds in general; it stops the one case where replacing the comment is strictly a loss. `round_ordinal` and any lane event still fire on a withheld round — a withheld comment is not a skipped round. Story: #149.
 
 Everything else about the review lane — inputs, org defaults (`.github/claude-review-defaults.yml`), per-repo configuration (`.github/claude-review.yml`), four-layer precedence, model escalation, summon grammar, incremental review, step summaries, liveness verdicts, thread resolution and fork handling — is read out of [`.github/workflows/claude-code-review.yml`](.github/workflows/claude-code-review.yml), which is the only source of truth for it. A prose copy of that behaviour used to live in `docs/review-lane.md`; it was deleted because it drifted, and its worked-example consumer stub had spent ten days telling new consumers to build the concurrency group that `prismalens/gh-workflows#12` exists to prevent. Read the workflow, and copy stubs from a repository that is running one.
+
+### Worked-Example Consumer Stub (Review Findings Sweep)
+
+[`.github/workflows/review-findings-sweep.yml`](.github/workflows/review-findings-sweep.yml) enumerates `claude[bot]` review threads with the default read-only `GITHUB_TOKEN` and POSTs them to the review-telemetry Worker's findings route (`#47`). It is a `workflow_call` callee, so a consumer needs its own scheduled caller stub. gh-workflows is excluded structurally by the callee's own job `if:` and never calls this workflow itself, because it hosts no Claude lane.
+
+```yaml
+# This is a managed caller stub.
+# Logic lives in prismalens/gh-workflows/.github/workflows/review-findings-sweep.yml.
+# Do not add logic here.
+
+name: Review Findings Sweep
+
+on:
+  schedule:
+    # Daily, off the hour on purpose: GitHub delays cron at peak hours (#44).
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      full_history:
+        description: 'Ignore the update window and sweep every pull request in this repository'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  sweep:
+    uses: prismalens/gh-workflows/.github/workflows/review-findings-sweep.yml@main
+    with:
+      full_history: ${{ inputs.full_history || false }}
+    # explicit mapping, not `secrets: inherit` — Sumit1993/mage-memory sits outside the
+    # prismalens org, and inherit does not cross that boundary (Stub Rule 3, above).
+    secrets:
+      REVIEW_TELEMETRY_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
+      REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+```
+
+Both secrets are `required: false` on the callee: a consumer that has not opted into review-findings ingest still runs the workflow, and the sweep step skips itself with a plain notice rather than failing the run, the same contract `claude-code-review.yml`'s own telemetry job already uses for `REVIEW_TELEMETRY_URL` / `REVIEW_TELEMETRY_TOKEN`. A normal (non-`full_history`) run only looks back `window_days` (default 3), wider than the daily cadence on purpose so a delayed or missed run cannot drop a day.
 
 ---
 

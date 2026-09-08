@@ -67,6 +67,12 @@ jobs:
       - name: Verdict kind drift check
         run: python3 tests/test-verdict-kind-drift.py
 
+      # A reason the workflow emits that the worker rejects is a silent 400 (telemetry
+      # loss); a reason the dashboard has never heard of is a row that can never
+      # populate. Both directions drifted once. Story: #154.
+      - name: Lane event reason drift check
+        run: python3 tests/test-lane-event-reason-drift.py
+
       # Extracts and runs the real smoke test step out of deploy-worker.yml. Story: #84.
       - name: Deploy Worker post-deploy smoke test behaviour
         run: python3 tests/test-deploy-worker-smoke.py
@@ -74,6 +80,21 @@ jobs:
       # Extracts and runs the forward-only migration guard from this workflow.
       - name: Forward-only migration guard behaviour
         run: python3 tests/test-migration-forward-only.py
+
+      # Extracts and runs the real script out of review-findings-sweep.yml. Story: #47.
+      - name: Review findings sweep behaviour
+        run: python3 tests/test-review-findings-sweep.py
+
+      # Extracts and runs the real 'Build review manifest' script out of
+      # claude-code-review.yml, plus the reviewable_lines size cap. Story: #105.
+      - name: Review manifest behaviour
+        run: python3 tests/test-review-manifest.py
+
+      # Extracts and runs the real 'Build review context' script out of
+      # claude-code-review.yml: profile, issues, ci_failures, dependencies, and
+      # tool_findings. Stories: #143, #144, #145, #146, #147.
+      - name: Review context behaviour
+        run: python3 tests/test-review-context.py
 
       # Version pinned: an actionlint release must not turn a green branch red on its own.
       - name: actionlint

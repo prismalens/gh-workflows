@@ -15,7 +15,7 @@ import {
 import { Timestamp } from "@/components/Timestamp";
 import { Degraded } from "@/honesty/Degraded";
 import { linkableRange, type RangeKey } from "@/honesty/range";
-import type { FourStateVerdict } from "@/honesty/verdict";
+import { ALL_VERDICT_KINDS, type VerdictState } from "@/honesty/verdict";
 import { formatCount } from "@/lib/format";
 import {
   getFieldDegradedState,
@@ -31,7 +31,7 @@ export interface VerdictSectionProps {
   repository?: string;
 }
 
-function groupBadgeVariant(group: FourStateVerdict) {
+function groupBadgeVariant(group: VerdictState) {
   switch (group) {
     case "reviewed":
       return { variant: "outline" as const, className: "border-emerald-600 text-emerald-500" };
@@ -41,10 +41,13 @@ function groupBadgeVariant(group: FourStateVerdict) {
       return { variant: "warning" as const, className: "" };
     case "silent":
       return { variant: "destructive" as const, className: "" };
+    // Neither a failure nor silence: the round finished but the read-back failed. Story: #159.
+    case "unknown":
+      return { variant: "outline" as const, className: "border-slate-500 text-slate-400" };
   }
 }
 
-function groupColor(group: FourStateVerdict) {
+function groupColor(group: VerdictState) {
   switch (group) {
     case "reviewed":
       return "#3AA368";
@@ -54,6 +57,8 @@ function groupColor(group: FourStateVerdict) {
       return "#AD8734";
     case "silent":
       return "#DB4A78";
+    case "unknown":
+      return "#8A93A6";
   }
 }
 
@@ -67,7 +72,7 @@ export function VerdictSection({ rows, now, range, repository }: VerdictSectionP
         <div>
           <CardTitle>1. Liveness verdicts</CardTitle>
           <p className="text-xs text-muted-foreground">
-            All eight verdict kinds, grouped under the four-state decode.
+            All {ALL_VERDICT_KINDS.length} verdict kinds, grouped under the five-state decode.
           </p>
         </div>
         <span className="tabular text-xs text-muted-foreground">

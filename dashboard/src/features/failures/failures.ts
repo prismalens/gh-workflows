@@ -1,8 +1,8 @@
 import type { LaneEventRow, RoundRow } from "@/api/types";
 import {
   ALL_VERDICT_KINDS,
-  type FourStateVerdict,
   type VerdictKind,
+  type VerdictState,
   VERDICT_KIND_DEFINITIONS,
 } from "@/honesty/verdict";
 
@@ -81,7 +81,7 @@ export function buildSparkline(
 
 export interface VerdictRowSummary {
   kind: VerdictKind;
-  group: FourStateVerdict;
+  group: VerdictState;
   definition: string;
   count: number;
   lastSeen: string | null;
@@ -374,6 +374,10 @@ export const LANE_EVENT_REASONS = [
   "fork-head",
   "skip-author",
   "draft",
+  "skip-trivial",
+  "superseded",
+  "paused-by-request",
+  "refused-size",
 ] as const;
 
 export type LaneEventReasonKey = (typeof LANE_EVENT_REASONS)[number];
@@ -385,6 +389,12 @@ export const LANE_EVENT_DEFINITIONS: Record<LaneEventReasonKey, string> = {
     "Run skipped on fork head (summon only; automatic fork PRs cannot authenticate to post lane events)",
   "skip-author": "Run skipped because PR author matches skip_authors configuration",
   draft: "Summon on a draft pull request; nothing reviews a draft, so the run reviewed nothing",
+  "skip-trivial": "Run skipped because the diff is below the repository's min_diff_lines floor",
+  superseded: "Run skipped because the head moved during the debounce window",
+  "paused-by-request": "Run skipped because the PR is paused by @claude pause",
+  "refused-size":
+    "Run refused because reviewable_lines exceeded the repository's max_reviewable_lines cap; " +
+    "nothing was posted. @claude full review overrides the cap for one round.",
 };
 
 export const FORK_HEAD_FOOTNOTE =
@@ -398,6 +408,15 @@ export interface LaneEventRowSummary {
   sparkline: { counts: number[]; path: string };
   footnote?: string;
   matchingEvents: LaneEventRow[];
+  // Set only on the "refused-size" reason's most recent matching event; null everywhere else.
+  latestReviewableLines: number | null;
+  latestMaxReviewableLines: number | null;
+  /**
+   * Set only on the "paused-by-request" reason, from its most recent matching event (#124).
+   * Null there means "not recorded": either the row predates the actor column, or a
+   * pre-migration pause never carried one. Never rendered as "nobody".
+   */
+  latestActor: string | null;
 }
 
 export function summariseLaneEvents(
@@ -411,6 +430,7 @@ export function summariseLaneEvents(
       (acc, e) => (acc === null || e.recorded_at > acc ? e.recorded_at : acc),
       null,
     );
+    const latestEvent = latest === null ? null : (matching.find((e) => e.recorded_at === latest) ?? null);
 
     return {
       reason,
@@ -420,6 +440,10 @@ export function summariseLaneEvents(
       sparkline: buildSparkline(timestamps, now),
       footnote: reason === "fork-head" ? FORK_HEAD_FOOTNOTE : undefined,
       matchingEvents: matching,
+      latestReviewableLines: latestEvent?.reviewable_lines ?? null,
+      latestMaxReviewableLines: latestEvent?.max_reviewable_lines ?? null,
+      latestActor:
+        reason === "paused-by-request" ? (latestEvent?.actor ?? null) : null,
     };
   });
 }

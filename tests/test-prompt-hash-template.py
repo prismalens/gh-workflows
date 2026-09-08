@@ -9,6 +9,10 @@ substituted text would differ between those two runs. A hash over the template �
 to disk with @@TOKEN@@ placeholders still in place, before substitution — does not: it
 only changes when the checked-in prompt content itself changes.
 
+Also proves review.level (#101 ruling) is one of those substituted-not-hashed values:
+run A (level=medium) and run B (level=high) render different STEP4_AGENT_PLAN text
+(4 agents vs. 6), and prompt_hash still matches between them.
+
 Run: python3 tests/test-prompt-hash-template.py
 """
 import os
@@ -34,6 +38,14 @@ RUN_A_ENV = {
     "STEP9_HEADER": "## Code review",
     "DEDUP_DISABLED_BLOCK": "",
     "INCREMENTAL_ROUND_BLOCK": "",
+    # review.level (#101 ruling): STEP4_AGENT_PLAN and STEP5_VALIDATION are template
+    # tokens the script fills in from this LEVEL env var, not direct env-var
+    # substitutions like the tokens above — a GH Actions expression string literal
+    # cannot carry the embedded newlines those two blocks need, so the script computes
+    # them in Python instead (see the "Build the review prompt" step). Runs A and B
+    # deliberately use different levels so their two blocks render different text,
+    # proving prompt_hash stays put regardless.
+    "LEVEL": "medium",
 }
 RUN_B_ENV = {
     "REPO": "someorg/other-repo",
@@ -55,6 +67,7 @@ RUN_B_ENV = {
     "INCREMENTAL_ROUND_BLOCK": (
         "THIS IS AN INCREMENTAL ROUND covering commits aaa111..bbb222 only. Read it first."
     ),
+    "LEVEL": "high",
 }
 
 
@@ -158,6 +171,23 @@ def main():
                 print("  FAIL  run B prompt missing its own repo/PR substitution")
             else:
                 print("  ok    run B's rendered prompt carries its own repo/PR number")
+
+            # review.level (#101 ruling): run A (medium) and run B (high) must render
+            # DIFFERENT step 4 agent-plan text — proving the two runs actually exercised
+            # different STEP4_AGENT_PLAN/STEP5_VALIDATION content, not merely different
+            # repo/PR strings — while hash_a == hash_b above already proved the hash
+            # does not move. Together these are the level-invariance the ruling asks for.
+            if "Launch 4 agents in parallel" not in (prompt_a or ""):
+                fails.append("run A (level=medium) prompt does not carry the 4-agent plan")
+                print("  FAIL  run A (medium) missing the 4-agent plan text")
+            elif "Launch 6 agents in parallel" not in (prompt_b or ""):
+                fails.append("run B (level=high) prompt does not carry the 6-agent plan")
+                print("  FAIL  run B (high) missing the 6-agent plan text")
+            elif "Launch 6 agents in parallel" in (prompt_a or "") or "Launch 4 agents in parallel" in (prompt_b or ""):
+                fails.append("run A and run B rendered the same agent-plan text despite different levels")
+                print("  FAIL  medium/high agent-plan text did not vary with level")
+            else:
+                print("  ok    medium (4 agents) and high (6 agents) render different step 4 text, same prompt_hash")
 
     # A change to the checked-in prompt content (simulating an actual prompt edit) MUST
     # change prompt_hash. Do this by patching the script's heredoc body before executing it.

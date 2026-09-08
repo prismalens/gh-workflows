@@ -1256,6 +1256,85 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(screen.getByTestId("report-tabs")).toBeInTheDocument();
   });
 
+  it("renders live findings on the detail page's findings tab, scoped to this PR (#75, #111)", async () => {
+    const known = fourStateRounds[3]; // PR 204 (reviewed)
+    const [owner, repo] = known.repository.split("/");
+    const findingsApi = makeFixtureApi(fourStateRounds, [], [], [], [], [
+      {
+        thread_node_id: "PRRT_scoped",
+        repository: known.repository,
+        pr_number: known.pr_number!,
+        path: "worker/index.js",
+        original_line: 5,
+        line: 5,
+        is_resolved: 1,
+        is_outdated: 0,
+        resolved_by_login: "alice",
+        thread_created_at: "2026-09-01T00:00:00.000Z",
+        header_raw: "Scoped finding",
+        body_excerpt: "detail",
+        diff_hunk: "@@ -1,1 +1,1 @@",
+        human_reply_count: 1,
+        human_reply_sha: null,
+        fix_sha: "cafefeed",
+        fix_sha_source: "human_reply",
+        verify_verdict: null,
+        head_sha_reviewed: known.head_sha,
+        last_swept_at: "2026-09-01T01:00:00.000Z",
+        row_set_incomplete: 0,
+      },
+      // A finding on a different PR must not leak into this PR's tab.
+      {
+        thread_node_id: "PRRT_other",
+        repository: known.repository,
+        pr_number: (known.pr_number ?? 0) + 999,
+        path: null,
+        original_line: null,
+        line: null,
+        is_resolved: 0,
+        is_outdated: 0,
+        resolved_by_login: null,
+        thread_created_at: "2026-09-01T00:00:00.000Z",
+        header_raw: "Other PR finding",
+        body_excerpt: null,
+        diff_hunk: null,
+        human_reply_count: 0,
+        human_reply_sha: null,
+        fix_sha: null,
+        fix_sha_source: null,
+        verify_verdict: null,
+        head_sha_reviewed: null,
+        last_swept_at: null,
+        row_set_incomplete: 0,
+      },
+    ]);
+
+    renderRoute({ path: `/prs/${owner}/${repo}/${known.pr_number}`, api: findingsApi });
+    await screen.findByText(new RegExp(`PR #${known.pr_number}`));
+
+    expect(await screen.findByText("Scoped finding")).toBeInTheDocument();
+    expect(screen.getByTestId("fix-cited-badge")).toBeInTheDocument();
+    expect(screen.queryByText("Other PR finding")).not.toBeInTheDocument();
+  });
+
+  it("a PR with zero findings says so plainly on its findings tab, not as filters excluding rows (this pass)", async () => {
+    const known = fourStateRounds[3]; // PR 204 (reviewed)
+    const [owner, repo] = known.repository.split("/");
+    // No findings at all in the store: this tab has no filter UI, so the generic inbox
+    // empty-state copy ("no findings match the selected filters") would assert filters
+    // that were never offered here, over a PR that may simply never have been swept.
+    const findingsApi = makeFixtureApi(fourStateRounds, [], [], [], [], []);
+
+    renderRoute({ path: `/prs/${owner}/${repo}/${known.pr_number}`, api: findingsApi });
+    await screen.findByText(new RegExp(`PR #${known.pr_number}`));
+
+    expect(
+      await screen.findByText(/No findings recorded for this pull request/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/not proof this pull request was clean/)).toBeInTheDocument();
+    expect(screen.queryByText(/No findings match the selected filters/)).not.toBeInTheDocument();
+  });
+
   it("renders copyable unblock hint for amber/red states on detail route", async () => {
     const amber = fourStateRounds[1]; // PR 202 (auto-paused)
     const [owner, repo] = amber.repository.split("/");
@@ -1271,6 +1350,33 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     const hint = screen.getByTestId("unblock-hint");
     expect(hint).toHaveTextContent("@claude review");
     expect(screen.getByRole("button", { name: /copy/i })).toBeInTheDocument();
+  });
+
+  it("a paused-by-request head renders a distinct sentence and an @claude resume hint, not @claude review (#124)", async () => {
+    const [owner, repo] = baseRound.repository.split("/");
+    const pausedRound = {
+      ...baseRound,
+      session_id: "pr-paused-by-request",
+      pr_number: 521,
+      pr_title: "PR paused on purpose",
+      verdict_kind: "paused-by-request",
+      round_type: "full",
+      job_conclusion: "success",
+    };
+    const api = makeFixtureApi([pausedRound]);
+
+    renderRoute({ path: `/prs/${owner}/${repo}/521`, api });
+
+    expect(await screen.findByText(/PR #521/)).toBeInTheDocument();
+    const banner = screen.getByTestId("head-banner");
+    expect(banner).toHaveTextContent(/not reviewed/i);
+    expect(banner).toHaveTextContent(/paused the lane.*on purpose/i);
+    // Must not read as the round-budget message auto-paused uses.
+    expect(banner).not.toHaveTextContent(/maximum automatic review rounds/i);
+
+    const hint = screen.getByTestId("unblock-hint");
+    expect(hint).toHaveTextContent("@claude resume");
+    expect(hint).not.toHaveTextContent("@claude review");
   });
 
   it("shows an empty state rather than crashing for an unknown PR", async () => {
@@ -1503,7 +1609,7 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(screen.getByText(/cache 25\.0%/)).toBeInTheDocument();
   });
 
-  it("ConfigInEffect renders unavailable limit and author-skip, and path match only on escalation (findings 3943781307, 3943781310)", async () => {
+  it("ConfigInEffect: a round with no config_effective at all names every curated field as not recorded and flags the round itself (#75, findings 3943781307, 3943781310)", async () => {
     const [owner, repo] = baseRound.repository.split("/");
     const configRounds = [
       {
@@ -1525,19 +1631,97 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     ];
     const configApi = makeFixtureApi(configRounds);
 
-    // Default model source: no match, unavailable limit, unavailable skip author
+    // Default model source: no match; auto-pause and skip-author name the field
+    // rather than saying "unavailable". Neither round below carries config_effective
+    // at all, so the panel also flags the round itself as predating the field (#75).
     renderRoute({ path: `/prs/${owner}/${repo}/501`, api: configApi });
     const cardDefault = await screen.findByTestId("config-in-effect-card");
-    expect(within(cardDefault).getByText("automatic-round limit unavailable")).toBeInTheDocument();
+    expect(
+      within(cardDefault).getByText("auto_pause_rounds: not recorded on this round"),
+    ).toBeInTheDocument();
     expect(within(cardDefault).getByText("no match")).toBeInTheDocument();
-    expect(within(cardDefault).getByText("unavailable")).toBeInTheDocument();
+    expect(
+      within(cardDefault).getByText("skip_authors: not recorded on this round"),
+    ).toBeInTheDocument();
+    const degradedDefault = within(cardDefault).getByTestId("degraded");
+    expect(degradedDefault).toHaveAttribute("data-reason", "lane-did-not-send");
 
     // Escalated model source: path match is proven (both directions proven)
     cleanup();
     renderRoute({ path: `/prs/${owner}/${repo}/502`, api: configApi });
     const cardEscalated = await screen.findByTestId("config-in-effect-card");
     expect(within(cardEscalated).getByText("match")).toBeInTheDocument();
-    expect(within(cardEscalated).getByText("unavailable")).toBeInTheDocument();
+    expect(
+      within(cardEscalated).getByText("skip_authors: not recorded on this round"),
+    ).toBeInTheDocument();
+    expect(within(cardEscalated).getByTestId("degraded")).toBeInTheDocument();
+  });
+
+  it("ConfigInEffect: a resolved key renders its value and layer generically, an unrecognized key included (#75)", async () => {
+    const [owner, repo] = baseRound.repository.split("/");
+    const configEffective = JSON.stringify({
+      auto_pause_rounds: { value: 5, layer: "repo" },
+      min_diff_lines: { value: 20, layer: "org" },
+    });
+    const round = {
+      ...baseRound,
+      session_id: "pr-cfg-present",
+      pr_number: 511,
+      pr_title: "PR with config_effective recorded",
+      config_effective: configEffective,
+    };
+    const api = makeFixtureApi([round]);
+
+    renderRoute({ path: `/prs/${owner}/${repo}/511`, api });
+    const card = await screen.findByTestId("config-in-effect-card");
+
+    // A key config_effective carries renders its value and layer, not "not recorded".
+    expect(
+      within(card).queryByText("auto_pause_rounds: not recorded on this round"),
+    ).not.toBeInTheDocument();
+    expect(within(card).getByText("5")).toBeInTheDocument();
+    expect(within(card).getByText("· repo")).toBeInTheDocument();
+
+    // An unrecognized key the dashboard has no special case for renders exactly like a
+    // known one: no dashboard change is needed to surface it (#75).
+    expect(within(card).getByText("min_diff_lines")).toBeInTheDocument();
+    expect(within(card).getByText("20")).toBeInTheDocument();
+    expect(within(card).getByText("· org")).toBeInTheDocument();
+
+    // The round carries config_effective, so it is not flagged as predating the field.
+    expect(within(card).queryByTestId("degraded")).not.toBeInTheDocument();
+  });
+
+  it("ConfigInEffect: a key absent from a config_effective that exists names the field as not recorded, distinct from a round with no config_effective at all (#75)", async () => {
+    const [owner, repo] = baseRound.repository.split("/");
+    const configEffective = JSON.stringify({
+      skip_authors: { value: ["dependabot"], layer: "repo" },
+    });
+    const round = {
+      ...baseRound,
+      session_id: "pr-cfg-partial",
+      pr_number: 512,
+      pr_title: "PR with a config_effective missing one curated key",
+      config_effective: configEffective,
+    };
+    const api = makeFixtureApi([round]);
+
+    renderRoute({ path: `/prs/${owner}/${repo}/512`, api });
+    const card = await screen.findByTestId("config-in-effect-card");
+
+    // auto_pause_rounds is absent from this round's config_effective, even though the
+    // object itself exists, so it is named as not recorded rather than "unavailable".
+    expect(
+      within(card).getByText("auto_pause_rounds: not recorded on this round"),
+    ).toBeInTheDocument();
+    // skip_authors is present, so it renders its value rather than "not recorded".
+    expect(
+      within(card).queryByText("skip_authors: not recorded on this round"),
+    ).not.toBeInTheDocument();
+    expect(within(card).getByText('["dependabot"]')).toBeInTheDocument();
+
+    // The object exists, so the round itself is not flagged as predating the field.
+    expect(within(card).queryByTestId("degraded")).not.toBeInTheDocument();
   });
 
   it("handles clipboard success and failure without unhandled rejections (finding 3943781302)", async () => {

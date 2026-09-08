@@ -98,6 +98,26 @@ describe("head-status decode produces the right label for each of the four state
     expect(noNewCommits.headRead).toBe(false);
   });
 
+  it("decodes paused-by-request distinctly from auto-paused: same state, different sentence and hint (#124)", () => {
+    const pausedByRequest = decodeHeadStatus(mockRow({ verdict_kind: "paused-by-request" }));
+    expect(pausedByRequest.state).toBe("did-not-run");
+    expect(pausedByRequest.label).toBe("paused-by-request");
+    expect(pausedByRequest.headRead).toBe(false);
+    expect(pausedByRequest.sentence).toMatch(/not reviewed/);
+    expect(pausedByRequest.sentence).toMatch(/paused the lane.*on purpose/);
+
+    // The whole point of the verb: a summon resumes an auto-pause but does not clear a
+    // manual one, so the hint here must differ from auto-paused's "@claude review".
+    const autoPaused = decodeHeadStatus(mockRow({ verdict_kind: "auto-paused" }));
+    expect(pausedByRequest.copyableHint).toBe("@claude resume");
+    expect(autoPaused.copyableHint).toBe("@claude review");
+    expect(pausedByRequest.copyableHint).not.toBe(autoPaused.copyableHint);
+
+    // The two messages must not merge: distinct sentences for a distinct cause.
+    expect(pausedByRequest.sentence).not.toBe(autoPaused.sentence);
+    expect(pausedByRequest.explain).not.toBe(autoPaused.explain);
+  });
+
   it("decodes state 3: threads-only (verify round re-checks unresolved threads but never reads head)", () => {
     // Explicit verdict_kind: verify-rechecked
     const rechecked = decodeHeadStatus(

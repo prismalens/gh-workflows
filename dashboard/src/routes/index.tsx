@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   useAttentionQuery,
   useChangesQuery,
+  useFindingsQuery,
   useRoundsQuery,
   useSummaryQuery,
 } from "@/api/queries";
@@ -21,7 +22,7 @@ import {
   tokensPerDay,
   wallClockPoints,
 } from "@/features/overview/activity";
-import { attentionCards } from "@/features/overview/attention";
+import { attentionCards, findingAttentionCards } from "@/features/overview/attention";
 import { AttentionFeed } from "@/features/overview/AttentionFeed";
 import {
   RoundsPerDayChart,
@@ -90,6 +91,7 @@ function OverviewPage() {
   const rounds = useRoundsQuery(filters, now);
   const attention = useAttentionQuery(filters, now);
   const changes = useChangesQuery();
+  const findings = useFindingsQuery({ repository: search.repository });
 
   const fetched = rounds.data?.rows ?? EMPTY_ROWS;
   const fetchedChanges = useMemo(() => changes.data?.rows ?? EMPTY_ROWS, [changes.data?.rows]);
@@ -388,7 +390,13 @@ function OverviewPage() {
             <QueryError error={attention.error} title="Could not load the attention feed" />
           ) : (
             <AttentionFeed
-              cards={attentionCards(attention.data?.rows ?? EMPTY_ROWS)}
+              cards={[
+                ...attentionCards(attention.data?.rows ?? EMPTY_ROWS),
+                // A findings failure must not hide the round cards, so the feed
+                // is told findings are unread rather than being skipped.
+                ...findingAttentionCards(findings.data?.rows ?? []),
+              ]}
+              findingsRead={findings.data ? findings.data.rows.length : null}
               scanned={attention.data?.rows.length ?? 0}
               windowLabel={windowed.label}
             />

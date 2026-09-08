@@ -6,7 +6,6 @@ history is the archive for anything removed this way. See #141.
 
 | Artboard | Screen | Retires with |
 | --- | --- | --- |
-| `canvas/FindingsInbox.dc.html` | Findings inbox | #111 |
 | `canvas/Config.dc.html` | Configuration | #78 |
 | `canvas/Keys.dc.html` | Credential registry | #77 |
 | `canvas/Agents.dc.html` | Agent registry | #81 |

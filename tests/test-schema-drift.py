@@ -56,7 +56,14 @@ USAGE_RECORDS_READ_ALLOWLIST = {
     "config_hash":      "Variant identity component (#47); not yet surfaced in dashboard read API",
     "variant":          "Variant identity operator label (#47); not yet surfaced in dashboard read API",
     "variant_key":      "Variant identity grouping key (#47); not yet surfaced in dashboard read API",
+    "reviewable_lines": "Review manifest unit (#105); not yet surfaced in dashboard read API",
+    "size_override":    "Whether @claude full review bypassed max_reviewable_lines (#105); not yet surfaced in dashboard read API",
 }
+
+# GET /api/findings (#111) selects every review_findings column, so this stays empty.
+# It exists so a later migration that adds a column and forgets the SELECT fails Check 3
+# below, the same drift #99 caught for usage_records.
+REVIEW_FINDINGS_READ_ALLOWLIST = {}
 
 
 # ── Migration parser ─────────────────────────────────────────
@@ -176,23 +183,25 @@ def parse_index_js():
     # Simpler approach: find all quoted string literals that look like column
     # names in array contexts near SELECT/FROM patterns.
 
-    # Find the columns array in handleRuns (lines with `const columns = [`)
-    # and the push call.
-    columns_match = re.search(
-        r'const\s+columns\s*=\s*\[(.*?)\]\s*;',
-        source, re.DOTALL,
-    )
-    if columns_match:
+    # Find every `const columns = [...]` block (handleRuns, handleLaneEvents,
+    # handleFindings, ...) rather than only the first: a bare re.search here
+    # silently dropped every table past the first one built this way, which is
+    # what let review_findings's SELECT go unchecked when #111 added it.
+    for columns_match in re.finditer(r'const\s+columns\s*=\s*\[(.*?)\]\s*;', source, re.DOTALL):
         arr_body = columns_match.group(1)
         arr_cols = set(re.findall(r'"(\w+)"', arr_body))
 
-        # Find push calls on columns: columns.push("col1", "col2", ...)
-        for pm in re.finditer(r'columns\.push\(([^)]+)\)', source):
-            push_body = pm.group(1)
-            arr_cols.update(re.findall(r'"(\w+)"', push_body))
+        # A push call belongs to the nearest preceding block, so this stays
+        # bounded to the text up to the next `const columns` (or EOF). Only
+        # handleRuns has one today.
+        next_block = source.find("const columns", columns_match.end())
+        block_end = next_block if next_block != -1 else len(source)
+        block_text = source[columns_match.end():block_end]
+        for pm in re.finditer(r'columns\.push\(([^)]+)\)', block_text):
+            arr_cols.update(re.findall(r'"(\w+)"', pm.group(1)))
 
-        # Find which table this SELECT is FROM
-        # Look for template literal: FROM <table>
+        # Find which table this SELECT is FROM: a template literal shortly
+        # after the array, e.g. `FROM lane_events` / `FROM review_findings`.
         table_match = re.search(
             r'FROM\s+(\w+)',
             source[columns_match.end():columns_match.end() + 500],
@@ -266,6 +275,35 @@ def main():
         print(f"    FAIL  unread and un-allowlisted columns: {', '.join(sorted(unread))}")
     else:
         print(f"    ok    all {len(ur_schema)} usage_records columns are read or allowlisted")
+
+    # ── Check 3: every review_findings schema column is read or allowlisted ─
+    # GET /api/findings (#111) is the read side of the #47 sweep; this is the
+    # same check as usage_records, scoped to the newer table.
+    print("\n  Check 3: review_findings schema columns are read or allowlisted")
+    rf_schema = schema.get("review_findings", set())
+    rf_selects = selects.get("review_findings", set())
+    rf_allowlisted = set(REVIEW_FINDINGS_READ_ALLOWLIST.keys())
+
+    rf_phantom = rf_allowlisted - rf_schema
+    if rf_phantom:
+        fails.append(
+            f"REVIEW_FINDINGS_READ_ALLOWLIST names columns not in the schema: "
+            f"{', '.join(sorted(rf_phantom))}. Remove stale allowlist entries."
+        )
+        print(f"    FAIL  allowlist names phantom columns: {', '.join(sorted(rf_phantom))}")
+
+    rf_unread = rf_schema - rf_selects - rf_allowlisted
+    if rf_unread:
+        fails.append(
+            f"review_findings columns exist in schema but are neither read nor "
+            f"allowlisted: {', '.join(sorted(rf_unread))}. Either:\n"
+            f"  • Add them to the SELECT in handleFindings() so the dashboard can use them, or\n"
+            f"  • Add them to REVIEW_FINDINGS_READ_ALLOWLIST in tests/test-schema-drift.py "
+            f"with a reason."
+        )
+        print(f"    FAIL  unread and un-allowlisted columns: {', '.join(sorted(rf_unread))}")
+    else:
+        print(f"    ok    all {len(rf_schema)} review_findings columns are read or allowlisted")
 
     # ── Summary ───────────────────────────────────────────────
     print()

@@ -18,7 +18,11 @@ export const HEAD_READING_ROUND_TYPES: ReadonlySet<string> = new Set([
   "incremental",
 ]);
 
-export const VERDICT_KIND_MAP: Record<string, FourStateVerdict> = {
+// `Record<string, VerdictState>` rather than `FourStateVerdict`: `counts-unread` and
+// `verify-unread` decode to `unknown`, the existing "can't tell" state, because the round may
+// have read the head just fine — only the read-back of what it posted failed. Mapping them to
+// `did-not-run` or `silent` would assert an outcome the lane never confirmed. Story: #159.
+export const VERDICT_KIND_MAP: Record<string, VerdictState> = {
   reviewed: "reviewed",
   "reviewed-incremental": "reviewed",
   "verify-rechecked": "threads-only",
@@ -29,10 +33,13 @@ export const VERDICT_KIND_MAP: Record<string, FourStateVerdict> = {
   "skipped-trivial": "did-not-run",
   superseded: "did-not-run",
   draft: "did-not-run",
+  "refused-size": "did-not-run",
   "verify-superseded": "did-not-run",
   silent: "silent",
   "verify-silent": "silent",
   "verify-cancelled": "silent",
+  "counts-unread": "unknown",
+  "verify-unread": "unknown",
 };
 
 export const ALL_VERDICT_KINDS = [
@@ -44,19 +51,22 @@ export const ALL_VERDICT_KINDS = [
   "skipped-trivial",
   "superseded",
   "draft",
+  "refused-size",
   "no-token",
   "no-new-commits",
   "silent",
   "verify-silent",
   "verify-superseded",
   "verify-cancelled",
+  "counts-unread",
+  "verify-unread",
 ] as const;
 
 export type VerdictKind = (typeof ALL_VERDICT_KINDS)[number];
 
 export const VERDICT_KIND_DEFINITIONS: Record<
   VerdictKind,
-  { group: FourStateVerdict; definition: string }
+  { group: VerdictState; definition: string }
 > = {
   reviewed: {
     group: "reviewed",
@@ -90,6 +100,13 @@ export const VERDICT_KIND_DEFINITIONS: Record<
     group: "did-not-run",
     definition: "The pull request is a draft. Nothing reviews a draft, summons included.",
   },
+  "refused-size": {
+    group: "did-not-run",
+    definition:
+      "The diff's reviewable_lines exceeded the repository's max_reviewable_lines cap, so the " +
+      "round refused and posted nothing. That is the size cap working, not a failure, and this " +
+      "head has no machine review on record. @claude full review overrides the cap for one round.",
+  },
   "verify-superseded": {
     group: "did-not-run",
     definition:
@@ -107,6 +124,16 @@ export const VERDICT_KIND_DEFINITIONS: Record<
   "no-new-commits": {
     group: "did-not-run",
     definition: "Head commit identical to baseline with no new commits; nothing to re-review.",
+  },
+  "counts-unread": {
+    group: "unknown",
+    definition:
+      "The round finished but the GitHub API would not answer when it tried to count what it posted. Not a report of zero. Read the pull request and the run log.",
+  },
+  "verify-unread": {
+    group: "unknown",
+    definition:
+      "A verification round finished but the GitHub API would not answer when it tried to read back its own summary comment. Whether threads were re-checked is not recorded here.",
   },
   silent: {
     group: "silent",
@@ -148,7 +175,9 @@ export const VERDICT_COPY: Record<VerdictState, { label: string; explain: string
   unknown: {
     label: "unknown",
     explain:
-      "A verify round, which reads no code, or a round recorded without a type. Whether the lane posted anything is not recorded here.",
+      "A verify round, which reads no code; a round recorded without a type; or a round whose " +
+      "GitHub API read-back failed after finishing (counts-unread, verify-unread). Whether the " +
+      "lane posted anything is not recorded here.",
   },
 };
 
@@ -201,6 +230,7 @@ export type VerdictKindBucket =
   | "did-not-run"
   | "silent"
   | "error"
+  | "unread"
   | "no-verdict-recorded";
 
 /** `clean` is folded into reviewed, matching headStatus.ts's own treatment of it. */
@@ -214,6 +244,7 @@ const VERDICT_KIND_BUCKET_MAP: Record<string, VerdictKindBucket> = {
   "skipped-trivial": "did-not-run",
   superseded: "did-not-run",
   draft: "did-not-run",
+  "refused-size": "did-not-run",
   "verify-superseded": "did-not-run",
   "no-token": "did-not-run",
   "no-new-commits": "did-not-run",
@@ -221,6 +252,10 @@ const VERDICT_KIND_BUCKET_MAP: Record<string, VerdictKindBucket> = {
   "verify-silent": "silent",
   "verify-cancelled": "silent",
   error: "error",
+  // The round finished; only the read-back of what it posted failed. Bucketing these as
+  // `silent` or `error` would assert a result the lane never confirmed. Story: #159.
+  "counts-unread": "unread",
+  "verify-unread": "unread",
 };
 
 export function decodeVerdictKind(row: RoundRow): VerdictKindBucket {
@@ -253,6 +288,13 @@ export const VERDICT_KIND_BUCKET_COPY: Record<
     label: "error",
     explain: "verdict_kind is error: the round failed.",
   },
+  unread: {
+    label: "unread",
+    explain:
+      "verdict_kind is counts-unread or verify-unread: the round finished but the GitHub API " +
+      "would not confirm what it posted. Not a failure and not silence — read the pull request " +
+      "and the run log directly.",
+  },
   "no-verdict-recorded": {
     label: "no verdict recorded",
     explain: "verdict_kind is null: this round predates the verdict fields.",
@@ -265,6 +307,7 @@ export interface VerdictKindMix {
   didNotRun: number;
   silent: number;
   error: number;
+  unread: number;
   noVerdictRecorded: number;
   n: number;
   [key: string]: number;
@@ -276,6 +319,7 @@ const VERDICT_KIND_MIX_KEY: Record<VerdictKindBucket, keyof Omit<VerdictKindMix,
   "did-not-run": "didNotRun",
   silent: "silent",
   error: "error",
+  unread: "unread",
   "no-verdict-recorded": "noVerdictRecorded",
 };
 
@@ -286,6 +330,7 @@ export function verdictKindMix(rows: RoundRow[]): VerdictKindMix {
     didNotRun: 0,
     silent: 0,
     error: 0,
+    unread: 0,
     noVerdictRecorded: 0,
     n: rows.length,
   };

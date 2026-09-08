@@ -1,0 +1,562 @@
+name: Review Findings Sweep
+
+# Reusable workflow (workflow_call) called by the three consumer repositories that carry
+# the Claude review lane. Never called by gh-workflows itself: see the job `if:` below and
+# "gh-workflows is excluded" in the ingest-sweep amendment of #47.
+#
+# Enumerates claude[bot] review threads with the default read-only GITHUB_TOKEN and POSTs
+# them to the review-telemetry Worker's findings route. Amendments implemented here (#47,
+# "Amendment: ingest sweep design"), each bought with a measured failure in that issue:
+#   1. one GraphQL query per PR, never aliased multi-PR batching (paginating WITHIN one PR,
+#      across multiple sequential queries, is not batching and stays within this rule)
+#   2. write incrementally after every PR, never once at the end
+#   3. any GraphQL failure is treated as throttling, regardless of the rate_limit endpoint
+#   4. originalLine is the durable key; line is display-only and never keyed on
+#   5. author logins are normalized ("claude" -> "claude[bot]") at write time
+#   6. commit oids come from the same GraphQL query, no REST per-commit fetches
+#   7. comment bodies are re-read on every pass; the upsert gives this for free
+#   8. fix_sha comes only from the verify round's own reply template or a human-quoted
+#      sha verified against real commit oids; no raw regex with no ground-truth check
+#   9. gh-workflows is excluded structurally (job `if:`), not by convention
+#  10. no severity column, no addressed boolean, no CodeRabbit rows; header_raw and
+#      resolved_by_login are stored verbatim, never enumed or pre-classified
+#  11. commits, reviewThreads and each thread's comments are paginated to exhaustion via
+#      pageInfo/endCursor. A `first: 100` selection with no cursor loop silently drops the
+#      overflow on a large PR and still reports success -- the same three-outcome collapse
+#      issue #123's ruling describes. A throttle mid-pagination still leaves prior pages'
+#      rows written (amendment 2 extends to pages, not just PRs).
+
+on:
+  workflow_call:
+    inputs:
+      full_history:
+        description: >-
+          Ignore the update-window filter and sweep every pull request (any state) in this
+          repository. Combined with upsert semantics and verbatim storage, a parser fix
+          becomes retroactive by re-running this: a wrong parse costs one re-run, not a
+          lost corpus.
+        required: false
+        default: false
+        type: boolean
+      window_days:
+        description: >-
+          How many days back to search for updated pull requests on a normal
+          (non-full_history) run. Wider than the daily cadence on purpose, so a delayed or
+          missed run cannot drop a day.
+        required: false
+        default: 3
+        type: number
+    secrets:
+      REVIEW_TELEMETRY_URL:
+        description: 'Base URL for the review-telemetry Worker (the same secret usage_records telemetry already holds).'
+        required: false
+      REVIEW_TELEMETRY_TOKEN:
+        description: 'Review telemetry ingest token.'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sweep:
+    name: Sweep claude[bot] review threads
+    # Structural exclusion (amendment 9, #47): gh-workflows has no Claude lane
+    # (claude-code-action self-skips there because it hosts claude-code-review.yml), so
+    # nothing here may ever write a gh-workflows row. gh-workflows never calls this
+    # workflow, but the guard stays even so a caller stub mistakenly added here still
+    # refuses to run rather than depending on nobody making that mistake.
+    if: ${{ github.repository != 'prismalens/gh-workflows' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Sweep review findings
+        id: sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          FULL_HISTORY: ${{ inputs.full_history }}
+          WINDOW_DAYS: ${{ inputs.window_days }}
+          INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
+          INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+        run: |
+          set -uo pipefail
+
+          # Telemetry must never fail a run: an unconfigured consumer just skips (same
+          # contract as the round telemetry POST in claude-code-review.yml).
+          if [ -z "${INGEST_URL:-}" ] || [ -z "${INGEST_TOKEN:-}" ]; then
+            echo "Review findings ingest is not configured for this repository; skipping."
+            exit 0
+          fi
+
+          case "$INGEST_URL" in
+            https://*) ;;
+            *)
+              echo "::warning::review-findings-sweep: REVIEW_TELEMETRY_URL is not https, so the token was not sent and nothing was swept."
+              exit 0
+              ;;
+          esac
+
+          OWNER="${REPOSITORY%%/*}"
+          NAME="${REPOSITORY##*/}"
+          FULL_HISTORY="${FULL_HISTORY:-false}"
+          WINDOW_DAYS="${WINDOW_DAYS:-3}"
+          MAX_ATTEMPTS="${SWEEP_MAX_ATTEMPTS:-5}"
+          BACKOFF_BASE="${SWEEP_BACKOFF_BASE_SECONDS:-5}"
+          SWEPT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          declare -a TMPFILES=()
+          declare -a TMPDIRS=()
+          trap 'rm -f "${TMPFILES[@]}"; rm -rf "${TMPDIRS[@]}"' EXIT
+
+          hdr="$(mktemp)"; TMPFILES+=("$hdr")
+          umask 077
+          printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+
+          if [ "$FULL_HISTORY" = "true" ]; then
+            PR_LIST_LIMIT=1000
+            pr_list_json=$(gh pr list --repo "$REPOSITORY" --state all --limit "$PR_LIST_LIMIT" --json number) || {
+              echo "::warning::review-findings-sweep: could not list pull requests for a full-history sweep; nothing was swept this run."
+              exit 0
+            }
+          else
+            since=$(python3 -c "
+          from datetime import datetime, timezone, timedelta
+          import os
+          days = int(os.environ.get('WINDOW_DAYS', '3'))
+          print((datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d'))
+          ")
+            PR_LIST_LIMIT=500
+            pr_list_json=$(gh pr list --repo "$REPOSITORY" --state all --search "updated:>=${since}" --limit "$PR_LIST_LIMIT" --json number) || {
+              echo "::warning::review-findings-sweep: could not list recently updated pull requests; nothing was swept this run."
+              exit 0
+            }
+          fi
+
+          pr_numbers=$(printf '%s' "$pr_list_json" | jq -r '.[].number')
+
+          # `gh pr list --limit N` truncates at N with no signal of its own that more
+          # PRs matched -- the same "first: N with no cursor loop" silent drop this
+          # workflow's own .coderabbit.yaml instructions call out for the GraphQL
+          # connections below, just moved to the REST search page cap. A count equal
+          # to the limit is the only observable evidence a truncation happened, so
+          # record it loudly rather than let a busy window quietly lose rows.
+          pr_list_count=$(printf '%s' "$pr_list_json" | jq 'length')
+          list_truncated=0
+          if [ "${pr_list_count:-0}" -ge "$PR_LIST_LIMIT" ]; then
+            list_truncated=1
+            echo "::warning::review-findings-sweep: the pull request list returned exactly its ${PR_LIST_LIMIT}-item limit; more pull requests may match and were silently dropped by this listing. Narrow window_days, or split full_history sweeps, to close the gap."
+          fi
+
+          # One PR per query (amendment 1, #47): no aliased multi-PR batching, which blows
+          # the 500k-node complexity ceiling at this nesting depth. Paginating WITHIN one PR
+          # is fine and is what the two queries below do. originalLine (amendment 4) and
+          # diffHunk (amendment 6, no REST per-commit fetch) are fetched here.
+          #
+          # main_query pages commits and reviewThreads together, each behind its own cursor
+          # (amendment 11): once a connection is exhausted its cursor is simply carried
+          # forward unchanged on later calls, which returns zero further nodes for it every
+          # time rather than restarting it from the beginning.
+          read -r -d '' main_query <<'GQL' || true
+          query($owner: String!, $name: String!, $number: Int!, $commitsCursor: String, $threadsCursor: String) {
+            repository(owner: $owner, name: $name) {
+              pullRequest(number: $number) {
+                headRefOid
+                commits(first: 100, after: $commitsCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes { commit { oid } }
+                }
+                reviewThreads(first: 100, after: $threadsCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    id
+                    isResolved
+                    isOutdated
+                    path
+                    line
+                    originalLine
+                    resolvedBy { login __typename }
+                    comments(first: 100) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        body
+                        diffHunk
+                        createdAt
+                        author { login __typename }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          GQL
+
+          # thread_comments_query pages the overflow for one review thread whose first 100
+          # comments (from main_query) were not all of them. Scoped to a single thread node,
+          # never a whole PR, so it stays far under the complexity ceiling per call.
+          read -r -d '' thread_comments_query <<'GQL' || true
+          query($threadId: ID!, $cursor: String) {
+            node(id: $threadId) {
+              ... on PullRequestReviewThread {
+                comments(first: 100, after: $cursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    body
+                    diffHunk
+                    createdAt
+                    author { login __typename }
+                  }
+                }
+              }
+            }
+          }
+          GQL
+
+          # Shared retry helper (amendment 3, #47): any GraphQL failure -- network, rate
+          # limit, a malformed response -- is throttling, full stop, never checked against
+          # rate_limit. Every page fetch below, main or overflow, goes through this.
+          graphql_fetch() {
+            local label="$1"; shift
+            local attempt=1
+            while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+              if GQL_RESP=$(gh api graphql "$@" 2>"$err_file"); then
+                if ! printf '%s' "$GQL_RESP" | jq -e '.errors' >/dev/null 2>&1; then
+                  return 0
+                fi
+              fi
+              echo "::warning::review-findings-sweep: ${label} attempt ${attempt}/${MAX_ATTEMPTS} failed; treating as throttling and backing off."
+              sleep "$((BACKOFF_BASE * attempt))"
+              attempt=$((attempt + 1))
+            done
+            return 1
+          }
+
+          swept=0
+          skipped=0
+
+          for pr in $pr_numbers; do
+            pr_dir="$(mktemp -d)"; TMPDIRS+=("$pr_dir")
+            err_file="$(mktemp)"; TMPFILES+=("$err_file")
+            complete=1
+
+            # ── Page commits + reviewThreads together until both are exhausted ──────────
+            commits_cursor=""
+            threads_cursor=""
+            commits_have_more=1
+            threads_have_more=1
+            page=0
+
+            while [ "$commits_have_more" -eq 1 ] || [ "$threads_have_more" -eq 1 ]; do
+              page=$((page + 1))
+              args=(-f query="$main_query" -f owner="$OWNER" -f name="$NAME" -F number="$pr")
+              [ -n "$commits_cursor" ] && args+=(-F commitsCursor="$commits_cursor")
+              [ -n "$threads_cursor" ] && args+=(-F threadsCursor="$threads_cursor")
+
+              if ! graphql_fetch "PR #${pr} page ${page}" "${args[@]}"; then
+                echo "::warning::review-findings-sweep: PR #${pr} commit/review-thread pagination stopped at page ${page} (attempts exhausted); rows from any earlier pages are still written below, but this PR's row set is incomplete for this sweep."
+                complete=0
+                break
+              fi
+              printf '%s' "$GQL_RESP" > "${pr_dir}/main_page_${page}.json"
+
+              chn=$(printf '%s' "$GQL_RESP" | jq -r '.data.repository.pullRequest.commits.pageInfo.hasNextPage // false')
+              ccur=$(printf '%s' "$GQL_RESP" | jq -r '.data.repository.pullRequest.commits.pageInfo.endCursor // empty')
+              [ "$chn" = "true" ] && commits_have_more=1 || commits_have_more=0
+              [ -n "$ccur" ] && commits_cursor="$ccur"
+
+              thn=$(printf '%s' "$GQL_RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false')
+              tcur=$(printf '%s' "$GQL_RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty')
+              [ "$thn" = "true" ] && threads_have_more=1 || threads_have_more=0
+              [ -n "$tcur" ] && threads_cursor="$tcur"
+            done
+
+            # A failure on the very first page means zero rows are recoverable for this PR
+            # (nothing to write). A failure on a later page still leaves the earlier pages'
+            # rows to write below (amendment 2 extends to pages, not just whole PRs) -- only
+            # the true zero-page case is counted as skipped.
+            if ! ls "${pr_dir}"/main_page_*.json >/dev/null 2>&1; then
+              echo "::warning::review-findings-sweep: PR #${pr} exhausted ${MAX_ATTEMPTS} attempts on its first page; skipped this sweep. Rows already written for other pull requests this run stand (amendment 2, #47)."
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            # ── Page the overflow for any thread whose first 100 comments weren't all ────
+            overflow_ids_file="${pr_dir}/overflow_ids.txt"
+            cat "${pr_dir}"/main_page_*.json \
+              | jq -r '(.data.repository.pullRequest.reviewThreads.nodes // [])[] | select(.comments.pageInfo.hasNextPage == true) | .id' \
+              | sort -u > "$overflow_ids_file"
+
+            idx=0
+            while IFS= read -r tid; do
+              [ -z "$tid" ] && continue
+              idx=$((idx + 1))
+              printf '%s' "$tid" > "${pr_dir}/overflow_${idx}.id"
+
+              cursor=$(cat "${pr_dir}"/main_page_*.json \
+                | jq -r --arg id "$tid" '(.data.repository.pullRequest.reviewThreads.nodes // [])[] | select(.id == $id) | .comments.pageInfo.endCursor // empty' \
+                | head -n1)
+              have_more=1
+              cpage=0
+
+              while [ "$have_more" -eq 1 ]; do
+                cpage=$((cpage + 1))
+                args=(-f query="$thread_comments_query" -F threadId="$tid")
+                [ -n "$cursor" ] && args+=(-F cursor="$cursor")
+
+                if ! graphql_fetch "PR #${pr} thread ${tid} comments page $((cpage + 1))" "${args[@]}"; then
+                  echo "::warning::review-findings-sweep: PR #${pr} thread ${tid} comment-overflow pagination stopped (attempts exhausted); that thread's row is written with only the comments already fetched, and this PR's row set is incomplete for this sweep."
+                  complete=0
+                  break
+                fi
+                printf '%s' "$GQL_RESP" > "${pr_dir}/overflow_${idx}_page_${cpage}.json"
+
+                hn=$(printf '%s' "$GQL_RESP" | jq -r '.data.node.comments.pageInfo.hasNextPage // false')
+                ecur=$(printf '%s' "$GQL_RESP" | jq -r '.data.node.comments.pageInfo.endCursor // empty')
+                [ "$hn" = "true" ] && have_more=1 || have_more=0
+                [ -n "$ecur" ] && cursor="$ecur"
+              done
+            done < "$overflow_ids_file"
+
+            findings_json=$(REPOSITORY="$REPOSITORY" PR_NUMBER="$pr" SWEPT_AT="$SWEPT_AT" ROW_SET_COMPLETE="$complete" python3 - "$pr_dir" <<'PY'
+          import glob
+          import json
+          import os
+          import re
+          import sys
+
+          pr_dir = sys.argv[1]
+
+
+          def load_pages(pattern):
+              paths = sorted(glob.glob(os.path.join(pr_dir, pattern)))
+              out = []
+              for p in paths:
+                  with open(p) as fh:
+                      out.append(json.load(fh))
+              return out
+
+
+          main_pages = load_pages("main_page_*.json")
+          if not main_pages:
+              print(json.dumps({"findings": []}))
+              raise SystemExit(0)
+
+          head_sha = ""
+          commit_oids = set()
+          threads = []
+          for page in main_pages:
+              pr = ((page.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+              if pr.get("headRefOid"):
+                  head_sha = pr["headRefOid"]
+              for n in (pr.get("commits") or {}).get("nodes", []) or []:
+                  if n and n.get("commit") and n["commit"].get("oid"):
+                      commit_oids.add(n["commit"]["oid"])
+              threads.extend((pr.get("reviewThreads") or {}).get("nodes", []) or [])
+          commit_oids = sorted(commit_oids)
+
+          # Merge overflow comment pages (amendment 11) into the owning thread's node,
+          # keyed by the thread id recorded alongside each overflow page.
+          overflow_by_id = {}
+          for idf in sorted(glob.glob(os.path.join(pr_dir, "overflow_*.id"))):
+              idx = os.path.basename(idf)[len("overflow_"):-len(".id")]
+              with open(idf) as fh:
+                  tid = fh.read().strip()
+              extra = []
+              for p in sorted(glob.glob(os.path.join(pr_dir, f"overflow_{idx}_page_*.json"))):
+                  with open(p) as fh:
+                      data = json.load(fh)
+                  node = (data.get("data") or {}).get("node") or {}
+                  extra.extend((node.get("comments") or {}).get("nodes", []) or [])
+              overflow_by_id.setdefault(tid, []).extend(extra)
+
+          for t in threads:
+              extra = overflow_by_id.get(t.get("id"))
+              if extra:
+                  t["comments"]["nodes"] = (t["comments"].get("nodes") or []) + extra
+
+
+          def normalize_login(actor):
+              # Amendment 5 (#47): GraphQL strips the "[bot]" suffix REST keeps, so an
+              # un-normalized sweep invents two identities for the same bot.
+              if not actor:
+                  return None
+              login = actor.get("login")
+              if login is None:
+                  return None
+              if actor.get("__typename") == "Bot" and not login.endswith("[bot]"):
+                  return login + "[bot]"
+              return login
+
+
+          def resolve_oid(candidate):
+              # A quoted sha is accepted only when it matches a real commit oid on this
+              # PR (amendment 8, #47) -- a prefix match against ground truth, never a bare
+              # regex hit taken on faith.
+              if not candidate:
+                  return None
+              candidate = candidate.lower()
+              for oid in commit_oids:
+                  if oid.lower() == candidate or oid.lower().startswith(candidate):
+                      return oid
+              return None
+
+
+          HEADER_RE = re.compile(r"^\*\*(.+?)\*\*")
+          SHA_RE = re.compile(r"`([0-9a-fA-F]{7,40})`")
+          # These three strings are the exact reply templates the verify job in
+          # claude-code-review.yml owns (TEMPLATES dict there). Matching them is reading the
+          # lane's own structured output, not a speculative pattern over free text.
+          FIXED_RE = re.compile(r"Verified fixed in commit `([0-9a-fA-F]{7,40})`")
+          STILL_RE = re.compile(r"Still applies to `([0-9a-fA-F]{7,40})`")
+          CANNOT_RE = re.compile(r"Could not verify against `([0-9a-fA-F]{7,40})`")
+
+          repository = os.environ["REPOSITORY"]
+          pr_number = int(os.environ["PR_NUMBER"])
+          swept_at = os.environ["SWEPT_AT"]
+          # 0 unless a page (commits/reviewThreads or a thread's comment overflow) could
+          # not be fetched after retries -- set by the bash pagination loops above. A
+          # thread's row still gets written from whatever pages did succeed (see the
+          # ::warning:: lines emitted there); this field is how that gets recorded rather
+          # than silently looking like a complete sweep.
+          row_set_incomplete = 0 if os.environ.get("ROW_SET_COMPLETE", "1") == "1" else 1
+
+          findings = []
+          for thread in threads:
+              comments = (thread.get("comments") or {}).get("nodes", []) or []
+              if not comments:
+                  continue
+              first = comments[0]
+              # Amendment 10 / schema scope correction (#47): only the Claude lane lands
+              # here. A thread whose opening comment is not claude[bot] (CodeRabbit,
+              # a human review, anything else) is never a row in this table.
+              if normalize_login(first.get("author")) != "claude[bot]":
+                  continue
+
+              body = (first.get("body") or "")
+              header_match = HEADER_RE.match(body.strip())
+              header_raw = header_match.group(1) if header_match else None
+              body_excerpt = body.strip()
+              if len(body_excerpt) > 500:
+                  body_excerpt = body_excerpt[:500] + "..."
+
+              replies = comments[1:]
+              # Reply count includes any non-claude[bot] reply (amendment 10: the human/bot
+              # split is dashboard-code, versioned-exclusion-list territory, not an ingest
+              # classification -- resolved_by_login below is kept just as raw for the same
+              # reason).
+              human_reply_count = sum(
+                  1 for c in replies if normalize_login(c.get("author")) != "claude[bot]"
+              )
+
+              # human_reply_sha (amendment 8): re-read on every pass (amendment 7), and
+              # accepted only once resolve_oid confirms it against a real commit on this PR.
+              human_reply_sha = None
+              for c in replies:
+                  if normalize_login(c.get("author")) == "claude[bot]":
+                      continue
+                  for m in SHA_RE.finditer(c.get("body") or ""):
+                      resolved = resolve_oid(m.group(1))
+                      if resolved:
+                          human_reply_sha = resolved
+                          break
+                  if human_reply_sha:
+                      break
+
+              # fix_sha / fix_sha_source / verify_verdict (amendment 8): the only two
+              # sources are the verify round's own reply template and a verified human
+              # reply. Re-read every pass so an edited comment settles here too.
+              fix_sha = None
+              fix_sha_source = None
+              verify_verdict = None
+              for c in comments:
+                  text = c.get("body") or ""
+                  m = FIXED_RE.search(text)
+                  if m:
+                      # A sha the verify template quoted but that resolve_oid cannot
+                      # confirm against a real commit oid on this PR (most likely
+                      # after a throttled commits page left commit_oids incomplete)
+                      # must never be stored as fix_sha_source="verify_table" --
+                      # that source name is the caller's promise it was checked.
+                      # The verdict still stands; only the unverified sha is dropped.
+                      resolved = resolve_oid(m.group(1))
+                      if resolved:
+                          fix_sha = resolved
+                          fix_sha_source = "verify_table"
+                      verify_verdict = "fixed"
+                      continue
+                  if STILL_RE.search(text):
+                      verify_verdict = "still_applies"
+                      continue
+                  if CANNOT_RE.search(text):
+                      verify_verdict = "cannot_verify"
+
+              if fix_sha is None and human_reply_sha:
+                  fix_sha = human_reply_sha
+                  fix_sha_source = "human_reply"
+
+              findings.append({
+                  "thread_node_id": thread["id"],
+                  "repository": repository,
+                  "pr_number": pr_number,
+                  "path": thread.get("path"),
+                  "original_line": thread.get("originalLine"),
+                  "line": thread.get("line"),
+                  "is_resolved": 1 if thread.get("isResolved") else 0,
+                  "is_outdated": 1 if thread.get("isOutdated") else 0,
+                  "resolved_by_login": normalize_login(thread.get("resolvedBy")),
+                  "thread_created_at": first.get("createdAt"),
+                  "header_raw": header_raw,
+                  "body_excerpt": body_excerpt,
+                  "diff_hunk": first.get("diffHunk"),
+                  "human_reply_count": human_reply_count,
+                  "human_reply_sha": human_reply_sha,
+                  "fix_sha": fix_sha,
+                  "fix_sha_source": fix_sha_source,
+                  "verify_verdict": verify_verdict,
+                  "head_sha_reviewed": head_sha,
+                  "last_swept_at": swept_at,
+                  "row_set_incomplete": row_set_incomplete,
+              })
+
+          print(json.dumps({"findings": findings}))
+          PY
+          )
+
+            if [ -z "$findings_json" ]; then
+              echo "::warning::review-findings-sweep: PR #${pr} response could not be parsed; skipped."
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            count=$(printf '%s' "$findings_json" | jq '.findings | length')
+            if [ "$count" -eq 0 ]; then
+              continue
+            fi
+
+            # Write incrementally, right after this PR's own successful fetch (amendment
+            # 2, #47): a later PR's failure can never unwrite what already posted here.
+            code=$(printf '%s' "$findings_json" | curl -sS -m 15 \
+              --proto '=https' \
+              -o /dev/null -w '%{http_code}' \
+              -X POST "${INGEST_URL%/}/ingest/findings" \
+              -H "@$hdr" \
+              --data-binary @-) || {
+                echo "::warning::review-findings-sweep: PR #${pr} ingest POST did not complete; ${count} finding(s) unconfirmed."
+                continue
+              }
+
+            case "$code" in
+              2??)
+                swept=$((swept + count))
+                echo "PR #${pr}: wrote ${count} finding(s) (HTTP $code)."
+                ;;
+              *)
+                echo "::warning::review-findings-sweep: PR #${pr} ingest returned HTTP $code; ${count} finding(s) unconfirmed."
+                ;;
+            esac
+          done
+
+          truncation_note=""
+          [ "$list_truncated" -eq 1 ] && truncation_note=" (pull request LIST WAS TRUNCATED at ${PR_LIST_LIMIT}; see warning above)"
+          echo "Review findings sweep complete: ${swept} finding(s) written, ${skipped} pull request(s) skipped${truncation_note}."

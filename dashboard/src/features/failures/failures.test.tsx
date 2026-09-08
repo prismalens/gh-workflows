@@ -96,6 +96,8 @@ function createSampleLaneEvents(): LaneEventRow[] {
       run_url: "https://github.com/prismalens/gh-workflows/actions/runs/101",
       rounds_used: null,
       lane_version: "v2.0.0",
+      reviewable_lines: null,
+      max_reviewable_lines: null,
     },
     {
       run_id: 102,
@@ -108,6 +110,8 @@ function createSampleLaneEvents(): LaneEventRow[] {
       run_url: "https://github.com/prismalens/gh-workflows/actions/runs/102",
       rounds_used: 5,
       lane_version: "v2.0.0",
+      reviewable_lines: null,
+      max_reviewable_lines: null,
     },
     {
       run_id: 103,
@@ -120,6 +124,37 @@ function createSampleLaneEvents(): LaneEventRow[] {
       run_url: "https://github.com/prismalens/gh-workflows/actions/runs/103",
       rounds_used: null,
       lane_version: "v2.0.0",
+      reviewable_lines: null,
+      max_reviewable_lines: null,
+    },
+    {
+      run_id: 104,
+      run_attempt: 1,
+      recorded_at: "2026-08-31T13:00:00.000Z",
+      repository: "prismalens/gh-workflows",
+      reason: "refused-size",
+      pr_number: 18,
+      head_sha: "fed4321",
+      run_url: "https://github.com/prismalens/gh-workflows/actions/runs/104",
+      rounds_used: null,
+      lane_version: "v2.0.0",
+      reviewable_lines: 9000,
+      max_reviewable_lines: 6000,
+    },
+    {
+      run_id: 105,
+      run_attempt: 1,
+      recorded_at: "2026-08-31T14:00:00.000Z",
+      repository: "prismalens/gh-workflows",
+      reason: "paused-by-request",
+      pr_number: 20,
+      head_sha: "1234abc",
+      run_url: "https://github.com/prismalens/gh-workflows/actions/runs/105",
+      rounds_used: null,
+      lane_version: "v2.0.0",
+      reviewable_lines: null,
+      max_reviewable_lines: null,
+      actor: "alice",
     },
   ];
 }
@@ -221,6 +256,25 @@ describe("/failures - Acceptance Criteria & Degraded States", () => {
     );
   });
 
+  it("names the decode by its real group count: five states, unknown included (#159, PR 161 review)", async () => {
+    const wave2Rows = createWave2CompleteRows();
+    const api = makeFixtureApi(wave2Rows, []);
+    renderRoute({ path: "/failures", api });
+
+    const verdictSection = await screen.findByTestId("section-verdicts");
+    // VerdictState has five members (reviewed, threads-only, did-not-run, silent, unknown);
+    // the caption must count them, not the stale four from before #159 added unknown.
+    expect(
+      within(verdictSection).getByText(/grouped under the five-state decode/),
+    ).toBeInTheDocument();
+    expect(
+      within(verdictSection).queryByText(/grouped under the four-state decode/),
+    ).not.toBeInTheDocument();
+    // counts-unread and verify-unread decode to the fifth group, "unknown", and it must
+    // actually render as its own badge, not silently fold into another state.
+    expect(within(verdictSection).getAllByText("unknown").length).toBeGreaterThan(0);
+  });
+
   it("unexpected-status-404 and unexpected-status-500 collapse into one fallback row naming both", async () => {
     const wave2Rows = createWave2CompleteRows();
     const api = makeFixtureApi(wave2Rows, []);
@@ -253,6 +307,8 @@ describe("/failures - Acceptance Criteria & Degraded States", () => {
         run_url: "https://github.com/prismalens/gh-workflows/actions/runs/201",
         rounds_used: null,
         lane_version: "v2.0.0",
+        reviewable_lines: null,
+        max_reviewable_lines: null,
       },
     ];
     const api = makeFixtureApi(createWave2CompleteRows(), laneEvents);
@@ -266,6 +322,50 @@ describe("/failures - Acceptance Criteria & Degraded States", () => {
     const footnote = within(eventsSection).getByTestId("fork-head-footnote");
     expect(footnote).toBeInTheDocument();
     expect(footnote.textContent).toContain(FORK_HEAD_FOOTNOTE);
+  });
+
+  it("a refused-size event renders its reviewable_lines and cap, other reasons render neither", async () => {
+    const api = makeFixtureApi(createWave2CompleteRows(), createSampleLaneEvents());
+    renderRoute({ path: "/failures", api });
+
+    const eventsSection = await screen.findByTestId("section-lane-events");
+    const refusedSizeRow = within(eventsSection).getByText("refused-size").closest("tr");
+    expect(refusedSizeRow).not.toBeNull();
+    expect(within(refusedSizeRow as HTMLElement).getByText(/9,000 reviewable lines/)).toBeInTheDocument();
+    expect(within(refusedSizeRow as HTMLElement).getByText(/6,000-line cap/)).toBeInTheDocument();
+
+    const draftRow = within(eventsSection).getByText("draft").closest("tr");
+    expect(draftRow).not.toBeNull();
+    expect(within(draftRow as HTMLElement).queryByText(/reviewable lines/)).not.toBeInTheDocument();
+  });
+
+  it("#124: a paused-by-request event renders 'Last paused by <login>' linked to the profile", async () => {
+    const api = makeFixtureApi(createWave2CompleteRows(), createSampleLaneEvents());
+    renderRoute({ path: "/failures", api });
+
+    const eventsSection = await screen.findByTestId("section-lane-events");
+    const pausedRow = within(eventsSection).getByText("paused-by-request").closest("tr");
+    expect(pausedRow).not.toBeNull();
+    const link = within(pausedRow as HTMLElement).getByRole("link", { name: "alice" });
+    expect(link).toHaveAttribute("href", "https://github.com/alice");
+
+    const draftRow = within(eventsSection).getByText("draft").closest("tr");
+    expect(within(draftRow as HTMLElement).queryByTestId("paused-by-actor")).not.toBeInTheDocument();
+  });
+
+  it("#124: a paused-by-request event with no recorded actor renders 'not recorded', never 'nobody'", async () => {
+    const events = createSampleLaneEvents().map((e) =>
+      e.reason === "paused-by-request" ? { ...e, actor: null } : e,
+    );
+    const api = makeFixtureApi(createWave2CompleteRows(), events);
+    renderRoute({ path: "/failures", api });
+
+    const eventsSection = await screen.findByTestId("section-lane-events");
+    const pausedRow = within(eventsSection).getByText("paused-by-request").closest("tr");
+    expect(pausedRow).not.toBeNull();
+    const actorCell = within(pausedRow as HTMLElement).getByTestId("paused-by-actor");
+    expect(actorCell).toHaveTextContent("Last paused by: not recorded.");
+    expect(actorCell.querySelector("a")).toBeNull();
   });
 
   it("an empty range renders 'no rounds in range' and no numeric zero", async () => {
@@ -394,6 +494,29 @@ describe("failures unit aggregators and helpers", () => {
     const draft = laneSummaries.find((l) => l.reason === "draft");
     expect(draft?.count).toBe(1);
     expect(draft?.definition).toBe(LANE_EVENT_DEFINITIONS.draft);
+    // #105: a refused-size event carries its reviewable_lines / max_reviewable_lines counts;
+    // every other reason's counts stay null rather than reading as a zero-line cap.
+    const refusedSize = laneSummaries.find((l) => l.reason === "refused-size");
+    expect(refusedSize?.count).toBe(1);
+    expect(refusedSize?.latestReviewableLines).toBe(9000);
+    expect(refusedSize?.latestMaxReviewableLines).toBe(6000);
+    expect(draft?.latestReviewableLines).toBeNull();
+    expect(draft?.latestMaxReviewableLines).toBeNull();
+    // #124: the actor is surfaced only on paused-by-request, from its latest matching event.
+    const pausedByRequest = laneSummaries.find((l) => l.reason === "paused-by-request");
+    expect(pausedByRequest?.latestActor).toBe("alice");
+    expect(draft?.latestActor).toBeNull();
+    expect(refusedSize?.latestActor).toBeNull();
+  });
+
+  it("#124: a null actor on a paused-by-request event reads as not-recorded, never as no actor was involved", () => {
+    const events = createSampleLaneEvents().map((e) =>
+      e.reason === "paused-by-request" ? { ...e, actor: null } : e,
+    );
+    const laneSummaries = summariseLaneEvents(events, now);
+    const pausedByRequest = laneSummaries.find((l) => l.reason === "paused-by-request");
+    expect(pausedByRequest?.count).toBe(1);
+    expect(pausedByRequest?.latestActor).toBeNull();
   });
 });
 

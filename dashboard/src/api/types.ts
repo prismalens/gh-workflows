@@ -53,6 +53,11 @@ export interface RoundRow {
   verdict_text?: string | null;
   comment_node_ids?: string | null;
   config_resolution?: string | null;
+  /**
+   * `{key: {value, layer}}` for every config key the lane resolved on this round, layer one of
+   * workflow/org/repo/summon (#75). Absent on a round recorded before this field existed.
+   */
+  config_effective?: string | null;
 }
 
 export interface RunsResponse {
@@ -96,6 +101,13 @@ export interface LaneEventRow {
   run_url: string | null;
   rounds_used: number | null;
   lane_version: string | null;
+  reviewable_lines: number | null;
+  max_reviewable_lines: number | null;
+  /**
+   * The login who posted `@claude pause`, on a `paused-by-request` event (#124). Null on
+   * every other reason, and null on a row recorded before this column existed.
+   */
+  actor?: string | null;
 }
 
 export interface LaneEventsResponse {
@@ -193,5 +205,40 @@ export interface PrRow {
 
 export interface PrsResponse {
   rows: PrRow[];
+  next_cursor: string | null;
+}
+
+/**
+ * One row of the `review_findings` table (worker/migrations/0009_review_findings.sql),
+ * from GET /api/findings (#111, #75). One row per claude[bot] review thread, fed by the
+ * #47 daily sweep. `resolved_by_login` and `header_raw` are stored raw on purpose: the
+ * human/workflow-actor split and any presentation happen in dashboard code, never here.
+ */
+export interface FindingRow {
+  thread_node_id: string;
+  repository: string;
+  pr_number: number;
+  path: string | null;
+  original_line: number | null;
+  line: number | null;
+  is_resolved: number | null;
+  is_outdated: number | null;
+  resolved_by_login: string | null;
+  thread_created_at: string | null;
+  header_raw: string | null;
+  body_excerpt: string | null;
+  diff_hunk: string | null;
+  human_reply_count: number | null;
+  human_reply_sha: string | null;
+  fix_sha: string | null;
+  fix_sha_source: string | null;
+  verify_verdict: string | null;
+  head_sha_reviewed: string | null;
+  last_swept_at: string | null;
+  row_set_incomplete: number | null;
+}
+
+export interface FindingsResponse {
+  rows: FindingRow[];
   next_cursor: string | null;
 }
