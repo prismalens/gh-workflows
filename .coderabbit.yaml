@@ -35,6 +35,48 @@ reviews:
         Flag any change that lets a step conclude successfully without evidence that
         something was posted, and any warning or comment text that asserts an outcome the
         code cannot know at that point.
+    - path: ".github/workflows/review-findings-sweep.yml"
+      instructions: >-
+        This sweep reads GitHub's GraphQL API over pull requests it does not own. Every
+        connection it selects is paginated: a `first: N` selection with no `pageInfo`/
+        `endCursor` loop truncates at N silently and the sweep still reports success, which is
+        the three-outcome collapse this repository keeps hitting. Flag any new selection
+        without a cursor loop, and any code path that can drop rows without recording that it
+        did. `fix_sha` may only come from a source verified against a real commit oid; flag
+        any inference from prose, from a comment body, or from proximity.
+    - path: "worker/**"
+      instructions: >-
+        `tests/test-schema-drift.py` requires every column to be read or explicitly
+        allowlisted, so a column added and never read fails the build on purpose; do not
+        suggest silencing it. Blob columns are returned only under `include=blobs`, because
+        returning one unconditionally changes the size of every list response. Migrations are
+        forward-only and `deploy-worker.yml` has no `workflow_dispatch`, so the schema ships on
+        merge and cannot be applied by hand first: flag a migration whose correctness depends
+        on a backfill, since old rows never gain a value. Ingest authenticates with one shared
+        bearer token whose Cloudflare copy is write-only and cannot be read back, so a partial
+        repair is impossible and every change to it is a full rotation across five locations.
+        Round payloads are lane-authored, but anything the findings sweep stores was written by
+        people on a pull request: flag any place that treats swept thread text, comment bodies
+        or logins as trusted.
+    - path: "dashboard/**"
+      instructions: >-
+        The one rule this surface exists to hold: a number or label on screen must be backed by
+        a column that exists. A field a round does not carry is named as not recorded, naming
+        the field, never "unavailable", never inferred from posted text, never defaulted to
+        zero or to an empty state that reads as a clean result. Flag any fallback that makes an
+        unknown look like a known. Aggregates are withheld below the sparse-range thresholds in
+        `honesty/thresholds.ts` while counts stay true at any n. The `self-graded` fate must
+        never render in the green used for `resolved-by-human`, because green would present the
+        lane agreeing with itself as an independent result. Refused outright, so flag them if
+        they reappear: a savings tile, a quality score, a resolution rate, findings-per-review,
+        and any self-confirmation rate.
+    - path: "tests/**"
+      instructions: >-
+        Workflow tests here extract the real shell out of the YAML and run it. A test that
+        reimplements the logic it is checking proves nothing about the workflow, so flag any
+        new test that pastes a copy of the script instead of extracting it. There is no
+        shellcheck on the maintainer's machine, so a local actionlint run skips those rules and
+        CI is the only proof the workflow shell is clean.
     - path: "actions/**"
       instructions: >-
         Composite actions run in the caller's job context, which keeps check run names
