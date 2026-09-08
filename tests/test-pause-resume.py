@@ -450,6 +450,8 @@ def main():
         fails.append(f"case 9: second pause overwrote the actor: want alice, got {outs.get('paused_by')!r}")
     elif "paused_by=mallory" in marker_line:
         fails.append(f"case 9: second pause wrote the new commenter into the marker: {marker_line!r}")
+    elif "paused_by=alice" not in marker_line:
+        fails.append(f"case 9: second pause did not retain alice in the marker: {marker_line!r}")
     else:
         print("  ok    second @claude pause on an already-paused PR is a no-op on the actor")
 

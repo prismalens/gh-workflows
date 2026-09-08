@@ -376,6 +376,30 @@ def main():
     check("verify_table: verify_verdict is fixed",
           row is not None and row["verify_verdict"] == "fixed", row)
 
+    # ── 4b. CodeRabbit #161 finding: an unverified sha in the verify template must
+    # not be stored as fix_sha_source="verify_table" -- that source name is the
+    # caller's promise it was checked against a real commit oid (amendment 8). The
+    # verdict still stands even when the quoted sha resolves to nothing on this PR
+    # (most likely after a throttled commits page left commit_oids incomplete).
+    unverified_verify_thread = thread(
+        "PRT_VERIFY_UNRESOLVED",
+        [
+            comment("claude", "**Bug**: null deref"),
+            comment("github-actions", f"Verified fixed in commit `{BAD_SHA}`. Added a guard.",
+                    typename="Bot"),
+        ],
+        resolved_by=("github-actions", "Bot"),
+    )
+    fx_verify_unresolved = main_page(head_sha=OID_A, commit_oids=[OID_A], threads=[unverified_verify_thread])
+    _, rows = run_sweep(script, pr_list=[14], main_fixtures={14: [fx_verify_unresolved]})
+    row = next((r for r in rows if r["thread_node_id"] == "PRT_VERIFY_UNRESOLVED"), None)
+    check("verify_table with an unresolved sha: fix_sha is null, never the raw regex capture",
+          row is not None and row["fix_sha"] is None, row)
+    check("verify_table with an unresolved sha: fix_sha_source is null",
+          row is not None and row["fix_sha_source"] is None, row)
+    check("verify_table with an unresolved sha: verify_verdict is still fixed",
+          row is not None and row["verify_verdict"] == "fixed", row)
+
     # ── 5. CodeRabbit threads never become rows ─────────────────────────────────────
     cr_thread = thread("PRT_CODERABBIT", [comment("coderabbitai", "**nit**: x")],
                         resolved_by=None)
