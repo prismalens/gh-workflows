@@ -101,7 +101,7 @@ on:
 # Bumped whenever the ingest payload shape gains or changes a field (#70 amendment).
 # The Worker uses this version to distinguish an older workflow lane from a broken one.
 env:
-  LANE_VERSION: '3'
+  LANE_VERSION: '4'
   # The claude-code-action pin, duplicated at the two `uses:` lines below because `uses:`
   # cannot take a `${{ }}` expression. tests/test-action-version-drift.py fails the build
   # if this value and either `uses:` pin ever disagree. Story: #47 amendment.
@@ -297,6 +297,9 @@ jobs:
       # would be two places to keep in sync.
       model: ${{ steps.model.outputs.model }}
       model_source: ${{ steps.model.outputs.model_source }}
+      # The effective level for this round (post escalation-floor), and why. #101 ruling.
+      level: ${{ steps.model.outputs.level }}
+      level_source: ${{ steps.model.outputs.level_source }}
       config_resolution: ${{ steps.config.outputs.config_resolution }}
       config_hash: ${{ steps.config.outputs.config_hash }}
       config_effective: ${{ steps.config.outputs.config_effective }}
@@ -367,6 +370,10 @@ jobs:
           # No workflow input backs this: it is an experiment handle read from the repo
           # config only, and absent means control. Story: #47 amendment.
           variant = ""
+          # review.level (#101 ruling): effort per unit of reviewed code, never which
+          # code is read. No workflow input either — org/repo config only, default medium.
+          # 'low' is schema-rejected this release (see ALLOWED_LEVELS below).
+          level = "medium"
 
           sources = {
               "default_model": "workflow default",
@@ -382,6 +389,7 @@ jobs:
               "issue_context_byte_budget": "workflow default",
               "issue_context_total_byte_budget": "workflow default",
               "variant": "control",
+              "level": "workflow default",
           }
 
           # Schema lives here and only here (#33).
@@ -402,6 +410,7 @@ jobs:
               "issue_context_byte_budget",
               "issue_context_total_byte_budget",
               "variant",
+              "level",
           }
           # Story: #47 amendment. An optional operator label for A/B comparison; empty is control.
           MAX_VARIANT_LENGTH = 64
@@ -413,6 +422,9 @@ jobs:
           }
           ALLOWED_DEFAULT_MODELS = {"claude-sonnet-5", "claude-opus-5"}
           ALLOWED_SUPPRESS_BELOW = {"none", "Minor", "Major", "Critical"}
+          # #101 ruling: 'low' is schema-rejected for this release. It ships once the
+          # findings sweep (#47) has a 'medium' baseline to compare it against.
+          ALLOWED_LEVELS = {"medium", "high"}
           # #146's catalog. Adding a genuinely new tool still needs a workflow change (the
           # command that runs it); this key only lets a repo narrow which of the catalog run.
           ALLOWED_TOOL_NAMES = {"actionlint", "shellcheck", "tsc", "eslint", "biome"}
@@ -454,6 +466,14 @@ jobs:
                               errors.append(
                                   f"Invalid value for 'review.default_model' in {filename}: {model!r}. "
                                   f"Allowed values: {sorted(ALLOWED_DEFAULT_MODELS)}"
+                              )
+
+                      if "level" in review:
+                          lvl = review["level"]
+                          if not isinstance(lvl, str) or lvl not in ALLOWED_LEVELS:
+                              errors.append(
+                                  f"Invalid value for 'review.level' in {filename}: {lvl!r}. "
+                                  f"Allowed values: {sorted(ALLOWED_LEVELS)}"
                               )
 
                       if "auto_pause_rounds" in review:
@@ -676,6 +696,10 @@ jobs:
                                   default_model = review["default_model"]
                                   sources["default_model"] = "org defaults"
                                   org_consumed.append(f"review.default_model={default_model}")
+                              if "level" in review:
+                                  level = review["level"]
+                                  sources["level"] = "org defaults"
+                                  org_consumed.append(f"review.level={level}")
                               if "auto_pause_rounds" in review:
                                   auto_pause_rounds = review["auto_pause_rounds"]
                                   sources["auto_pause_rounds"] = "org defaults"
@@ -794,6 +818,10 @@ jobs:
                                   default_model = review["default_model"]
                                   sources["default_model"] = "repo config"
                                   consumed.append(f"review.default_model={default_model}")
+                              if "level" in review:
+                                  level = review["level"]
+                                  sources["level"] = "repo config"
+                                  consumed.append(f"review.level={level}")
                               if "auto_pause_rounds" in review:
                                   auto_pause_rounds = review["auto_pause_rounds"]
                                   sources["auto_pause_rounds"] = "repo config"
@@ -883,6 +911,7 @@ jobs:
               "tool_findings": tool_findings_tools,
               "issue_context_byte_budget": issue_context_byte_budget,
               "issue_context_total_byte_budget": issue_context_total_byte_budget,
+              "level": level,
           }
           config_hash = hashlib.sha256(
               json.dumps(resolved_config, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -916,6 +945,7 @@ jobs:
           print(f"  review.issue_context_byte_budget: {issue_context_byte_budget} (source: {sources['issue_context_byte_budget']})")
           print(f"  review.issue_context_total_byte_budget: {issue_context_total_byte_budget} (source: {sources['issue_context_total_byte_budget']})")
           print(f"  review.variant: {variant or '(control)'} (source: {sources['variant']})")
+          print(f"  review.level: {level} (source: {sources['level']})")
           print(f"  config_hash: {config_hash}")
 
           github_output = os.environ.get("GITHUB_OUTPUT", "")
@@ -937,6 +967,7 @@ jobs:
                   f.write(f"config_hash={config_hash}\n")
                   f.write(f"config_effective={config_effective_json}\n")
                   f.write(f"variant={variant}\n")
+                  f.write(f"level={level}\n")
           PY
 
       # Mode switch (#403 incremental re-review): on non-bot replies or summons,
@@ -1185,6 +1216,7 @@ jobs:
           ALIASES: ${{ inputs.model_aliases }}
           DEFAULT_MODEL: ${{ steps.config.outputs.default_model }}
           ESCALATION_PATHS: ${{ steps.config.outputs.escalation_paths }}
+          CONFIG_LEVEL: ${{ steps.config.outputs.level }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -1200,6 +1232,7 @@ jobs:
           aliases_raw = os.environ.get("ALIASES", "")
           default_model = os.environ.get("DEFAULT_MODEL", "claude-sonnet-5")
           escalation_paths_raw = os.environ.get("ESCALATION_PATHS", "[]")
+          level = os.environ.get("CONFIG_LEVEL", "medium")
 
           if not aliases_raw.strip():
               print("::error::model_aliases input is empty", file=sys.stderr)
@@ -1229,6 +1262,48 @@ jobs:
               rest = body.split("--model ", 1)[1]
               requested_alias = rest.split()[0] if rest.split() else ""
 
+          # Escalation-path match against changed files, read once regardless of a
+          # --model summon: it feeds both the model escalation below and the review.level
+          # floor (#101 ruling), which are orthogonal and must not gate each other.
+          try:
+              escalation_paths = json.loads(escalation_paths_raw) if escalation_paths_raw else []
+          except Exception:
+              escalation_paths = []
+
+          matched_file = None
+          matched_pattern = None
+          files_fetch_failed = False
+
+          if escalation_paths and repo and pr:
+              cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--jq", ".[].filename"]
+              res = subprocess.run(cmd, capture_output=True, text=True)
+              if res.returncode != 0:
+                  err = res.stderr.strip() if res.stderr else "unknown error"
+                  print(f"::warning::Command '{' '.join(cmd)}' failed with exit code {res.returncode}: {err}")
+                  files_fetch_failed = True
+              else:
+                  changed_files = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+
+                  def matches_pattern(path: str, pattern: str) -> bool:
+                      if pattern.endswith("/**"):
+                          prefix = pattern[:-3]
+                          if path == prefix or path.startswith(prefix + "/"):
+                              return True
+                          if fnmatch.fnmatch(path, pattern):
+                              return True
+                      elif fnmatch.fnmatch(path, pattern):
+                          return True
+                      return False
+
+                  for f in changed_files:
+                      for pat in escalation_paths:
+                          if matches_pattern(f, pat):
+                              matched_file = f
+                              matched_pattern = pat
+                              break
+                      if matched_file:
+                          break
+
           selected_model = None
           model_source = None
           model_fallback = ""
@@ -1242,56 +1317,28 @@ jobs:
                   model_source = "default"
                   model_fallback = "true"
                   print(f"::warning::Unrecognized --model alias in comment; falling back to default model ({default_model})")
+          elif files_fetch_failed:
+              selected_model = default_model
+              model_source = "default (changed-files fetch failed)"
+          elif matched_file:
+              selected_model = opus_model
+              model_source = "escalated by path match"
+              print(f"High-risk path matched: '{matched_file}' matched '{matched_pattern}'; escalating model to {selected_model}")
           else:
-              # 2. No summon override: check path-based escalation against changed files
-              try:
-                  escalation_paths = json.loads(escalation_paths_raw) if escalation_paths_raw else []
-              except Exception:
-                  escalation_paths = []
+              selected_model = default_model
+              model_source = "default"
 
-              if escalation_paths and repo and pr:
-                  cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--jq", ".[].filename"]
-                  res = subprocess.run(cmd, capture_output=True, text=True)
-                  if res.returncode != 0:
-                      err = res.stderr.strip() if res.stderr else "unknown error"
-                      print(f"::warning::Command '{' '.join(cmd)}' failed with exit code {res.returncode}: {err}")
-                      selected_model = default_model
-                      model_source = "default (changed-files fetch failed)"
-                  else:
-                      changed_files = [line.strip() for line in res.stdout.splitlines() if line.strip()]
-
-                      def matches_pattern(path: str, pattern: str) -> bool:
-                          if pattern.endswith("/**"):
-                              prefix = pattern[:-3]
-                              if path == prefix or path.startswith(prefix + "/"):
-                                  return True
-                              if fnmatch.fnmatch(path, pattern):
-                                  return True
-                          elif fnmatch.fnmatch(path, pattern):
-                              return True
-                          return False
-
-                      matched_file = None
-                      matched_pattern = None
-                      for f in changed_files:
-                          for pat in escalation_paths:
-                              if matches_pattern(f, pat):
-                                  matched_file = f
-                                  matched_pattern = pat
-                                  break
-                          if matched_file:
-                              break
-
-                      if matched_file:
-                          selected_model = opus_model
-                          model_source = "escalated by path match"
-                          print(f"High-risk path matched: '{matched_file}' matched '{matched_pattern}'; escalating model to {selected_model}")
-                      else:
-                          selected_model = default_model
-                          model_source = "default"
-              else:
-                  selected_model = default_model
-                  model_source = "default"
+          # review.level floor (#101 ruling): a changed file matching escalation_paths
+          # sets a floor of medium, never a ceiling, and never gates on a --model summon
+          # — level and model are orthogonal. No summon-level override exists yet
+          # (deferred by the ruling). Ordering is forward-looking for 'low', which this
+          # release's schema does not accept (see ALLOWED_LEVELS in the config step).
+          LEVEL_ORDER = {"low": 0, "medium": 1, "high": 2}
+          level_source = "config"
+          if matched_file:
+              level_source = "escalation"
+              if LEVEL_ORDER.get(level, 1) < LEVEL_ORDER["medium"]:
+                  level = "medium"
 
           github_output = os.environ.get("GITHUB_OUTPUT", "")
           if github_output:
@@ -1299,6 +1346,8 @@ jobs:
                   f.write(f"model={selected_model}\n")
                   f.write(f"model_source={model_source}\n")
                   f.write(f"model_fallback={model_fallback}\n")
+                  f.write(f"level={level}\n")
+                  f.write(f"level_source={level_source}\n")
           PY
 
       - name: Checkout repository
@@ -2568,6 +2617,11 @@ jobs:
             ${{ github.repository }}
           PR_NUMBER: >-
             ${{ needs.resolve.outputs.number }}
+          # review.level (#101): changes agent count and validation shape only, never
+          # which code is read. Computed in Python below, not as a ternary here, because
+          # its substituted text is multi-paragraph and GH Actions string literals cannot
+          # carry embedded newlines.
+          LEVEL: ${{ steps.model.outputs.level }}
           STEP3_TASK: >-
             ${{ steps.mode.outputs.mode == 'incremental' && format('Launch a sonnet agent to return a summary of the changes covering the range {0}..{1}, whose changed files and patches are in `.claude-incremental-range.json` in the repository root. The agent should read that file rather than treat the whole PR diff as its subject', steps.mode.outputs.range_base, steps.mode.outputs.range_head) || 'Launch a sonnet agent to view the pull request and return a summary of the changes' }}
           AGENT3_FOCUS: >-
@@ -2621,34 +2675,9 @@ jobs:
 
           3. @@STEP3_TASK@@
 
-          4. Launch 4 agents in parallel to independently review the changes. Each agent should return the list of issues, where each issue includes a description, the reason it was flagged (e.g. "CLAUDE.md/AGENTS.md adherence", "bug"), and candidate classification (Category, Severity, Effort). The agents review the diff and must not execute the project's tests, type checker, linter, formatter, or package manager (the review job installs no toolchain). The agents should do the following:
+          4. @@STEP4_AGENT_PLAN@@
 
-             Agents 1 + 2: CLAUDE.md and AGENTS.md compliance sonnet agents
-             Audit changes for CLAUDE.md and AGENTS.md compliance in parallel. Note: When evaluating compliance for a file, you should only consider CLAUDE.md and AGENTS.md files that share a file path with the file or parents.@@AGENTS1_2_PATH_INSTRUCTIONS@@
-
-             Agent 3: Opus bug agent (parallel subagent with agent 4)
-             Scan for obvious bugs. @@AGENT3_FOCUS@@ Flag only significant bugs; ignore nitpicks and likely false positives. Do not flag issues that you cannot validate without looking at context outside of the git diff.@@AGENT3_PATH_INSTRUCTIONS@@
-
-             Agent 4: Opus bug agent (parallel subagent with agent 3)
-             Look for problems that exist in the introduced code. This could be security issues, incorrect logic, etc. @@AGENT4_FOCUS@@@@AGENT4_PATH_INSTRUCTIONS@@
-
-             **CRITICAL: We only want HIGH SIGNAL issues.** Flag issues where:
-             - The code will fail to compile or parse (syntax errors, type errors, missing imports, unresolved references)
-             - The code will definitely produce wrong results regardless of inputs (clear logic errors)
-             - Clear, unambiguous CLAUDE.md or AGENTS.md violations where you can quote the exact rule being broken
-
-             Do NOT flag:
-             - Code style or quality concerns
-             - Potential issues that depend on specific inputs or state
-             - Subjective suggestions or improvements
-
-             If you are not certain an issue is real, do not flag it. False positives erode trust and waste reviewer time.
-
-             Before writing a finding of the form "X says A, and this contradicts B", Grep the phrase you are quoting across every file this diff changes. The changed files are already in the working directory, so this costs no fetch. Say which files the phrase turned up in. Search inside the diff only, never the wider repository. Do this for distinctive multi-word phrasing. Do not do it for a common identifier that appears in many files, because a rule that searches everything produces a round that reads instead of reviewing. If the phrase appears in a second changed file, that is a different and usually worse defect than one file carrying it. Report it as its own finding. Never fold the second occurrence into the first.
-
-             In addition to the above, each subagent should be told the PR title and description@@STEP4_CONTEXT_SUFFIX@@. This will help provide context regarding the author's intent.
-
-          5. For each issue found in step 4, launch parallel subagents to validate the issue. These subagents should get the PR title and description along with a description of the issue. The agent's job is to review the issue to validate that the stated issue is truly an issue with high confidence, and formulate the verification evidence (1-3 sentences under 60 words stating what was inspected and what was proven). For example, if an issue such as "variable is not defined" was flagged, the subagent's job would be to validate that is actually true in the code. For CLAUDE.md and AGENTS.md issues, the agent should validate that the rule that was violated is scoped for this file and is actually violated. Use Opus subagents for bugs and logic issues, and sonnet agents for CLAUDE.md and AGENTS.md violations.
+          5. @@STEP5_VALIDATION@@
 
           6. Filter out any issues that were not validated in step 5. This step will give us our list of high signal issues for our review.
 
@@ -2746,6 +2775,88 @@ jobs:
           import uuid
 
           text = open(sys.argv[1], encoding='utf-8').read()
+
+          # review.level (#101 ruling): changes agent count and validation shape only,
+          # never which code is read or any cap/budget/turn limit. Substituted here,
+          # not as a GH Actions ternary env var like the tokens below, because a GH
+          # Actions string literal cannot carry the embedded newlines these blocks need.
+          # `low` is schema-rejected this release (see the config step), so `level` can
+          # only be 'medium' or 'high' in practice; the .get() default covers anything else.
+          level = os.environ.get('LEVEL', 'medium')
+
+          STEP4_AGENT_PLAN_LINES = {
+              'medium': [
+                  "Launch 4 agents in parallel to independently review the changes. Each agent should return the list of issues, where each issue includes a description, the reason it was flagged (e.g. \"CLAUDE.md/AGENTS.md adherence\", \"bug\"), and candidate classification (Category, Severity, Effort). The agents review the diff and must not execute the project's tests, type checker, linter, formatter, or package manager (the review job installs no toolchain). The agents should do the following:",
+                  "",
+                  "   Agents 1 + 2: CLAUDE.md and AGENTS.md compliance sonnet agents",
+                  "   Audit changes for CLAUDE.md and AGENTS.md compliance in parallel. Note: When evaluating compliance for a file, you should only consider CLAUDE.md and AGENTS.md files that share a file path with the file or parents.@@AGENTS1_2_PATH_INSTRUCTIONS@@",
+                  "",
+                  "   Agent 3: Opus bug agent (parallel subagent with agent 4)",
+                  "   Scan for obvious bugs. @@AGENT3_FOCUS@@ Flag only significant bugs; ignore nitpicks and likely false positives. Do not flag issues that you cannot validate without looking at context outside of the git diff.@@AGENT3_PATH_INSTRUCTIONS@@",
+                  "",
+                  "   Agent 4: Opus bug agent (parallel subagent with agent 3)",
+                  "   Look for problems that exist in the introduced code. This could be security issues, incorrect logic, etc. @@AGENT4_FOCUS@@@@AGENT4_PATH_INSTRUCTIONS@@",
+                  "",
+                  "   **CRITICAL: We only want HIGH SIGNAL issues.** Flag issues where:",
+                  "   - The code will fail to compile or parse (syntax errors, type errors, missing imports, unresolved references)",
+                  "   - The code will definitely produce wrong results regardless of inputs (clear logic errors)",
+                  "   - Clear, unambiguous CLAUDE.md or AGENTS.md violations where you can quote the exact rule being broken",
+                  "",
+                  "   Do NOT flag:",
+                  "   - Code style or quality concerns",
+                  "   - Potential issues that depend on specific inputs or state",
+                  "   - Subjective suggestions or improvements",
+                  "",
+                  "   If you are not certain an issue is real, do not flag it. False positives erode trust and waste reviewer time.",
+                  "",
+                  "   Before writing a finding of the form \"X says A, and this contradicts B\", Grep the phrase you are quoting across every file this diff changes. The changed files are already in the working directory, so this costs no fetch. Say which files the phrase turned up in. Search inside the diff only, never the wider repository. Do this for distinctive multi-word phrasing. Do not do it for a common identifier that appears in many files, because a rule that searches everything produces a round that reads instead of reviewing. If the phrase appears in a second changed file, that is a different and usually worse defect than one file carrying it. Report it as its own finding. Never fold the second occurrence into the first.",
+                  "",
+                  "   In addition to the above, each subagent should be told the PR title and description@@STEP4_CONTEXT_SUFFIX@@. This will help provide context regarding the author's intent.",
+              ],
+              'high': [
+                  "Launch 6 agents in parallel to independently review the changes. Each agent should return the list of issues, where each issue includes a description, the reason it was flagged (e.g. \"CLAUDE.md/AGENTS.md adherence\", \"bug\"), and candidate classification (Category, Severity, Effort). The agents review the diff and must not execute the project's tests, type checker, linter, formatter, or package manager (the review job installs no toolchain). The agents should do the following:",
+                  "",
+                  "   Agents 1 + 2: CLAUDE.md and AGENTS.md compliance sonnet agents",
+                  "   Audit changes for CLAUDE.md and AGENTS.md compliance in parallel. Note: When evaluating compliance for a file, you should only consider CLAUDE.md and AGENTS.md files that share a file path with the file or parents.@@AGENTS1_2_PATH_INSTRUCTIONS@@",
+                  "",
+                  "   Agent 3: Opus bug agent (parallel subagent with agents 4, 5, and 6)",
+                  "   Scan for obvious bugs. @@AGENT3_FOCUS@@ Flag only significant bugs; ignore nitpicks and likely false positives. Do not flag issues that you cannot validate without looking at context outside of the git diff.@@AGENT3_PATH_INSTRUCTIONS@@",
+                  "",
+                  "   Agent 4: Opus bug agent (parallel subagent with agents 3, 5, and 6)",
+                  "   Look for problems that exist in the introduced code. This could be security issues, incorrect logic, etc. @@AGENT4_FOCUS@@@@AGENT4_PATH_INSTRUCTIONS@@",
+                  "",
+                  "   Agent 5: Opus bug agent (parallel subagent with agents 3, 4, and 6)",
+                  "   Examine how the diff's changed code interacts with unchanged code it calls into or that calls it: altered function signatures, changed return shapes or error paths, and call sites now feeding old code values it was not written to expect. Flag only significant bugs; ignore nitpicks and likely false positives. Do not flag issues that you cannot validate without looking at context outside of the git diff.",
+                  "",
+                  "   Agent 6: Opus bug agent (parallel subagent with agents 3, 4, and 5)",
+                  "   Examine the contracts and schemas the diff touches: API request/response shapes, database schemas and migrations, serialization formats, and public function signatures. Flag a break in what a caller or consumer already relies on. Flag only significant bugs; ignore nitpicks and likely false positives. Do not flag issues that you cannot validate without looking at context outside of the git diff.",
+                  "",
+                  "   **CRITICAL: We only want HIGH SIGNAL issues.** Flag issues where:",
+                  "   - The code will fail to compile or parse (syntax errors, type errors, missing imports, unresolved references)",
+                  "   - The code will definitely produce wrong results regardless of inputs (clear logic errors)",
+                  "   - Clear, unambiguous CLAUDE.md or AGENTS.md violations where you can quote the exact rule being broken",
+                  "",
+                  "   Do NOT flag:",
+                  "   - Code style or quality concerns",
+                  "   - Potential issues that depend on specific inputs or state",
+                  "   - Subjective suggestions or improvements",
+                  "",
+                  "   If you are not certain an issue is real, do not flag it. False positives erode trust and waste reviewer time.",
+                  "",
+                  "   Before writing a finding of the form \"X says A, and this contradicts B\", Grep the phrase you are quoting across every file this diff changes. The changed files are already in the working directory, so this costs no fetch. Say which files the phrase turned up in. Search inside the diff only, never the wider repository. Do this for distinctive multi-word phrasing. Do not do it for a common identifier that appears in many files, because a rule that searches everything produces a round that reads instead of reviewing. If the phrase appears in a second changed file, that is a different and usually worse defect than one file carrying it. Report it as its own finding. Never fold the second occurrence into the first.",
+                  "",
+                  "   In addition to the above, each subagent should be told the PR title and description@@STEP4_CONTEXT_SUFFIX@@. This will help provide context regarding the author's intent.",
+              ],
+          }
+          step4_agent_plan = '\n'.join(STEP4_AGENT_PLAN_LINES.get(level, STEP4_AGENT_PLAN_LINES['medium']))
+
+          # medium and high keep today's per-candidate validation subagent, unchanged.
+          # `low`, deferred, is where validation folds into the reviewing agent instead.
+          step5_validation = "For each issue found in step 4, launch parallel subagents to validate the issue. These subagents should get the PR title and description along with a description of the issue. The agent's job is to review the issue to validate that the stated issue is truly an issue with high confidence, and formulate the verification evidence (1-3 sentences under 60 words stating what was inspected and what was proven). For example, if an issue such as \"variable is not defined\" was flagged, the subagent's job would be to validate that is actually true in the code. For CLAUDE.md and AGENTS.md issues, the agent should validate that the rule that was violated is scoped for this file and is actually violated. Use Opus subagents for bugs and logic issues, and sonnet agents for CLAUDE.md and AGENTS.md violations."
+
+          text = text.replace('@@STEP4_AGENT_PLAN@@', step4_agent_plan)
+          text = text.replace('@@STEP5_VALIDATION@@', step5_validation)
+
           for token in [
               'REPO',
               'PR_NUMBER',
@@ -3129,6 +3240,8 @@ jobs:
           ACTION_VERSION: ${{ env.ACTION_VERSION }}
           CONFIG_HASH: ${{ steps.config.outputs.config_hash }}
           VARIANT: ${{ steps.config.outputs.variant }}
+          LEVEL: ${{ steps.model.outputs.level }}
+          LEVEL_SOURCE: ${{ steps.model.outputs.level_source }}
           REVIEWABLE_LINES: ${{ steps.manifest.outputs.reviewable_lines }}
           SIZE_OVERRIDE: ${{ steps.manifest.outputs.size_override }}
         run: |
@@ -3203,6 +3316,8 @@ jobs:
             --arg action_version "${ACTION_VERSION:-}" \
             --arg config_hash "${CONFIG_HASH:-}" \
             --arg variant "${VARIANT:-}" \
+            --arg level "${LEVEL:-}" \
+            --arg level_source "${LEVEL_SOURCE:-}" \
             --arg reviewable_lines "${REVIEWABLE_LINES:-}" \
             --arg size_override "${SIZE_OVERRIDE:-}" \
             --arg agents "${AGENTS:-[]}" \
@@ -3252,6 +3367,8 @@ jobs:
               action_version: (if $action_version == "" then null else $action_version end),
               config_hash: (if $config_hash == "" then null else $config_hash end),
               variant: (if $variant == "" then null else $variant end),
+              level: (if $level == "" then null else $level end),
+              level_source: (if $level_source == "" then null else $level_source end),
               reviewable_lines: num($reviewable_lines),
               size_override: (if $size_override == "true" then 1 elif $size_override == "false" then 0 else null end),
               per_model_usage: ((.modelUsage // {}) | tojson),
