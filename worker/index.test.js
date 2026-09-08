@@ -1211,8 +1211,18 @@ describe("Worker telemetry ingest", () => {
       assert.equal(query.args[11], 6000);
     });
 
-    it("supports all six valid reasons: no-token, auto-paused, paused-by-request, fork-head, skip-author, refused-size", async () => {
-      const reasons = ["no-token", "auto-paused", "paused-by-request", "fork-head", "skip-author", "refused-size"];
+    it("supports all nine valid reasons: no-token, auto-paused, paused-by-request, fork-head, skip-author, refused-size, draft, skip-trivial, superseded (#154)", async () => {
+      const reasons = [
+        "no-token",
+        "auto-paused",
+        "paused-by-request",
+        "fork-head",
+        "skip-author",
+        "refused-size",
+        "draft",
+        "skip-trivial",
+        "superseded",
+      ];
       for (const reason of reasons) {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };

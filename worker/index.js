@@ -98,6 +98,9 @@ const VALID_LANE_EVENT_REASONS = new Set([
   "fork-head",
   "skip-author",
   "refused-size", // #105: reviewable_lines exceeded max_reviewable_lines, nothing posted
+  "draft", // #153: a summon on a draft spends a run and reviews nothing
+  "skip-trivial", // #154: min_diff_lines floor
+  "superseded", // #154: debounce_minutes lever
 ]);
 
 const LANE_EVENT_NUMERIC_FIELDS = [

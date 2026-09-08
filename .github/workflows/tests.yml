@@ -67,6 +67,12 @@ jobs:
       - name: Verdict kind drift check
         run: python3 tests/test-verdict-kind-drift.py
 
+      # A reason the workflow emits that the worker rejects is a silent 400 (telemetry
+      # loss); a reason the dashboard has never heard of is a row that can never
+      # populate. Both directions drifted once. Story: #154.
+      - name: Lane event reason drift check
+        run: python3 tests/test-lane-event-reason-drift.py
+
       # Extracts and runs the real smoke test step out of deploy-worker.yml. Story: #84.
       - name: Deploy Worker post-deploy smoke test behaviour
         run: python3 tests/test-deploy-worker-smoke.py
