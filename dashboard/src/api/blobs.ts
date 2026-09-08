@@ -92,6 +92,32 @@ export function parseSubagentStats(row: RoundRow): FanOutStats | null {
   return { lifecycle, groups, unreadable };
 }
 
+export interface ConfigEffectiveEntry {
+  value: unknown;
+  layer: string;
+}
+
+/**
+ * `config_effective`: `{key: {value, layer}}` for every config key the lane resolved on this
+ * round (#75). Returns null when the round carries no `config_effective` at all — the caller's
+ * signal that this round predates the field, distinct from an object that exists but omits a
+ * particular key. An entry missing `layer` or shaped as something other than an object is
+ * dropped rather than guessed at; the rest of the object still renders.
+ */
+export function parseConfigEffective(row: RoundRow): Record<string, ConfigEffectiveEntry> | null {
+  const parsed = parseJson<Record<string, unknown>>(row.config_effective);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+
+  const result: Record<string, ConfigEffectiveEntry> = {};
+  for (const [key, entry] of Object.entries(parsed)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const { value, layer } = entry as Record<string, unknown>;
+    if (typeof layer !== "string") continue;
+    result[key] = { value, layer };
+  }
+  return result;
+}
+
 export function humanizeKey(key: string): string {
   return key
     .replace(/[_-]+/g, " ")

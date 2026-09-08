@@ -32,6 +32,7 @@ const BLOB_COLUMNS = [
   "verdict_text",
   "comment_node_ids",
   "config_resolution",
+  "config_effective",
 ] as const;
 
 /**

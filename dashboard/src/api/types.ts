@@ -53,6 +53,11 @@ export interface RoundRow {
   verdict_text?: string | null;
   comment_node_ids?: string | null;
   config_resolution?: string | null;
+  /**
+   * `{key: {value, layer}}` for every config key the lane resolved on this round, layer one of
+   * workflow/org/repo/summon (#75). Absent on a round recorded before this field existed.
+   */
+  config_effective?: string | null;
 }
 
 export interface RunsResponse {
