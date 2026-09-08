@@ -105,6 +105,9 @@ const LANE_EVENT_STRING_FIELDS = [
   "head_sha",
   "run_url",
   "lane_version",
+  // #124: the login that issued @claude pause, read by the lane from the event
+  // payload rather than comment text. Null on every reason but paused-by-request.
+  "actor",
 ];
 
 const CANARY_STRING_FIELDS = [
@@ -805,6 +808,7 @@ async function handleLaneEvents(url, env) {
     "lane_version",
     "reviewable_lines",
     "max_reviewable_lines",
+    "actor",
   ];
 
   let query = `SELECT
@@ -1519,8 +1523,9 @@ async function handleIngest(request, env) {
           rounds_used,
           lane_version,
           reviewable_lines,
-          max_reviewable_lines
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+          max_reviewable_lines,
+          actor
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         ON CONFLICT(run_id, run_attempt) DO NOTHING`
       ).bind(
         payload.run_id,
@@ -1534,7 +1539,8 @@ async function handleIngest(request, env) {
         payload.rounds_used ?? null,
         payload.lane_version ?? null,
         payload.reviewable_lines ?? null,
-        payload.max_reviewable_lines ?? null
+        payload.max_reviewable_lines ?? null,
+        payload.actor ?? null
       ).run();
     } catch {
       return new Response(null, { status: 500 });

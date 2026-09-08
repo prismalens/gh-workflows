@@ -1005,6 +1005,8 @@ describe("Worker telemetry ingest", () => {
         // predates the review manifest cap.
         null,
         null,
+        // actor (#124): null on a payload that carries no pause actor.
+        null,
       ]);
     });
 
@@ -1136,6 +1138,66 @@ describe("Worker telemetry ingest", () => {
       });
       const resMissingRepo = await worker.fetch(reqMissingRepo, env);
       assert.equal(resMissingRepo.status, 400);
+    });
+
+    it("stores actor as a login for a paused-by-request event (#124)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          event_kind: "lane_event",
+          run_id: 777,
+          run_attempt: 1,
+          repository: "prismalens/gh-workflows",
+          reason: "paused-by-request",
+          actor: "octocat",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 1], "octocat");
+    });
+
+    it("stores actor as null when the payload omits it (#124)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          event_kind: "lane_event",
+          run_id: 778,
+          run_attempt: 1,
+          repository: "prismalens/gh-workflows",
+          reason: "auto-paused",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 1], null);
+    });
+
+    it("returns 400 when actor is not a string", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          event_kind: "lane_event",
+          run_id: 779,
+          run_attempt: 1,
+          repository: "prismalens/gh-workflows",
+          reason: "paused-by-request",
+          actor: 12345,
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      assert.equal(db.queries.length, 0);
     });
   });
 
@@ -1890,6 +1952,58 @@ describe("Worker telemetry read API", () => {
       const query = db.queries[0];
       assert.ok(query.sql.includes("reviewable_lines"));
       assert.ok(query.sql.includes("max_reviewable_lines"));
+    });
+
+    it("returns actor when set by a paused-by-request row, and null when the row carries none (#124)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql, args) => {
+          if (sql.includes("FROM lane_events")) {
+            return {
+              results: [
+                {
+                  run_id: 1004,
+                  run_attempt: 1,
+                  recorded_at: "2026-09-06T10:00:00.000Z",
+                  repository: "prismalens/gh-workflows",
+                  reason: "paused-by-request",
+                  pr_number: 57,
+                  head_sha: "aa11bb22cc33",
+                  run_url: "https://github.com/prismalens/gh-workflows/actions/runs/1004",
+                  rounds_used: 0,
+                  lane_version: "v2.1.0",
+                  actor: "octocat",
+                },
+                {
+                  run_id: 1003,
+                  run_attempt: 1,
+                  recorded_at: "2026-08-31T16:00:00.000Z",
+                  repository: "prismalens/gh-workflows",
+                  reason: "refused-size",
+                  pr_number: 56,
+                  head_sha: "112233aabbcc",
+                  run_url: "https://github.com/prismalens/gh-workflows/actions/runs/1003",
+                  rounds_used: null,
+                  lane_version: "v2.0.0",
+                  actor: null,
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/lane-events", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].actor, "octocat");
+      assert.equal(data.rows[1].actor, null);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("actor"));
     });
 
     it("handles cursor pagination and rejects invalid cursor or limit", async () => {
