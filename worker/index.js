@@ -189,7 +189,20 @@ function truncateString(val, maxLen = 512) {
   if (typeof val !== "string") {
     return null;
   }
-  return val.length > maxLen ? val.slice(0, maxLen) : val;
+  if (val.length <= maxLen) {
+    return val;
+  }
+  let end = maxLen;
+  // A cut exactly between a surrogate pair leaves a lone high surrogate, which has no
+  // valid UTF-8 encoding: D1's bind and any later TextEncoder pass replace it with U+FFFD
+  // rather than throw, silently corrupting the last character. header_raw/body_excerpt/
+  // diff_hunk (#47) are PR comment text a person wrote and can contain any Unicode,
+  // including astral characters (emoji) that land on this boundary by chance.
+  const code = val.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) {
+    end -= 1;
+  }
+  return val.slice(0, end);
 }
 
 function toIntegerOrNull(val) {

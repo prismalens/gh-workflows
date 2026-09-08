@@ -487,6 +487,40 @@ describe("Worker telemetry ingest", () => {
       assert.equal(boundTitle, "T".repeat(512));
     });
 
+    it("never truncates a title mid-surrogate-pair, dropping the trailing emoji instead of a lone surrogate", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      // 511 plain chars + one emoji (2 UTF-16 units at positions 511-512) straddles the
+      // 512-char truncation boundary exactly.
+      const titleWithEmojiAtBoundary = "T".repeat(511) + "\u{1F600}";
+      assert.equal(titleWithEmojiAtBoundary.length, 513);
+
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "session-emoji-boundary",
+          repository: "prismalens/gh-workflows",
+          pr_title: titleWithEmojiAtBoundary,
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const boundTitle = db.queries[0].args[38];
+      // A naive slice(0, 512) would cut between the emoji's two UTF-16 units, leaving a
+      // lone high surrogate that has no valid UTF-8 encoding. The fix drops the whole
+      // emoji instead, so the stored value is 511 chars of plain text and contains no
+      // unpaired surrogate anywhere.
+      assert.equal(boundTitle, "T".repeat(511));
+      for (let i = 0; i < boundTitle.length; i++) {
+        const code = boundTitle.charCodeAt(i);
+        assert.ok(
+          !(code >= 0xd800 && code <= 0xdbff),
+          `found a lone high surrogate at index ${i}`
+        );
+      }
+    });
+
     it("truncates pr_author, pr_base_ref, and pr_head_ref to 512 characters", async () => {
       const db = createFakeDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
@@ -3225,6 +3259,35 @@ describe("Worker telemetry read API", () => {
           db.queries.map((q) => q.args[0]),
           ["PRRT_1", "PRRT_2", "PRRT_3"]
         );
+      });
+
+      it("never truncates body_excerpt mid-surrogate-pair, since a person's PR comment can carry any Unicode", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        // 8191 plain chars + one emoji (2 UTF-16 units at positions 8191-8192) straddles
+        // the 8192-char truncation boundary exactly.
+        const bodyWithEmojiAtBoundary = "x".repeat(8191) + "\u{1F600}";
+        assert.equal(bodyWithEmojiAtBoundary.length, 8193);
+
+        const req = makeRequest("/ingest/findings", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: { findings: [sampleFinding({ body_excerpt: bodyWithEmojiAtBoundary })] },
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 204);
+
+        const storedBody = db.queries[0].args[11];
+        // A naive slice(0, 8192) would cut between the emoji's two UTF-16 units, leaving a
+        // lone high surrogate with no valid UTF-8 encoding (D1 and any later TextEncoder
+        // pass would replace it with U+FFFD). The fix drops the whole emoji instead.
+        assert.equal(storedBody, "x".repeat(8191));
+        for (let i = 0; i < storedBody.length; i++) {
+          const code = storedBody.charCodeAt(i);
+          assert.ok(
+            !(code >= 0xd800 && code <= 0xdbff),
+            `found a lone high surrogate at index ${i}`
+          );
+        }
       });
 
       it("ignores a field outside the schema rather than storing it", async () => {
