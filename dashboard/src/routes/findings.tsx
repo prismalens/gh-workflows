@@ -121,8 +121,13 @@ function FindingsPage() {
 
   const incomplete = useMemo(() => incompletePrKeys(fetched), [fetched]);
 
+  // #111's table contract rules one page of up to 1000 rows, no page walking, and
+  // exactly this wording when next_cursor is non-null. This is an API read-window
+  // limit, a fact about how many rows this page fetched - never the sweep's own
+  // throttle, which is a different mechanism named separately via row_set_incomplete
+  // (the "partial sweep" badge). The two must not be conflated in this label.
   const windowLabel = truncated
-    ? "the most recent findings read (a throttle cut the sweep short)"
+    ? "the most recent findings read"
     : "every recorded finding";
 
   const isLoading = findings.isPending;
@@ -243,8 +248,7 @@ function FindingsPage() {
 
             {truncated && (
               <p className="text-[11px] text-muted-foreground">
-                the {formatCount(fetched.length)} most recent findings are shown; a throttle cut
-                the underlying sweep short for at least one pull request.
+                the {formatCount(fetched.length)} most recent findings are shown.
               </p>
             )}
           </div>

@@ -75,10 +75,9 @@ export function TileStrip({
           {n} {n === 1 ? singular : unit} over {windowLabel}: the table below is the summary
         </AlertTitle>
         <AlertDescription>
-          Aggregate tiles are withheld under {TILES_MIN_ROUNDS} {unit}. A mean over this many
-          {" "}
-          {unit} moves with any single {singular}, and the rows are short enough to read
-          directly.
+          Aggregate tiles are withheld under {TILES_MIN_ROUNDS} {unit}. An aggregate metric over
+          this many {unit} moves with any single {singular}, and the rows are short enough to
+          read directly.
         </AlertDescription>
       </Alert>
     );

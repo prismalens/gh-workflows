@@ -49,7 +49,7 @@ export function FindingsTiles({ rows, prs, windowLabel }: FindingsTilesProps) {
         label="Review-to-merge latency"
         metric={latency}
         format={formatHoursAsDuration}
-        hint="attention metric: time an open finding sat before merge, not review quality"
+        hint="attention metric: time from the first recorded finding to merge, not review quality"
       />
     </TileStrip>
   );

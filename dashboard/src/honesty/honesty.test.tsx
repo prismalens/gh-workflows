@@ -126,6 +126,18 @@ describe("a thin range renders rows, not aggregates", () => {
     expect(screen.getByText(/the table below is the summary/)).toBeInTheDocument();
   });
 
+  it("names the sparse-range explanation generically, since a caller's aggregates are not always a mean (PR 161 review)", () => {
+    // FindingsTiles wraps a rate, a count and a median in the same strip, so "a mean"
+    // is only sometimes true. The explanation must hold for any aggregate, not just one.
+    render(
+      <TileStrip n={4} windowLabel="the last 7 days" unit="findings">
+        <Tile label="Mean wall clock" metric={meanMetric(seq(4))} format={formatDuration} />
+      </TileStrip>,
+    );
+    expect(screen.getByText(/An aggregate metric over this many findings/)).toBeInTheDocument();
+    expect(screen.queryByText(/A mean over this many/)).not.toBeInTheDocument();
+  });
+
   it("says no rounds in range on an empty window", () => {
     render(<TileStrip n={0} windowLabel="the last 30 days" children={null} />);
     expect(screen.getByText("No rounds in range")).toBeInTheDocument();

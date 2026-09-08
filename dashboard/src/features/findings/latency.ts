@@ -9,9 +9,10 @@ import { medianMetric, type Metric } from "@/honesty/metrics";
  * settled, and a negative duration would misstate that as review after merge.
  *
  * This is an attention metric, not a review-quality one (#111): it says how
- * long an open finding sat before merge, not whether the review was any good.
- * A merged PR with no findings at all contributes nothing, because there is no
- * review timestamp to measure from.
+ * long from the first recorded finding to merge, not whether the review was
+ * any good, and not whether that finding stayed open the whole time - it
+ * does not check `is_resolved` at all. A merged PR with no findings at all
+ * contributes nothing, because there is no review timestamp to measure from.
  */
 export function reviewToMergeHours(findings: FindingRow[], pr: PrRow): number | null {
   if (pr.state !== "merged" || !pr.merged_at) return null;

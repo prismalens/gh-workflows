@@ -73,6 +73,12 @@ describe("/findings: the inbox", () => {
     expect(within(strip).getByText("Never answered")).toBeInTheDocument();
     // 1 of 10 rows carries a fix_sha.
     expect(within(strip).getByText("10.0%")).toBeInTheDocument();
+    // The latency hint must not claim the finding stayed open the whole time - the
+    // metric never reads is_resolved (PR 161 review).
+    expect(
+      within(strip).getByText(/time from the first recorded finding to merge/),
+    ).toBeInTheDocument();
+    expect(within(strip).queryByText(/an open finding sat before merge/)).not.toBeInTheDocument();
   });
 
   it("withholds tiles for a table below the sparse-range threshold, naming findings, not rounds", async () => {
@@ -138,6 +144,22 @@ describe("/findings: the inbox", () => {
     const rows = [finding({ row_set_incomplete: 1 })];
     renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
     expect(await screen.findByText("partial sweep")).toBeInTheDocument();
+  });
+
+  it("a page-limited read says how many were read, never blaming the sweep's own throttle (#111 table contract)", async () => {
+    // MAX_LIMIT rows so the fixture's fetchFindings hands back a non-null next_cursor,
+    // exactly the API read-window limit #111 rules "no page walking" for. This is a
+    // different fact than row_set_incomplete (the sweep's own GraphQL throttle, covered
+    // by the partial-sweep badge above) and the two must not read as the same cause.
+    const rows = Array.from({ length: 1000 }, (_, i) =>
+      finding({ thread_node_id: `PRRT_${i}`, pr_number: i + 1 }),
+    );
+    renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
+
+    expect(await screen.findByText(/1,000 most recent findings are shown\./)).toBeInTheDocument();
+    expect(screen.queryByText(/throttle cut the sweep/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/throttle cut the underlying sweep/)).not.toBeInTheDocument();
+    expect(screen.queryByText("partial sweep")).not.toBeInTheDocument();
   });
 
   it("renders the divergence list only for verdict/GitHub disagreements, never as a tile", async () => {

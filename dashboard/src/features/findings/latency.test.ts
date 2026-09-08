@@ -74,6 +74,24 @@ describe("reviewToMergeHours", () => {
     const findings = [finding({ pr_number: 999, thread_created_at: "2026-09-01T00:00:00Z" })];
     expect(reviewToMergeHours(findings, pr())).toBeNull();
   });
+
+  it("counts a finding resolved long before merge the same as one still open (PR 161 review: the hint must not claim it stayed open)", () => {
+    const resolvedEarly = finding({
+      thread_created_at: "2026-09-01T02:00:00Z",
+      is_resolved: 1,
+      resolved_by_login: "alice",
+    });
+    const stillOpen = finding({
+      thread_node_id: "PRRT_2",
+      thread_created_at: "2026-09-01T02:00:00Z",
+      is_resolved: 0,
+    });
+    // Same creation time, one resolved immediately, one never resolved: the metric
+    // must produce the same duration either way, since it never reads is_resolved.
+    expect(reviewToMergeHours([resolvedEarly], pr())).toBe(
+      reviewToMergeHours([stillOpen], pr()),
+    );
+  });
 });
 
 describe("reviewToMergeLatencyMetric", () => {

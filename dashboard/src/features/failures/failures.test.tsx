@@ -256,6 +256,25 @@ describe("/failures - Acceptance Criteria & Degraded States", () => {
     );
   });
 
+  it("names the decode by its real group count: five states, unknown included (#159, PR 161 review)", async () => {
+    const wave2Rows = createWave2CompleteRows();
+    const api = makeFixtureApi(wave2Rows, []);
+    renderRoute({ path: "/failures", api });
+
+    const verdictSection = await screen.findByTestId("section-verdicts");
+    // VerdictState has five members (reviewed, threads-only, did-not-run, silent, unknown);
+    // the caption must count them, not the stale four from before #159 added unknown.
+    expect(
+      within(verdictSection).getByText(/grouped under the five-state decode/),
+    ).toBeInTheDocument();
+    expect(
+      within(verdictSection).queryByText(/grouped under the four-state decode/),
+    ).not.toBeInTheDocument();
+    // counts-unread and verify-unread decode to the fifth group, "unknown", and it must
+    // actually render as its own badge, not silently fold into another state.
+    expect(within(verdictSection).getAllByText("unknown").length).toBeGreaterThan(0);
+  });
+
   it("unexpected-status-404 and unexpected-status-500 collapse into one fallback row naming both", async () => {
     const wave2Rows = createWave2CompleteRows();
     const api = makeFixtureApi(wave2Rows, []);

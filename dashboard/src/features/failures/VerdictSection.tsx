@@ -72,7 +72,7 @@ export function VerdictSection({ rows, now, range, repository }: VerdictSectionP
         <div>
           <CardTitle>1. Liveness verdicts</CardTitle>
           <p className="text-xs text-muted-foreground">
-            All {ALL_VERDICT_KINDS.length} verdict kinds, grouped under the four-state decode.
+            All {ALL_VERDICT_KINDS.length} verdict kinds, grouped under the five-state decode.
           </p>
         </div>
         <span className="tabular text-xs text-muted-foreground">
