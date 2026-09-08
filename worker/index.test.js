@@ -279,7 +279,7 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 51);
+      assert.equal(query.args.length, 52);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
@@ -324,6 +324,9 @@ describe("Worker telemetry ingest", () => {
       // a v1 payload predates them and binds NULL for both.
       assert.equal(query.args[49], null);
       assert.equal(query.args[50], null);
+
+      // config_effective (51) is the #75 field; a v1 payload predates it too.
+      assert.equal(query.args[51], null);
     });
 
     it("inserts a full v2 payload and binds every new column with given values", async () => {
@@ -624,6 +627,78 @@ describe("Worker telemetry ingest", () => {
       const query = db.queries[0];
       assert.equal(query.args[30], payload.comment_node_ids);
       assert.equal(query.args[35], payload.config_resolution);
+    });
+
+    it("returns 400 when config_effective is not an object (#75)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+
+      const notJsonReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-bad-config-effective-1",
+          repository: "prismalens/gh-workflows",
+          config_effective: "not-json",
+        },
+      });
+      assert.equal((await worker.fetch(notJsonReq, env)).status, 400);
+
+      const wrongShapeReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-bad-config-effective-2",
+          repository: "prismalens/gh-workflows",
+          config_effective: ["not", "an", "object"],
+        },
+      });
+      assert.equal((await worker.fetch(wrongShapeReq, env)).status, 400);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("stores config_effective verbatim, including a config key the worker has never seen (#75)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const configEffective = {
+        auto_pause_rounds: { value: 8, layer: "repo" },
+        min_diff_lines: { value: 20, layer: "org" },
+        // A key the worker has no knowledge of. #75: never parsed, reshaped, or
+        // validated into a fixed key set, so a new lane config key needs no worker change.
+        a_brand_new_lane_config_key: { value: "shiny", layer: "summon" },
+      };
+      const payload = {
+        session_id: "s-config-effective-1",
+        repository: "prismalens/gh-workflows",
+        config_effective: configEffective,
+      };
+
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: payload,
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+
+      const query = db.queries[0];
+      assert.match(query.sql, /config_effective/);
+      assert.equal(query.args[query.args.length - 1], JSON.stringify(configEffective));
+    });
+
+    it("stores null for config_effective when the payload omits it (#75)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-config-effective-absent",
+          repository: "prismalens/gh-workflows",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 1], null);
     });
   });
 
@@ -1628,9 +1703,56 @@ describe("Worker telemetry read API", () => {
       assert.ok(!query.sql.includes("per_model_usage"));
       assert.ok(!query.sql.includes("subagent_stats"));
       assert.ok(!query.sql.includes("raw_result"));
+      assert.ok(!query.sql.includes("config_effective"));
     });
 
-    it("includes all 6 blob columns when include=blobs and caps limit at 50", async () => {
+    it("returns config_effective only under include=blobs, preserving an unknown config key (#75)", async () => {
+      const helper = await getAccessHelper();
+      const configEffective = {
+        auto_pause_rounds: { value: 8, layer: "repo" },
+        a_brand_new_lane_config_key: { value: "shiny", layer: "summon" },
+      };
+
+      const dbNoBlobs = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return { results: [{ session_id: "s-cfg-1" }] };
+          }
+          return null;
+        },
+      });
+      const envNoBlobs = { ...helper.env, DB: dbNoBlobs };
+      const reqNoBlobs = makeAuthenticatedRequest("/api/runs", helper.jwt);
+      const resNoBlobs = await worker.fetch(reqNoBlobs, envNoBlobs);
+      const dataNoBlobs = await resNoBlobs.json();
+      assert.equal("config_effective" in dataNoBlobs.rows[0], false);
+
+      const dbBlobs = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return {
+              results: [
+                {
+                  session_id: "s-cfg-1",
+                  config_effective: JSON.stringify(configEffective),
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const envBlobs = { ...helper.env, DB: dbBlobs };
+      const reqBlobs = makeAuthenticatedRequest("/api/runs?include=blobs", helper.jwt);
+      const resBlobs = await worker.fetch(reqBlobs, envBlobs);
+      const dataBlobs = await resBlobs.json();
+      const stored = JSON.parse(dataBlobs.rows[0].config_effective);
+      assert.deepEqual(stored, configEffective);
+      assert.equal(stored.a_brand_new_lane_config_key.value, "shiny");
+      assert.equal(stored.a_brand_new_lane_config_key.layer, "summon");
+    });
+
+    it("includes all 7 blob columns when include=blobs and caps limit at 50", async () => {
       const helper = await getAccessHelper();
       const db = createFakeDb();
       const env = { ...helper.env, DB: db };
@@ -1645,6 +1767,7 @@ describe("Worker telemetry read API", () => {
       assert.ok(query.sql.includes("per_model_usage"));
       assert.ok(query.sql.includes("subagent_stats"));
       assert.ok(query.sql.includes("raw_result"));
+      assert.ok(query.sql.includes("config_effective"));
 
       // Limit bound is capped at 50
       assert.equal(query.args[query.args.length - 1], 50);

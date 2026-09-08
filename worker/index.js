@@ -82,7 +82,9 @@ const STRING_FIELDS = [
 ];
 
 const JSON_ARRAY_FIELDS = ["comment_node_ids"];
-const JSON_OBJECT_FIELDS = ["config_resolution"];
+// #75: config_effective is lane-authored config, stored as-is; never parsed into a
+// fixed key set, so a new config key needs no worker change.
+const JSON_OBJECT_FIELDS = ["config_resolution", "config_effective"];
 
 const VALID_LANE_EVENT_REASONS = new Set([
   "no-token",
@@ -701,7 +703,8 @@ async function handleRuns(url, env) {
       "raw_result",
       "verdict_text",
       "comment_node_ids",
-      "config_resolution"
+      "config_resolution",
+      "config_effective"
     );
   }
 
@@ -1334,14 +1337,15 @@ async function handleIngest(request, env) {
           variant_key,
           agents_status,
           reviewable_lines,
-          size_override
+          size_override,
+          config_effective
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
           ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
           ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
           ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
-          ?51
+          ?51, ?52
         )
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
@@ -1395,7 +1399,8 @@ async function handleIngest(request, env) {
         variantKey,
         payload.agents_status ?? null,
         payload.reviewable_lines ?? null,
-        payload.size_override ?? null
+        payload.size_override ?? null,
+        serializeJson(payload.config_effective, null)
       );
 
       const agentStmts = [];
