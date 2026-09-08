@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ChangeRow, RoundRow } from "@/api/types";
+import type { ChangeRow, FindingRow, RoundRow } from "@/api/types";
 import { CountTile } from "@/honesty/Tile";
 import { decodeVerdict, verdictKindMix, verdictMix } from "@/honesty/verdict";
 import { VerdictStrip } from "./VerdictStrip";
@@ -13,7 +13,7 @@ import {
   tokensPerDay,
   wallClockPoints,
 } from "./activity";
-import { attentionCards } from "./attention";
+import { attentionCards, findingAttentionCards } from "./attention";
 import {
   RoundsPerDayChart,
   TokenCompositionChart,
@@ -433,3 +433,55 @@ describe("chart rendering and marker interactions", () => {
 });
 
 
+
+describe("never-answered findings reach the attention feed (#111)", () => {
+  const finding = (overrides: Partial<FindingRow> = {}): FindingRow => ({
+    thread_node_id: "PRRT_1",
+    repository: "prismalens/gh-workflows",
+    pr_number: 111,
+    path: "worker/index.js",
+    original_line: 10,
+    line: 10,
+    is_resolved: 0,
+    is_outdated: 0,
+    resolved_by_login: null,
+    thread_created_at: "2026-09-01T00:00:00Z",
+    header_raw: "Unbounded page",
+    body_excerpt: "first: 100 with no cursor loop.",
+    diff_hunk: "@@ -1,3 +1,3 @@",
+    human_reply_count: 0,
+    human_reply_sha: null,
+    fix_sha: null,
+    fix_sha_source: null,
+    verify_verdict: null,
+    head_sha_reviewed: "abc1234",
+    last_swept_at: "2026-09-02T00:00:00Z",
+    row_set_incomplete: 0,
+    ...overrides,
+  });
+
+  it("carries only never-answered, so a thread someone replied to is not an action item", () => {
+    const cards = findingAttentionCards([
+      finding({ thread_node_id: "never" }),
+      finding({ thread_node_id: "answered", human_reply_count: 2 }),
+      finding({ thread_node_id: "resolved", is_resolved: 1, resolved_by_login: "a-human" }),
+    ]);
+    expect(cards.map((card) => card.finding.thread_node_id)).toEqual(["never"]);
+    expect(cards[0].kind).toBe("never-answered");
+    expect(cards[0].detail).toBe("worker/index.js:10 - Unbounded page");
+  });
+
+  it("sorts a thread with no creation time last, never first", () => {
+    const cards = findingAttentionCards([
+      finding({ thread_node_id: "undated", thread_created_at: null }),
+      finding({ thread_node_id: "old", thread_created_at: "2026-08-01T00:00:00Z" }),
+      finding({ thread_node_id: "new", thread_created_at: "2026-09-05T00:00:00Z" }),
+    ]);
+    expect(cards.map((card) => card.finding.thread_node_id)).toEqual(["new", "old", "undated"]);
+  });
+
+  it("names the missing path rather than rendering a bare line number", () => {
+    const cards = findingAttentionCards([finding({ path: null, original_line: null })]);
+    expect(cards[0].detail).toContain("no path recorded");
+  });
+});
