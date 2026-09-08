@@ -103,6 +103,11 @@ export interface LaneEventRow {
   lane_version: string | null;
   reviewable_lines: number | null;
   max_reviewable_lines: number | null;
+  /**
+   * The login who posted `@claude pause`, on a `paused-by-request` event (#124). Null on
+   * every other reason, and null on a row recorded before this column existed.
+   */
+  actor?: string | null;
 }
 
 export interface LaneEventsResponse {

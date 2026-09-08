@@ -411,6 +411,12 @@ export interface LaneEventRowSummary {
   // Set only on the "refused-size" reason's most recent matching event; null everywhere else.
   latestReviewableLines: number | null;
   latestMaxReviewableLines: number | null;
+  /**
+   * Set only on the "paused-by-request" reason, from its most recent matching event (#124).
+   * Null there means "not recorded": either the row predates the actor column, or a
+   * pre-migration pause never carried one. Never rendered as "nobody".
+   */
+  latestActor: string | null;
 }
 
 export function summariseLaneEvents(
@@ -436,6 +442,8 @@ export function summariseLaneEvents(
       matchingEvents: matching,
       latestReviewableLines: latestEvent?.reviewable_lines ?? null,
       latestMaxReviewableLines: latestEvent?.max_reviewable_lines ?? null,
+      latestActor:
+        reason === "paused-by-request" ? (latestEvent?.actor ?? null) : null,
     };
   });
 }

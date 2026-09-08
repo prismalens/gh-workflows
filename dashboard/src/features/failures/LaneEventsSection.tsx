@@ -71,6 +71,26 @@ export function LaneEventsSection({ events, now, range, repository }: LaneEvents
                       {formatCount(item.latestMaxReviewableLines)}-line cap.
                     </div>
                   )}
+                  {item.reason === "paused-by-request" && item.count > 0 && (
+                    <div className="mt-1 text-[11px] text-foreground/80" data-testid="paused-by-actor">
+                      {item.latestActor ? (
+                        <>
+                          Last paused by{" "}
+                          <a
+                            href={`https://github.com/${item.latestActor}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-primary underline-offset-4 hover:underline"
+                          >
+                            {item.latestActor}
+                          </a>
+                          .
+                        </>
+                      ) : (
+                        "Last paused by: not recorded."
+                      )}
+                    </div>
+                  )}
                   {item.footnote && (
                     <div
                       className="mt-1 flex items-start gap-1 rounded bg-muted/40 p-1.5 text-[11px] text-foreground/80 leading-normal"

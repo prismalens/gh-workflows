@@ -141,6 +141,21 @@ function createSampleLaneEvents(): LaneEventRow[] {
       reviewable_lines: 9000,
       max_reviewable_lines: 6000,
     },
+    {
+      run_id: 105,
+      run_attempt: 1,
+      recorded_at: "2026-08-31T14:00:00.000Z",
+      repository: "prismalens/gh-workflows",
+      reason: "paused-by-request",
+      pr_number: 20,
+      head_sha: "1234abc",
+      run_url: "https://github.com/prismalens/gh-workflows/actions/runs/105",
+      rounds_used: null,
+      lane_version: "v2.0.0",
+      reviewable_lines: null,
+      max_reviewable_lines: null,
+      actor: "alice",
+    },
   ];
 }
 
@@ -305,6 +320,35 @@ describe("/failures - Acceptance Criteria & Degraded States", () => {
     expect(within(draftRow as HTMLElement).queryByText(/reviewable lines/)).not.toBeInTheDocument();
   });
 
+  it("#124: a paused-by-request event renders 'Last paused by <login>' linked to the profile", async () => {
+    const api = makeFixtureApi(createWave2CompleteRows(), createSampleLaneEvents());
+    renderRoute({ path: "/failures", api });
+
+    const eventsSection = await screen.findByTestId("section-lane-events");
+    const pausedRow = within(eventsSection).getByText("paused-by-request").closest("tr");
+    expect(pausedRow).not.toBeNull();
+    const link = within(pausedRow as HTMLElement).getByRole("link", { name: "alice" });
+    expect(link).toHaveAttribute("href", "https://github.com/alice");
+
+    const draftRow = within(eventsSection).getByText("draft").closest("tr");
+    expect(within(draftRow as HTMLElement).queryByTestId("paused-by-actor")).not.toBeInTheDocument();
+  });
+
+  it("#124: a paused-by-request event with no recorded actor renders 'not recorded', never 'nobody'", async () => {
+    const events = createSampleLaneEvents().map((e) =>
+      e.reason === "paused-by-request" ? { ...e, actor: null } : e,
+    );
+    const api = makeFixtureApi(createWave2CompleteRows(), events);
+    renderRoute({ path: "/failures", api });
+
+    const eventsSection = await screen.findByTestId("section-lane-events");
+    const pausedRow = within(eventsSection).getByText("paused-by-request").closest("tr");
+    expect(pausedRow).not.toBeNull();
+    const actorCell = within(pausedRow as HTMLElement).getByTestId("paused-by-actor");
+    expect(actorCell).toHaveTextContent("Last paused by: not recorded.");
+    expect(actorCell.querySelector("a")).toBeNull();
+  });
+
   it("an empty range renders 'no rounds in range' and no numeric zero", async () => {
     const api = makeFixtureApi([], []);
     renderRoute({ path: "/failures", api });
@@ -439,6 +483,21 @@ describe("failures unit aggregators and helpers", () => {
     expect(refusedSize?.latestMaxReviewableLines).toBe(6000);
     expect(draft?.latestReviewableLines).toBeNull();
     expect(draft?.latestMaxReviewableLines).toBeNull();
+    // #124: the actor is surfaced only on paused-by-request, from its latest matching event.
+    const pausedByRequest = laneSummaries.find((l) => l.reason === "paused-by-request");
+    expect(pausedByRequest?.latestActor).toBe("alice");
+    expect(draft?.latestActor).toBeNull();
+    expect(refusedSize?.latestActor).toBeNull();
+  });
+
+  it("#124: a null actor on a paused-by-request event reads as not-recorded, never as no actor was involved", () => {
+    const events = createSampleLaneEvents().map((e) =>
+      e.reason === "paused-by-request" ? { ...e, actor: null } : e,
+    );
+    const laneSummaries = summariseLaneEvents(events, now);
+    const pausedByRequest = laneSummaries.find((l) => l.reason === "paused-by-request");
+    expect(pausedByRequest?.count).toBe(1);
+    expect(pausedByRequest?.latestActor).toBeNull();
   });
 });
 
