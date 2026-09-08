@@ -10,6 +10,8 @@ stubbed `gh`, verifying:
 5. A changed file matching path_filters escalates to opus.
 6. A changed file not matching leaves the default model.
 7. A summon `--model` override beats a path match (precedence rule).
+8. config_effective (#75) carries a {value, layer} entry per resolved key, layer matching
+   whichever of workflow/org/repo actually supplied it, with no hardcoded key list.
 
 Run: python3 tests/test-review-config.py
 """
@@ -414,6 +416,36 @@ def main():
           "review.skip_authors: org-bot (source: org defaults)" in stdout and
           "review.path_filters: ['org-core/**'] (source: org defaults)" in stdout,
           f"stdout: {stdout}")
+
+    # 3b. config_effective (#75): one {value, layer} entry per key config_hash hashes,
+    # a layer per source actually resolved (repo/org/workflow all exercised at once here),
+    # and no hardcoded key list — a new resolved_config key needs no change to this step.
+    config_effective = json.loads(out.get("config_effective", "{}"))
+    check("config_effective is a non-empty object", isinstance(config_effective, dict) and config_effective, f"got {config_effective!r}")
+    check("config_effective repo-sourced default_model carries layer=repo",
+          config_effective.get("default_model") == {"value": "claude-sonnet-5", "layer": "repo"},
+          f"got {config_effective.get('default_model')!r}")
+    check("config_effective repo-sourced auto_pause_rounds carries layer=repo and an int value",
+          config_effective.get("auto_pause_rounds") == {"value": 3, "layer": "repo"},
+          f"got {config_effective.get('auto_pause_rounds')!r}")
+    check("config_effective org-sourced skip_authors carries layer=org",
+          config_effective.get("skip_authors") == {"value": "org-bot", "layer": "org"},
+          f"got {config_effective.get('skip_authors')!r}")
+    check("config_effective org-sourced path_filters carries layer=org",
+          config_effective.get("path_filters") == {"value": ["org-core/**"], "layer": "org"},
+          f"got {config_effective.get('path_filters')!r}")
+    check("config_effective unset max_reviewable_lines carries layer=workflow (not 'unavailable')",
+          config_effective.get("max_reviewable_lines") == {"value": 6000, "layer": "workflow"},
+          f"got {config_effective.get('max_reviewable_lines')!r}")
+    check("config_effective carries every key config_hash hashes, no more and no less",
+          set(config_effective.keys()) == {
+              "default_model", "auto_pause_rounds", "skip_authors", "escalation_paths",
+              "path_filters", "path_instructions", "max_reviewable_lines", "max_file_lines",
+              "language_map", "tool_findings", "issue_context_byte_budget",
+              "issue_context_total_byte_budget",
+          },
+          f"got keys {sorted(config_effective.keys())}")
+    check("config_effective excludes variant, same as config_hash", "variant" not in config_effective, f"got keys {sorted(config_effective.keys())}")
 
     # 4. Malformed org defaults: warns, ignored, workflow defaults apply, and run continues
     for label, malformed_yaml, expected_err_sub in [

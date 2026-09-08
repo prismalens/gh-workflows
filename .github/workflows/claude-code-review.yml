@@ -101,7 +101,7 @@ on:
 # Bumped whenever the ingest payload shape gains or changes a field (#70 amendment).
 # The Worker uses this version to distinguish an older workflow lane from a broken one.
 env:
-  LANE_VERSION: '2'
+  LANE_VERSION: '3'
   # The claude-code-action pin, duplicated at the two `uses:` lines below because `uses:`
   # cannot take a `${{ }}` expression. tests/test-action-version-drift.py fails the build
   # if this value and either `uses:` pin ever disagree. Story: #47 amendment.
@@ -299,6 +299,7 @@ jobs:
       model_source: ${{ steps.model.outputs.model_source }}
       config_resolution: ${{ steps.config.outputs.config_resolution }}
       config_hash: ${{ steps.config.outputs.config_hash }}
+      config_effective: ${{ steps.config.outputs.config_effective }}
       variant: ${{ steps.config.outputs.variant }}
       prompt_hash: ${{ steps.build-prompt.outputs.prompt_hash }}
       telemetry_record: ${{ steps.telemetry.outputs.record }}
@@ -887,6 +888,20 @@ jobs:
               json.dumps(resolved_config, sort_keys=True, separators=(",", ":")).encode("utf-8")
           ).hexdigest()
 
+          # config_effective (#75): the explanation behind config_hash, one entry per key
+          # config_hash covers (variant stays excluded, same reasoning as above). Built from
+          # `sources` generically, so a new resolved_config key needs no line added here.
+          SOURCE_TO_LAYER = {
+              "workflow default": "workflow",
+              "org defaults": "org",
+              "repo config": "repo",
+          }
+          config_effective = {
+              key: {"value": value, "layer": SOURCE_TO_LAYER.get(sources.get(key), "workflow")}
+              for key, value in resolved_config.items()
+          }
+          config_effective_json = json.dumps(config_effective, separators=(',', ':'))
+
           print("Effective review configuration:")
           print(f"  review.default_model: {default_model} (source: {sources['default_model']})")
           print(f"  review.auto_pause_rounds: {auto_pause_rounds} (source: {sources['auto_pause_rounds']})")
@@ -920,6 +935,7 @@ jobs:
                   f.write(f"issue_context_total_byte_budget={issue_context_total_byte_budget}\n")
                   f.write(f"config_resolution={config_resolution}\n")
                   f.write(f"config_hash={config_hash}\n")
+                  f.write(f"config_effective={config_effective_json}\n")
                   f.write(f"variant={variant}\n")
           PY
 
@@ -3442,6 +3458,7 @@ jobs:
           RANGE_HEAD: ${{ needs.review.outputs.range_head }}
           MODEL_SOURCE: ${{ needs.review.outputs.model_source }}
           CONFIG_RESOLUTION: ${{ needs.review.outputs.config_resolution }}
+          CONFIG_EFFECTIVE: ${{ needs.review.outputs.config_effective }}
           JOB_CONCLUSION: ${{ needs.review.result }}
           ROUND_ORDINAL: ${{ needs.announce.outputs.round_ordinal }}
           VERDICT_KIND: ${{ needs.announce.outputs.verdict_kind }}
@@ -3477,6 +3494,7 @@ jobs:
             --arg range_head "${RANGE_HEAD:-}" \
             --arg model_source "${MODEL_SOURCE:-}" \
             --arg config_resolution "${CONFIG_RESOLUTION:-}" \
+            --arg config_effective "${CONFIG_EFFECTIVE:-}" \
             --arg job_conclusion "${JOB_CONCLUSION:-}" \
             --arg round_ordinal "${ROUND_ORDINAL:-}" \
             --arg verdict_kind "${VERDICT_KIND:-}" \
@@ -3500,6 +3518,7 @@ jobs:
               range_head: str_val($range_head),
               model_source: str_val($model_source),
               config_resolution: json_val($config_resolution),
+              config_effective: json_val($config_effective),
               job_conclusion: str_val($job_conclusion),
               round_ordinal: num_val($round_ordinal),
               verdict_kind: str_val($verdict_kind),
