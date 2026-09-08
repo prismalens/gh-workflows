@@ -18,6 +18,10 @@ against a stubbed `gh`, verifying:
 6. With nothing to report (no issue refs, CI green, no lockfile change, no
    applicable tools), `context_notes` is empty: a repo that configures nothing
    gets empty context and no liveness caveat.
+7. Defect hunt (#105 surface): issue_context_total_byte_budget is a ceiling on the
+   FIRST resolved issue too, not just the second and later ones. A per-issue budget
+   (issue_context_byte_budget) configured larger than the total must not let one
+   oversized entry slip through the total budget unresolved-and-unrecorded.
 
 Run: python3 tests/test-review-context.py
 """
@@ -433,6 +437,55 @@ fi
         fails.append(f"case 6: want empty context.issues with no PR body references, got {manifest['context']['issues']}")
     else:
         print("  ok    a repo/PR with nothing to report gets empty context and no liveness caveat")
+
+    # -------------------------------------------------------------
+    # 7. issue_context_total_byte_budget is a ceiling on the FIRST issue too
+    # (defect hunt, #105 surface). A per-issue budget configured larger than the
+    # total must not silently exempt the first resolved issue from that ceiling.
+    # -------------------------------------------------------------
+    big_body = "x" * 2500  # over the 2000-byte total budget below, under the 3000 per-issue one
+    gh_routes = rf"""
+if [[ "$args" == *"pulls/105"* ]]; then
+  echo '{{"body":"Closes #10."}}'
+  exit 0
+fi
+if [[ "$args" == *"issues/10/comments"* ]]; then
+  echo '[]'
+  exit 0
+fi
+if [[ "$args" == *"issues/10"* ]]; then
+  echo '{{"title":"Big issue","body":"{big_body}","labels":[],"html_url":"https://x/10"}}'
+  exit 0
+fi
+if [[ "$args" == *"check-runs"* ]]; then
+  echo '{{"check_runs":[]}}'
+  exit 0
+fi
+"""
+    rc, outs, manifest, stdout, stderr = run_context_step(
+        script,
+        manifest_files=[{"path": "README.md", "status": "modified"}],
+        gh_routes=gh_routes,
+        issue_byte_budget="3000",
+        issue_total_byte_budget="2000",
+    )
+    if rc != 0:
+        fails.append(f"case 7 failed with rc={rc}: {stderr}")
+    else:
+        issues = manifest["context"]["issues"]
+        resolved_numbers = {e["number"] for e in issues["resolved"]}
+        unresolved_refs = {e["ref"] for e in issues["unresolved"]}
+        if resolved_numbers:
+            fails.append(
+                f"case 7: the first issue alone (2500+ bytes) exceeds the 2000-byte total budget "
+                f"and must not be resolved regardless of being first; got resolved={resolved_numbers}"
+            )
+        elif unresolved_refs != {10}:
+            fails.append(f"case 7: want unresolved={{10}}, got {unresolved_refs}")
+        elif "total issue context byte budget exhausted" not in issues["unresolved"][0].get("reason", ""):
+            fails.append(f"case 7: want the budget-exhausted reason, got {issues['unresolved'][0]}")
+        else:
+            print("  ok    the total issue-context byte budget is enforced on the first resolved issue too")
 
     print()
     if fails:

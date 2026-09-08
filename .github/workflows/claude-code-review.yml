@@ -1391,6 +1391,10 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ needs.resolve.outputs.number }}
           MODE: ${{ steps.mode.outputs.mode }}
+          # HEAD_SHA guards the live `/files` fetch below against a push that lands
+          # after checkout pinned this ref (#defect-hunt, review-findings-sweep
+          # surface audit): see the head-sha check just above that fetch.
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
           PATH_FILTERS: ${{ steps.config.outputs.path_filters }}
           CONFIG_RESOLUTION: ${{ steps.config.outputs.config_resolution }}
           MAX_REVIEWABLE_LINES: ${{ steps.config.outputs.max_reviewable_lines }}
@@ -1491,6 +1495,32 @@ jobs:
                       print(f"::warning::Failed to read incremental range file for manifest: {e}")
           else:
               if repo and pr:
+                  # `/pulls/{pr}/files` is not pinned to a commit -- it always reflects
+                  # the PR's CURRENT head. "Checkout repository" (the previous step)
+                  # already pinned HEAD_SHA to disk; a push landing in the gap between
+                  # that checkout and this fetch would make the manifest/diff built
+                  # below describe a different commit than what is on disk and than
+                  # what the round's own baseline math (the liveness marker's `sha=`)
+                  # assumes was reviewed -- a live-diff-vs-checked-out-code mismatch
+                  # while still reporting success. Confirm the head has not moved.
+                  head_sha = os.environ.get("HEAD_SHA", "")
+                  if head_sha:
+                      live_res = subprocess.run(
+                          ["gh", "api", f"repos/{repo}/pulls/{pr}", "--jq", ".head.sha"],
+                          capture_output=True, text=True,
+                      )
+                      if live_res.returncode != 0:
+                          print(f"::warning::Could not confirm PR #{pr}'s current head before building the manifest: {live_res.stderr.strip()}")
+                      else:
+                          live_head = live_res.stdout.strip()
+                          if live_head and live_head != head_sha:
+                              print(
+                                  f"::error::Build review manifest: PR #{pr} head moved from {head_sha} to "
+                                  f"{live_head} between checkout and this step; refusing to build a manifest "
+                                  f"for a diff that may not match the checked-out commit."
+                              )
+                              raise SystemExit(1)
+
                   cmd = ["gh", "api", f"repos/{repo}/pulls/{pr}/files", "--paginate", "--slurp"]
                   res = subprocess.run(cmd, capture_output=True, text=True)
                   if res.returncode == 0 and res.stdout.strip():
@@ -1930,7 +1960,13 @@ jobs:
                   "truncated": t_trunc or b_trunc or r_trunc,
               }
               entry_bytes = len(json.dumps(entry).encode("utf-8"))
-              if resolved_issues and issues_total_bytes + entry_bytes > issue_total_byte_budget:
+              # Applies to the FIRST issue too (defect hunt): a per-issue budget
+              # (issue_byte_budget) can be configured larger than this total, in which
+              # case a bug that only checked "resolved_issues and ..." let exactly one
+              # oversized entry through regardless of the configured ceiling -- an
+              # honest "budget exhausted" report is required even when it means zero
+              # issues resolved, never a silent one-entry overrun.
+              if issues_total_bytes + entry_bytes > issue_total_byte_budget:
                   unresolved_issues.append({"ref": n, "reason": "total issue context byte budget exhausted"})
                   continue
               resolved_issues.append(entry)

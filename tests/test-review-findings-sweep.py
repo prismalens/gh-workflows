@@ -27,6 +27,12 @@ fix_sha_source=verify_table (amendment 8), a CodeRabbit thread never becomes a r
 (amendment 10 / scope correction), and original_line is populated and never dropped in
 favor of the display-only line (amendment 4).
 
+Plus (defect hunt over this branch's .github/workflows/ surface): `gh pr list --limit N`
+is not itself paginated to exhaustion by this workflow -- it silently drops anything past
+N with no signal of its own. A PR count landing exactly on the limit now gets a loud
+::warning:: and the completion line says so, rather than a quietly incomplete sweep that
+still reports success.
+
 Run: python3 tests/test-review-findings-sweep.py
 """
 import json
@@ -451,6 +457,24 @@ def main():
               row["human_reply_sha"] == OID_A, row)
         check("comment overflow: row set is complete",
               row["row_set_incomplete"] == 0, row)
+
+    # ── 10. Defect hunt: `gh pr list --limit N` truncates silently at N with no
+    # signal of its own. A pull-request count equal to the (windowed, non-full-history)
+    # 500-item limit must be recorded loudly, not just silently under-swept.
+    truncated_pr_list = list(range(1, 501))  # exactly the windowed PR_LIST_LIMIT
+    proc, rows = run_sweep(
+        script, pr_list=truncated_pr_list, main_fixtures={}, max_attempts=1, backoff=0,
+    )
+    check("PR-list truncation: a full-limit listing emits a warning naming the limit",
+          "::warning::" in proc.stdout and "500" in proc.stdout and "truncat" in proc.stdout.lower(),
+          proc.stdout[-2000:])
+    check("PR-list truncation: the completion line says the list was truncated",
+          "TRUNCATED" in proc.stdout, proc.stdout[-500:])
+
+    # ── 11. A comfortably-under-the-limit listing gets no truncation warning ──
+    proc, rows = run_sweep(script, pr_list=[1, 2, 3], main_fixtures={}, max_attempts=1, backoff=0)
+    check("PR-list truncation: a small listing gets no truncation warning",
+          "truncat" not in proc.stdout.lower(), proc.stdout)
 
     print()
     if fails:

@@ -17,6 +17,13 @@ verifying:
 6. `max_reviewable_lines=0` disables the cap.
 7. Added and modified files are summed into `reviewable_lines`.
 8. Incremental mode reads the (pre-filter) range file rather than calling `gh`.
+9. A head-sha race (defect hunt, #105 surface): the `/files` fetch is not pinned to a
+   commit, so a push landing between "Checkout repository" and this step would make
+   the manifest describe a different commit than what got checked out. The step
+   confirms the PR's live head still matches HEAD_SHA before trusting the fetch:
+   unchanged proceeds normally, a moved head fails loudly (never silently reviews
+   the wrong diff), and a failed confirmation check degrades to a warning rather
+   than blocking a live PR on a transient metadata-fetch problem.
 
 Run: python3 tests/test-review-manifest.py
 """
@@ -71,6 +78,9 @@ def run_manifest_step(
     max_file_lines="",
     repo_files=None,
     gh_fail=False,
+    head_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    live_head=None,
+    head_fetch_fail=False,
 ):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
@@ -97,11 +107,20 @@ case "$args" in
   *"pulls/"*"/files"*)
     printf '%s\\n' '{files_payload}'
     exit 0 ;;
+  *".head.sha"*)
+    if [ "${{FAKE_HEAD_FETCH_FAIL:-0}}" = "1" ]; then
+      echo "gh: API rate limit exceeded" >&2
+      exit 1
+    fi
+    printf '%s\\n' "${{FAKE_LIVE_HEAD:-}}"
+    exit 0 ;;
 esac
 echo "gh stub: unrouted call: $args" >&2
 exit 1
 """)
         gh_stub.chmod(0o755)
+
+        effective_live_head = live_head if live_head is not None else head_sha
 
         if mode == "incremental" and incremental_files is not None:
             range_data = {"files": incremental_files}
@@ -121,6 +140,9 @@ exit 1
             FAKE_GH_FAIL="1" if gh_fail else "0",
             MAX_REVIEWABLE_LINES=str(max_reviewable_lines),
             MAX_FILE_LINES=str(max_file_lines),
+            HEAD_SHA=head_sha,
+            FAKE_LIVE_HEAD=effective_live_head,
+            FAKE_HEAD_FETCH_FAIL="1" if head_fetch_fail else "0",
         )
         env["PATH_FILTERS"] = json.dumps(path_filters) if path_filters is not None else "[]"
         env["CONFIG_RESOLUTION"] = json.dumps(config_resolution) if config_resolution is not None else "{}"
@@ -334,6 +356,74 @@ def main():
         fails.append(f"case 8: want reviewable_lines=8, got {outs.get('reviewable_lines')}")
     else:
         print("  ok    incremental mode reads the range file directly, without calling gh")
+
+    # -------------------------------------------------------------
+    # 9a. Head unchanged: proceeds normally (baseline for the next two cases)
+    # -------------------------------------------------------------
+    SHA_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    SHA_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    rc, outs, manifest, diff_text, stdout, stderr = run_manifest_step(
+        script,
+        gh_files_json=[
+            {"filename": "src/app.ts", "status": "modified", "additions": 10, "deletions": 2, "patch": "@@ ... @@"},
+        ],
+        max_reviewable_lines="1000",
+        head_sha=SHA_A,
+        live_head=SHA_A,
+    )
+    if rc != 0:
+        fails.append(f"case 9a failed with rc={rc}: {stderr}")
+    elif outs.get("reviewable_lines") != "12":
+        fails.append(f"case 9a: want reviewable_lines=12, got {outs.get('reviewable_lines')}")
+    else:
+        print("  ok    head unchanged: manifest built normally")
+
+    # -------------------------------------------------------------
+    # 9b. Head moved between checkout and this step: fail loudly, never build a
+    # manifest for a diff that may not match what got checked out (defect hunt).
+    # -------------------------------------------------------------
+    rc, outs, manifest, diff_text, stdout, stderr = run_manifest_step(
+        script,
+        gh_files_json=[
+            {"filename": "src/app.ts", "status": "modified", "additions": 10, "deletions": 2, "patch": "@@ ... @@"},
+        ],
+        max_reviewable_lines="1000",
+        head_sha=SHA_A,
+        live_head=SHA_B,
+    )
+    if rc == 0:
+        fails.append(f"case 9b: want non-zero exit when the head moved, got rc=0 (outputs={outs})")
+    elif "::error::" not in stdout and "::error::" not in stderr:
+        fails.append(f"case 9b: want an ::error:: annotation naming the race, got stdout={stdout!r} stderr={stderr!r}")
+    elif SHA_A not in (stdout + stderr) or SHA_B not in (stdout + stderr):
+        fails.append(f"case 9b: error should name both the checked-out and the live head sha")
+    elif manifest is not None or diff_text is not None:
+        fails.append(f"case 9b: a manifest/diff must not be written when the head moved (manifest={manifest!r}, diff_text={diff_text!r})")
+    else:
+        print("  ok    a head that moved between checkout and this step fails loudly, never silently reviews the wrong diff")
+
+    # -------------------------------------------------------------
+    # 9c. The confirmation check itself fails to fetch: degrade to a warning and
+    # still build the manifest, rather than blocking every round on a transient
+    # metadata-fetch problem this check introduced.
+    # -------------------------------------------------------------
+    rc, outs, manifest, diff_text, stdout, stderr = run_manifest_step(
+        script,
+        gh_files_json=[
+            {"filename": "src/app.ts", "status": "modified", "additions": 10, "deletions": 2, "patch": "@@ ... @@"},
+        ],
+        max_reviewable_lines="1000",
+        head_sha=SHA_A,
+        head_fetch_fail=True,
+    )
+    if rc != 0:
+        fails.append(f"case 9c failed with rc={rc}: {stderr}")
+    elif outs.get("reviewable_lines") != "12":
+        fails.append(f"case 9c: want reviewable_lines=12 despite the failed head confirmation, got {outs.get('reviewable_lines')}")
+    elif "::warning::" not in stdout and "::warning::" not in stderr:
+        fails.append(f"case 9c: want a ::warning:: that the head could not be confirmed, got stdout={stdout!r} stderr={stderr!r}")
+    else:
+        print("  ok    a failed head-confirmation check warns and still builds the manifest")
 
     print()
     if fails:

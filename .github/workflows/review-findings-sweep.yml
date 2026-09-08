@@ -114,7 +114,8 @@ jobs:
           printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
 
           if [ "$FULL_HISTORY" = "true" ]; then
-            pr_list_json=$(gh pr list --repo "$REPOSITORY" --state all --limit 1000 --json number) || {
+            PR_LIST_LIMIT=1000
+            pr_list_json=$(gh pr list --repo "$REPOSITORY" --state all --limit "$PR_LIST_LIMIT" --json number) || {
               echo "::warning::review-findings-sweep: could not list pull requests for a full-history sweep; nothing was swept this run."
               exit 0
             }
@@ -125,13 +126,27 @@ jobs:
           days = int(os.environ.get('WINDOW_DAYS', '3'))
           print((datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d'))
           ")
-            pr_list_json=$(gh pr list --repo "$REPOSITORY" --state all --search "updated:>=${since}" --limit 500 --json number) || {
+            PR_LIST_LIMIT=500
+            pr_list_json=$(gh pr list --repo "$REPOSITORY" --state all --search "updated:>=${since}" --limit "$PR_LIST_LIMIT" --json number) || {
               echo "::warning::review-findings-sweep: could not list recently updated pull requests; nothing was swept this run."
               exit 0
             }
           fi
 
           pr_numbers=$(printf '%s' "$pr_list_json" | jq -r '.[].number')
+
+          # `gh pr list --limit N` truncates at N with no signal of its own that more
+          # PRs matched -- the same "first: N with no cursor loop" silent drop this
+          # workflow's own .coderabbit.yaml instructions call out for the GraphQL
+          # connections below, just moved to the REST search page cap. A count equal
+          # to the limit is the only observable evidence a truncation happened, so
+          # record it loudly rather than let a busy window quietly lose rows.
+          pr_list_count=$(printf '%s' "$pr_list_json" | jq 'length')
+          list_truncated=0
+          if [ "${pr_list_count:-0}" -ge "$PR_LIST_LIMIT" ]; then
+            list_truncated=1
+            echo "::warning::review-findings-sweep: the pull request list returned exactly its ${PR_LIST_LIMIT}-item limit; more pull requests may match and were silently dropped by this listing. Narrow window_days, or split full_history sweeps, to close the gap."
+          fi
 
           # One PR per query (amendment 1, #47): no aliased multi-PR batching, which blows
           # the 500k-node complexity ceiling at this nesting depth. Paginating WITHIN one PR
@@ -534,4 +549,6 @@ jobs:
             esac
           done
 
-          echo "Review findings sweep complete: ${swept} finding(s) written, ${skipped} pull request(s) skipped."
+          truncation_note=""
+          [ "$list_truncated" -eq 1 ] && truncation_note=" (pull request LIST WAS TRUNCATED at ${PR_LIST_LIMIT}; see warning above)"
+          echo "Review findings sweep complete: ${swept} finding(s) written, ${skipped} pull request(s) skipped${truncation_note}."
