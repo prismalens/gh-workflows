@@ -261,7 +261,12 @@ def test_suite():
     assert len(put_config) == 1, f"expected one PUT for config.yml, got {len(put_config)}"
     assert any(f.startswith("sha=") for f in put_feature[0]), "drifted PUT missing sha field"
     assert not any(f.startswith("sha=") for f in put_config[0]), "missing-file PUT should carry no sha field"
-    assert not has_call(calls, contains=["cli_bug_report.yml"]), "sync touched the local-only file"
+    # has_call tests exact argv elements (`tok in c` over a list), and the script
+    # never passes a bare "cli_bug_report.yml" -- only the full endpoint below, as
+    # put_feature/put_config above already match. The old bare-name assertion could
+    # never fail (CR #173, thread 4000816215).
+    cli_endpoint = f"repos/{TARGET}/contents/.github/ISSUE_TEMPLATE/cli_bug_report.yml"
+    assert not has_call(calls, contains=[cli_endpoint]), "sync touched the local-only file"
     pr_creates = sum(1 for c in calls if c[:2] == ["pr", "create"])
     assert pr_creates == 1, f"expected exactly one pr create, got {pr_creates}"
     print("  ok    --sync-templates writes drifted+missing only, sha only on drifted, one PR")
