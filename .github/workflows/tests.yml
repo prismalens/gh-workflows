@@ -125,6 +125,9 @@ jobs:
       - name: Prompt hash template
         run: python3 tests/test-prompt-hash-template.py
 
+      - name: Review prompt remedy, precedence and dedup rules
+        run: python3 tests/test-review-prompt-remedy.py
+
       - name: Telemetry reconciler behaviour
         run: python3 tests/test-telemetry-reconcile.py
 
