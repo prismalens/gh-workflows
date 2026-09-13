@@ -274,7 +274,53 @@ def test_suite():
     assert not has_call(calls, contains=["-X", "PUT"]), "unreadable source still wrote something"
     print("  ok    unreadable source warns once, exits 0")
 
-    print("\nAll 4 test cases passed successfully.")
+    # Case 5: only drifted files, no missing files -- MISSING_FILES is empty and
+    # set -u is active, so the unguarded loop at the old line 342 (and the dry-run
+    # print at 327) would raise "unbound variable" on bash below 4.4
+    # (CR #173, thread 4000816192).
+    drifted_only_cfg = {
+        "source_templates": {
+            "bug_report.yml": "sha-bug-same",
+            "feature_request.yml": "sha-feature-src",
+        },
+        "target_templates": {
+            "bug_report.yml": "sha-bug-same",
+            "feature_request.yml": "sha-feature-TGT-DRIFTED",
+            "cli_bug_report.yml": "sha-cli-local",
+        },
+    }
+    proc, calls = run_case(SCRIPT, ["--sync-templates"], cfg_overrides=drifted_only_cfg)
+    assert proc.returncode == 0, f"Case 5 failed (exit {proc.returncode}):\n{proc.stderr}\n{proc.stdout}"
+    assert "unbound variable" not in proc.stderr, proc.stderr
+    put_feature = [c for c in calls if "-X" in c and "PUT" in c and f"repos/{TARGET}/contents/.github/ISSUE_TEMPLATE/feature_request.yml" in c]
+    assert len(put_feature) == 1, f"expected one PUT for feature_request.yml, got {len(put_feature)}"
+    pr_creates = sum(1 for c in calls if c[:2] == ["pr", "create"])
+    assert pr_creates == 1, f"expected exactly one pr create, got {pr_creates}"
+    print("  ok    drifted-only sync (no missing files) does not raise unbound variable")
+
+    # Case 6: the reverse -- only missing files, no drifted files. DRIFTED_FILES is
+    # empty; the unguarded loop at the old line 334 (and dry-run print at 326) is
+    # the one that would fail.
+    missing_only_cfg = {
+        "source_templates": {
+            "bug_report.yml": "sha-bug-same",
+            "config.yml": "sha-config-src",
+        },
+        "target_templates": {
+            "bug_report.yml": "sha-bug-same",
+            "cli_bug_report.yml": "sha-cli-local",
+        },
+    }
+    proc, calls = run_case(SCRIPT, ["--sync-templates"], cfg_overrides=missing_only_cfg)
+    assert proc.returncode == 0, f"Case 6 failed (exit {proc.returncode}):\n{proc.stderr}\n{proc.stdout}"
+    assert "unbound variable" not in proc.stderr, proc.stderr
+    put_config = [c for c in calls if "-X" in c and "PUT" in c and f"repos/{TARGET}/contents/.github/ISSUE_TEMPLATE/config.yml" in c]
+    assert len(put_config) == 1, f"expected one PUT for config.yml, got {len(put_config)}"
+    pr_creates = sum(1 for c in calls if c[:2] == ["pr", "create"])
+    assert pr_creates == 1, f"expected exactly one pr create, got {pr_creates}"
+    print("  ok    missing-only sync (no drifted files) does not raise unbound variable")
+
+    print("\nAll 6 test cases passed successfully.")
 
 
 if __name__ == "__main__":

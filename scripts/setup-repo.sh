@@ -323,15 +323,19 @@ else
     if [ ${#DRIFTED_FILES[@]} -eq 0 ] && [ ${#MISSING_FILES[@]} -eq 0 ]; then
       say "  nothing to sync"
     elif [ "$DRY" -eq 1 ]; then
-      for spec in "${DRIFTED_FILES[@]}"; do say "  WOULD write ${spec%%|*} (drifted)"; done
-      for name in "${MISSING_FILES[@]}"; do say "  WOULD write $name (missing)"; done
+      # set -u is active, and bash below 4.4 raises "unbound variable" expanding
+      # an empty array even quoted; a sync branch with only drifted or only
+      # missing files hits this on the other array (CR #173, thread 4000816192).
+      # ${arr[@]+"${arr[@]}"} is the one idiom proven safe across every version.
+      for spec in ${DRIFTED_FILES[@]+"${DRIFTED_FILES[@]}"}; do say "  WOULD write ${spec%%|*} (drifted)"; done
+      for name in ${MISSING_FILES[@]+"${MISSING_FILES[@]}"}; do say "  WOULD write $name (missing)"; done
     else
       DEFAULT_BRANCH=$(gh api "repos/$REPO" --jq .default_branch)
       HEAD_SHA=$(gh api "repos/$REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)
       SYNC_BRANCH="setup-repo/sync-templates-$(date +%s)"
       gh api -X POST "repos/$REPO/git/refs" -f "ref=refs/heads/$SYNC_BRANCH" -f "sha=$HEAD_SHA" >/dev/null
       WRITTEN=()
-      for spec in "${DRIFTED_FILES[@]}"; do
+      for spec in ${DRIFTED_FILES[@]+"${DRIFTED_FILES[@]}"}; do
         name="${spec%%|*}"; tgt_sha="${spec##*|}"
         content=$(gh api "repos/$TEMPLATE_SRC/contents/.github/ISSUE_TEMPLATE/$name" --jq .content | tr -d '\n')
         gh api -X PUT "repos/$REPO/contents/.github/ISSUE_TEMPLATE/$name" \
@@ -339,7 +343,7 @@ else
           -f "content=$content" -f "sha=$tgt_sha" -f "branch=$SYNC_BRANCH" >/dev/null
         WRITTEN+=("$name"); say "  wrote    $name"
       done
-      for name in "${MISSING_FILES[@]}"; do
+      for name in ${MISSING_FILES[@]+"${MISSING_FILES[@]}"}; do
         content=$(gh api "repos/$TEMPLATE_SRC/contents/.github/ISSUE_TEMPLATE/$name" --jq .content | tr -d '\n')
         gh api -X PUT "repos/$REPO/contents/.github/ISSUE_TEMPLATE/$name" \
           -f "message=chore: sync issue template $name from $TEMPLATE_SRC" \
