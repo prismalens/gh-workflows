@@ -140,7 +140,7 @@ def run_collect(step, *, repos, window_hours="0", heartbeat="false", webhook="ht
             "WORKFLOW_FILE": "ci-failure-report.yml",
             "WINDOW_HOURS": window_hours,
             "HEARTBEAT": heartbeat,
-            "SLACK_CI_FAILURES_WEBHOOK": webhook,
+            "SLACK_CI_WEBHOOK": webhook,
             "PAYLOAD_FILE": str(payload),
         }
         p = subprocess.run(["bash", "-c", step], cwd=td, env=env, capture_output=True, text=True)
@@ -227,9 +227,9 @@ def test_window_override_and_cap(step):
 def test_missing_webhook(step):
     p, out, body = run_collect(step, repos=["prismalens/sreforge"], webhook="")
     assert p.returncode == 1, f"6: missing webhook must exit 1, got {p.returncode}"
-    assert "::error::SLACK_CI_FAILURES_WEBHOOK is not set" in p.stdout, f"6: secret not named: {p.stdout!r}"
+    assert "::error::SLACK_CI_WEBHOOK is not set" in p.stdout, f"6: secret not named: {p.stdout!r}"
     assert body is None, "6: no payload may be written without a webhook"
-    print("  ok    6 missing SLACK_CI_FAILURES_WEBHOOK: exit 1, named")
+    print("  ok    6 missing SLACK_CI_WEBHOOK: exit 1, named")
 
 
 def test_structure():
