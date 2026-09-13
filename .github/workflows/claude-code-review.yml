@@ -727,10 +727,20 @@ jobs:
                                               f"Unknown configuration key 'review.context[{i}].{k}' in {filename}"
                                           )
                                   repo_val = item.get("repository")
-                                  if (
-                                      not isinstance(repo_val, str)
-                                      or not re.fullmatch(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo_val)
-                                  ):
+                                  # "../.." passes the character-class regex below (both are
+                                  # allowed characters), and the checkout step joins it as
+                                  # .claude-context/${repository}, escaping the workspace
+                                  # (CR #173, thread 4000816212). Reject a "." or ".."
+                                  # component, or one starting with ".", on each side.
+                                  repo_parts_ok = (
+                                      isinstance(repo_val, str)
+                                      and re.fullmatch(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo_val)
+                                      and not any(
+                                          part in {".", ".."} or part.startswith(".")
+                                          for part in repo_val.split("/")
+                                      )
+                                  )
+                                  if not repo_parts_ok:
                                       errors.append(
                                           f"Missing or invalid required key 'repository' in 'review.context[{i}]' in {filename}"
                                       )
@@ -1617,6 +1627,19 @@ jobs:
 
                 # 3. Clone and checkout paths without credentials (#90)
                 target=".claude-context/${repo}"
+                # Defence in depth beyond the schema validator (CR #173, thread
+                # 4000816212): refuse a target whose resolved path is not under
+                # .claude-context/, in case a repository slug ever reaches here
+                # unvalidated.
+                resolved_target=$(cd . && realpath -m -- "$target")
+                resolved_base=$(realpath -m -- ".claude-context")
+                case "$resolved_target" in
+                  "$resolved_base"/*) ;;
+                  *)
+                    echo "::warning::Context repository '${repo}' resolves outside .claude-context/ (${resolved_target}); skipping (#90)."
+                    continue
+                    ;;
+                esac
                 mkdir -p "$(dirname "$target")"
                 rm -rf "$target"
 

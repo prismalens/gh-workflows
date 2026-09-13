@@ -397,6 +397,20 @@ review:
         - "x"
 """
 
+# "../.." passes the character-class regex (both chars are allowed), and the
+# checkout step joins it as .claude-context/${repository} -- escaping the
+# workspace unless the owner/name components are rejected explicitly (CR #173,
+# thread 4000816212).
+MALFORMED_CONTEXT_DOTDOT_REPO = """
+version: 1
+review:
+  context:
+    - repository: "../.."
+      ref: "main"
+      paths:
+        - "x"
+"""
+
 ORG_CONFIG_FULL = """
 version: 1
 
@@ -571,6 +585,7 @@ def main():
         ("context: missing paths (#90)", MALFORMED_CONTEXT_MISSING_PATHS, "'paths' in 'review.context[0]'"),
         ("context: '..' path segment (#90)", MALFORMED_CONTEXT_DOTDOT_PATH, "'paths' in 'review.context[0]'"),
         ("context: bad repository slug (#90)", MALFORMED_CONTEXT_BAD_REPO, "'repository' in 'review.context[0]'"),
+        ("context: '../..' repository escapes the workspace (CR #173, thread 4000816212)", MALFORMED_CONTEXT_DOTDOT_REPO, "'repository' in 'review.context[0]'"),
     ]:
         rc, out, stdout, stderr = run_config_case(config_script, config_yaml=malformed_yaml)
         check(f"malformed config ({label}) exits 0", rc == 0, f"rc={rc}")

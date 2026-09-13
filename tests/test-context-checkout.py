@@ -130,7 +130,9 @@ def run_checkout_case(script, *, context_config, max_context_lines="3000",
         context_json_path = tdp / ".claude-context.json"
         kept = json.loads(context_json_path.read_text()) if context_json_path.exists() else None
 
-        return p.returncode, outputs, kept, p.stdout, p.stderr
+        git_calls = call_log.read_text().splitlines() if call_log.exists() else []
+
+        return p.returncode, outputs, kept, p.stdout, p.stderr, git_calls
 
 
 def main():
@@ -158,7 +160,7 @@ def main():
 
 
     # 1. A private repository is skipped with a warning, step exits 0
-    rc, outs, kept, stdout, stderr = run_checkout_case(
+    rc, outs, kept, stdout, stderr, git_calls = run_checkout_case(
         script,
         context_config=[{"repository": "octo-org/private-lib", "ref": "main", "paths": ["x"]}],
         private_repos="octo-org/private-lib",
@@ -169,7 +171,7 @@ def main():
     check("private repo: context_repositories=0", outs.get("context_repositories") == "0", f"outs={outs}")
 
     # 2. A clone failure is skipped with a warning, step exits 0
-    rc, outs, kept, stdout, stderr = run_checkout_case(
+    rc, outs, kept, stdout, stderr, git_calls = run_checkout_case(
         script,
         context_config=[{"repository": "octo-org/unreachable", "ref": "main", "paths": ["x"]}],
         clone_fail_repos="octo-org/unreachable",
@@ -179,7 +181,7 @@ def main():
     check("clone failure: warns naming the repo", "::warning::" in stdout and "git clone failed" in stdout and "octo-org/unreachable" in stdout, f"stdout={stdout!r}")
 
     # 3. An over-cap entry is dropped and an earlier kept entry survives
-    rc, outs, kept, stdout, stderr = run_checkout_case(
+    rc, outs, kept, stdout, stderr, git_calls = run_checkout_case(
         script,
         context_config=[
             {"repository": "octo-org/small-lib", "ref": "main", "paths": ["x"]},
@@ -206,7 +208,7 @@ def main():
           f"entry={entry}")
 
     # 5. max_context_lines=0 disables checkout entirely, no gh or git call made
-    rc, outs, kept, stdout, stderr = run_checkout_case(
+    rc, outs, kept, stdout, stderr, git_calls = run_checkout_case(
         script,
         context_config=[{"repository": "octo-org/any", "ref": "main", "paths": ["x"]}],
         max_context_lines="0",
@@ -214,6 +216,18 @@ def main():
     check("max_context_lines=0: step exits 0", rc == 0, f"rc={rc}, stderr={stderr}")
     check("max_context_lines=0: nothing kept", kept == [], f"kept={kept}")
     check("max_context_lines=0: no warning (feature disabled, not a skip)", "::warning::" not in stdout, f"stdout={stdout!r}")
+    check("max_context_lines=0: no git call at all (CR #173 nitpick)", git_calls == [], f"git_calls={git_calls}")
+
+    # 6. A repository slug that resolves outside .claude-context/ is refused, even if it
+    # somehow reached this step unvalidated (CR #173, thread 4000816212, defence in depth).
+    rc, outs, kept, stdout, stderr, git_calls = run_checkout_case(
+        script,
+        context_config=[{"repository": "../..", "ref": "main", "paths": ["x"]}],
+    )
+    check("path-escape repository: step exits 0", rc == 0, f"rc={rc}, stderr={stderr}")
+    check("path-escape repository: skipped, none kept", kept == [], f"kept={kept}")
+    check("path-escape repository: warns naming the resolved path", "::warning::" in stdout and "resolves outside .claude-context/" in stdout, f"stdout={stdout!r}")
+    check("path-escape repository: never invokes git clone", not any(c.startswith("clone ") for c in git_calls), f"git_calls={git_calls}")
 
     print()
     if fails:
