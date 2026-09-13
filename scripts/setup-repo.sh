@@ -9,6 +9,8 @@ DRY=0
 RULESET_NAME="main protection"
 REQUIRED_CHECKS=("CI gate" "Validate PR title (conventional commits)")
 LABEL_SOURCE=""   # set with --clone-labels; empty means required labels only
+TEMPLATES_FROM="" # set with --templates-from; empty means <owner of --repo>/.github
+SYNC_TEMPLATES=0
 
 # Labels every repo needs because doctrine references them by name. `coderabbit_review`
 # is the manual admission gate in the coderabbit-lane skill; without it the escalation
@@ -29,9 +31,14 @@ Usage: setup-repo.sh --repo OWNER/NAME [--dry-run] [options]
                         replaces the defaults on first use.
   --skip-ruleset        Settings and labels only.
   --no-labels           Skip the label pass.
+  --templates-from REPO Source of shared issue templates. Default: the target
+                        owner's .github repo.
+  --sync-templates      Write drifted or missing issue templates via a PR.
+                        Off by default; report-only otherwise. Never deletes
+                        a target-only template.
 
-Sections run in order: settings, labels, ruleset, then a read-only report of
-missing workflow caller stubs.
+Sections run in order: settings, labels, ruleset, issue templates, then a
+read-only report of missing workflow caller stubs.
 EOF
 }
 
@@ -46,6 +53,8 @@ while [ $# -gt 0 ]; do
       REQUIRED_CHECKS+=("${2:-}"); shift 2 ;;
     --skip-ruleset) SKIP_RULESET=1; shift ;;
     --no-labels) NO_LABELS=1; shift ;;
+    --templates-from) TEMPLATES_FROM="${2:-}"; shift 2 ;;
+    --sync-templates) SYNC_TEMPLATES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -262,10 +271,96 @@ if [ "$SKIP_RULESET" -eq 0 ]; then
   say ""
 fi
 
+# --------------------------------------------------------- issue templates
+# The org ".github" repo cannot extend a repo's own templates (#67): a directory that
+# defines any template of its own suppresses every inherited one. So a repo that wants
+# the shared set plus one local addition needs those files copied in, kept in step by
+# this sync rather than by GitHub's per-directory inheritance.
+say "issue templates"
+TARGET_OWNER="${REPO%%/*}"
+TEMPLATE_SRC="${TEMPLATES_FROM:-$TARGET_OWNER/.github}"
+if [ "$TEMPLATE_SRC" = "$REPO" ]; then
+  say "  source is the target, skipping"
+else
+  SRC_LIST=""
+  if ! SRC_LIST=$(gh api "repos/$TEMPLATE_SRC/contents/.github/ISSUE_TEMPLATE" 2>/dev/null); then
+    say "  WARNING: cannot read $TEMPLATE_SRC/.github/ISSUE_TEMPLATE, skipping"
+    SRC_LIST=""
+  fi
+  DRIFTED_FILES=()
+  MISSING_FILES=()
+  if [ -n "$SRC_LIST" ]; then
+    SRC_NAMES=$(printf '%s' "$SRC_LIST" | jq -r '.[] | select(.type=="file") | .name' | sort)
+    # A git blob sha is a content hash, so comparing it to the target's file sha proves
+    # the decoded content matches without a second content fetch per file.
+    while IFS= read -r name; do
+      [ -z "$name" ] && continue
+      SRC_SHA=$(printf '%s' "$SRC_LIST" | jq -r --arg n "$name" '.[]|select(.name==$n)|.sha')
+      if TGT_JSON=$(gh api "repos/$REPO/contents/.github/ISSUE_TEMPLATE/$name" 2>/dev/null); then
+        TGT_SHA=$(printf '%s' "$TGT_JSON" | jq -r '.sha')
+        if [ "$SRC_SHA" = "$TGT_SHA" ]; then
+          say "  same     $name"
+        else
+          say "  DRIFTED  $name"
+          DRIFTED_FILES+=("$name|$TGT_SHA")
+        fi
+      else
+        say "  MISSING  $name"
+        MISSING_FILES+=("$name")
+      fi
+    done <<<"$SRC_NAMES"
+
+    if TGT_LIST=$(gh api "repos/$REPO/contents/.github/ISSUE_TEMPLATE" 2>/dev/null); then
+      TGT_NAMES=$(printf '%s' "$TGT_LIST" | jq -r '.[]|select(.type=="file")|.name' | sort)
+      while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        printf '%s\n' "$SRC_NAMES" | grep -qxF "$name" || say "  local    $name"
+      done <<<"$TGT_NAMES"
+    fi
+  fi
+
+  if [ "$SYNC_TEMPLATES" -eq 1 ] && [ -n "$SRC_LIST" ]; then
+    if [ ${#DRIFTED_FILES[@]} -eq 0 ] && [ ${#MISSING_FILES[@]} -eq 0 ]; then
+      say "  nothing to sync"
+    elif [ "$DRY" -eq 1 ]; then
+      for spec in "${DRIFTED_FILES[@]}"; do say "  WOULD write ${spec%%|*} (drifted)"; done
+      for name in "${MISSING_FILES[@]}"; do say "  WOULD write $name (missing)"; done
+    else
+      DEFAULT_BRANCH=$(gh api "repos/$REPO" --jq .default_branch)
+      HEAD_SHA=$(gh api "repos/$REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)
+      SYNC_BRANCH="setup-repo/sync-templates-$(date +%s)"
+      gh api -X POST "repos/$REPO/git/refs" -f "ref=refs/heads/$SYNC_BRANCH" -f "sha=$HEAD_SHA" >/dev/null
+      WRITTEN=()
+      for spec in "${DRIFTED_FILES[@]}"; do
+        name="${spec%%|*}"; tgt_sha="${spec##*|}"
+        content=$(gh api "repos/$TEMPLATE_SRC/contents/.github/ISSUE_TEMPLATE/$name" --jq .content | tr -d '\n')
+        gh api -X PUT "repos/$REPO/contents/.github/ISSUE_TEMPLATE/$name" \
+          -f "message=chore: sync issue template $name from $TEMPLATE_SRC" \
+          -f "content=$content" -f "sha=$tgt_sha" -f "branch=$SYNC_BRANCH" >/dev/null
+        WRITTEN+=("$name"); say "  wrote    $name"
+      done
+      for name in "${MISSING_FILES[@]}"; do
+        content=$(gh api "repos/$TEMPLATE_SRC/contents/.github/ISSUE_TEMPLATE/$name" --jq .content | tr -d '\n')
+        gh api -X PUT "repos/$REPO/contents/.github/ISSUE_TEMPLATE/$name" \
+          -f "message=chore: sync issue template $name from $TEMPLATE_SRC" \
+          -f "content=$content" -f "branch=$SYNC_BRANCH" >/dev/null
+        WRITTEN+=("$name"); say "  wrote    $name"
+      done
+      BODY="Syncs the following issue templates from $TEMPLATE_SRC:"$'\n\n'
+      for name in "${WRITTEN[@]}"; do BODY+="- $name"$'\n'; done
+      gh pr create --repo "$REPO" --head "$SYNC_BRANCH" \
+        --title "chore: sync shared issue templates from $TEMPLATE_SRC" \
+        --body "$BODY" >/dev/null
+      say "  opened PR from $SYNC_BRANCH"
+    fi
+  fi
+fi
+say ""
+
 # ------------------------------------------------- caller stubs, report only
 # Writing these means a PR against the target repo, which is that repo's business.
 say "workflow caller stubs (report only)"
-for f in claude-code-review.yml claude.yml pr-title.yml dependabot-auto-merge.yml; do
+for f in claude-code-review.yml claude.yml pr-title.yml dependabot-auto-merge.yml review-findings-sweep.yml; do
   if gh api "repos/$REPO/contents/.github/workflows/$f" --jq .name >/dev/null 2>&1; then
     say "  present  $f"
   else
