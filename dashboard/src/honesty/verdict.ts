@@ -32,6 +32,7 @@ export const VERDICT_KIND_MAP: Record<string, VerdictState> = {
   "paused-by-request": "did-not-run",
   "skipped-trivial": "did-not-run",
   superseded: "did-not-run",
+  "unchanged-patch": "did-not-run",
   draft: "did-not-run",
   "refused-size": "did-not-run",
   "verify-superseded": "did-not-run",
@@ -50,6 +51,7 @@ export const ALL_VERDICT_KINDS = [
   "paused-by-request",
   "skipped-trivial",
   "superseded",
+  "unchanged-patch",
   "draft",
   "refused-size",
   "no-token",
@@ -95,6 +97,10 @@ export const VERDICT_KIND_DEFINITIONS: Record<
   superseded: {
     group: "did-not-run",
     definition: "The head moved during the debounce window, so this round would have read a stale diff.",
+  },
+  "unchanged-patch": {
+    group: "did-not-run",
+    definition: "The push changed no line of this PR's own patch, so no round ran.",
   },
   draft: {
     group: "did-not-run",
@@ -243,6 +249,7 @@ const VERDICT_KIND_BUCKET_MAP: Record<string, VerdictKindBucket> = {
   "paused-by-request": "did-not-run",
   "skipped-trivial": "did-not-run",
   superseded: "did-not-run",
+  "unchanged-patch": "did-not-run",
   draft: "did-not-run",
   "refused-size": "did-not-run",
   "verify-superseded": "did-not-run",

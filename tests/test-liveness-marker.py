@@ -82,7 +82,8 @@ exit 1
 def run_case(script, *, marker_body=None, inline=0, summary=0,
              event="pull_request", skip_reason="", result="success",
              mode="review", mutate_result="skipped", resolved="", open_="",
-             verify_summary="", inline_json="", draft="", current_head=None):
+             verify_summary="", inline_json="", draft="", current_head=None,
+             patch_fingerprint=""):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
@@ -110,6 +111,7 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
             MUTATE_RESULT=mutate_result, RESOLVED=resolved, OPEN=open_,
             STARTED_AT="2026-01-01T00:00:00Z", RUN_URL="http://run",
             DRAFT=draft,
+            PATCH_FINGERPRINT=patch_fingerprint,
             # The head the PR is on right now. Unchanged unless a case moves it.
             FAKE_CURRENT_HEAD=(NEW if current_head is None else current_head),
         )
@@ -126,7 +128,8 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
 def parse_marker(line):
     rounds = re.search(r"rounds=(\d+)", line)
     sha = re.search(r"sha=([0-9a-f]{40})", line)
-    return (rounds.group(1) if rounds else None, sha.group(1) if sha else None)
+    patch = re.search(r"patch=([0-9a-f]{64})", line)
+    return (rounds.group(1) if rounds else None, sha.group(1) if sha else None, patch.group(1) if patch else None)
 
 
 # The reader in `Detect verification mode` parses rounds off the marker with this
@@ -134,6 +137,14 @@ def parse_marker(line):
 def reader_rounds(line):
     p = subprocess.run(
         "head -1 | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true",
+        shell=True, input=line, capture_output=True, text=True)
+    return p.stdout.strip()
+
+
+# Old readers parse sha= off the marker with this exact expression (#162).
+def reader_sha(line):
+    p = subprocess.run(
+        "head -1 | grep -oE 'sha=[0-9a-f]{40}' | head -1 | cut -d= -f2 || true",
         shell=True, input=line, capture_output=True, text=True)
     return p.stdout.strip()
 
@@ -246,6 +257,16 @@ CASES = [
                                                "original_commit_id": OLD}]),
                                               summary=0),                                "1",  None,
                                          lambda v: "posted **nothing**" in v),
+    ("review with patch: marker carries patch and reader parses sha (#162)",
+                                         dict(inline=1, summary=1, patch_fingerprint="f" * 64),
+                                                                                         "1",  NEW,
+                                         None, "f" * 64),
+    ("unchanged-patch skip: advances sha and carries patch (#162)",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} patch={'e' * 64} -->",
+                                              mode="skip", skip_reason="unchanged-patch", patch_fingerprint="e" * 64),
+                                                                                         "2",  NEW,
+                                         lambda v: "changed no line of this PR's own patch" in v,
+                                         "e" * 64),
 ]
 
 
@@ -257,18 +278,26 @@ def main():
     for case in CASES:
         name, kw, want_rounds, want_sha = case[:4]
         verdict_check = case[4] if len(case) > 4 else None
+        want_patch = case[5] if len(case) > 5 else None
         res, err = run_case(script, **kw)
         if err:
             fails.append(f"{name}: {err}")
             print(f"  ERROR  {name}: {err}")
             continue
         line, verdict = res
-        got_rounds, got_sha = parse_marker(line)
+        got_rounds, got_sha, got_patch = parse_marker(line)
         ok = got_rounds == want_rounds and got_sha == want_sha
+        if want_patch is not None and got_patch != want_patch:
+            ok = False
+            fails.append(f"{name}: want patch={want_patch}, got {got_patch}")
         # the existing reader must still see the same rounds value
         if reader_rounds(line) != (want_rounds or ""):
             ok = False
-            err = f"reader parsed rounds={reader_rounds(line)!r}"
+            fails.append(f"{name}: reader parsed rounds={reader_rounds(line)!r}")
+        # old readers parse sha= off the marker (#162)
+        if reader_sha(line) != (want_sha or ""):
+            ok = False
+            fails.append(f"{name}: reader parsed sha={reader_sha(line)!r}")
         if verdict_check and not verdict_check(verdict):
             ok = False
             fails.append(f"{name}: verdict assertion failed on {verdict!r}")

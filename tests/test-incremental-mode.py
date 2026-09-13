@@ -66,7 +66,7 @@ def run_case(script, *, event="pull_request", has_token="true", summon="none",
              fake_compare_json="{}", fake_compare_404="0",
              skip_authors="dependabot[bot]", pr_author="",
              diff_lines="", min_diff_lines="0", debounce_minutes="0",
-             debounced_head=""):
+             debounced_head="", patch_fingerprint=""):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
@@ -99,7 +99,9 @@ def run_case(script, *, event="pull_request", has_token="true", summon="none",
             DIFF_LINES=diff_lines,
             MIN_DIFF_LINES=min_diff_lines,
             DEBOUNCE_MINUTES=debounce_minutes,
+            DEBOUNCED_HEAD=debounced_head or head_sha,
             FAKE_DEBOUNCED_HEAD=debounced_head or head_sha,
+            PATCH_FINGERPRINT=patch_fingerprint,
             SKIP_AUTHORS=str(skip_authors),
             PR_AUTHOR=str(pr_author),
             FAKE_LIVENESS=fake_liveness,
@@ -147,6 +149,32 @@ CASES = [
     ("pull_request, compare diverged",
      dict(fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + OLD + " -->",
           fake_compare_json=json.dumps({"status": "diverged", "files": [{}]})),
+     "review", "diverged", "", False),
+
+    ("pull_request, compare diverged with equal patch fingerprint gives unchanged-patch skip (#162)",
+     dict(fake_liveness=f"<!-- claude-review-liveness rounds=1 sha={OLD} patch={'e' * 64} -->",
+          fake_compare_json=json.dumps({"status": "diverged", "files": [{}]}),
+          patch_fingerprint="e" * 64),
+     "skip", "unchanged-patch", "unchanged-patch", False),
+
+    ("pull_request, compare diverged with different patch fingerprint gives full review (#162)",
+     dict(fake_liveness=f"<!-- claude-review-liveness rounds=1 sha={OLD} patch={'e' * 64} -->",
+          fake_compare_json=json.dumps({"status": "diverged", "files": [{}]}),
+          patch_fingerprint="f" * 64),
+     "review", "diverged", "", False),
+
+    ("pull_request, compare diverged with empty stored patch fingerprint gives full review (#162)",
+     dict(fake_liveness=f"<!-- claude-review-liveness rounds=1 sha={OLD} -->",
+          fake_compare_json=json.dumps({"status": "diverged", "files": [{}]}),
+          patch_fingerprint="e" * 64),
+     "review", "diverged", "", False),
+
+    ("issue_comment summon, compare diverged with equal patch fingerprint still reviews (#162)",
+     dict(event="issue_comment", summon="incremental",
+          fake_threads="[]",
+          fake_liveness=f"<!-- claude-review-liveness rounds=1 sha={OLD} patch={'e' * 64} -->",
+          fake_compare_json=json.dumps({"status": "diverged", "files": [{}]}),
+          patch_fingerprint="e" * 64),
      "review", "diverged", "", False),
 
     ("pull_request, compare behind",

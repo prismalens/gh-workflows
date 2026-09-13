@@ -101,6 +101,7 @@ const VALID_LANE_EVENT_REASONS = new Set([
   "draft", // #153: a summon on a draft spends a run and reviews nothing
   "skip-trivial", // #154: min_diff_lines floor
   "superseded", // #154: debounce_minutes lever
+  "unchanged-patch", // #162: restack with unchanged patch
 ]);
 
 const LANE_EVENT_NUMERIC_FIELDS = [

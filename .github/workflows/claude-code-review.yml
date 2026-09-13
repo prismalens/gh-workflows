@@ -161,6 +161,7 @@ jobs:
       pr_head_ref: ${{ steps.pr.outputs.pr_head_ref }}
       base_pr_number: ${{ steps.pr.outputs.base_pr_number }}
       base_pr_title: ${{ steps.pr.outputs.base_pr_title }}
+      patch_fingerprint: ${{ steps.fingerprint.outputs.patch_fingerprint }}
 
     steps:
       - name: Admit commenter
@@ -265,6 +266,64 @@ jobs:
           else
             echo "same_repo=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Compute patch fingerprint
+        id: fingerprint
+        if: steps.admit.outputs.admitted == 'true' || github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          # Patch fingerprint: sha256 of sorted filenames and patch +/- lines (#162).
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import sys
+
+          repo = os.environ.get("GITHUB_REPOSITORY", "")
+          base_sha = os.environ.get("BASE_SHA", "")
+          head_sha = os.environ.get("HEAD_SHA", "")
+          gh_output = os.environ.get("GITHUB_OUTPUT", "")
+
+          fingerprint = ""
+          if repo and base_sha and head_sha:
+              try:
+                  res = subprocess.run(
+                      ["gh", "api", f"repos/{repo}/compare/{base_sha}...{head_sha}"],
+                      capture_output=True,
+                      text=True,
+                  )
+                  if res.returncode == 0 and res.stdout.strip():
+                      data = json.loads(res.stdout)
+                      files = data.get("files")
+                      if isinstance(files, list) and len(files) < 300:
+                          h = hashlib.sha256()
+                          valid = True
+                          for f in sorted(files, key=lambda x: x.get("filename", "") if isinstance(x, dict) else ""):
+                              if not isinstance(f, dict) or "patch" not in f or f["patch"] is None:
+                                  valid = False
+                                  break
+                              filename = f.get("filename", "")
+                              h.update(f"{filename}\n".encode("utf-8"))
+                              for line in f["patch"].splitlines():
+                                  if (line.startswith("+") or line.startswith("-")) and not (line.startswith("+++") or line.startswith("---")):
+                                      h.update(f"{line}\n".encode("utf-8"))
+                          if valid:
+                              fingerprint = h.hexdigest()
+              except Exception:
+                  fingerprint = ""
+
+          if gh_output:
+              with open(gh_output, "a", encoding="utf-8") as f:
+                  f.write(f"patch_fingerprint={fingerprint}\n")
+          else:
+              print(fingerprint)
+          PY
 
   review:
     needs: resolve
@@ -1007,6 +1066,7 @@ jobs:
           DIFF_LINES: ${{ needs.resolve.outputs.diff_lines }}
           MIN_DIFF_LINES: ${{ inputs.min_diff_lines }}
           DEBOUNCE_MINUTES: ${{ inputs.debounce_minutes }}
+          PATCH_FINGERPRINT: ${{ needs.resolve.outputs.patch_fingerprint }}
           # Presence only — the token value never enters the shell.
           HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
@@ -1026,10 +1086,11 @@ jobs:
           }
 
           resolve_range() {
-            baseline=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            liveness_raw=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
               "[.[] | select(.user.login==\"github-actions[bot]\")
-                    | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty" \
-              | head -1 | grep -oE 'sha=[0-9a-f]{40}' | head -1 | cut -d= -f2 || true)
+                    | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty")
+            baseline=$(printf '%s\n' "$liveness_raw" | head -1 | grep -oE 'sha=[0-9a-f]{40}' | head -1 | cut -d= -f2 || true)
+            stored_patch=$(printf '%s\n' "$liveness_raw" | head -1 | grep -oE 'patch=[0-9a-f]{64}' | head -1 | cut -d= -f2 || true)
 
             if [ -z "$baseline" ]; then
               echo "fallback to full review: no baseline sha found in liveness marker"
@@ -1063,6 +1124,12 @@ jobs:
             case "$files_count" in ''|*[!0-9]*) files_count=0 ;; esac
 
             if [ "$status" = "diverged" ] || [ "$status" = "behind" ]; then
+              # A diverged push with identical patch fingerprint skips review; summons never skip (#162).
+              if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$stored_patch" ] && [ "$stored_patch" = "${PATCH_FINGERPRINT:-}" ]; then
+                echo "skipping review: diverged push has unchanged patch fingerprint $stored_patch"
+                emit skip unchanged-patch unchanged-patch
+                exit 0
+              fi
               echo "fallback to full review: compare status between $baseline and $HEAD_SHA is '$status'"
               emit review "" diverged
               exit 0
@@ -4359,6 +4426,7 @@ jobs:
           REVIEWABLE_LINES: ${{ needs.review.outputs.reviewable_lines }}
           MAX_REVIEWABLE_LINES: ${{ needs.review.outputs.max_reviewable_lines }}
           CONTEXT_NOTES: ${{ needs.review.outputs.context_notes }}
+          PATCH_FINGERPRINT: ${{ needs.resolve.outputs.patch_fingerprint }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -4485,6 +4553,10 @@ jobs:
           would have reviewed a stale diff. **This head has no machine review on record.** Whether the newer \
           head gets one depends on its own run, which this round cannot see."
             verdict_kind="superseded"
+          elif [ "$SKIP_REASON" = "unchanged-patch" ]; then
+            verdict="did not run at \`$short\`: the push changed no line of this PR's own patch, so no round ran."
+            verdict_kind="unchanged-patch"
+            reviewed_sha="$HEAD_SHA"
           elif [ "$SKIP_REASON" = "no-token" ]; then
             verdict="did not run at \`$short\`: no CLAUDE_CODE_OAUTH_TOKEN reached this lane. \
           This head has no machine review on record — map the secret explicitly in the caller stub."
@@ -4672,7 +4744,7 @@ jobs:
             # `no-new-commits` is the one skip whose meaning is "this head was already
             # reviewed". It confirms the standing verdict rather than replacing it with the
             # absence of one, so it is not the loss this guard exists to stop.
-            no-new-commits)
+            no-new-commits|unchanged-patch)
               ;;
             *)
               if [ -n "$existing" ] && [ "$reviewed_sha" = "$HEAD_SHA" ]; then
@@ -4704,9 +4776,15 @@ jobs:
             fi
           fi
 
+          # A patch fingerprint is recorded on sha= advancement and unchanged-patch skip (#162).
+          patch_flag=""
+          if [ -n "$reviewed_sha" ] && [ -n "${PATCH_FINGERPRINT:-}" ]; then
+            patch_flag=" patch=${PATCH_FINGERPRINT}"
+          fi
+
           # `sha=` is omitted entirely when there is no baseline, so markers on never-reviewed
           # PRs stay clean and the field's absence is unambiguous.
-          marker="<!-- claude-review-liveness rounds=${rounds}${reviewed_sha:+ sha=${reviewed_sha}}${paused_flag} -->"
+          marker="<!-- claude-review-liveness rounds=${rounds}${reviewed_sha:+ sha=${reviewed_sha}}${patch_flag}${paused_flag} -->"
           body="$marker
           **Claude review lane** — [run]($RUN_URL): $verdict"
 
@@ -4815,6 +4893,7 @@ jobs:
         needs.review.outputs.skip_reason == 'skipped-author' ||
         needs.review.outputs.skip_reason == 'trivial' ||
         needs.review.outputs.skip_reason == 'superseded' ||
+        needs.review.outputs.skip_reason == 'unchanged-patch' ||
         needs.review.outputs.skip_reason == 'refused-size' ||
         (
           needs.resolve.outputs.draft == 'true' &&
@@ -4875,6 +4954,8 @@ jobs:
             reason="skip-trivial"
           elif [ "$SKIP_REASON" = "superseded" ]; then
             reason="superseded"
+          elif [ "$SKIP_REASON" = "unchanged-patch" ]; then
+            reason="unchanged-patch"
           elif [ "$SKIP_REASON" = "skipped-author" ]; then
             reason="skip-author"
           elif [ "$SKIP_REASON" = "no-token" ]; then

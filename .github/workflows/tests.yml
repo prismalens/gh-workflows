@@ -27,6 +27,10 @@ jobs:
       - name: Incremental review mode behaviour
         run: python3 tests/test-incremental-mode.py
 
+      # Extracts and runs the real script out of claude-code-review.yml. Story: #162.
+      - name: Patch fingerprint behaviour
+        run: python3 tests/test-patch-fingerprint.py
+
       # Extracts and runs the real script out of claude-code-review.yml. Story: #33, #34.
       - name: Review config and model escalation behaviour
         run: python3 tests/test-review-config.py
