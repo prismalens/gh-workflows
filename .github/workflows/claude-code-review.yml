@@ -218,12 +218,20 @@ jobs:
           pr_base_ref="$(jq -r '.base.ref // ""' <<< "$pr")"
           pr_head_ref="$(jq -r '.head.ref // ""' <<< "$pr")"
 
-          # Unmerged base PR lookup failure must never fail the job (#162).
+          # Unmerged base PR lookup failure must never fail the job (#162). `resolve`
+          # is the single owner of this lookup, recovery included -- the manifest
+          # step used to retry it independently, which could recover a PR resolve's
+          # own attempt missed while telemetry still read resolve's empty result
+          # (CR #173, thread 4000816174). One retry on an empty first attempt is
+          # the whole recovery path; both consumers read this job's final result.
           owner="${GITHUB_REPOSITORY%%/*}"
           base_pr_number=""
           base_pr_title=""
           if [ -n "$pr_base_ref" ]; then
             base_pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${owner}:${pr_base_ref}" --jq '.[0] | {number, title} // empty' 2>/dev/null || true)"
+            if [ -z "$base_pr_json" ]; then
+              base_pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${owner}:${pr_base_ref}" --jq '.[0] | {number, title} // empty' 2>/dev/null || true)"
+            fi
             if [ -n "$base_pr_json" ]; then
               base_pr_number="$(jq -r '.number // ""' <<< "$base_pr_json" 2>/dev/null || true)"
               base_pr_title="$(jq -r '.title // ""' <<< "$base_pr_json" 2>/dev/null || true)"
@@ -2047,7 +2055,6 @@ jobs:
           ISSUE_TOTAL_BYTE_BUDGET: ${{ steps.config.outputs.issue_context_total_byte_budget }}
           BASE_PR_NUMBER: ${{ needs.resolve.outputs.base_pr_number }}
           BASE_PR_TITLE: ${{ needs.resolve.outputs.base_pr_title }}
-          BASE_REF: ${{ needs.resolve.outputs.pr_base_ref }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -2669,7 +2676,10 @@ jobs:
           
           tool_findings_context = {"ran": tools_ran, "skipped": tools_skipped, "findings": tool_findings_list}
           
-          # A base PR lookup failure leaves base_pull_request null and never fails the round (#162).
+          # `resolve` is the single owner of the base PR lookup, recovery included
+          # (CR #173, thread 4000816174): this step reads its final result rather
+          # than repeating the lookup, so telemetry (which also reads resolve's
+          # output directly) can never disagree with what the manifest carries.
           base_pull_request = None
           base_pr_num = os.environ.get("BASE_PR_NUMBER", "").strip()
           base_pr_title = os.environ.get("BASE_PR_TITLE", "").strip()
@@ -2678,25 +2688,6 @@ jobs:
                   base_pull_request = {"number": int(base_pr_num), "title": base_pr_title}
               except Exception:
                   base_pull_request = None
-          else:
-              owner = repo.split("/")[0] if "/" in repo else ""
-              target_base_ref = os.environ.get("BASE_REF", "").strip()
-              if not target_base_ref and pr:
-                  pr_fetch = run_gh(["gh", "api", f"repos/{repo}/pulls/{pr}"])
-                  if pr_fetch.returncode == 0 and pr_fetch.stdout.strip():
-                      try:
-                          target_base_ref = (json.loads(pr_fetch.stdout).get("base") or {}).get("ref") or ""
-                      except Exception:
-                          pass
-              if owner and target_base_ref:
-                  bpr_res = run_gh(["gh", "api", f"repos/{repo}/pulls?state=open&head={owner}:{target_base_ref}"])
-                  if bpr_res.returncode == 0 and bpr_res.stdout.strip():
-                      try:
-                          bpr_list = json.loads(bpr_res.stdout)
-                          if isinstance(bpr_list, list) and len(bpr_list) > 0 and isinstance(bpr_list[0], dict):
-                              base_pull_request = {"number": bpr_list[0]["number"], "title": bpr_list[0].get("title", "")}
-                      except Exception:
-                          pass
 
           # Kept entries from .claude-context.json, or [] (#90).
           cross_repo_context = []
