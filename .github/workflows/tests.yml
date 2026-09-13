@@ -108,6 +108,42 @@ jobs:
       - name: CI failure report behaviour
         run: python3 tests/test-ci-failure-report.py
 
+      # Seven tests existed and this job never ran them, which is how #166 bumped both
+      # uses: pins and left env.ACTION_VERSION on the old SHA with a green check (#130).
+      - name: action_version drift
+        run: python3 tests/test-action-version-drift.py
+
+      - name: Agent rollup
+        run: python3 tests/test-agent-rollup.py
+
+      - name: Path filters
+        run: python3 tests/test-path-filters.py
+
+      - name: Pause and resume
+        run: python3 tests/test-pause-resume.py
+
+      - name: Prompt hash template
+        run: python3 tests/test-prompt-hash-template.py
+
+      - name: Telemetry reconciler behaviour
+        run: python3 tests/test-telemetry-reconcile.py
+
+      - name: Verify tool allowlist
+        run: python3 tests/test-verify-tool-allowlist.py
+
+      # A test file this job does not name is a test that never runs (#130).
+      - name: Every test file is wired into this job
+        run: |
+          set -euo pipefail
+          missing=0
+          for t in tests/test-*.py; do
+            if ! grep -qF "$(basename "$t")" .github/workflows/tests.yml; then
+              echo "::error::${t} exists but nothing in tests.yml runs it (#130)."
+              missing=1
+            fi
+          done
+          exit "${missing}"
+
       # Version pinned: an actionlint release must not turn a green branch red on its own.
       # The release tarball against a recorded checksum, never the upstream installer from
       # a moving branch (#163). tests/test-actionlint-pin-drift.py holds this step and the
