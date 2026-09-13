@@ -1323,6 +1323,29 @@ async function handleIngest(request, env) {
             }
           );
         }
+
+        // #174, CR #173 thread 4000816218: neither field was validated, so a
+        // malformed tool_detail (a non-object, or a string that fails to parse)
+        // or a negative harness_paths_count stored anyway, silently as-is or
+        // as null, while the caller still received 204.
+        if (!isValidJsonShape(agent.tool_detail, "object")) {
+          return new Response(
+            JSON.stringify({ error: `invalid agent at index ${i}: tool_detail must be a JSON object` }),
+            { status: 400, headers: { "content-type": "application/json" } }
+          );
+        }
+        if (
+          agent.harness_paths_count !== undefined &&
+          agent.harness_paths_count !== null &&
+          !(Number.isInteger(agent.harness_paths_count) && agent.harness_paths_count >= 0)
+        ) {
+          return new Response(
+            JSON.stringify({
+              error: `invalid agent at index ${i}: harness_paths_count must be a non-negative integer`,
+            }),
+            { status: 400, headers: { "content-type": "application/json" } }
+          );
+        }
       }
     }
 

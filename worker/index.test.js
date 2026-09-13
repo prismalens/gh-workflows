@@ -1246,6 +1246,69 @@ describe("Worker telemetry ingest", () => {
       assert.equal(db.queries.length, 0);
     });
 
+    it("rejects a malformed tool_detail or a negative harness_paths_count before batching (#174, CR #173 thread 4000816218)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+
+      // tool_detail: a string that is not JSON
+      const notJsonReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-tool-detail-not-json",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: "agent-0", tool_detail: "not-json" }],
+        },
+      });
+      const notJsonRes = await worker.fetch(notJsonReq, env);
+      assert.equal(notJsonRes.status, 400);
+      const notJsonBody = await notJsonRes.json();
+      assert.match(notJsonBody.error, /tool_detail/);
+      assert.equal(db.queries.length, 0);
+
+      // tool_detail: a JSON array, not an object
+      const arrayReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-tool-detail-array",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: "agent-0", tool_detail: [1, 2, 3] }],
+        },
+      });
+      const arrayRes = await worker.fetch(arrayReq, env);
+      assert.equal(arrayRes.status, 400);
+      const arrayBody = await arrayRes.json();
+      assert.match(arrayBody.error, /tool_detail/);
+      assert.equal(db.queries.length, 0);
+
+      // harness_paths_count: -1
+      const negativeReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-harness-negative",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: "agent-0", harness_paths_count: -1 }],
+        },
+      });
+      const negativeRes = await worker.fetch(negativeReq, env);
+      assert.equal(negativeRes.status, 400);
+      const negativeBody = await negativeRes.json();
+      assert.match(negativeBody.error, /harness_paths_count/);
+      assert.equal(db.queries.length, 0);
+
+      // Valid values still insert, proving the rejection is on shape, not presence.
+      const validReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-tool-detail-valid",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: "agent-0", tool_detail: { read: [] }, harness_paths_count: 0 }],
+        },
+      });
+      const validRes = await worker.fetch(validReq, env);
+      assert.equal(validRes.status, 204);
+      assert.equal(db.queries.length, 2);
+    });
+
     it("integer fields that are not integers become null and string fields are truncated", async () => {
       const db = createFakeDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
