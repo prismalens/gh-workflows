@@ -201,6 +201,10 @@ export interface PrRow {
   closed_at: string | null;
   updated_at: string;
   source: string;
+  /** Rows in review_findings for this PR; 0 means no sweep has recorded it (#75). */
+  total_findings: number;
+  /** Of those, the threads not resolved on GitHub; the same rule decodeFate uses (#75). */
+  open_findings: number;
 }
 
 export interface PrsResponse {

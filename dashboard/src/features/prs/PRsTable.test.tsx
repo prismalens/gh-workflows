@@ -64,3 +64,39 @@ describe("PRsTable pagination (#141)", () => {
     expect(bodyRows(table)).toHaveLength(2);
   });
 });
+
+describe("PRsTable Open findings column (#75)", () => {
+  it("renders three states with distinct titles and content", async () => {
+    const rowNoPrs = {
+      ...pr({ pr_number: 1, session_id: "p1" }),
+      openFindings: null,
+      totalFindings: null,
+    };
+    const rowNoFindings = {
+      ...pr({ pr_number: 2, session_id: "p2" }),
+      openFindings: 0,
+      totalFindings: 0,
+    };
+    const rowWithFindings = {
+      ...pr({ pr_number: 3, session_id: "p3" }),
+      openFindings: 2,
+      totalFindings: 5,
+    };
+
+    await renderTable({
+      prs: [rowNoPrs, rowNoFindings, rowWithFindings],
+      sorting: [],
+      onSortingChange: vi.fn(),
+    });
+
+    const noPrsEl = screen.getByTitle("Finding counts not recorded: no prs row for this PR yet");
+    expect(noPrsEl).toHaveTextContent("—");
+
+    const noFindingsEl = screen.getByTitle("No findings on record for this PR");
+    expect(noFindingsEl).toHaveTextContent("—");
+
+    const withFindingsEl = screen.getByTitle("2 open of 5 recorded by the findings sweep");
+    expect(withFindingsEl).toHaveTextContent("2");
+    expect(withFindingsEl).toHaveTextContent("/ 5");
+  });
+});

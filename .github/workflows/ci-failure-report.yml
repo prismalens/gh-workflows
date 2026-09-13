@@ -1,0 +1,181 @@
+# Nothing else here says when a lane dies. A startup_failure never starts a job, so
+# neither the callee nor telemetry can report it; only a reader of run conclusions can.
+# One poller for every consumer: all four repositories are public, so one GITHUB_TOKEN
+# reads them all, and a stub per repo would depend on the very callee that just failed
+# silently for a week. Story: #169.
+name: CI failure report
+
+on:
+  schedule:
+    # Hourly, off the hour: GitHub delays cron at peak minutes (#44).
+    - cron: '23 * * * *'
+    # The heartbeat. Posts even when nothing failed, so a dead poller is noticed within
+    # a week rather than never. A different minute from the hourly entry, so the two
+    # never read the same window and post it twice.
+    - cron: '37 7 * * 1'
+  workflow_dispatch:
+    inputs:
+      window_hours:
+        description: 'Hours to look back. 0 means since the last successful poll, capped at 24.'
+        required: false
+        default: 0
+        type: number
+      heartbeat:
+        description: 'Post even when nothing failed'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect failed runs across the fleet
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The consumer list from README.md, plus this repository for its own lanes.
+          REPOSITORIES: |
+            prismalens/gh-workflows
+            prismalens/prismalens
+            prismalens/sreforge
+            Sumit1993/mage-memory
+          WORKFLOW_FILE: ci-failure-report.yml
+          WINDOW_HOURS: ${{ inputs.window_hours || 0 }}
+          HEARTBEAT: ${{ inputs.heartbeat || github.event.schedule == '37 7 * * 1' }}
+          SLACK_CI_FAILURES_WEBHOOK: ${{ secrets.SLACK_CI_FAILURES_WEBHOOK }}
+          PAYLOAD_FILE: ${{ runner.temp }}/slack-payload.json
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SLACK_CI_FAILURES_WEBHOOK:-}" ]; then
+            echo "::error::SLACK_CI_FAILURES_WEBHOOK is not set. Create a Slack incoming webhook for the failures channel and store it as a repository secret; until then no failure is reported anywhere (#169)."
+            exit 1
+          fi
+
+          # The window is [since, until). `until` is this run's own creation time, so the
+          # next poll, which starts from this run's created_at, never re-reads a second
+          # this one already covered. The 24h floor bounds the API read whatever happened
+          # to earlier polls.
+          until="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at')"
+          floor="$(date -u -d "${until} -24 hours" +%Y-%m-%dT%H:%M:%SZ)"
+          if [ "${WINDOW_HOURS}" != "0" ]; then
+            since="$(date -u -d "${until} -${WINDOW_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)"
+            since_source="window_hours=${WINDOW_HOURS}"
+          else
+            last="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_FILE}/runs?status=success&per_page=1" --jq '.workflow_runs[0].created_at // empty' 2>/dev/null || true)"
+            if [ -n "${last}" ] && [ "${last}" \> "${floor}" ]; then
+              since="${last}"
+              since_source="last successful poll"
+            else
+              since="${floor}"
+              since_source="24h cap"
+            fi
+          fi
+          echo "window: ${since} to ${until} (${since_source})"
+
+          failures="$(mktemp)"
+          runs="$(mktemp)"
+          err="$(mktemp)"
+          trap 'rm -f "$failures" "$runs" "$err"' EXIT
+          : > "${failures}"
+          unread=""
+          repos_read=0
+          # The created= filter drops runs before the API read, so it takes the earlier of
+          # the window start and the 24h floor; a window_hours past 24 is otherwise cut.
+          lower="${floor}"
+          if [ "${since}" \< "${floor}" ]; then lower="${since}"; fi
+          created_floor="${lower%%T*}"
+
+          while IFS= read -r repo; do
+            repo="$(echo "${repo}" | tr -d '[:space:]')"
+            [ -z "${repo}" ] && continue
+            if ! gh api --paginate -X GET "repos/${repo}/actions/runs" \
+                 -f per_page=100 -f "created=>=${created_floor}" \
+                 --jq '.workflow_runs[]' > "${runs}" 2> "${err}"; then
+              echo "::warning::Could not read runs for ${repo}: $(head -c 300 "${err}") (#169)"
+              unread="${unread}${repo} "
+              continue
+            fi
+            repos_read=$((repos_read + 1))
+            jq -c --arg since "${since}" --arg until "${until}" '
+              select(.status == "completed")
+              | select(.updated_at >= $since and .updated_at < $until)
+              | select(.conclusion == "failure" or .conclusion == "startup_failure"
+                       or .conclusion == "timed_out" or .conclusion == "action_required")
+              | {repo: .repository.full_name, id: .id, workflow: .name, conclusion: .conclusion,
+                 event: .event, branch: .head_branch, title: .display_title, url: .html_url,
+                 attempt: .run_attempt, updated_at: .updated_at}' "${runs}" >> "${failures}"
+          done <<< "${REPOSITORIES}"
+
+          # A startup_failure has no jobs and the API does not carry the parse error, so
+          # the run page is the evidence. Every other conclusion names its failed jobs and
+          # the first failed step in each.
+          detailed="$(mktemp)"
+          : > "${detailed}"
+          while IFS= read -r failure; do
+            [ -z "${failure}" ] && continue
+            repo="$(echo "${failure}" | jq -r '.repo')"
+            id="$(echo "${failure}" | jq -r '.id')"
+            conclusion="$(echo "${failure}" | jq -r '.conclusion')"
+            if [ "${conclusion}" = "startup_failure" ]; then
+              jobs='["no job ran: the workflow file did not parse or a reusable workflow could not be resolved; the run page shows the error"]'
+            elif ! jobs="$(gh api "repos/${repo}/actions/runs/${id}/jobs" --jq '
+                [.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out")
+                 | "\(.name) → \(([.steps[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .name][0]) // "no step named")"]
+                | .[:3]' 2>/dev/null)"; then
+              jobs='["jobs could not be read"]'
+            fi
+            echo "${failure}" | jq -c --argjson jobs "${jobs}" '. + {jobs: $jobs}' >> "${detailed}"
+          done < "${failures}"
+
+          count="$(wc -l < "${detailed}" | tr -d ' ')"
+          echo "failures=${count} repos_read=${repos_read} unread=${unread:-none}"
+
+          post=true
+          if [ "${count}" = "0" ] && [ -z "${unread}" ] && [ "${HEARTBEAT}" != "true" ]; then
+            post=false
+          fi
+
+          jq -n --slurpfile rows "${detailed}" \
+            --arg since "${since}" --arg until "${until}" --arg since_source "${since_source}" \
+            --arg repos_read "${repos_read}" --arg unread "${unread% }" --arg heartbeat "${HEARTBEAT}" '
+            def esc: tostring | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
+            def failure_block:
+              "*\(.repo | esc)* · \(.workflow | esc) · `\(.conclusion)`\n"
+              + "\(.event) on `\(.branch // "?" | esc)` · \(.title | esc)\n"
+              + "<\(.url)|run \(.id), attempt \(.attempt)>\n"
+              + (.jobs | map("• " + esc) | join("\n"));
+            ($rows | length) as $n
+            | (if $n == 0 then
+                 "CI failure report: \($repos_read) repositories read, 0 failures since \($since) (\($since_source)). The poller is alive."
+               else
+                 "CI failures across the fleet: \($n) since \($since) (\($since_source)). Repositories: \($rows | map(.repo) | unique | join(", ")). Reply in this thread with @Claude triage this."
+               end) as $headline
+            | {
+                text: $headline,
+                blocks: (
+                  [{type: "section", text: {type: "mrkdwn", text: $headline}}]
+                  + ($rows[:20] | map({type: "section", text: {type: "mrkdwn", text: failure_block}}))
+                  + (if $n > 20 then [{type: "context", elements: [{type: "mrkdwn", text: "and \($n - 20) more in this window"}]}] else [] end)
+                  + (if $unread != "" then [{type: "context", elements: [{type: "mrkdwn", text: "could not read runs for: \($unread | esc)"}]}] else [] end)
+                )
+              }' > "${PAYLOAD_FILE}"
+          rm -f "${detailed}"
+
+          {
+            echo "post=${post}"
+            echo "count=${count}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Post to Slack
+        if: steps.collect.outputs.post == 'true'
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
+        with:
+          webhook: ${{ secrets.SLACK_CI_FAILURES_WEBHOOK }}
+          webhook-type: incoming-webhook
+          payload-file-path: ${{ runner.temp }}/slack-payload.json
+          errors: true

@@ -1,24 +1,35 @@
 #!/usr/bin/env python3
-"""Behavioural tests for the D1 migration check step in deploy-worker.yml.
+"""Behavioural tests for the D1 migration guard: worker/scripts/d1-pending.sh and the
+"Check for pending D1 migrations" step in deploy-worker.yml (#164).
 
-Extracts the REAL shell body out of .github/workflows/deploy-worker.yml and runs it
-against stubbed wrangler invocations to prove all three distinct states:
-1. Migrations are up to date (clean schema, exit 0, no warning, no summary).
-2. A migration is pending (exit 1, pending migrations error & step summary).
-3. The migration state could not be determined (exit 0, check failure warning & step summary).
+The script is run against a stubbed wrangler that answers `d1 execute --json` with a
+d1_migrations result set, proving:
+1. Every file applied: exit 0, nothing on stdout.
+2. Two files missing from d1_migrations: exit 2, exactly those names on stdout, in order.
+3. wrangler exits non-zero: exit 1, its stderr forwarded, nothing on stdout.
+4. wrangler exits 0 with a non-result body (the "did not look" case #164 measured): exit 1.
+5. A clean summary line from wrangler with no rows (a fresh database): every file pending.
+
+The guard step is run against a stubbed scripts/d1-pending.sh, proving:
+6. Exit 0 from the script: step exits 0, no annotation, empty summary.
+7. Exit 2: step exits 1, ::error:: names the pending files and the Apply workflow, summary too.
+8. Exit 1: step exits 1, ::error:: says the state is unknown; the deploy never proceeds on
+   an unread table.
 
 Run: python3 tests/test-deploy-worker-migration-check.py
 """
+import json
 import os
 import pathlib
-import re
 import subprocess
 import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = ROOT / ".github/workflows/deploy-worker.yml"
+SCRIPT = ROOT / "worker/scripts/d1-pending.sh"
 STEP = "Check for pending D1 migrations"
+MIGRATIONS = ["0001_initial_schema.sql", "0002_wave2_fields.sql", "0003_indexes.sql"]
 
 
 def extract_step_script() -> str:
@@ -31,118 +42,125 @@ def extract_step_script() -> str:
     sys.exit(f"step {STEP!r} not found in {WF}")
 
 
-def run_migration_check(script: str, *, wrangler_output: str = "", wrangler_exit_code: int = 0):
+def run_script(*, applied=None, wrangler_stdout=None, wrangler_exit=0, wrangler_stderr=""):
+    """Runs the real d1-pending.sh from a temp worker/ with a stubbed wrangler."""
     with tempfile.TemporaryDirectory() as td:
-        tdp = pathlib.Path(td)
-        bin_dir = tdp / "node_modules" / ".bin"
+        worker = pathlib.Path(td) / "worker"
+        (worker / "migrations").mkdir(parents=True)
+        for name in MIGRATIONS:
+            (worker / "migrations" / name).write_text("-- fixture\n")
+        scripts = worker / "scripts"
+        scripts.mkdir()
+        (scripts / "d1-pending.sh").write_text(SCRIPT.read_text())
+        (scripts / "d1-pending.sh").chmod(0o755)
+        bin_dir = worker / "node_modules" / ".bin"
         bin_dir.mkdir(parents=True)
-        wrangler_bin = bin_dir / "wrangler"
-
-        # Stub wrangler binary
-        wrangler_script = f"""#!/usr/bin/env bash
-cat <<'EOF_WRANGLER'
-{wrangler_output}
-EOF_WRANGLER
-exit {wrangler_exit_code}
+        if wrangler_stdout is None:
+            wrangler_stdout = json.dumps(
+                [{"results": [{"name": n} for n in (applied or [])], "success": True, "meta": {}}]
+            )
+        stub = f"""#!/usr/bin/env bash
+printf '%s' {json.dumps(wrangler_stdout)}
+printf '%b' {json.dumps(wrangler_stderr)} >&2
+exit {wrangler_exit}
 """
-        wrangler_bin.write_text(wrangler_script)
-        wrangler_bin.chmod(0o755)
-
-        summary_file = tdp / "step_summary.md"
-        summary_file.touch()
-
-        env = dict(os.environ)
-        env.update(
-            GITHUB_STEP_SUMMARY=str(summary_file),
-            CLOUDFLARE_API_TOKEN="fake-token",
-        )
-
+        (bin_dir / "wrangler").write_text(stub)
+        (bin_dir / "wrangler").chmod(0o755)
         p = subprocess.run(
-            ["bash", "-c", script],
-            cwd=str(tdp),
-            env=env,
+            ["bash", str(scripts / "d1-pending.sh")],
+            cwd=str(worker),
             capture_output=True,
             text=True,
+            env={**os.environ, "CLOUDFLARE_API_TOKEN": "fake-token"},
         )
-
-        summary_content = summary_file.read_text()
-        return p, summary_content
+        return p
 
 
-def test_suite():
-    script = extract_step_script()
-    print("=== Testing Deploy Worker Migration Check Logic ===")
+def run_guard(step: str, *, stub_stdout="", stub_exit=0):
+    """Runs the real guard step body with scripts/d1-pending.sh stubbed."""
+    with tempfile.TemporaryDirectory() as td:
+        tdp = pathlib.Path(td)
+        (tdp / "scripts").mkdir()
+        stub = tdp / "scripts" / "d1-pending.sh"
+        stub.write_text(f"#!/usr/bin/env bash\nprintf '%b' {json.dumps(stub_stdout)}\nexit {stub_exit}\n")
+        stub.chmod(0o755)
+        summary = tdp / "summary.md"
+        summary.touch()
+        p = subprocess.run(
+            ["bash", "-c", step],
+            cwd=str(tdp),
+            capture_output=True,
+            text=True,
+            env={**os.environ, "GITHUB_STEP_SUMMARY": str(summary), "CLOUDFLARE_API_TOKEN": "fake-token"},
+        )
+        return p, summary.read_text()
 
-    # State 1: Up to date (clean schema)
-    clean_output = """
- ⛅️ wrangler 4.127.1
-────────────────────
-Resource location: remote 
 
-✅ No migrations to apply!
-"""
-    proc, summary = run_migration_check(script, wrangler_output=clean_output, wrangler_exit_code=0)
-    assert proc.returncode == 0, f"State 1 failed with non-zero exit: {proc.returncode}"
-    assert "::warning::" not in proc.stdout and "::warning::" not in proc.stderr, "State 1 must not emit warning"
-    assert "::error::" not in proc.stdout and "::error::" not in proc.stderr, "State 1 must not emit error"
-    assert summary.strip() == "", f"State 1 step summary must be empty, got: {summary!r}"
-    print("  ok    State 1 (Up to date): exit 0, no warning, no step summary")
+def test_script():
+    print("=== worker/scripts/d1-pending.sh ===")
 
-    # State 2: Pending migration (fails closed with exit 1)
-    pending_output = """
- ⛅️ wrangler 4.127.1
-────────────────────
-Resource location: remote 
+    p = run_script(applied=MIGRATIONS)
+    assert p.returncode == 0, f"1: expected exit 0, got {p.returncode}: {p.stderr}"
+    assert p.stdout == "", f"1: expected empty stdout, got {p.stdout!r}"
+    print("  ok    1 every file applied: exit 0, silent")
 
-Migrations to be applied:
-┌─────────────────────────┐
-│ Name                    │
-├─────────────────────────┤
-│ 0002_new_columns.sql    │
-└─────────────────────────┘
-"""
-    proc, summary = run_migration_check(script, wrangler_output=pending_output, wrangler_exit_code=0)
-    assert proc.returncode == 1, f"State 2 must fail closed with exit 1, got: {proc.returncode}"
-    assert "::error::Pending D1 migrations detected on remote database review-telemetry" in proc.stdout, "State 2 missing error"
-    assert "::warning::" not in proc.stdout, "State 2 must not emit warning"
-    assert "## ⚠️ Pending D1 Migrations" in summary, "State 2 missing step summary header"
-    assert "wrangler d1 migrations apply review-telemetry --remote" in summary, "State 2 missing manual apply command in summary"
-    print("  ok    State 2 (Pending migration): exit 1, pending error emitted, step summary written")
+    p = run_script(applied=[MIGRATIONS[0]])
+    assert p.returncode == 2, f"2: expected exit 2, got {p.returncode}: {p.stderr}"
+    assert p.stdout.split() == MIGRATIONS[1:], f"2: expected {MIGRATIONS[1:]}, got {p.stdout.split()}"
+    print("  ok    2 two files pending: exit 2, both named in order")
 
-    # State 3a: Check failed with exit code 1 (e.g. database not found or config missing)
-    error_output = """
- ⛅️ wrangler 4.127.1
-────────────────────
-Resource location: remote 
+    p = run_script(wrangler_stdout="", wrangler_exit=1, wrangler_stderr="Authentication error (10000)\n")
+    assert p.returncode == 1, f"3: expected exit 1, got {p.returncode}"
+    assert "Authentication error" in p.stderr, f"3: wrangler stderr not forwarded: {p.stderr!r}"
+    assert "exited with status 1" in p.stderr, f"3: status not named: {p.stderr!r}"
+    assert p.stdout == "", f"3: nothing may look pending on an unread table, got {p.stdout!r}"
+    print("  ok    3 wrangler fails: exit 1, stderr forwarded, stdout empty")
 
-✘ [ERROR] Couldn't find a D1 DB with the name or binding 'review-telemetry' in your wrangler.toml file.
-"""
-    proc, summary = run_migration_check(script, wrangler_output=error_output, wrangler_exit_code=1)
-    assert proc.returncode == 0, f"State 3a must proceed with exit 0, got: {proc.returncode}"
-    assert "::warning::Could not determine D1 migration state for remote database review-telemetry (wrangler d1 migrations list exited with status 1)" in proc.stdout, "State 3a missing distinct warning"
-    assert "## ⚠️ D1 Migration Check Failed" in summary, "State 3a missing step summary header"
-    assert "wrangler d1 migrations list review-telemetry --remote" in summary, "State 3a missing manual check command in summary"
-    assert "exit status 1" in summary, "State 3a missing exit status in summary"
-    print("  ok    State 3a (Check failure exit 1): exit 0, failure warning emitted, step summary written")
+    # The measured #164 case: wrangler exits 0 and prints a summary it could not know.
+    p = run_script(wrangler_stdout="✅ No migrations to apply!\n", wrangler_exit=0)
+    assert p.returncode == 1, f"4: a non-result body must be unknown (exit 1), got {p.returncode}"
+    assert "no result set" in p.stderr, f"4: cause not named: {p.stderr!r}"
+    assert p.stdout == "", f"4: stdout must be empty, got {p.stdout!r}"
+    print("  ok    4 wrangler exit 0 with a prose body: exit 1, never read as clean")
 
-    # State 3b: Check failed with exit code 2 (e.g. auth / network failure)
-    auth_error_output = """
- ⛅️ wrangler 4.127.1
-────────────────────
-Resource location: remote 
+    p = run_script(applied=[])
+    assert p.returncode == 2, f"5: expected exit 2 on an empty table, got {p.returncode}"
+    assert p.stdout.split() == MIGRATIONS, f"5: expected every file, got {p.stdout.split()}"
+    print("  ok    5 empty d1_migrations: every file pending")
 
-✘ [ERROR] A request to the Cloudflare API (/accounts/.../d1/database/...) failed.
-Authentication error (10000)
-"""
-    proc, summary = run_migration_check(script, wrangler_output=auth_error_output, wrangler_exit_code=2)
-    assert proc.returncode == 0, f"State 3b must proceed with exit 0, got: {proc.returncode}"
-    assert "::warning::Could not determine D1 migration state for remote database review-telemetry (wrangler d1 migrations list exited with status 2)" in proc.stdout, "State 3b missing distinct warning"
-    assert "## ⚠️ D1 Migration Check Failed" in summary, "State 3b missing step summary header"
-    assert "exit status 2" in summary, "State 3b missing exit status in summary"
-    print("  ok    State 3b (Check failure exit 2): exit 0, failure warning emitted with status 2, step summary written")
 
-    print("\nAll migration check behavioural tests passed.")
+def test_guard_step():
+    print("=== deploy-worker.yml: Check for pending D1 migrations ===")
+    step = extract_step_script()
+    assert "scripts/d1-pending.sh" in step, "the guard must call the script, not wrangler's list summary"
+    assert "d1 migrations list" not in step, "the guard must not read `wrangler d1 migrations list` (#164)"
+
+    p, summary = run_guard(step, stub_exit=0)
+    assert p.returncode == 0, f"6: expected exit 0, got {p.returncode}: {p.stdout}{p.stderr}"
+    assert "::error::" not in p.stdout and "::warning::" not in p.stdout, f"6: no annotation allowed: {p.stdout!r}"
+    assert summary.strip() == "", f"6: summary must be empty, got {summary!r}"
+    print("  ok    6 nothing pending: exit 0, no annotation, empty summary")
+
+    p, summary = run_guard(step, stub_stdout="0002_wave2_fields.sql\n0003_indexes.sql\n", stub_exit=2)
+    assert p.returncode == 1, f"7: expected exit 1, got {p.returncode}"
+    assert "::error::Pending D1 migrations" in p.stdout, f"7: missing error: {p.stdout!r}"
+    for name in ("0002_wave2_fields.sql", "0003_indexes.sql"):
+        assert name in p.stdout, f"7: {name} not named in the error: {p.stdout!r}"
+        assert name in summary, f"7: {name} not named in the summary: {summary!r}"
+    assert "Apply D1 migrations" in p.stdout and "Apply D1 migrations" in summary, "7: the Apply workflow must be named"
+    assert "## ⚠️ Pending D1 Migrations" in summary, f"7: summary header missing: {summary!r}"
+    print("  ok    7 pending: exit 1, files and the Apply workflow named in error and summary")
+
+    p, summary = run_guard(step, stub_exit=1)
+    assert p.returncode == 1, f"8: an unread table must stop the deploy (exit 1), got {p.returncode}"
+    assert "::error::Could not read d1_migrations" in p.stdout, f"8: missing error: {p.stdout!r}"
+    assert "status 1" in p.stdout, f"8: status not named: {p.stdout!r}"
+    assert "::warning::" not in p.stdout, "8: unknown state is an error now, never a warning that proceeds (#164)"
+    assert "## ⚠️ D1 Migration Check Failed" in summary, f"8: summary header missing: {summary!r}"
+    print("  ok    8 unknown state: exit 1, error, summary; the deploy does not proceed")
 
 
 if __name__ == "__main__":
-    test_suite()
+    test_script()
+    test_guard_step()
+    print("\nAll migration guard behavioural tests passed.")

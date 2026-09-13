@@ -12,6 +12,14 @@ on:
       REVIEW_TELEMETRY_TOKEN:
         description: 'Review telemetry token'
         required: true
+      # The read API sits behind Cloudflare Access (#65), which answers 302 to its login
+      # page before the Worker sees the bearer. A service token is what gets through (#170).
+      CF_ACCESS_CLIENT_ID:
+        description: 'Cloudflare Access service token id for the accounted-runs path'
+        required: false
+      CF_ACCESS_CLIENT_SECRET:
+        description: 'Cloudflare Access service token secret for the accounted-runs path'
+        required: false
 
 permissions:
   actions: read
@@ -26,6 +34,8 @@ jobs:
         env:
           ACCOUNTED_RUNS_URL: ${{ vars.TELEMETRY_ACCOUNTED_RUNS_URL || 'https://assayer.sfun.cloud/api/accounted-runs' }}
           REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           WINDOW_HOURS: ${{ inputs.window_hours || '26' }}
@@ -53,6 +63,12 @@ jobs:
           trap 'rm -f "$hdr" "$headers" "$body" "$repo_err"' EXIT
           umask 077
           printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$REVIEW_TELEMETRY_TOKEN" > "$hdr"
+          # Without these the edge answers 302 and the Worker never sees the bearer (#170).
+          if [ -n "${CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
+            printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" >> "$hdr"
+          else
+            echo "::warning::CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET are not both set; the read API sits behind Cloudflare Access and will answer 302 without them (#170)."
+          fi
 
           WINDOW_HOURS="${WINDOW_HOURS:-26}"
           if [ -z "${SINCE:-}" ] || [ -z "${UNTIL:-}" ]; then
@@ -86,6 +102,7 @@ jobs:
             head -c 500 "$body" 2>/dev/null || true
             echo ""
             case "$code" in
+              302) cause="Cloudflare Access redirected to its login page: the request carried no service token the policy on this path accepts. Set CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET from a service token that policy allows (#170)." ;;
               400) cause="The Worker rejected the request parameters. Check repository, since and until parameters (#87)." ;;
               401) cause="The Worker rejected the token. REVIEW_TELEMETRY_TOKEN here and the Worker's own secret have diverged; rotate both together (#87)." ;;
               403) cause="Blocked before the Worker: Cloudflare bot/WAF mitigation challenging curl from an Azure IP, or an Access policy widened to cover the API path (#87)." ;;

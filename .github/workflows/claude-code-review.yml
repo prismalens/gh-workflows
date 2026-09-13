@@ -105,7 +105,7 @@ env:
   # The claude-code-action pin, duplicated at the two `uses:` lines below because `uses:`
   # cannot take a `${{ }}` expression. tests/test-action-version-drift.py fails the build
   # if this value and either `uses:` pin ever disagree. Story: #47 amendment.
-  ACTION_VERSION: 'ef8bb1e43bf303cff727a1dd0b8837029fe982a2'
+  ACTION_VERSION: '0a8d3c9443bbff909ab973b6a17a340b913f229f'
 
 jobs:
   # ONE set of PR facts for automatic rounds, summons, and in-thread replies alike,
@@ -2191,13 +2191,19 @@ jobs:
                   if actionlint_bin is None and pathlib.Path("./actionlint").exists():
                       actionlint_bin = "./actionlint"
                   if actionlint_bin is None:
-                      # Pinned install, same version and source as this repo's own CI check
-                      # (tests.yml): a static, versioned binary, not the tool reaching out
-                      # while it analyses the diff.
+                      # The release tarball against a recorded checksum, the same version
+                      # and checksum as tests.yml; tests/test-actionlint-pin-drift.py holds
+                      # the two together (#163).
+                      ACTIONLINT_VERSION = "1.7.12"
+                      ACTIONLINT_SHA256 = "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+                      asset = f"actionlint_{ACTIONLINT_VERSION}_linux_amd64.tar.gz"
                       install = run_timeboxed(
                           ["bash", "-c",
-                           "curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash "
-                           "| bash -s 1.7.12"],
+                           "set -euo pipefail; "
+                           f"curl -fsSL --proto '=https' -o {asset} "
+                           f"https://github.com/rhysd/actionlint/releases/download/v{ACTIONLINT_VERSION}/{asset}; "
+                           f"echo '{ACTIONLINT_SHA256}  {asset}' | sha256sum -c -; "
+                           f"tar -xzf {asset} actionlint"],
                           timeout=60,
                       )
                       if install is not None and install.returncode == 0 and pathlib.Path("./actionlint").exists():

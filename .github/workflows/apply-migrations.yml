@@ -1,0 +1,119 @@
+# The deploy refuses to run ahead of the schema and never applies a migration itself
+# (deploy-worker.yml). This is the one click that replaces a laptop apply with a rolled
+# token: the credential CI already holds, an Actions log as the audit trail, and the
+# applied set verified against d1_migrations rather than wrangler's summary. Story: #164.
+name: Apply D1 migrations
+
+# Never on push. Applying a migration is irreversible on D1, so it stays a human's click.
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_after:
+        description: 'Dispatch Deploy Worker once d1_migrations lists every file in worker/migrations'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  # gh workflow run on deploy-worker.yml, nothing else.
+  actions: write
+
+# Shares the deploy's group so an apply never runs under a deploy in flight.
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require the deploy credential
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not set. It is the same repository secret deploy-worker.yml uses; nothing here needs a second credential."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install the pinned wrangler
+        working-directory: worker
+        run: |
+          set -euo pipefail
+          npm ci
+
+      - name: Say what is pending before applying
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          set +e
+          pending="$(scripts/d1-pending.sh)"
+          status=$?
+          set -e
+          case "${status}" in
+            0) echo "Nothing pending: d1_migrations already lists every file in worker/migrations." ;;
+            2) echo "Pending:"; echo "${pending}" ;;
+            *) echo "::error::Could not read d1_migrations (exit status ${status}); refusing to apply against an unknown state (#164)."; exit 1 ;;
+          esac
+
+      - name: Apply pending D1 migrations
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/wrangler d1 migrations apply review-telemetry --remote
+
+      # wrangler's own summary is not the evidence (#164): the table is read back and every
+      # file in worker/migrations must be in it, or this run fails and says which is not.
+      - name: Verify d1_migrations lists every file in worker/migrations
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          set +e
+          pending="$(scripts/d1-pending.sh)"
+          status=$?
+          set -e
+          case "${status}" in
+            0)
+              echo "Verified: d1_migrations lists every file in worker/migrations."
+              {
+                echo "## D1 migrations applied"
+                echo
+                echo "\`d1_migrations\` on \`review-telemetry\` lists every file in \`worker/migrations\`."
+              } >> "${GITHUB_STEP_SUMMARY}"
+              ;;
+            2)
+              echo "::error::wrangler reported the apply done, but d1_migrations still does not list: $(echo "${pending}" | tr '\n' ' '). Nothing is deployed against this state (#164)."
+              exit 1
+              ;;
+            *)
+              echo "::error::Could not read d1_migrations after the apply (exit status ${status}). The apply may or may not have landed; read the table by hand before deploying (#164)."
+              exit 1
+              ;;
+          esac
+
+      - name: Dispatch Deploy Worker
+        if: ${{ inputs.deploy_after }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run deploy-worker.yml --ref main
+          echo "Deploy Worker dispatched on main."

@@ -44,6 +44,8 @@ function pr(overrides: Partial<PrRow> = {}): PrRow {
     closed_at: null,
     updated_at: "2026-09-01T08:00:00Z",
     source: "hook",
+    total_findings: 0,
+    open_findings: 0,
     ...overrides,
   };
 }

@@ -1474,6 +1474,8 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
         closed_at: null,
         updated_at: enrichedRound.recorded_at,
         source: "hook",
+        total_findings: 0,
+        open_findings: 0,
       },
     ];
     const api = makeFixtureApi([enrichedRound, fallbackRound], [], [], [], prsRows);
@@ -1514,6 +1516,8 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
       closed_at: null,
       updated_at: new Date(now.getTime() - 2 * 3600000).toISOString(),
       source: "hook",
+      total_findings: 0,
+      open_findings: 0,
     };
     const truncatedApi = {
       ...fourStateApi,

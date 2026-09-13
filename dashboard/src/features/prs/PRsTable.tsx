@@ -100,17 +100,37 @@ const columns = helper.columns([
       </span>
     ),
   }),
-  helper.display({
+  helper.accessor("openFindings", {
     id: "open_findings",
     header: "Open findings",
-    cell: () => (
-      <span
-        className="text-xs text-muted-foreground"
-        title="Open findings count arrives with #111"
-      >
-        —
-      </span>
-    ),
+    // Three states, never collapsed into one dash: no prs row yet, a row with no sweep
+    // findings recorded, and a real count (#75).
+    cell: ({ row }) => {
+      const { openFindings, totalFindings } = row.original;
+      if (openFindings === null || totalFindings === null) {
+        return (
+          <span className="text-xs text-muted-foreground" title="Finding counts not recorded: no prs row for this PR yet">
+            —
+          </span>
+        );
+      }
+      if (totalFindings === 0) {
+        return (
+          <span className="text-xs text-muted-foreground" title="No findings on record for this PR">
+            —
+          </span>
+        );
+      }
+      return (
+        <span
+          className={`tabular text-xs ${openFindings > 0 ? "text-foreground" : "text-muted-foreground"}`}
+          title={`${openFindings} open of ${totalFindings} recorded by the findings sweep`}
+        >
+          {openFindings}
+          <span className="text-muted-foreground"> / {totalFindings}</span>
+        </span>
+      );
+    },
   }),
   helper.accessor("lastRoundAt", {
     id: "last_round",
