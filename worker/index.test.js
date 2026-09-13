@@ -3512,6 +3512,50 @@ describe("Worker telemetry read API", () => {
         assert.equal(query.args[2], "2026-09-06T12:00:00.000Z");
         assert.equal(query.args[3], 136);
       });
+
+      it("queries findings counts and returns total_findings and open_findings unchanged (#75)", async () => {
+        const helper = await getAccessHelper();
+        let capturedSql = "";
+        const sampleRows = [
+          {
+            repository: "prismalens/gh-workflows",
+            pr_number: 75,
+            state: "open",
+            title: "feat: open findings count",
+            author: "alice",
+            base_ref: "main",
+            head_ref: "feat/findings-count",
+            head_sha: "abc1234",
+            merged_at: null,
+            closed_at: null,
+            updated_at: "2026-09-06T12:00:00.000Z",
+            source: "hook",
+            total_findings: 5,
+            open_findings: 2,
+          },
+        ];
+        const db = createFakeDb({
+          handler: (sql, args) => {
+            capturedSql = sql;
+            return { results: sampleRows };
+          },
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/prs", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+
+        const findingsMatches = capturedSql.match(/FROM review_findings f/g) || [];
+        assert.equal(findingsMatches.length, 2);
+        assert.ok(capturedSql.includes("AS total_findings"));
+        assert.ok(capturedSql.includes("AS open_findings"));
+        assert.ok(capturedSql.includes("COALESCE(f.is_resolved, 0) = 0"));
+
+        const data = await res.json();
+        assert.equal(data.rows.length, 1);
+        assert.equal(data.rows[0].total_findings, 5);
+        assert.equal(data.rows[0].open_findings, 2);
+      });
     });
 
     describe("GET /api/findings (Read Route & Pagination, #111)", () => {

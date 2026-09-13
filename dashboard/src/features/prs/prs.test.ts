@@ -22,6 +22,8 @@ function prRow(overrides: Partial<PrRow> & { repository: string; pr_number: numb
     closed_at: null,
     updated_at: "2026-09-01T00:00:00.000Z",
     source: "hook",
+    total_findings: 0,
+    open_findings: 0,
     ...overrides,
   };
 }
@@ -109,5 +111,26 @@ describe("enrichPRs (#136, #141)", () => {
 
     expect(filterPRsByState(enriched, "merged")).toHaveLength(1);
     expect(filterPRsByState(enriched, "open")).toHaveLength(0);
+  });
+
+  it("enrichPRs copies total_findings and open_findings from the row into totalFindings and openFindings (#75)", () => {
+    const rounds = [round({ session_id: "s-7", repository: "a/b", pr_number: 7 })];
+    const prs = groupRoundsByPR(rounds);
+    const enriched = enrichPRs(prs, [
+      prRow({ repository: "a/b", pr_number: 7, total_findings: 5, open_findings: 2 }),
+    ]);
+
+    expect(enriched[0].totalFindings).toBe(5);
+    expect(enriched[0].openFindings).toBe(2);
+  });
+});
+
+describe("groupRoundsByPR (#75)", () => {
+  it("leaves totalFindings and openFindings null", () => {
+    const rounds = [round({ session_id: "s-8", repository: "a/b", pr_number: 8 })];
+    const prs = groupRoundsByPR(rounds);
+
+    expect(prs[0].totalFindings).toBeNull();
+    expect(prs[0].openFindings).toBeNull();
   });
 });

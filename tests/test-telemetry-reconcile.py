@@ -258,6 +258,16 @@ def main():
         else:
             print("  ok    reusable workflow secrets: REVIEW_TELEMETRY_TOKEN required")
 
+        # CF Access secrets declared with required: false (#170)
+        cf_id_sec = call_secrets.get("CF_ACCESS_CLIENT_ID", {})
+        cf_sec_sec = call_secrets.get("CF_ACCESS_CLIENT_SECRET", {})
+        if "CF_ACCESS_CLIENT_ID" not in call_secrets or cf_id_sec.get("required") is not False:
+            fails.append(f"workflow_call.secrets.CF_ACCESS_CLIENT_ID want required: false, got {cf_id_sec!r}")
+        elif "CF_ACCESS_CLIENT_SECRET" not in call_secrets or cf_sec_sec.get("required") is not False:
+            fails.append(f"workflow_call.secrets.CF_ACCESS_CLIENT_SECRET want required: false, got {cf_sec_sec!r}")
+        else:
+            print("  ok    reusable workflow secrets: CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET declared with required: false")
+
     # Permissions on reusable workflow
     perms = wf_data.get("permissions", {})
     if perms.get("actions") != "read" or perms.get("contents") != "read":
@@ -301,6 +311,14 @@ def main():
             fails.append(f"caller job uses want './.github/workflows/telemetry-reconcile.yml', got {caller_job.get('uses')!r}")
         else:
             print("  ok    caller job invokes reusable workflow: uses ./.github/workflows/telemetry-reconcile.yml")
+
+        caller_sec = caller_job.get("secrets", {})
+        if caller_sec.get("CF_ACCESS_CLIENT_ID") != "${{ secrets.CF_ACCESS_CLIENT_ID }}":
+            fails.append(f"caller job secrets.CF_ACCESS_CLIENT_ID want '${{{{ secrets.CF_ACCESS_CLIENT_ID }}}}', got {caller_sec.get('CF_ACCESS_CLIENT_ID')!r}")
+        elif caller_sec.get("CF_ACCESS_CLIENT_SECRET") != "${{ secrets.CF_ACCESS_CLIENT_SECRET }}":
+            fails.append(f"caller job secrets.CF_ACCESS_CLIENT_SECRET want '${{{{ secrets.CF_ACCESS_CLIENT_SECRET }}}}', got {caller_sec.get('CF_ACCESS_CLIENT_SECRET')!r}")
+        else:
+            print("  ok    caller job passes CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET secrets")
 
     script = extract_step_script("reconcile", "Reconcile review telemetry")
 
@@ -720,18 +738,104 @@ def main():
         print("  ok    missing repository: exits non-zero and warns repository cannot be determined")
 
     # -------------------------------------------------------------
-    # 12. Security: secret token value is never echoed in output
+    # 12. Security: secret token value is never echoed in output (#170 extended)
     # -------------------------------------------------------------
     secret_val = "SUPER_SECRET_VALUE_NEVER_ECHO_ABC789"
-    _, out_clean, err_clean, _, _ = run_reconciler_step(script, token=secret_val, accounted_json=accounted_clean, gh_mocks=gh_clean_mocks)
-    _, out_err, err_err, _, _ = run_reconciler_step(script, token=secret_val, curl_code="500")
+    cf_secret = "cf-secret-456"
+    cf_env = {"CF_ACCESS_CLIENT_ID": "cf-id-123", "CF_ACCESS_CLIENT_SECRET": cf_secret}
 
-    all_outputs = [out_clean, err_clean, out_err, err_err]
+    _, out_clean, err_clean, _, _ = run_reconciler_step(
+        script, token=secret_val, accounted_json=accounted_clean, gh_mocks=gh_clean_mocks, env_overrides=cf_env
+    )
+    _, out_err, err_err, _, _ = run_reconciler_step(script, token=secret_val, curl_code="500")
+    _, out_302, err_302, _, _ = run_reconciler_step(script, token=secret_val, curl_code="302", env_overrides=cf_env)
+    _, out_401, err_401, _, _ = run_reconciler_step(script, token=secret_val, curl_code="401", env_overrides=cf_env)
+
+    all_outputs = [out_clean, err_clean, out_err, err_err, out_302, err_302, out_401, err_401]
     if any(secret_val in out for out in all_outputs):
         fails.append("security: secret token value was echoed in script stdout or stderr!")
         print("  FAIL  security: secret token was leaked in output")
+    elif any(cf_secret in out for out in [out_clean, err_clean, out_302, err_302, out_401, err_401]):
+        fails.append("security: CF_ACCESS_CLIENT_SECRET was echoed in script stdout or stderr on clean, 302 or 401 path!")
+        print("  FAIL  security: CF_ACCESS_CLIENT_SECRET was leaked in output")
     else:
-        print("  ok    security: secret token value is never echoed in stdout or stderr")
+        print("  ok    security: secret token and CF Access secret values are never echoed in stdout or stderr")
+
+    # -------------------------------------------------------------
+    # 13. Cloudflare Access credentials passed in headers (#170)
+    # -------------------------------------------------------------
+    code, stdout, stderr, summary, auth = run_reconciler_step(
+        script,
+        accounted_json=accounted_clean,
+        gh_mocks=gh_clean_mocks,
+        since=SINCE,
+        until=UNTIL,
+        env_overrides={
+            "CF_ACCESS_CLIENT_ID": "cf-id-123",
+            "CF_ACCESS_CLIENT_SECRET": "cf-secret-456",
+        },
+    )
+    combined = stdout + "\n" + stderr
+    if code != 0:
+        fails.append(f"cf access headers: expected exit 0, got {code}:\n{combined}")
+        print(f"  FAIL  cf access headers: exited {code}")
+    elif "CF-Access-Client-Id: cf-id-123" not in auth:
+        fails.append(f"cf access headers: captured header file missing CF-Access-Client-Id: {auth!r}")
+        print("  FAIL  cf access headers: missing CF-Access-Client-Id")
+    elif "CF-Access-Client-Secret: cf-secret-456" not in auth:
+        fails.append(f"cf access headers: captured header file missing CF-Access-Client-Secret: {auth!r}")
+        print("  FAIL  cf access headers: missing CF-Access-Client-Secret")
+    elif "::warning::" in combined and ("CF_ACCESS_CLIENT_ID" in combined or "CF_ACCESS_CLIENT_SECRET" in combined):
+        fails.append(f"cf access headers: unexpected warning mentioning CF Access secrets:\n{combined}")
+        print("  FAIL  cf access headers: warning emitted")
+    else:
+        print("  ok    cf access headers: captured header contains CF-Access credentials and no warning mentions them")
+
+    # -------------------------------------------------------------
+    # 14. Neither CF_ACCESS credential set warns and sends no CF-Access headers (#170)
+    # -------------------------------------------------------------
+    code, stdout, stderr, summary, auth = run_reconciler_step(
+        script,
+        accounted_json=accounted_clean,
+        gh_mocks=gh_clean_mocks,
+        since=SINCE,
+        until=UNTIL,
+        env_overrides={
+            "CF_ACCESS_CLIENT_ID": "",
+            "CF_ACCESS_CLIENT_SECRET": "",
+        },
+    )
+    combined = stdout + "\n" + stderr
+    if "::warning::" not in combined or "CF_ACCESS_CLIENT_ID" not in combined or "CF_ACCESS_CLIENT_SECRET" not in combined:
+        fails.append(f"neither cf access set: warning missing or does not name both secrets:\n{combined}")
+        print("  FAIL  neither cf access set: warning does not name both secrets")
+    elif "CF-Access-" in auth:
+        fails.append(f"neither cf access set: captured headers contain unexpected CF-Access- line:\n{auth}")
+        print("  FAIL  neither cf access set: captured headers contain CF-Access- line")
+    else:
+        print("  ok    neither cf access set: warning names both secrets and captured headers contain no CF-Access- line")
+
+    # -------------------------------------------------------------
+    # 15. HTTP 302 from accounted-runs read (#170)
+    # -------------------------------------------------------------
+    code, stdout, stderr, summary, auth = run_reconciler_step(
+        script,
+        curl_code="302",
+        since=SINCE,
+        until=UNTIL,
+    )
+    combined = stdout + "\n" + stderr
+    if code == 0:
+        fails.append("read API HTTP 302: expected non-zero exit, got 0")
+        print("  FAIL  read API HTTP 302: exit 0")
+    elif "::error::" not in combined:
+        fails.append("read API HTTP 302: missing ::error:: annotation")
+        print("  FAIL  read API HTTP 302: missing ::error::")
+    elif "Cloudflare Access" not in combined or "CF_ACCESS_CLIENT_ID" not in combined:
+        fails.append(f"read API HTTP 302: error output missing 'Cloudflare Access' or 'CF_ACCESS_CLIENT_ID':\n{combined}")
+        print("  FAIL  read API HTTP 302: missing Cloudflare Access or CF_ACCESS_CLIENT_ID")
+    else:
+        print("  ok    read API HTTP 302: exits non-zero with ::error:: containing Cloudflare Access and CF_ACCESS_CLIENT_ID")
 
     print()
     if fails:
