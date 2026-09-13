@@ -279,7 +279,7 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 54);
+      assert.equal(query.args.length, 56);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
@@ -331,6 +331,10 @@ describe("Worker telemetry ingest", () => {
       // level (52) and level_source (53) are the #101 fields; a v1 payload predates them too.
       assert.equal(query.args[52], null);
       assert.equal(query.args[53], null);
+
+      // context_repositories (54) and context_lines (55) are the #90 fields; a v1 payload predates them too.
+      assert.equal(query.args[54], null);
+      assert.equal(query.args[55], null);
     });
 
     it("inserts a full v2 payload and binds every new column with given values", async () => {
@@ -719,9 +723,9 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /config_effective/);
-      // config_effective sits 3 params before the end: level and level_source (#101)
-      // were appended after it.
-      assert.equal(query.args[query.args.length - 3], JSON.stringify(configEffective));
+      // config_effective sits 5 params before the end: level and level_source (#101),
+      // context_repositories and context_lines (#90) were appended after it.
+      assert.equal(query.args[query.args.length - 5], JSON.stringify(configEffective));
     });
 
     it("stores null for config_effective when the payload omits it (#75)", async () => {
@@ -738,7 +742,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 3], null);
+      assert.equal(query.args[query.args.length - 5], null);
     });
 
     it("stores level and level_source for a v2 payload that sets them (#101)", async () => {
@@ -757,8 +761,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 2], "high");
-      assert.equal(query.args[query.args.length - 1], "repo");
+      assert.equal(query.args[query.args.length - 4], "high");
+      assert.equal(query.args[query.args.length - 3], "repo");
     });
 
     it("stores null for level and level_source when the payload omits them (#101)", async () => {
@@ -775,8 +779,62 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 4], null);
+      assert.equal(query.args[query.args.length - 3], null);
+    });
+
+    it("stores context_repositories and context_lines for a v2 payload that sets them (#90)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-context-1",
+          repository: "prismalens/gh-workflows",
+          context_repositories: 2,
+          context_lines: 450,
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 2], 2);
+      assert.equal(query.args[query.args.length - 1], 450);
+    });
+
+    it("stores null for context_repositories and context_lines when the payload omits them (#90)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-context-absent",
+          repository: "prismalens/gh-workflows",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
       assert.equal(query.args[query.args.length - 2], null);
       assert.equal(query.args[query.args.length - 1], null);
+    });
+
+    it("returns 400 when context_repositories or context_lines is not a number (#90)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-context-bad",
+          repository: "prismalens/gh-workflows",
+          context_repositories: "not-a-number",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      assert.equal(db.queries.length, 0);
     });
 
     it("returns 400 when level or level_source is not a string", async () => {
@@ -1848,6 +1906,45 @@ describe("Worker telemetry read API", () => {
       const query = db.queries[0];
       assert.ok(query.sql.includes("level"));
       assert.ok(query.sql.includes("level_source"));
+    });
+
+    it("selects context_repositories and context_lines in the default response (#90)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return {
+              results: [
+                {
+                  session_id: "s-context-read-1",
+                  context_repositories: 2,
+                  context_lines: 450,
+                },
+                {
+                  session_id: "s-context-read-2",
+                  context_repositories: null,
+                  context_lines: null,
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/runs", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].context_repositories, 2);
+      assert.equal(data.rows[0].context_lines, 450);
+      assert.equal(data.rows[1].context_repositories, null);
+      assert.equal(data.rows[1].context_lines, null);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("context_repositories"));
+      assert.ok(query.sql.includes("context_lines"));
     });
 
     it("returns config_effective only under include=blobs, preserving an unknown config key (#75)", async () => {
