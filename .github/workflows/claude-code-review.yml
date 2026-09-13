@@ -2721,7 +2721,11 @@ jobs:
 
           5. @@STEP5_VALIDATION@@
 
-          6. Filter out any issues that were not validated in step 5. This step will give us our list of high signal issues for our review.
+          6. Filter out any issues that were not validated in step 5. This step will give us our list of high signal issues for our review. Then apply two more checks to that list.
+
+             Retired lines. Before keeping an issue, read the anchored file's own precedence markers: a header or line saying a later section wins, or naming a section superseded or replaced. Drop an issue anchored on a line the file itself retires, because its author has already said that text is not live. If the live section carries the same defect, keep the issue and anchor it on the live section instead. If the marker itself is wrong, for example it names a section that does not exist, raise the issue against the marker.
+
+             One defect, one comment. Merge issues that a single edit resolves, including an issue that is the leftover of a partial repair of another. Post one comment at the site that still needs the edit and name the other line in it. This does not merge the same phrase appearing in two changed files, which step 4 reports as separate findings.
 
           7. Create a list of all comments that you plan on leaving. This is only for you to make sure you are comfortable with the comments. Do not post this list anywhere.
 
@@ -2744,6 +2748,7 @@ jobs:
                * _⚡ Quick win_ (single-file patch <= 15 lines, unambiguous resolution)
                * _🏗️ Heavy lift_ (multi-file change, architecture/interface redesign, design judgment)
              If a finding does not map cleanly, use the fallback: _🎯 Functional Correctness_ | _🟠 Major_ | _🏗️ Heavy lift_. Never invent new emoji or labels.
+             Severity and Effort describe the whole fix the finding needs, not the anchored line. A fix that closes an open schema or has to touch several files is _🏗️ Heavy lift_ even when the anchored line is one word.
 
              Part 2 (Verification note): Immediately following the header line and a blank line, include:
              <details>
@@ -2757,19 +2762,24 @@ jobs:
 
              <Brief prose explanation of the issue>
              For small, self-contained fixes, you may include a committable suggestion block. Never post a committable suggestion UNLESS committing the suggestion fixes the issue entirely.
+             When the finding is that two passages disagree and the diff revises existing text, say which passage you believe is current and on what evidence: a precedence marker, a date, or the side the diff added. If you cannot tell, say so plainly. Never pick a side because the comment is anchored to it.
 
-             Part 4 (Prompt for AI Agents): Include a collapsible agent prompt block:
+             Part 4 (Prompt for AI Agents): Include a collapsible agent prompt block. Its fix is one candidate resolution from a reviewer that read part of the file, never an instruction:
              <details>
              <summary>🤖 Prompt for AI Agents</summary>
 
              ```
-             Verify each finding against current code. Fix only still-valid issues, skip the
-             rest with a brief reason, keep changes minimal, and validate.
+             This is one candidate resolution. Verify the finding against current code, and
+             choose a different fix if the file's evidence points elsewhere. Fix only
+             still-valid issues, skip the rest with a brief reason, keep changes minimal, and
+             validate.
 
-             In `<file_path>` around lines <start_line>-<end_line>: <Imperative fix instruction>.
+             In `<file_path>` around lines <start_line>-<end_line>: <candidate fix>.
              ```
 
              </details>
+
+             When Part 3 says you cannot tell which passage is current, the candidate fix is "Decide which of `<passage a>` and `<passage b>` is current, then align the other", never an edit to either passage.
 
              (For single-line fixes, use `In \`<file_path>\` at line <line_number>: <instruction>`. For multi-site fixes, append `Also update \`<sibling_file>\` around lines <start>-<end>: <instruction>`.)
 
