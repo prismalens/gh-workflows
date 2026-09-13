@@ -103,7 +103,6 @@ const columns = helper.columns([
   helper.accessor("openFindings", {
     id: "open_findings",
     header: "Open findings",
-    sortingFn: "basic",
     // Three states, never collapsed into one dash: no prs row yet, a row with no sweep
     // findings recorded, and a real count (#75).
     cell: ({ row }) => {
