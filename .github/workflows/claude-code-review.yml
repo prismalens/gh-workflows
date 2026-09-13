@@ -4994,10 +4994,25 @@ jobs:
             fi
           fi
 
-          # A patch fingerprint is recorded on sha= advancement and unchanged-patch skip (#162).
+          # A patch fingerprint must describe reviewed_sha, never just this run's head
+          # (#162, gh-workflows#12 fix). reviewed_sha carries forward unchanged from the
+          # old marker on trivial, superseded, paused and no-token skips, while
+          # PATCH_FINGERPRINT is always computed for THIS head. Writing PATCH_FINGERPRINT
+          # whenever reviewed_sha was merely non-empty paired an old reviewed sha= with a
+          # new, unreviewed patch=, so a later restack of that unreviewed head skipped as
+          # unchanged-patch and its content was never reviewed. PATCH_FINGERPRINT is used
+          # only when this round set reviewed_sha to THIS head (a real review, or the
+          # unchanged-patch skip itself); every other case carries the old patch= forward
+          # unchanged, read from the same marker reviewed_sha came from.
+          prev_patch=$(jq -r '.body // ""' <<< "${found:-null}" \
+            | head -1 | grep -oE 'patch=[0-9a-f]{64}' | head -1 | cut -d= -f2 || true)
           patch_flag=""
-          if [ -n "$reviewed_sha" ] && [ -n "${PATCH_FINGERPRINT:-}" ]; then
-            patch_flag=" patch=${PATCH_FINGERPRINT}"
+          if [ -n "$reviewed_sha" ]; then
+            if [ "$reviewed_sha" = "$HEAD_SHA" ] && [ -n "${PATCH_FINGERPRINT:-}" ]; then
+              patch_flag=" patch=${PATCH_FINGERPRINT}"
+            elif [ -n "$prev_patch" ]; then
+              patch_flag=" patch=${prev_patch}"
+            fi
           fi
 
           # `sha=` is omitted entirely when there is no baseline, so markers on never-reviewed

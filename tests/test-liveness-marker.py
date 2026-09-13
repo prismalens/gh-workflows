@@ -267,6 +267,15 @@ CASES = [
                                                                                          "2",  NEW,
                                          lambda v: "changed no line of this PR's own patch" in v,
                                          "e" * 64),
+    # reviewed_sha carries forward unchanged on a trivial skip, but PATCH_FINGERPRINT is
+    # always computed for THIS (new, unreviewed) head. Pairing the old sha= with the new
+    # fingerprint would let a later restack of this same unreviewed head skip as
+    # unchanged-patch. The marker must keep the OLD patch=, not the new head's (gh-workflows#12).
+    ("trivial skip on a new head: keeps old patch=, never this head's fingerprint (gh-workflows#12)",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} patch={'d' * 64} -->",
+                                              skip_reason="trivial", patch_fingerprint="9" * 64),
+                                                                                         "2",  OLD,
+                                         None, "d" * 64),
 ]
 
 
