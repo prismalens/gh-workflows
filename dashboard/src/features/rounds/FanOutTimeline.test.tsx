@@ -20,6 +20,8 @@ function makeAgent(overrides: Partial<RoundAgentRow> = {}): RoundAgentRow {
     tool_uses: 10,
     tool_uses_by_name: JSON.stringify({ ReadFile: 6, EditFile: 4 }),
     file_paths: JSON.stringify(["src/index.ts"]),
+    tool_detail: null,
+    harness_paths_count: null,
     ...overrides,
   };
 }

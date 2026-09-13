@@ -3675,6 +3675,23 @@ jobs:
                   tool_uses_by_name = {}
                   file_paths = set()
                   has_assistant_lines = False
+                  # #174: finer per-tool detail than tool_uses_by_name's bare count, and
+                  # harness-internal paths (under /home/runner/.claude/) counted separately
+                  # rather than polluting file_paths, which used to be their only home.
+                  harness_paths_count = 0
+                  pending_tool_uses = {}
+                  tool_result_lines = {}
+                  github_workspace = os.environ.get("GITHUB_WORKSPACE", "")
+                  harness_prefix = "/home/runner/.claude/"
+
+                  def normalize_path(raw):
+                      if not isinstance(raw, str) or not raw:
+                          return None, False
+                      if raw.startswith(harness_prefix):
+                          return None, True
+                      if github_workspace and raw.startswith(github_workspace + "/"):
+                          return raw[len(github_workspace) + 1:], False
+                      return raw, False
 
                   if has_transcript:
                       try:
@@ -3744,18 +3761,130 @@ jobs:
                                       content_list = item.get("content")
 
                                   for c in content_list:
-                                      if isinstance(c, dict) and c.get("type") == "tool_use":
+                                      if not isinstance(c, dict):
+                                          continue
+                                      if c.get("type") == "tool_use":
                                           t_name = c.get("name")
                                           if t_name and isinstance(t_name, str):
                                               tool_uses_by_name[t_name] = tool_uses_by_name.get(t_name, 0) + 1
-                                          inp_c = c.get("input")
-                                          if isinstance(inp_c, dict):
-                                              fp = inp_c.get("file_path")
-                                              if isinstance(fp, str) and fp:
-                                                  file_paths.add(fp)
+                                          inp_c = c.get("input") if isinstance(c.get("input"), dict) else {}
+                                          tu_id = c.get("id")
+                                          if isinstance(tu_id, str) and tu_id:
+                                              pending_tool_uses[tu_id] = (t_name, inp_c)
+                                          fp = inp_c.get("file_path")
+                                          if isinstance(fp, str) and fp:
+                                              norm, is_harness = normalize_path(fp)
+                                              if is_harness:
+                                                  harness_paths_count += 1
+                                              elif norm:
+                                                  file_paths.add(norm)
+                                      elif c.get("type") == "tool_result":
+                                          tr_id = c.get("tool_use_id")
+                                          content_field = c.get("content")
+                                          text = ""
+                                          if isinstance(content_field, str):
+                                              text = content_field
+                                          elif isinstance(content_field, list):
+                                              parts = []
+                                              for block in content_field:
+                                                  if isinstance(block, dict) and block.get("type") == "text":
+                                                      parts.append(block.get("text", ""))
+                                              text = "\n".join(parts)
+                                          if isinstance(tr_id, str) and tr_id:
+                                              lines = len(text.splitlines()) if text else 0
+                                              tool_result_lines[tr_id] = tool_result_lines.get(tr_id, 0) + lines
                       except Exception as e:
                           print(f"::warning::agent-rollup: could not read transcript file {tf}: {e}")
                           has_transcript = False
+
+                  # tool_detail (#174): grouped, per-tool call detail, matched to its own
+                  # tool_result by tool_use_id so byte counts never guess at a call's cost.
+                  read_groups = {}
+                  grep_groups = {}
+                  glob_groups = {}
+                  bash_counts = {}
+                  other_counts = {}
+                  for tu_id, (t_name, inp_c) in pending_tool_uses.items():
+                      lines_returned = tool_result_lines.get(tu_id, 0)
+                      if t_name == "Read":
+                          fp = inp_c.get("file_path")
+                          norm, is_harness = normalize_path(fp) if isinstance(fp, str) else (None, False)
+                          if is_harness:
+                              continue
+                          key = norm or ""
+                          g = read_groups.setdefault(key, {
+                              "path": key, "calls": 0, "offset_max": 0, "limit_max": 0, "lines_returned": 0,
+                          })
+                          g["calls"] += 1
+                          for field, out_key in (("offset", "offset_max"), ("limit", "limit_max")):
+                              raw = inp_c.get(field)
+                              try:
+                                  val = int(raw) if raw is not None else 0
+                              except (TypeError, ValueError):
+                                  val = 0
+                              g[out_key] = max(g[out_key], val)
+                          g["lines_returned"] += lines_returned
+                      elif t_name == "Grep":
+                          pattern = str(inp_c.get("pattern", ""))[:200]
+                          path = inp_c.get("path")
+                          norm_path, is_harness = normalize_path(path) if isinstance(path, str) else (None, False)
+                          if is_harness:
+                              harness_paths_count += 1
+                              path_key = None
+                          else:
+                              path_key = norm_path
+                          glob_field = inp_c.get("glob")
+                          key = (pattern, path_key, glob_field)
+                          g = grep_groups.setdefault(key, {
+                              "pattern": pattern, "path": path_key, "glob": glob_field, "calls": 0, "matches": 0,
+                          })
+                          g["calls"] += 1
+                          g["matches"] += lines_returned
+                      elif t_name == "Glob":
+                          pattern = inp_c.get("pattern")
+                          path = inp_c.get("path")
+                          norm_path, is_harness = normalize_path(path) if isinstance(path, str) else (None, False)
+                          if is_harness:
+                              harness_paths_count += 1
+                              path_key = None
+                          else:
+                              path_key = norm_path
+                          key = (pattern, path_key)
+                          g = glob_groups.setdefault(key, {
+                              "pattern": pattern, "path": path_key, "calls": 0, "results": 0,
+                          })
+                          g["calls"] += 1
+                          g["results"] += lines_returned
+                      elif t_name == "Bash":
+                          cmd = inp_c.get("command")
+                          if isinstance(cmd, str) and cmd.strip():
+                              parts = cmd.strip().split()
+                              if parts[0] == "gh":
+                                  bash_key = " ".join(parts[:3]) if len(parts) >= 3 else " ".join(parts)
+                              else:
+                                  bash_key = parts[0]
+                              bash_counts[bash_key] = bash_counts.get(bash_key, 0) + 1
+                      elif t_name:
+                          other_counts[t_name] = other_counts.get(t_name, 0) + 1
+
+                  tool_detail = {
+                      "read": sorted(read_groups.values(), key=lambda x: x["path"]),
+                      "grep": sorted(grep_groups.values(), key=lambda x: (x["pattern"], x["path"] or "", x["glob"] or "")),
+                      "glob": sorted(glob_groups.values(), key=lambda x: (x["pattern"] or "", x["path"] or "")),
+                      "bash": bash_counts,
+                      "other": other_counts,
+                  }
+                  tool_detail_json = json.dumps(tool_detail, sort_keys=True, separators=(",", ":"))
+                  if len(tool_detail_json.encode("utf-8")) > 48000:
+                      truncatable = {"read": tool_detail["read"], "grep": tool_detail["grep"], "glob": tool_detail["glob"]}
+                      while len(tool_detail_json.encode("utf-8")) > 48000:
+                          longest_key = max(truncatable, key=lambda k: len(truncatable[k]))
+                          if not truncatable[longest_key]:
+                              break
+                          truncatable[longest_key].pop()
+                          tool_detail_json = json.dumps(tool_detail, sort_keys=True, separators=(",", ":"))
+                      tool_detail["tool_detail_truncated"] = True
+                      tool_detail_json = json.dumps(tool_detail, sort_keys=True, separators=(",", ":"))
 
                   if has_transcript and models_seen:
                       model = models_seen[-1]
@@ -3815,6 +3944,8 @@ jobs:
                       "tool_uses": tool_uses,
                       "tool_uses_by_name": json.dumps(tool_uses_by_name, sort_keys=True),
                       "file_paths": json.dumps(sorted(list(file_paths))),
+                      "tool_detail": tool_detail_json,
+                      "harness_paths_count": harness_paths_count,
                   }
                   agents.append(record)
 
@@ -3856,6 +3987,8 @@ jobs:
           MODEL: ${{ steps.model.outputs.model }}
           RESOLVE_CHANGED_FILES: ${{ needs.resolve.outputs.changed_files }}
           RESOLVE_DIFF_LINES: ${{ needs.resolve.outputs.diff_lines }}
+          BASE_PR_NUMBER: ${{ needs.resolve.outputs.base_pr_number }}
+          RESOLVE_PATCH_FINGERPRINT: ${{ needs.resolve.outputs.patch_fingerprint }}
           CLAUDE_OUTCOME: ${{ steps.claude-review.outcome }}
           HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
           PROMPT_HASH: ${{ steps.build-prompt.outputs.prompt_hash }}
@@ -3954,6 +4087,8 @@ jobs:
             --arg failure_reset_at "${FAILURE_RESET_AT:-}" \
             --arg api_error_status "${API_ERROR_STATUS:-}" \
             --arg credential_type "${CREDENTIAL_TYPE:-}" \
+            --arg base_pr_number "${BASE_PR_NUMBER:-}" \
+            --arg round_patch_fingerprint "${RESOLVE_PATCH_FINGERPRINT:-}" \
             '
             def num(s): if s == "" then null else (s | tonumber? // null) end;
             def denials:
@@ -4012,6 +4147,8 @@ jobs:
               failure_reset_at: (if $failure_reset_at == "" then null else $failure_reset_at end),
               api_error_status: (if $api_error_status == "" then null else ($api_error_status | tonumber?) end),
               credential_type: (if $credential_type == "" then null else $credential_type end),
+              base_pr_number: (if $base_pr_number == "" then null else ($base_pr_number | tonumber?) end),
+              patch_fingerprint: (if $round_patch_fingerprint == "" then null else $round_patch_fingerprint end),
               raw_result: (
                 . as $o
                 | ($o | del(.result, .permission_denials)) as $base

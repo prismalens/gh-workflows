@@ -11,3 +11,13 @@ ALTER TABLE usage_records ADD COLUMN api_error_status INTEGER;
 
 -- Slice 6: which credential authenticated this round, 'oauth' or 'api_key'.
 ALTER TABLE usage_records ADD COLUMN credential_type TEXT;
+
+-- Slice 7: per-agent tool call detail (read/grep/glob/bash breakdowns) and how many
+-- tool calls touched the harness's own files rather than the checkout.
+ALTER TABLE round_agents ADD COLUMN tool_detail TEXT;
+ALTER TABLE round_agents ADD COLUMN harness_paths_count INTEGER;
+
+-- Slice 7: telemetry for part 1's slices #90/#162, so a restack skip rate and
+-- unmerged-base-PR rate can both be computed from usage_records.
+ALTER TABLE usage_records ADD COLUMN base_pr_number INTEGER;
+ALTER TABLE usage_records ADD COLUMN patch_fingerprint TEXT;

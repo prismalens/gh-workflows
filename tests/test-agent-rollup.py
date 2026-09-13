@@ -398,6 +398,92 @@ def main():
         print("  ok    model change mid-transcript: reports last model and warns")
 
     # -------------------------------------------------------------
+    # 9b. tool_detail (#174): Read (offset/limit), Grep, Glob, three Bash calls
+    # (gh pr diff, gh pr view, ls) and a harness path.
+    # -------------------------------------------------------------
+    workspace = "/home/runner/work/repo/repo"
+    detail_lines = "\n".join([
+        json.dumps({"type": "assistant", "message": {"model": "claude-sonnet-5", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Read",
+             "input": {"file_path": f"{workspace}/src/foo.py", "offset": 10, "limit": 50}},
+            {"type": "tool_use", "id": "t2", "name": "Grep",
+             "input": {"pattern": "needle", "path": f"{workspace}/src", "glob": "*.py"}},
+            {"type": "tool_use", "id": "t3", "name": "Glob",
+             "input": {"pattern": "*.ts", "path": f"{workspace}/src"}},
+            {"type": "tool_use", "id": "t4", "name": "Bash", "input": {"command": "gh pr diff 123"}},
+            {"type": "tool_use", "id": "t5", "name": "Bash", "input": {"command": "gh pr view 123"}},
+            {"type": "tool_use", "id": "t6", "name": "Bash", "input": {"command": "ls -la"}},
+            {"type": "tool_use", "id": "t7", "name": "Read",
+             "input": {"file_path": "/home/runner/.claude/projects/x/tool-results/blah.txt"}},
+        ]}}),
+        json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "line1\nline2\nline3"},
+            {"type": "tool_result", "tool_use_id": "t2", "content": "match1\nmatch2"},
+            {"type": "tool_result", "tool_use_id": "t3", "content": "a.ts\nb.ts\nc.ts"},
+            {"type": "tool_result", "tool_use_id": "t7", "content": "harness content, never counted as a repo file"},
+        ]}}),
+    ])
+    rc, agents, output = run_rollup_step(
+        script, execution_events=[], transcript_files={"agent-detail.jsonl": detail_lines},
+        env_overrides={"GITHUB_WORKSPACE": workspace},
+    )
+    if rc != 0:
+        fails.append(f"case 9b: exited {rc}: {output}")
+    elif not isinstance(agents, list) or len(agents) != 1:
+        fails.append(f"case 9b: expected 1 agent, got {agents}")
+    else:
+        a = agents[0]
+        detail = json.loads(a["tool_detail"])
+        want = {
+            "read": [{"path": "src/foo.py", "calls": 1, "offset_max": 10, "limit_max": 50, "lines_returned": 3}],
+            "grep": [{"pattern": "needle", "path": "src", "glob": "*.py", "calls": 1, "matches": 2}],
+            "glob": [{"pattern": "*.ts", "path": "src", "calls": 1, "results": 3}],
+            "bash": {"gh pr diff": 1, "gh pr view": 1, "ls": 1},
+            "other": {},
+        }
+        if detail != want:
+            fails.append(f"case 9b: tool_detail mismatch, want {want}, got {detail}")
+        elif a["harness_paths_count"] != 1:
+            fails.append(f"case 9b: want harness_paths_count=1, got {a['harness_paths_count']}")
+        elif "harness" in json.dumps(detail) or "tool-results" in json.dumps(detail):
+            fails.append(f"case 9b: harness path leaked into tool_detail: {detail}")
+        else:
+            print("  ok    tool_detail: Read/Grep/Glob/Bash grouped exactly, harness path excluded and counted")
+
+    # -------------------------------------------------------------
+    # 9c. tool_detail truncation: an oversized read list is trimmed and flagged
+    # -------------------------------------------------------------
+    big_tool_uses = [
+        {"type": "tool_use", "id": f"r{i}", "name": "Read", "input": {"file_path": f"{workspace}/file{i}.py"}}
+        for i in range(2000)
+    ]
+    big_results = [
+        {"type": "tool_result", "tool_use_id": f"r{i}", "content": "x" * 40}
+        for i in range(2000)
+    ]
+    big_lines = "\n".join([
+        json.dumps({"type": "assistant", "message": {"model": "claude-sonnet-5", "content": big_tool_uses}}),
+        json.dumps({"type": "user", "message": {"content": big_results}}),
+    ])
+    rc, agents, output = run_rollup_step(
+        script, execution_events=[], transcript_files={"agent-big.jsonl": big_lines},
+        env_overrides={"GITHUB_WORKSPACE": workspace},
+    )
+    if rc != 0:
+        fails.append(f"case 9c: exited {rc}: {output}")
+    elif not isinstance(agents, list) or len(agents) != 1:
+        fails.append(f"case 9c: expected 1 agent, got {agents}")
+    else:
+        raw = agents[0]["tool_detail"]
+        detail = json.loads(raw)
+        if len(raw.encode("utf-8")) > 48000:
+            fails.append(f"case 9c: tool_detail is {len(raw.encode('utf-8'))} bytes, over the 48000 budget")
+        elif detail.get("tool_detail_truncated") is not True:
+            fails.append(f"case 9c: expected tool_detail_truncated=true, got {detail.get('tool_detail_truncated')!r}")
+        else:
+            print("  ok    tool_detail: a 2000-entry read list is trimmed under 48000 bytes and flagged truncated")
+
+    # -------------------------------------------------------------
     # 10. Absent session_id: emits [], warns, exit 0
     # -------------------------------------------------------------
     rc, agents, output = run_rollup_step(script, execution_events=exec_events_1, session_id="")

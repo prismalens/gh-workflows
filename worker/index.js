@@ -57,6 +57,8 @@ const NUMERIC_FIELDS = [
   // #174: account/auth/quota failure classification.
   "failure_retryable",
   "api_error_status",
+  // #174: telemetry backfill for #90's unmerged base PR.
+  "base_pr_number",
 ];
 
 const STRING_FIELDS = [
@@ -93,6 +95,8 @@ const STRING_FIELDS = [
   "failure_class",
   "failure_reset_at",
   "credential_type",
+  // #174: telemetry backfill for #162's restack fingerprint.
+  "patch_fingerprint",
 ];
 
 const JSON_ARRAY_FIELDS = ["comment_node_ids"];
@@ -736,6 +740,8 @@ async function handleRuns(url, env) {
     "failure_reset_at",
     "api_error_status",
     "credential_type",
+    "base_pr_number",
+    "patch_fingerprint",
   ];
   if (includeBlobs) {
     columns.push(
@@ -924,7 +930,9 @@ async function handleRoundAgents(url, env) {
     duration_ms,
     tool_uses,
     tool_uses_by_name,
-    file_paths
+    file_paths,
+    tool_detail,
+    harness_paths_count
   FROM round_agents
   WHERE session_id = ?
   ORDER BY agent_id ASC
@@ -1393,14 +1401,16 @@ async function handleIngest(request, env) {
           failure_retryable,
           failure_reset_at,
           api_error_status,
-          credential_type
+          credential_type,
+          base_pr_number,
+          patch_fingerprint
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
           ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
           ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
           ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
-          ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61
+          ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61, ?62, ?63
         )
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
@@ -1464,7 +1474,9 @@ async function handleIngest(request, env) {
         payload.failure_retryable ?? null,
         payload.failure_reset_at ?? null,
         payload.api_error_status ?? null,
-        payload.credential_type ?? null
+        payload.credential_type ?? null,
+        payload.base_pr_number ?? null,
+        payload.patch_fingerprint ?? null
       );
 
       const agentStmts = [];
@@ -1485,10 +1497,12 @@ async function handleIngest(request, env) {
               duration_ms,
               tool_uses,
               tool_uses_by_name,
-              file_paths
+              file_paths,
+              tool_detail,
+              harness_paths_count
             ) VALUES (
               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-              ?11, ?12, ?13, ?14
+              ?11, ?12, ?13, ?14, ?15, ?16
             )
             ON CONFLICT(session_id, agent_id) DO UPDATE SET
               subagent_type = excluded.subagent_type,
@@ -1502,7 +1516,9 @@ async function handleIngest(request, env) {
               duration_ms = excluded.duration_ms,
               tool_uses = excluded.tool_uses,
               tool_uses_by_name = excluded.tool_uses_by_name,
-              file_paths = excluded.file_paths`
+              file_paths = excluded.file_paths,
+              tool_detail = excluded.tool_detail,
+              harness_paths_count = excluded.harness_paths_count`
           ).bind(
             payload.session_id,
             agent.agent_id,
@@ -1517,7 +1533,9 @@ async function handleIngest(request, env) {
             toIntegerOrNull(agent.duration_ms),
             toIntegerOrNull(agent.tool_uses),
             serializeJson(agent.tool_uses_by_name, null),
-            serializeJson(agent.file_paths, null)
+            serializeJson(agent.file_paths, null),
+            serializeJson(agent.tool_detail, null),
+            toIntegerOrNull(agent.harness_paths_count)
           );
           agentStmts.push(stmt);
         }
