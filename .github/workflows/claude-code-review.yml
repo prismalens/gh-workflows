@@ -159,6 +159,8 @@ jobs:
       pr_state: ${{ steps.pr.outputs.pr_state }}
       pr_base_ref: ${{ steps.pr.outputs.pr_base_ref }}
       pr_head_ref: ${{ steps.pr.outputs.pr_head_ref }}
+      base_pr_number: ${{ steps.pr.outputs.base_pr_number }}
+      base_pr_title: ${{ steps.pr.outputs.base_pr_title }}
 
     steps:
       - name: Admit commenter
@@ -204,6 +206,18 @@ jobs:
           pr_base_ref="$(jq -r '.base.ref // ""' <<< "$pr")"
           pr_head_ref="$(jq -r '.head.ref // ""' <<< "$pr")"
 
+          # Unmerged base PR lookup failure must never fail the job (#162).
+          owner="${GITHUB_REPOSITORY%%/*}"
+          base_pr_number=""
+          base_pr_title=""
+          if [ -n "$pr_base_ref" ]; then
+            base_pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${owner}:${pr_base_ref}" --jq '.[0] | {number, title} // empty' 2>/dev/null || true)"
+            if [ -n "$base_pr_json" ]; then
+              base_pr_number="$(jq -r '.number // ""' <<< "$base_pr_json" 2>/dev/null || true)"
+              base_pr_title="$(jq -r '.title // ""' <<< "$base_pr_json" 2>/dev/null || true)"
+            fi
+          fi
+
           {
             echo "number=${PR_NUMBER}"
             echo "head_sha=${head_sha}"
@@ -211,6 +225,7 @@ jobs:
             echo "draft=$(jq -r '.draft' <<< "$pr")"
             echo "changed_files=$(jq -r '.changed_files // ""' <<< "$pr")"
             echo "diff_lines=$(jq -r 'if .additions == null and .deletions == null then "" else ((.additions // 0) + (.deletions // 0)) end' <<< "$pr")"
+            echo "base_pr_number=${base_pr_number}"
           } >> "$GITHUB_OUTPUT"
 
           delim="$(openssl rand -hex 16 2>/dev/null || echo "PR_DELIM_${RANDOM}_$$")"
@@ -229,6 +244,9 @@ jobs:
             echo "${delim}"
             echo "pr_head_ref<<${delim}"
             echo "${pr_head_ref}"
+            echo "${delim}"
+            echo "base_pr_title<<${delim}"
+            echo "${base_pr_title}"
             echo "${delim}"
           } >> "$GITHUB_OUTPUT"
 
@@ -1702,6 +1720,9 @@ jobs:
           TOOL_FINDINGS: ${{ steps.config.outputs.tool_findings }}
           ISSUE_BYTE_BUDGET: ${{ steps.config.outputs.issue_context_byte_budget }}
           ISSUE_TOTAL_BYTE_BUDGET: ${{ steps.config.outputs.issue_context_total_byte_budget }}
+          BASE_PR_NUMBER: ${{ needs.resolve.outputs.base_pr_number }}
+          BASE_PR_TITLE: ${{ needs.resolve.outputs.base_pr_title }}
+          BASE_REF: ${{ needs.resolve.outputs.pr_base_ref }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -2323,6 +2344,35 @@ jobs:
           
           tool_findings_context = {"ran": tools_ran, "skipped": tools_skipped, "findings": tool_findings_list}
           
+          # A base PR lookup failure leaves base_pull_request null and never fails the round (#162).
+          base_pull_request = None
+          base_pr_num = os.environ.get("BASE_PR_NUMBER", "").strip()
+          base_pr_title = os.environ.get("BASE_PR_TITLE", "").strip()
+          if base_pr_num:
+              try:
+                  base_pull_request = {"number": int(base_pr_num), "title": base_pr_title}
+              except Exception:
+                  base_pull_request = None
+          else:
+              owner = repo.split("/")[0] if "/" in repo else ""
+              target_base_ref = os.environ.get("BASE_REF", "").strip()
+              if not target_base_ref and pr:
+                  pr_fetch = run_gh(["gh", "api", f"repos/{repo}/pulls/{pr}"])
+                  if pr_fetch.returncode == 0 and pr_fetch.stdout.strip():
+                      try:
+                          target_base_ref = (json.loads(pr_fetch.stdout).get("base") or {}).get("ref") or ""
+                      except Exception:
+                          pass
+              if owner and target_base_ref:
+                  bpr_res = run_gh(["gh", "api", f"repos/{repo}/pulls?state=open&head={owner}:{target_base_ref}"])
+                  if bpr_res.returncode == 0 and bpr_res.stdout.strip():
+                      try:
+                          bpr_list = json.loads(bpr_res.stdout)
+                          if isinstance(bpr_list, list) and len(bpr_list) > 0 and isinstance(bpr_list[0], dict):
+                              base_pull_request = {"number": bpr_list[0]["number"], "title": bpr_list[0].get("title", "")}
+                      except Exception:
+                          pass
+
           # ---------------------------------------------------------------------------
           manifest["context"] = {
               "profile": profile,
@@ -2330,6 +2380,7 @@ jobs:
               "ci_failures": ci_context,
               "dependencies": dependencies_context,
               "tool_findings": tool_findings_context,
+              "base_pull_request": base_pull_request,
           }
           with open(manifest_path, "w", encoding="utf-8") as f:
               json.dump(manifest, f, indent=2)
@@ -2705,6 +2756,8 @@ jobs:
           `context.dependencies` is populated when a lockfile changed. It states packages added, removed, or bumped (with `major`, `minor`, or `patch`), and whether each is `direct` or transitive. A major bump or a new direct dependency is worth a sentence in the walkthrough; a transitive patch is not. A format with no parser reports `unparsed` with the file's path. Treat that as "this delta was not computed", never as "nothing changed", and never guess at what moved inside a lockfile body the manifest has already filtered out of the diff.
 
           `context.tool_findings` lists what a deterministic tool (`actionlint`, `shellcheck`, `tsc`, `eslint`, `biome`) already found on the changed files, normalised to `{tool, path, line, message}`, plus which tools ran and which could not. Each is a candidate: confirm it against the code and cite the tool in the finding, or discard it with no comment. Never post a tool's own output verbatim.
+
+          When `context.base_pull_request` is set, this PR's base branch is another open pull request that may change under this review or never merge. Findings that depend on the base's own code say so. The base PR's diff is not a source of findings.
 
           To do this, follow these steps precisely:
 

@@ -22,6 +22,8 @@ against a stubbed `gh`, verifying:
    FIRST resolved issue too, not just the second and later ones. A per-issue budget
    (issue_context_byte_budget) configured larger than the total must not let one
    oversized entry slip through the total budget unresolved-and-unrecorded.
+8. `context.base_pull_request`: set to `{number, title}` when stubbed pulls lookup
+   returns a PR, and `null` when it returns `[]` (#162).
 
 Run: python3 tests/test-review-context.py
 """
@@ -486,6 +488,66 @@ fi
             fails.append(f"case 7: want the budget-exhausted reason, got {issues['unresolved'][0]}")
         else:
             print("  ok    the total issue-context byte budget is enforced on the first resolved issue too")
+
+    # -------------------------------------------------------------
+    # 8. context.base_pull_request is {number, title} when stubbed pulls
+    # lookup returns a PR, and null when it returns [] (#162)
+    # -------------------------------------------------------------
+    gh_routes = r"""
+if [[ "$args" == *"pulls/105"* ]]; then
+  echo '{"body":"","base":{"ref":"stacked-base"}}'
+  exit 0
+fi
+if [[ "$args" == *"pulls?state=open&head=test-org:stacked-base"* ]]; then
+  echo '[{"number":42,"title":"Stacked Base PR"}]'
+  exit 0
+fi
+if [[ "$args" == *"check-runs"* ]]; then
+  echo '{"check_runs":[]}'
+  exit 0
+fi
+"""
+    rc, outs, manifest, stdout, stderr = run_context_step(
+        script,
+        manifest_files=[{"path": "README.md", "status": "modified"}],
+        gh_routes=gh_routes,
+    )
+    if rc != 0:
+        fails.append(f"case 8 (PR found) failed with rc={rc}: {stderr}")
+    else:
+        bpr = manifest["context"].get("base_pull_request")
+        if bpr != {"number": 42, "title": "Stacked Base PR"}:
+            fails.append(f"case 8: want base_pull_request={{'number': 42, 'title': 'Stacked Base PR'}}, got {bpr}")
+        else:
+            print("  ok    base_pull_request is populated when stubbed pulls lookup returns a PR")
+
+    gh_routes_empty = r"""
+if [[ "$args" == *"pulls/105"* ]]; then
+  echo '{"body":"","base":{"ref":"main"}}'
+  exit 0
+fi
+if [[ "$args" == *"pulls?state=open&head=test-org:main"* ]]; then
+  echo '[]'
+  exit 0
+fi
+if [[ "$args" == *"check-runs"* ]]; then
+  echo '{"check_runs":[]}'
+  exit 0
+fi
+"""
+    rc, outs, manifest, stdout, stderr = run_context_step(
+        script,
+        manifest_files=[{"path": "README.md", "status": "modified"}],
+        gh_routes=gh_routes_empty,
+    )
+    if rc != 0:
+        fails.append(f"case 8 (empty) failed with rc={rc}: {stderr}")
+    else:
+        bpr = manifest["context"].get("base_pull_request")
+        if bpr is not None:
+            fails.append(f"case 8: want base_pull_request=None (null), got {bpr}")
+        else:
+            print("  ok    base_pull_request is null when stubbed pulls lookup returns []")
 
     print()
     if fails:

@@ -25,6 +25,7 @@ RULES = {
     "severity from whole fix": "Severity and Effort describe the whole fix the finding needs, not the anchored line",
     "one defect one comment": "Merge issues that a single edit resolves, including an issue that is the leftover of a partial repair of another",
     "two-file phrase not merged": "This does not merge the same phrase appearing in two changed files",
+    "unmerged base PR": "this PR's base branch is another open pull request that may change under this review or never merge",
 }
 FORBIDDEN = {"imperative remedy": "<Imperative fix instruction>"}
 
