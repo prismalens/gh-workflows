@@ -42,7 +42,8 @@ while [ $i -lt ${#args[@]} ]; do
   a="${args[$i]}"
   case "$a" in
     --paginate) ;;
-    -X|-f) i=$((i+1)) ;;
+    -X) i=$((i+1)) ;;
+    -f) i=$((i+1)); echo "${args[$i]}" >> "${GH_ARGS_LOG:-/dev/null}" ;;
     --jq) i=$((i+1)); jqexpr="${args[$i]}" ;;
     *) path="$a" ;;
   esac
@@ -102,7 +103,7 @@ JOBS_700 = {"jobs": [{"name": "reconcile", "conclusion": "timed_out", "steps": [
 
 
 def run_collect(step, *, repos, window_hours="0", heartbeat="false", webhook="https://hooks.slack.com/services/T/B/x",
-                last_poll=LAST_POLL, sreforge_runs=SREFORGE_RUNS, ghw_runs=GHW_RUNS):
+                last_poll=LAST_POLL, sreforge_runs=SREFORGE_RUNS, ghw_runs=GHW_RUNS, args_log=os.devnull):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         fixtures = tdp / "fixtures"
@@ -131,6 +132,7 @@ def run_collect(step, *, repos, window_hours="0", heartbeat="false", webhook="ht
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "GH_FIXTURES": str(fixtures),
             "GH_TOKEN": "fake",
+            "GH_ARGS_LOG": str(args_log),
             "GITHUB_REPOSITORY": "prismalens/gh-workflows",
             "GITHUB_RUN_ID": "999",
             "GITHUB_OUTPUT": str(output),
@@ -212,7 +214,14 @@ def test_window_override_and_cap(step):
     p, out, body = run_collect(step, repos=["prismalens/sreforge"], last_poll=None)
     assert "(24h cap)" in body["text"], f"5: no prior poll must fall back to the cap: {body['text']}"
     assert "since 2026-09-12T08:23:10Z" in body["text"], f"5: cap is until minus 24h: {body['text']}"
-    print("  ok    5 window_hours overrides the watermark; no prior poll uses the 24h cap")
+
+    with tempfile.TemporaryDirectory() as td:
+        for hours, want in (("48", "created=>=2026-09-11"), ("0", "created=>=2026-09-12")):
+            log = pathlib.Path(td) / f"args-{hours}.log"
+            run_collect(step, repos=["prismalens/sreforge"], window_hours=hours, args_log=log)
+            got = [l for l in log.read_text().splitlines() if l.startswith("created=")]
+            assert got == [want], f"5: window_hours={hours} must query {want}, got {got}"
+    print("  ok    5 window_hours overrides the watermark; no prior poll uses the 24h cap; created= covers a 48h window")
 
 
 def test_missing_webhook(step):

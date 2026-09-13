@@ -109,7 +109,7 @@ const columns = helper.columns([
       const { openFindings, totalFindings } = row.original;
       if (openFindings === null || totalFindings === null) {
         return (
-          <span className="text-xs text-muted-foreground" title="No prs row for this PR yet">
+          <span className="text-xs text-muted-foreground" title="Finding counts not recorded: no prs row for this PR yet">
             —
           </span>
         );

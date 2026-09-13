@@ -61,7 +61,7 @@ def run_script(*, applied=None, wrangler_stdout=None, wrangler_exit=0, wrangler_
             )
         stub = f"""#!/usr/bin/env bash
 printf '%s' {json.dumps(wrangler_stdout)}
-printf '%s' {json.dumps(wrangler_stderr)} >&2
+printf '%b' {json.dumps(wrangler_stderr)} >&2
 exit {wrangler_exit}
 """
         (bin_dir / "wrangler").write_text(stub)
@@ -82,7 +82,7 @@ def run_guard(step: str, *, stub_stdout="", stub_exit=0):
         tdp = pathlib.Path(td)
         (tdp / "scripts").mkdir()
         stub = tdp / "scripts" / "d1-pending.sh"
-        stub.write_text(f"#!/usr/bin/env bash\nprintf '%s' {json.dumps(stub_stdout)}\nexit {stub_exit}\n")
+        stub.write_text(f"#!/usr/bin/env bash\nprintf '%b' {json.dumps(stub_stdout)}\nexit {stub_exit}\n")
         stub.chmod(0o755)
         summary = tdp / "summary.md"
         summary.touch()

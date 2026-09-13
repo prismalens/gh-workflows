@@ -84,7 +84,11 @@ jobs:
           : > "${failures}"
           unread=""
           repos_read=0
-          created_floor="${floor%%T*}"
+          # The created= filter drops runs before the API read, so it takes the earlier of
+          # the window start and the 24h floor; a window_hours past 24 is otherwise cut.
+          lower="${floor}"
+          if [ "${since}" \< "${floor}" ]; then lower="${since}"; fi
+          created_floor="${lower%%T*}"
 
           while IFS= read -r repo; do
             repo="$(echo "${repo}" | tr -d '[:space:]')"

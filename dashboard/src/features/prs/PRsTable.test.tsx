@@ -89,7 +89,7 @@ describe("PRsTable Open findings column (#75)", () => {
       onSortingChange: vi.fn(),
     });
 
-    const noPrsEl = screen.getByTitle("No prs row for this PR yet");
+    const noPrsEl = screen.getByTitle("Finding counts not recorded: no prs row for this PR yet");
     expect(noPrsEl).toHaveTextContent("—");
 
     const noFindingsEl = screen.getByTitle("No findings on record for this PR");
