@@ -454,6 +454,8 @@ export const REQUIRED_PR_KEYS = [
   "closed_at",
   "updated_at",
   "source",
+  "total_findings",
+  "open_findings",
 ] as const;
 
 export function isPrRow(row: unknown): row is PrRow {
@@ -472,7 +474,9 @@ export function isPrRow(row: unknown): row is PrRow {
     (r.merged_at === null || typeof r.merged_at === "string") &&
     (r.closed_at === null || typeof r.closed_at === "string") &&
     typeof r.updated_at === "string" &&
-    typeof r.source === "string"
+    typeof r.source === "string" &&
+    typeof r.total_findings === "number" &&
+    typeof r.open_findings === "number"
   );
 }
 

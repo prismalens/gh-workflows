@@ -1015,7 +1015,12 @@ async function handlePrs(url, env) {
     merged_at,
     closed_at,
     updated_at,
-    source
+    source,
+    (SELECT COUNT(*) FROM review_findings f
+      WHERE f.repository = prs.repository AND f.pr_number = prs.pr_number) AS total_findings,
+    (SELECT COUNT(*) FROM review_findings f
+      WHERE f.repository = prs.repository AND f.pr_number = prs.pr_number
+        AND COALESCE(f.is_resolved, 0) = 0) AS open_findings
   FROM prs`;
 
   if (conditions.length > 0) {

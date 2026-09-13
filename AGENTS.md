@@ -60,10 +60,10 @@ So the shape of a batched run is: open the draft first, push to it as often as t
 and mark it ready once, at the end. Nothing is saved by holding commits back before a push to
 a draft, which is the opposite of the rule for a pull request that is already ready.
 
-One slot is worth far more than one change. CodeRabbit will take on the order of 150 files in a
-single review, so a batch of a dozen issues costs exactly what a typo fix costs. Size the batch
-by what reviews together coherently and by what is unblocked, never by what feels like a
-reasonable pull request.
+One slot is worth far more than one change. CodeRabbit reviews up to 100 files in a single
+review, so a batch of a dozen issues costs exactly what a typo fix costs. Size the batch by what
+reviews together coherently and by what is unblocked, never by what feels like a reasonable pull
+request.
 
 ### Batch the lanes too, not only the pull request
 
@@ -126,6 +126,22 @@ either, for the mirror-image reason. Run both, and quote both.
 
 A reviewer whose token lacks admin scope gets HTTP 403 rather than 404 from the protection
 endpoint and cannot reproduce this. A 403 is "not allowed to look", never "nothing is there".
+
+## A callee permission is a caller change
+
+A reusable workflow can only downgrade the token its caller passes, never raise it. So a
+permission added to a job in `claude-code-review.yml` or any other `workflow_call` callee is a
+change to every consumer stub, and it ships in the stubs before or with the callee, never after.
+#161 added `checks: read` and `actions: read` to the review job for #145 with no stub change, and
+every consumer's review lane was `startup_failure` for five days before a human noticed (#165):
+
+```
+The nested job 'review' is requesting 'actions: read, checks: read', but is only allowed 'actions: none, checks: none'.
+```
+
+A `startup_failure` never starts a job, so the callee cannot report it and telemetry never sees
+it. `ci-failure-report.yml` reads run conclusions across every consumer for exactly this class
+(#169); it is the only place such a failure shows.
 
 ## Pull request titles
 

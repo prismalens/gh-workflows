@@ -29,6 +29,9 @@ export interface PRSummary {
   compactRounds: string;
   lastRoundAt: string;
   lastModel: string | null;
+  /** Null until a prs row enriches this PR; then the sweep's counts, 0 total meaning no row on record (#75). */
+  totalFindings: number | null;
+  openFindings: number | null;
 }
 
 /**
@@ -96,6 +99,8 @@ export function groupRoundsByPR(rows: RoundRow[]): PRSummary[] {
       compactRounds,
       lastRoundAt: latestRound.recorded_at,
       lastModel: latestRound.model,
+      totalFindings: null,
+      openFindings: null,
     });
   }
 
@@ -139,6 +144,8 @@ export function enrichPRs(prs: PRSummary[], prsRows: PrRow[]): PRSummary[] {
       mergedAt: row.merged_at,
       closedAt: row.closed_at,
       prsUpdatedAt: row.updated_at,
+      totalFindings: row.total_findings,
+      openFindings: row.open_findings,
     };
   });
 }

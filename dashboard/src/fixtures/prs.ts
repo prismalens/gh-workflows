@@ -23,6 +23,10 @@ export const FIXTURE_PRS: PrRow[] = FIXTURE_ROUNDS.filter((_, i) => i % 2 === 0)
       closed_at: state === "closed" ? "2026-08-29T09:00:00.000Z" : null,
       updated_at: round.recorded_at,
       source: "hook",
+      // Every third enriched PR has no sweep row, so the column's "no findings on
+      // record" state renders in fixture mode beside real counts (#75).
+      total_findings: idx % 3 === 0 ? 0 : (idx % 5) + 1,
+      open_findings: idx % 3 === 0 ? 0 : Math.min(idx % 3, (idx % 5) + 1),
     };
   },
 );

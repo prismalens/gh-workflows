@@ -234,7 +234,7 @@ export function ReportTabs({ pr }: { pr: PRSummary }) {
           Findings
         </button>
         <span className="ml-auto text-[11px] text-muted-foreground">
-          walkthrough and summary link out until #111 ships stored bodies
+          walkthrough and summary are read on GitHub; the sweep stores finding excerpts only
         </span>
       </div>
 
@@ -252,7 +252,8 @@ export function ReportTabs({ pr }: { pr: PRSummary }) {
             <div className="flex flex-col gap-2">
               <p className="text-muted-foreground">
                 Walkthrough comments are posted to GitHub on each full and incremental round.
-                Stored comment bodies arrive with #111; until then this links to the comment on GitHub.
+                The lane stores a 500-character excerpt per finding and no comment bodies (#75), so
+                the walkthrough is read on GitHub.
               </p>
               {pr.url && (
                 <div>
@@ -273,7 +274,7 @@ export function ReportTabs({ pr }: { pr: PRSummary }) {
             <div className="flex flex-col gap-2">
               <p className="text-muted-foreground">
                 Summary comments record the review resolution and audit details.
-                Stored comment bodies arrive with #111 too; until then this links to the comment on GitHub.
+                They are not stored either (#75), so the summary is read on GitHub.
               </p>
               {pr.url && (
                 <div>

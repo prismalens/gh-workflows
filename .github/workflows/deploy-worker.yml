@@ -96,50 +96,54 @@ jobs:
             exit 1
           fi
 
-      # Migration check: D1 migrations are not auto-applied on merge because D1 has
-      # no multi-statement transactional rollback across statements, risking corrupted
-      # live data if a migration fails halfway. The operator applies them deliberately.
-      # This step detects pending unapplied migrations on remote and warns loudly,
-      # distinguishing clean schema, pending migrations, and migration check failures.
+      # The deploy never applies a migration: D1 has no down migration, so that stays a
+      # human's click in apply-migrations.yml. This step only refuses to run code ahead
+      # of the schema, and it refuses on an unknown state too, because a deploy that
+      # did not look is the green this repository chases everywhere else. Story: #164.
       - name: Check for pending D1 migrations
         working-directory: worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          if output="$(./node_modules/.bin/wrangler d1 migrations list review-telemetry --remote 2>&1)"; then
-            echo "${output}"
-            if echo "${output}" | grep -q "Migrations to be applied:"; then
-              echo "::error::Pending D1 migrations detected on remote database review-telemetry. The deploy workflow does not auto-apply migrations. Apply them manually with: cd worker && ./node_modules/.bin/wrangler d1 migrations apply review-telemetry --remote"
+          set +e
+          pending="$(scripts/d1-pending.sh)"
+          status=$?
+          set -e
+          case "${status}" in
+            0)
+              echo "d1_migrations lists every file in worker/migrations."
+              ;;
+            2)
+              echo "::error::Pending D1 migrations on remote database review-telemetry: $(echo "${pending}" | tr '\n' ' '). Run the Apply D1 migrations workflow; it applies them, verifies d1_migrations and redrives this deploy (#164)."
               {
                 echo "## ⚠️ Pending D1 Migrations"
                 echo
-                echo "Unapplied migrations were detected for \`review-telemetry\`. The deploy workflow does not mutate the database schema automatically."
+                echo "\`d1_migrations\` on \`review-telemetry\` does not list:"
                 echo
-                echo "To apply pending migrations to the remote database:"
+                echo "\`\`\`"
+                echo "${pending}"
+                echo "\`\`\`"
+                echo
+                echo "Run the **Apply D1 migrations** workflow (Actions → Apply D1 migrations → Run workflow). It applies the pending files, verifies the applied set against \`d1_migrations\`, and dispatches this deploy again."
+              } >> "${GITHUB_STEP_SUMMARY}"
+              exit 1
+              ;;
+            *)
+              echo "::error::Could not read d1_migrations on remote database review-telemetry (scripts/d1-pending.sh exited with status ${status}). The schema state is unknown, so nothing deploys against it. Fix the credential or the database, then re-run this workflow (#164)."
+              {
+                echo "## ⚠️ D1 Migration Check Failed"
+                echo
+                echo "\`d1_migrations\` on \`review-telemetry\` could not be read (exit status ${status}), so the schema state is unknown and the deploy stopped rather than guess."
+                echo
+                echo "To read it by hand:"
                 echo "\`\`\`bash"
-                echo "cd worker && ./node_modules/.bin/wrangler d1 migrations apply review-telemetry --remote"
+                echo "cd worker && scripts/d1-pending.sh"
                 echo "\`\`\`"
               } >> "${GITHUB_STEP_SUMMARY}"
-              # Deploying code ahead of schema migrations breaks ingest with 500s (#87).
-              # Fail closed so migrations precede code deployment.
               exit 1
-            fi
-          else
-            status=$?
-            echo "${output}"
-            echo "::warning::Could not determine D1 migration state for remote database review-telemetry (wrangler d1 migrations list exited with status ${status}). Deploy is proceeding, but the remote schema state is unknown."
-            {
-              echo "## ⚠️ D1 Migration Check Failed"
-              echo
-              echo "Could not determine the D1 migration state for \`review-telemetry\` because \`wrangler d1 migrations list\` failed (exit status ${status}). The remote schema state is unknown."
-              echo
-              echo "To inspect migration status on the remote database manually:"
-              echo "\`\`\`bash"
-              echo "cd worker && ./node_modules/.bin/wrangler d1 migrations list review-telemetry --remote"
-              echo "\`\`\`"
-            } >> "${GITHUB_STEP_SUMMARY}"
-          fi
+              ;;
+          esac
 
       - name: Deploy
         working-directory: worker
