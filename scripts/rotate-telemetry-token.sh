@@ -85,10 +85,23 @@ else
 fi
 
 if [ "$SKIP_WORKER" -eq 0 ]; then
-  if (cd "$WORKER_DIR" && npx wrangler whoami >/dev/null 2>&1); then
-    say "  ok    npx wrangler whoami (worker/)"
+  # Running Wrangler through npx can download the latest release on demand when
+  # worker/node_modules is absent, so an unpinned, unvalidated version would run
+  # against the production Worker secret (CR #173, thread 4000816186, CWE-494).
+  # The pinned local binary is used explicitly instead, everywhere Wrangler runs
+  # in this script.
+  WRANGLER_BIN="$WORKER_DIR/node_modules/.bin/wrangler"
+  if [ -x "$WRANGLER_BIN" ]; then
+    say "  ok    worker/node_modules/.bin/wrangler present"
   else
-    say "  FAIL  npx wrangler whoami (worker/)"
+    say "  FAIL  worker/node_modules/.bin/wrangler missing -- run npm ci in worker/ first"
+    PREFLIGHT_FAILED=1
+  fi
+
+  if [ -x "$WRANGLER_BIN" ] && (cd "$WORKER_DIR" && "$WRANGLER_BIN" whoami >/dev/null 2>&1); then
+    say "  ok    wrangler whoami (worker/)"
+  elif [ -x "$WRANGLER_BIN" ]; then
+    say "  FAIL  wrangler whoami (worker/)"
     PREFLIGHT_FAILED=1
   fi
 fi
@@ -165,12 +178,12 @@ say ""
 # -------------------------------------------------------------- the Worker
 if [ "$SKIP_WORKER" -eq 0 ]; then
   say "rotating the Cloudflare Worker"
-  if (cd "$WORKER_DIR" && printf '%s' "$NEW_TOKEN" | npx wrangler secret put REVIEW_TELEMETRY_TOKEN); then
+  if (cd "$WORKER_DIR" && printf '%s' "$NEW_TOKEN" | "$WRANGLER_BIN" secret put REVIEW_TELEMETRY_TOKEN); then
     say "  worker updated"
   else
     say "  FAILED to set the Worker secret. All ${#REPOS[@]} repositories already hold"
     say "  the new token; only the Worker is stale. Retry:"
-    say "    cd worker && npx wrangler secret put REVIEW_TELEMETRY_TOKEN"
+    say "    cd worker && ./node_modules/.bin/wrangler secret put REVIEW_TELEMETRY_TOKEN"
     exit 1
   fi
 else
@@ -187,6 +200,6 @@ say ""
 say "A clean workflow exit is not proof: the telemetry step exits 0 even when the"
 say "token or URL is missing. The rotation is not proven until a round from each"
 say "repository has written a row after $START_TIME:"
-say "  cd worker && npx wrangler d1 execute review-telemetry --remote --json --command \\"
+say "  cd worker && ./node_modules/.bin/wrangler d1 execute review-telemetry --remote --json --command \\"
 say "    \"SELECT repository, COUNT(*) AS n, MAX(recorded_at) AS last FROM usage_records"
 say "     WHERE recorded_at > '$START_TIME' GROUP BY repository\""

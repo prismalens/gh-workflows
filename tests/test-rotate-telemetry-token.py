@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Behavioural tests for scripts/rotate-telemetry-token.sh.
 
-Runs the real script (nothing extracted) against stub `gh`, `openssl` and `npx`
-binaries on PATH. Each stub logs its own argv and, where the real command reads a
-secret on stdin, its stdin, to separate log files, so the tests can prove the token
-never reaches an argv, stdout or stderr while still landing everywhere it must.
-Story: #156.
+Runs the real script (nothing extracted), copied into a sandboxed <tmp>/scripts/
+with a sibling <tmp>/worker/node_modules/.bin/wrangler, against stub `gh`,
+`openssl` and `wrangler` binaries. Each stub logs its own argv and, where the real
+command reads a secret on stdin, its stdin, to separate log files, so the tests can
+prove the token never reaches an argv, stdout or stderr while still landing
+everywhere it must. Stories: #156, gh-workflows#173 thread 4000816186 (the pinned
+local wrangler binary, never an unpinned npx download).
 
 Run: python3 tests/test-rotate-telemetry-token.py
 """
@@ -125,7 +127,11 @@ print(cfg.get("fake_token", "deadbeef0123456789abcdef0123456789abcdef0123456789a
 sys.exit(0)
 '''
 
-NPX_STUB_PY = r'''#!/usr/bin/env python3
+# Stubs worker/node_modules/.bin/wrangler directly -- the script no longer shells
+# out through npx at all (CR #173, thread 4000816186: npx wrangler can download an
+# unpinned Wrangler when worker/node_modules is absent, so the pinned local binary
+# is invoked explicitly, and its absence fails preflight instead of falling back).
+WRANGLER_STUB_PY = r'''#!/usr/bin/env python3
 import json
 import os
 import sys
@@ -139,8 +145,8 @@ def log(path, line):
             fh.write(line + "\n")
 
 
-argv_log = os.environ.get("NPX_ARGV_LOG", "")
-stdin_log = os.environ.get("NPX_STDIN_LOG", "")
+argv_log = os.environ.get("WRANGLER_ARGV_LOG", "")
+stdin_log = os.environ.get("WRANGLER_STDIN_LOG", "")
 seq_log = os.environ.get("SEQ_LOG", "")
 cfg_path = os.environ.get("MOCK_CONFIG_FILE", "")
 cfg = {}
@@ -150,16 +156,16 @@ if cfg_path and os.path.exists(cfg_path):
 
 log(argv_log, json.dumps(args))
 
-if args[:2] == ["wrangler", "whoami"]:
+if args[:1] == ["whoami"]:
     sys.exit(0 if cfg.get("wrangler_whoami_ok", True) else 1)
 
-if args[:3] == ["wrangler", "secret", "put"]:
+if args[:2] == ["secret", "put"]:
     token = sys.stdin.read()
     log(stdin_log, token)
-    log(seq_log, "npx-secret-put worker")
+    log(seq_log, "wrangler-secret-put worker")
     sys.exit(0 if cfg.get("wrangler_secret_put_ok", True) else 1)
 
-sys.stderr.write("npx stub: unhandled call %r\n" % (args,))
+sys.stderr.write("wrangler stub: unhandled call %r\n" % (args,))
 sys.exit(1)
 '''
 
@@ -174,7 +180,7 @@ DEFAULT_CFG = {
 }
 
 
-def run_case(script_path, extra_args, cfg_overrides=None):
+def run_case(script_path, extra_args, cfg_overrides=None, wrangler_present=True):
     cfg = json.loads(json.dumps(DEFAULT_CFG))
     if cfg_overrides:
         cfg.update(cfg_overrides)
@@ -182,16 +188,33 @@ def run_case(script_path, extra_args, cfg_overrides=None):
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
         binp.mkdir()
-        for name, text in (("gh", GH_STUB_PY), ("openssl", OPENSSL_STUB_PY), ("npx", NPX_STUB_PY)):
+        for name, text in (("gh", GH_STUB_PY), ("openssl", OPENSSL_STUB_PY)):
             p = binp / name
             p.write_text(text, encoding="utf-8")
             p.chmod(0o755)
+
+        # SCRIPT_DIR is derived from ${BASH_SOURCE[0]}, so the script is copied into
+        # a sandboxed <tmp>/scripts/ with a sibling <tmp>/worker/, exactly like the
+        # real repo layout -- rather than running in place against the real
+        # worker/node_modules, which this test no longer depends on at all.
+        scripts_dir = tdp / "scripts"
+        scripts_dir.mkdir()
+        sandboxed_script = scripts_dir / "rotate-telemetry-token.sh"
+        sandboxed_script.write_text(script_path.read_text(encoding="utf-8"), encoding="utf-8")
+        sandboxed_script.chmod(0o755)
+
+        wrangler_bin_dir = tdp / "worker" / "node_modules" / ".bin"
+        wrangler_bin_dir.mkdir(parents=True)
+        if wrangler_present:
+            wrangler_bin = wrangler_bin_dir / "wrangler"
+            wrangler_bin.write_text(WRANGLER_STUB_PY, encoding="utf-8")
+            wrangler_bin.chmod(0o755)
 
         cfg_file = tdp / "cfg.json"
         cfg_file.write_text(json.dumps(cfg), encoding="utf-8")
 
         logs = {name: tdp / f"{name}.log" for name in (
-            "gh_argv", "gh_stdin", "openssl_argv", "npx_argv", "npx_stdin", "seq",
+            "gh_argv", "gh_stdin", "openssl_argv", "wrangler_argv", "wrangler_stdin", "seq",
         )}
         for p in logs.values():
             p.write_text("", encoding="utf-8")
@@ -203,14 +226,14 @@ def run_case(script_path, extra_args, cfg_overrides=None):
             GH_ARGV_LOG=str(logs["gh_argv"]),
             GH_STDIN_LOG=str(logs["gh_stdin"]),
             OPENSSL_ARGV_LOG=str(logs["openssl_argv"]),
-            NPX_ARGV_LOG=str(logs["npx_argv"]),
-            NPX_STDIN_LOG=str(logs["npx_stdin"]),
+            WRANGLER_ARGV_LOG=str(logs["wrangler_argv"]),
+            WRANGLER_STDIN_LOG=str(logs["wrangler_stdin"]),
             SEQ_LOG=str(logs["seq"]),
         )
 
         proc = subprocess.run(
-            ["bash", str(script_path), *extra_args],
-            cwd=str(ROOT),
+            ["bash", str(sandboxed_script), *extra_args],
+            cwd=str(tdp),
             env=env,
             capture_output=True,
             text=True,
@@ -228,8 +251,8 @@ def test_suite():
     proc = r["proc"]
     assert proc.returncode == 0, f"Case 1 failed (exit {proc.returncode}):\n{proc.stderr}\n{proc.stdout}"
     assert FAKE_TOKEN in r["gh_stdin"], "token did not reach gh secret set via stdin"
-    assert FAKE_TOKEN in r["npx_stdin"], "token did not reach wrangler secret put via stdin"
-    for name in ("gh_argv", "openssl_argv", "npx_argv"):
+    assert FAKE_TOKEN in r["wrangler_stdin"], "token did not reach wrangler secret put via stdin"
+    for name in ("gh_argv", "openssl_argv", "wrangler_argv"):
         assert FAKE_TOKEN not in r[name], f"token leaked into {name}"
     assert FAKE_TOKEN not in proc.stdout, "token leaked into stdout"
     assert FAKE_TOKEN not in proc.stderr, "token leaked into stderr"
@@ -237,7 +260,7 @@ def test_suite():
 
     # Case 2: order is every repo, then the Worker.
     seq = [line for line in r["seq"].splitlines() if line]
-    expected = [f"gh-secret-set {repo}" for repo in DEFAULT_REPOS] + ["npx-secret-put worker"]
+    expected = [f"gh-secret-set {repo}" for repo in DEFAULT_REPOS] + ["wrangler-secret-put worker"]
     assert seq == expected, f"unexpected order: {seq}"
     print("  ok    order is every repo, then the Worker")
 
@@ -252,7 +275,7 @@ def test_suite():
         "gh-secret-set prismalens/sreforge",
         "gh-secret-set prismalens/gh-workflows",  # attempted, stub returns failure
     ], seq
-    assert "npx-secret-put worker" not in r["seq"], "Worker was touched after a repo failure"
+    assert "wrangler-secret-put worker" not in r["seq"], "Worker was touched after a repo failure"
     rotated_line = next(l for l in proc.stdout.splitlines() if "rotated:" in l and "not rotated" not in l)
     not_rotated_line = next(l for l in proc.stdout.splitlines() if "not rotated:" in l)
     assert "prismalens/prismalens" in rotated_line and "prismalens/sreforge" in rotated_line, rotated_line
@@ -269,7 +292,7 @@ def test_suite():
         "gh-secret-set prismalens/prismalens",
         "gh-secret-set prismalens/sreforge",
     ], seq
-    assert "npx-secret-put worker" not in r["seq"], "Worker was touched after an unconfirmed set"
+    assert "wrangler-secret-put worker" not in r["seq"], "Worker was touched after an unconfirmed set"
     print("  ok    an unconfirmed set stops the run before the Worker")
 
     # Case 4: a preflight failure makes zero secret set calls.
@@ -295,7 +318,18 @@ def test_suite():
     assert "Sumit1993/mage-memory" in m.group(1), "default list is missing Sumit1993/mage-memory"
     print("  ok    default list contains Sumit1993/mage-memory")
 
-    print("\nAll 7 test cases passed successfully.")
+    # Case 7: preflight fails, naming npm ci, when worker/node_modules/.bin/wrangler
+    # is absent -- never falling back to an unpinned npx download (CR #173, thread
+    # 4000816186).
+    r = run_case(SCRIPT, [], wrangler_present=False)
+    proc = r["proc"]
+    assert proc.returncode != 0, "Case 7 expected non-zero exit when wrangler is absent"
+    assert r["seq"].strip() == "", f"preflight failure still wrote: {r['seq']}"
+    assert "run npm ci in worker/ first" in proc.stdout, proc.stdout
+    assert r["wrangler_argv"] == "", "wrangler must never be invoked when it is absent"
+    print("  ok    preflight fails naming 'npm ci in worker/' when wrangler is absent")
+
+    print("\nAll 8 test cases passed successfully.")
 
 
 if __name__ == "__main__":
