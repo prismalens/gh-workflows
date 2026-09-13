@@ -379,6 +379,7 @@ export const LANE_EVENT_REASONS = [
   "unchanged-patch",
   "paused-by-request",
   "refused-size",
+  "api-error",
 ] as const;
 
 export type LaneEventReasonKey = (typeof LANE_EVENT_REASONS)[number];
@@ -397,6 +398,9 @@ export const LANE_EVENT_DEFINITIONS: Record<LaneEventReasonKey, string> = {
   "refused-size":
     "Run refused because reviewable_lines exceeded the repository's max_reviewable_lines cap; " +
     "nothing was posted. @claude full review overrides the cap for one round.",
+  "api-error":
+    "Run failed on an account, auth or quota error before it read the diff; the failure_class " +
+    "field on the round's usage_records row names which.",
 };
 
 export const FORK_HEAD_FOOTNOTE =

@@ -83,7 +83,8 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
              event="pull_request", skip_reason="", result="success",
              mode="review", mutate_result="skipped", resolved="", open_="",
              verify_summary="", inline_json="", draft="", current_head=None,
-             patch_fingerprint=""):
+             patch_fingerprint="", failure_class="", failure_reset_at="",
+             api_error_status="", failure_message="", num_turns="1"):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
@@ -112,6 +113,11 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
             STARTED_AT="2026-01-01T00:00:00Z", RUN_URL="http://run",
             DRAFT=draft,
             PATCH_FINGERPRINT=patch_fingerprint,
+            FAILURE_CLASS=failure_class,
+            FAILURE_RESET_AT=failure_reset_at,
+            API_ERROR_STATUS=api_error_status,
+            FAILURE_MESSAGE=failure_message,
+            NUM_TURNS=num_turns,
             # The head the PR is on right now. Unchanged unless a case moves it.
             FAKE_CURRENT_HEAD=(NEW if current_head is None else current_head),
         )
@@ -276,6 +282,22 @@ CASES = [
                                               skip_reason="trivial", patch_fingerprint="9" * 64),
                                                                                          "2",  OLD,
                                          None, "d" * 64),
+    # An account/auth/quota failure classified by "Classify the round's outcome" must
+    # not advance the baseline or the round counter: nothing was reviewed (#174).
+    ("api-error (account-limit): does not advance sha= or rounds=, names the reset time",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=3 sha={OLD} -->",
+                                              result="failure", failure_class="account-limit",
+                                              failure_reset_at="2026-09-13T10:10:00Z",
+                                              failure_message="You've hit your session limit · resets 10:10am (UTC)",
+                                              inline=0, summary=0),
+                                                                                         "3",  OLD,
+                                         lambda v: "2026-09-13T10:10:00Z" in v and "usage limit" in v),
+    ("api-error (auth-failed): names both credentials, no retry advice",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=1 sha={OLD} -->",
+                                              result="failure", failure_class="auth-failed",
+                                              api_error_status="401", inline=0, summary=0),
+                                                                                         "1",  OLD,
+                                         lambda v: "CLAUDE_CODE_OAUTH_TOKEN" in v and "ANTHROPIC_API_KEY" in v),
 ]
 
 

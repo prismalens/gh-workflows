@@ -41,6 +41,7 @@ export const VERDICT_KIND_MAP: Record<string, VerdictState> = {
   "verify-cancelled": "silent",
   "counts-unread": "unknown",
   "verify-unread": "unknown",
+  "api-error": "did-not-run",
 };
 
 export const ALL_VERDICT_KINDS = [
@@ -62,6 +63,7 @@ export const ALL_VERDICT_KINDS = [
   "verify-cancelled",
   "counts-unread",
   "verify-unread",
+  "api-error",
 ] as const;
 
 export type VerdictKind = (typeof ALL_VERDICT_KINDS)[number];
@@ -140,6 +142,11 @@ export const VERDICT_KIND_DEFINITIONS: Record<
     group: "unknown",
     definition:
       "A verification round finished but the GitHub API would not answer when it tried to read back its own summary comment. Whether threads were re-checked is not recorded here.",
+  },
+  "api-error": {
+    group: "did-not-run",
+    definition:
+      "An account, auth or quota failure stopped the round before it read the diff. The failure_class field on the round's usage_records row names which.",
   },
   silent: {
     group: "silent",
@@ -255,6 +262,7 @@ const VERDICT_KIND_BUCKET_MAP: Record<string, VerdictKindBucket> = {
   "verify-superseded": "did-not-run",
   "no-token": "did-not-run",
   "no-new-commits": "did-not-run",
+  "api-error": "did-not-run",
   silent: "silent",
   "verify-silent": "silent",
   "verify-cancelled": "silent",

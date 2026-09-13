@@ -279,7 +279,7 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 56);
+      assert.equal(query.args.length, 60);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
@@ -725,7 +725,7 @@ describe("Worker telemetry ingest", () => {
       assert.match(query.sql, /config_effective/);
       // config_effective sits 5 params before the end: level and level_source (#101),
       // context_repositories and context_lines (#90) were appended after it.
-      assert.equal(query.args[query.args.length - 5], JSON.stringify(configEffective));
+      assert.equal(query.args[query.args.length - 9], JSON.stringify(configEffective));
     });
 
     it("stores null for config_effective when the payload omits it (#75)", async () => {
@@ -742,7 +742,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 5], null);
+      assert.equal(query.args[query.args.length - 9], null);
     });
 
     it("stores level and level_source for a v2 payload that sets them (#101)", async () => {
@@ -761,8 +761,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 4], "high");
-      assert.equal(query.args[query.args.length - 3], "repo");
+      assert.equal(query.args[query.args.length - 8], "high");
+      assert.equal(query.args[query.args.length - 7], "repo");
     });
 
     it("stores null for level and level_source when the payload omits them (#101)", async () => {
@@ -779,8 +779,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 4], null);
-      assert.equal(query.args[query.args.length - 3], null);
+      assert.equal(query.args[query.args.length - 8], null);
+      assert.equal(query.args[query.args.length - 7], null);
     });
 
     it("stores context_repositories and context_lines for a v2 payload that sets them (#90)", async () => {
@@ -799,8 +799,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 2], 2);
-      assert.equal(query.args[query.args.length - 1], 450);
+      assert.equal(query.args[query.args.length - 6], 2);
+      assert.equal(query.args[query.args.length - 5], 450);
     });
 
     it("stores null for context_repositories and context_lines when the payload omits them (#90)", async () => {
@@ -817,8 +817,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 2], null);
-      assert.equal(query.args[query.args.length - 1], null);
+      assert.equal(query.args[query.args.length - 6], null);
+      assert.equal(query.args[query.args.length - 5], null);
     });
 
     it("returns 400 when context_repositories or context_lines is not a number (#90)", async () => {
@@ -830,6 +830,66 @@ describe("Worker telemetry ingest", () => {
           session_id: "s-context-bad",
           repository: "prismalens/gh-workflows",
           context_repositories: "not-a-number",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("stores failure_class, failure_retryable, failure_reset_at and api_error_status for a v2 payload that sets them (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-failure-1",
+          repository: "prismalens/gh-workflows",
+          failure_class: "account-limit",
+          failure_retryable: 0,
+          failure_reset_at: "2026-09-13T10:10:00Z",
+          api_error_status: 429,
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 4], "account-limit");
+      assert.equal(query.args[query.args.length - 3], 0);
+      assert.equal(query.args[query.args.length - 2], "2026-09-13T10:10:00Z");
+      assert.equal(query.args[query.args.length - 1], 429);
+    });
+
+    it("stores null for failure_class, failure_retryable, failure_reset_at and api_error_status when the payload omits them (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-failure-absent",
+          repository: "prismalens/gh-workflows",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 4], null);
+      assert.equal(query.args[query.args.length - 3], null);
+      assert.equal(query.args[query.args.length - 2], null);
+      assert.equal(query.args[query.args.length - 1], null);
+    });
+
+    it("returns 400 when failure_retryable or api_error_status is not a number (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-failure-bad",
+          repository: "prismalens/gh-workflows",
+          failure_retryable: "not-a-number",
         },
       });
       const res = await worker.fetch(req, env);
@@ -1945,6 +2005,42 @@ describe("Worker telemetry read API", () => {
       const query = db.queries[0];
       assert.ok(query.sql.includes("context_repositories"));
       assert.ok(query.sql.includes("context_lines"));
+    });
+
+    it("selects failure_class, failure_retryable, failure_reset_at and api_error_status in the default response (#174)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return {
+              results: [
+                {
+                  session_id: "s-failure-read-1",
+                  failure_class: "account-limit",
+                  failure_retryable: 0,
+                  failure_reset_at: "2026-09-13T10:10:00Z",
+                  api_error_status: 429,
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/runs", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].failure_class, "account-limit");
+      assert.equal(data.rows[0].failure_retryable, 0);
+      assert.equal(data.rows[0].failure_reset_at, "2026-09-13T10:10:00Z");
+      assert.equal(data.rows[0].api_error_status, 429);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("failure_class"));
+      assert.ok(query.sql.includes("api_error_status"));
     });
 
     it("returns config_effective only under include=blobs, preserving an unknown config key (#75)", async () => {

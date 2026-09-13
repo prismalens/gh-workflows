@@ -54,6 +54,9 @@ const NUMERIC_FIELDS = [
   "size_override",
   "context_repositories",
   "context_lines",
+  // #174: account/auth/quota failure classification.
+  "failure_retryable",
+  "api_error_status",
 ];
 
 const STRING_FIELDS = [
@@ -86,6 +89,9 @@ const STRING_FIELDS = [
   // later release enabling it needs no worker change.
   "level",
   "level_source",
+  // #174: account/auth/quota failure classification, and reset time when parsed.
+  "failure_class",
+  "failure_reset_at",
 ];
 
 const JSON_ARRAY_FIELDS = ["comment_node_ids"];
@@ -104,6 +110,7 @@ const VALID_LANE_EVENT_REASONS = new Set([
   "skip-trivial", // #154: min_diff_lines floor
   "superseded", // #154: debounce_minutes lever
   "unchanged-patch", // #162: restack with unchanged patch
+  "api-error", // #174: account, auth or quota failure; the class is on usage_records.failure_class
 ]);
 
 const LANE_EVENT_NUMERIC_FIELDS = [
@@ -723,6 +730,10 @@ async function handleRuns(url, env) {
     "level_source",
     "context_repositories",
     "context_lines",
+    "failure_class",
+    "failure_retryable",
+    "failure_reset_at",
+    "api_error_status",
   ];
   if (includeBlobs) {
     columns.push(
@@ -1375,14 +1386,18 @@ async function handleIngest(request, env) {
           level,
           level_source,
           context_repositories,
-          context_lines
+          context_lines,
+          failure_class,
+          failure_retryable,
+          failure_reset_at,
+          api_error_status
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
           ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
           ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
           ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
-          ?51, ?52, ?53, ?54, ?55, ?56
+          ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60
         )
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
@@ -1441,7 +1456,11 @@ async function handleIngest(request, env) {
         payload.level ?? null,
         payload.level_source ?? null,
         payload.context_repositories ?? null,
-        payload.context_lines ?? null
+        payload.context_lines ?? null,
+        payload.failure_class ?? null,
+        payload.failure_retryable ?? null,
+        payload.failure_reset_at ?? null,
+        payload.api_error_status ?? null
       );
 
       const agentStmts = [];

@@ -392,6 +392,14 @@ jobs:
       context_lines: ${{ steps.context-checkout.outputs.context_lines }}
       prompt_hash: ${{ steps.build-prompt.outputs.prompt_hash }}
       telemetry_record: ${{ steps.telemetry.outputs.record }}
+      # Account, auth and quota failures classified once, from the round's own result
+      # item, so liveness, the rollup and telemetry all agree. Story: gh-workflows#174.
+      failure_class: ${{ steps.classify-failure.outputs.failure_class }}
+      failure_retryable: ${{ steps.classify-failure.outputs.failure_retryable }}
+      failure_reset_at: ${{ steps.classify-failure.outputs.failure_reset_at }}
+      api_error_status: ${{ steps.classify-failure.outputs.api_error_status }}
+      failure_message: ${{ steps.classify-failure.outputs.failure_message }}
+      num_turns: ${{ steps.telemetry.outputs.num_turns }}
 
     steps:
       - name: Record review start time
@@ -3276,6 +3284,10 @@ jobs:
       # Stories: prismalens/prismalens#403 and #410.
       # Steps 2, 4, and Notes direct agents to local checkout tools (Glob/Read/Grep/LS) and forbid
       # gh api, git, and test/lint runners to eliminate denied tool-call round trips. Story: #42.
+      # The action itself exits non-zero on `is_error: true` (account/auth/quota failures
+      # included), so the job conclusion stays `failure` without extra code here: a green
+      # check on a round that reviewed nothing is the failure this lane exists to prevent
+      # (gh-workflows#174).
       - name: Run Claude Code Review
         id: claude-review
         if: >-
@@ -3300,6 +3312,189 @@ jobs:
             "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
             --model ${{ steps.model.outputs.model }}
 
+      # An account, auth or quota failure returns as a normal `type: result` item with
+      # `is_error: true`, not a step failure the caller can branch on cheaply. Classifying
+      # it here, once, is what lets liveness, the rollup and telemetry all say the same
+      # thing instead of each guessing from `agents_status=no-session-id`. Story: gh-workflows#174.
+      - name: Classify the round's outcome
+        id: classify-failure
+        if: always()
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+          import re
+
+          EMPTY = {
+              "failure_class": "",
+              "failure_retryable": "",
+              "failure_reset_at": "",
+              "api_error_status": "",
+              "failure_message": "",
+          }
+
+
+          def load_events(path):
+              with open(path, "r", encoding="utf-8") as f:
+                  content = f.read().strip()
+              if content.startswith("["):
+                  events = json.loads(content)
+              else:
+                  events = []
+                  for line in content.splitlines():
+                      line = line.strip()
+                      if not line:
+                          continue
+                      try:
+                          events.append(json.loads(line))
+                      except Exception:
+                          continue
+              return events if isinstance(events, list) else []
+
+
+          def last_result(events):
+              found = None
+              for ev in events:
+                  if isinstance(ev, dict) and ev.get("type") == "result":
+                      found = ev
+              return found
+
+
+          def parse_reference(result_item):
+              ts = result_item.get("timestamp") if isinstance(result_item, dict) else None
+              if isinstance(ts, str):
+                  try:
+                      return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                  except Exception:
+                      pass
+              return datetime.datetime.now(datetime.timezone.utc)
+
+
+          def parse_reset_at(text, reference):
+              # "resets 10:10am (UTC)" -> the next such UTC instant after `reference`.
+              m = re.search(r"resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(UTC\)", text, re.IGNORECASE)
+              if m:
+                  hour = int(m.group(1)) % 12
+                  minute = int(m.group(2) or 0)
+                  if m.group(3).lower() == "pm":
+                      hour += 12
+                  candidate = reference.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                  if candidate <= reference:
+                      candidate += datetime.timedelta(days=1)
+                  return candidate.strftime("%Y-%m-%dT%H:%M:%SZ")
+              # "resets September 20 at 00:00 UTC" -> that date, next year if already past.
+              m = re.search(r"resets\s+([A-Za-z]+)\s+(\d{1,2})\s+at\s+00:00\s*UTC", text, re.IGNORECASE)
+              if m:
+                  try:
+                      month = datetime.datetime.strptime(m.group(1)[:3], "%b").month
+                  except ValueError:
+                      return ""
+                  day = int(m.group(2))
+                  try:
+                      candidate = reference.replace(
+                          year=reference.year, month=month, day=day,
+                          hour=0, minute=0, second=0, microsecond=0,
+                      )
+                  except ValueError:
+                      return ""
+                  if candidate <= reference:
+                      candidate = candidate.replace(year=candidate.year + 1)
+                  return candidate.strftime("%Y-%m-%dT%H:%M:%SZ")
+              return ""
+
+
+          def redact(message):
+              return re.sub(r"[A-Za-z0-9_-]{21,}", "[redacted]", message)
+
+
+          def classify(result_item):
+              text = str(result_item.get("result", "") or "")
+              text_lower = text.lower()
+              status = result_item.get("api_error_status")
+              try:
+                  status = int(status)
+              except (TypeError, ValueError):
+                  status = None
+              err_type = str(result_item.get("terminal_reason", "") or "").lower()
+
+              def has_any(*needles):
+                  return any(n in text_lower for n in needles)
+
+              if status == 429 and has_any(
+                  "session limit", "weekly limit", "opus weekly", "usage limits",
+                  "enforced_spend_limit_reached",
+              ):
+                  failure_class, retryable = "account-limit", "0"
+              elif status == 429:
+                  failure_class, retryable = "rate-limited", "1"
+              elif status == 401 or has_any(
+                  "login expired", "oauth token refresh failed",
+                  "organization has been disabled", "disabled api key authentication",
+              ):
+                  failure_class, retryable = "auth-failed", "0"
+              elif status == 402 or "billing_error" in text_lower or (
+                  status == 400 and "specified api usage limits" in text_lower
+              ):
+                  failure_class, retryable = "billing", "0"
+              elif status == 400 and (
+                  has_any("not available with", "not a recognized model", "restricted by your organization")
+                  or ("model" in text_lower and "not found" in text_lower)
+              ):
+                  failure_class, retryable = "model-unavailable", "0"
+              elif status == 413 or has_any(
+                  "context exceeds", "prompt is too long", "input is too long",
+              ):
+                  failure_class, retryable = "request-too-large", "0"
+              elif status in (500, 502, 503, 504, 529) or "overloaded_error" in text_lower \
+                      or err_type == "api_error" or has_any("unable to connect", "connection refused"):
+                  failure_class, retryable = "api-unavailable", "1"
+              else:
+                  failure_class, retryable = "api-error", "0"
+
+              reset_at = ""
+              if failure_class in ("account-limit", "billing"):
+                  reset_at = parse_reset_at(text, parse_reference(result_item))
+
+              message = text[:200]
+              message = re.sub(r"\s+", " ", message).strip()
+              message = redact(message)
+
+              return {
+                  "failure_class": failure_class,
+                  "failure_retryable": retryable,
+                  "failure_reset_at": reset_at,
+                  "api_error_status": str(status) if status is not None else "",
+                  "failure_message": message,
+              }
+
+
+          def main():
+              out = dict(EMPTY)
+              execution_file = os.environ.get("EXECUTION_FILE", "")
+              if execution_file and os.path.isfile(execution_file):
+                  try:
+                      events = load_events(execution_file)
+                      result_item = last_result(events)
+                      if isinstance(result_item, dict) and result_item.get("is_error"):
+                          out = classify(result_item)
+                  except Exception as e:
+                      print(f"::warning::classify-failure: could not read execution file: {e}")
+
+              gh_output = os.environ.get("GITHUB_OUTPUT")
+              if gh_output:
+                  with open(gh_output, "a", encoding="utf-8") as f:
+                      for k, v in out.items():
+                          f.write(f"{k}={v}\n")
+              print(f"classify-failure: failure_class={out['failure_class'] or '(none)'}")
+
+
+          main()
+          PY
+
       # Rolls up per-agent identity from task_started/task_notification in the execution
       # file and per-agent costs from subagent transcripts. Story: #93.
       - name: Roll up subagent transcripts
@@ -3309,6 +3504,7 @@ jobs:
           EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
           SESSION_ID: ${{ steps.claude-review.outputs.session_id }}
           CLAUDE_OUTCOME: ${{ steps.claude-review.outcome }}
+          FAILURE_CLASS: ${{ steps.classify-failure.outputs.failure_class }}
         run: |
           set -uo pipefail
 
@@ -3325,6 +3521,15 @@ jobs:
           if [ "${CLAUDE_OUTCOME:-skipped}" = "skipped" ]; then
             echo "agent-rollup: no review ran in this round; nothing to roll up."
             emit_empty "skipped"
+            exit 0
+          fi
+
+          # An account/auth/quota failure on turn 1 also has spawned=0, and reads
+          # identically to "nothing to review" under the old no-session-id status.
+          # The classifier already told us why nothing was spawned (#174).
+          if [ -n "${FAILURE_CLASS:-}" ]; then
+            echo "agent-rollup: round failed (${FAILURE_CLASS}); nothing to roll up."
+            emit_empty "api-error"
             exit 0
           fi
 
@@ -3635,6 +3840,10 @@ jobs:
           LEVEL_SOURCE: ${{ steps.model.outputs.level_source }}
           REVIEWABLE_LINES: ${{ steps.manifest.outputs.reviewable_lines }}
           SIZE_OVERRIDE: ${{ steps.manifest.outputs.size_override }}
+          FAILURE_CLASS: ${{ steps.classify-failure.outputs.failure_class }}
+          FAILURE_RETRYABLE: ${{ steps.classify-failure.outputs.failure_retryable }}
+          FAILURE_RESET_AT: ${{ steps.classify-failure.outputs.failure_reset_at }}
+          API_ERROR_STATUS: ${{ steps.classify-failure.outputs.api_error_status }}
         run: |
           set -uo pipefail
 
@@ -3713,6 +3922,10 @@ jobs:
             --arg size_override "${SIZE_OVERRIDE:-}" \
             --arg agents "${AGENTS:-[]}" \
             --arg agents_status "${AGENTS_STATUS:-}" \
+            --arg failure_class "${FAILURE_CLASS:-}" \
+            --arg failure_retryable "${FAILURE_RETRYABLE:-}" \
+            --arg failure_reset_at "${FAILURE_RESET_AT:-}" \
+            --arg api_error_status "${API_ERROR_STATUS:-}" \
             '
             def num(s): if s == "" then null else (s | tonumber? // null) end;
             def denials:
@@ -3766,6 +3979,10 @@ jobs:
               subagent_stats: (if .subagent_stats == null then null else (.subagent_stats | tojson) end),
               agents: (if $agents == "" or $agents == "null" then [] else (try ($agents | fromjson) catch []) end),
               agents_status: (if $agents_status == "" then null else $agents_status end),
+              failure_class: (if $failure_class == "" then null else $failure_class end),
+              failure_retryable: (if $failure_retryable == "" then null else ($failure_retryable | tonumber?) end),
+              failure_reset_at: (if $failure_reset_at == "" then null else $failure_reset_at end),
+              api_error_status: (if $api_error_status == "" then null else ($api_error_status | tonumber?) end),
               raw_result: (
                 . as $o
                 | ($o | del(.result, .permission_denials)) as $base
@@ -3790,6 +4007,9 @@ jobs:
             echo "record<<TELEMETRY_EOF"
             printf '%s\n' "$record"
             echo "TELEMETRY_EOF"
+            # A plain output beside the record blob: the announce job wants num_turns
+            # on its own to decide `partial` without parsing the whole record (#174).
+            echo "num_turns=$(printf '%s' "$record" | jq -r '.num_turns // 0')"
           } >> "$GITHUB_OUTPUT"
 
           echo "Extracted telemetry for session $session_id: $(printf '%s' "$record" | jq -r '"\(.num_turns) turns, \(.permission_denials) denials, \(.duration_ms)ms"')"
@@ -4646,6 +4866,11 @@ jobs:
           MAX_REVIEWABLE_LINES: ${{ needs.review.outputs.max_reviewable_lines }}
           CONTEXT_NOTES: ${{ needs.review.outputs.context_notes }}
           PATCH_FINGERPRINT: ${{ needs.resolve.outputs.patch_fingerprint }}
+          FAILURE_CLASS: ${{ needs.review.outputs.failure_class }}
+          FAILURE_RESET_AT: ${{ needs.review.outputs.failure_reset_at }}
+          API_ERROR_STATUS: ${{ needs.review.outputs.api_error_status }}
+          FAILURE_MESSAGE: ${{ needs.review.outputs.failure_message }}
+          NUM_TURNS: ${{ needs.review.outputs.num_turns }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -4788,6 +5013,54 @@ jobs:
           \`max_reviewable_lines\` cap of \`${MAX_REVIEWABLE_LINES:-0}\`. Nothing was posted. \
           **This head has no machine review on record.** \`@claude full review\` overrides the cap for one round."
             verdict_kind="refused-size"
+          elif [ -n "${FAILURE_CLASS:-}" ]; then
+            # An account, auth or quota failure classified once by "Classify the
+            # round's outcome" (gh-workflows#174). reviewed_sha and rounds are both
+            # left untouched by this branch: REVIEW_RESULT is "failure" here (the
+            # action itself exits non-zero on is_error), so the increment condition
+            # above already stays false, and nothing here sets reviewed_sha.
+            verdict_kind="api-error"
+            partial=0
+            if [ "${NUM_TURNS:-0}" -gt 1 ] 2>/dev/null; then
+              partial_inline_raw=$(gh_read "repos/$REPO/pulls/$PR/comments" --paginate --jq \
+                "[.[] | select(.user.login==\"claude[bot]\")
+                      | select(.original_commit_id==\"$HEAD_SHA\") | .node_id // empty]") || partial_inline_raw="[]"
+              partial_inline=$(jq -r 'if type == "array" then length else 0 end' <<< "${partial_inline_raw:-[]}" 2>/dev/null || echo 0)
+              if [ "${partial_inline:-0}" -gt 0 ] 2>/dev/null; then
+                partial=1
+              fi
+            fi
+            case "$FAILURE_CLASS" in
+              account-limit)
+                if [ -n "${FAILURE_RESET_AT:-}" ]; then
+                  reset_txt="at \`${FAILURE_RESET_AT}\`"
+                else
+                  reset_txt="at the time the provider states"
+                fi
+                verdict="did not review \`$short\`: the Claude account behind this lane hit its usage limit (${FAILURE_MESSAGE:-usage limit reached}). It resets ${reset_txt}. After that, push or comment \`@claude review\`."
+                ;;
+              rate-limited|api-unavailable)
+                verdict="did not review \`$short\`: the Claude API was rate-limited or unavailable (${API_ERROR_STATUS:-unknown}) after its own retries. This is usually transient; comment \`@claude review\` to try again."
+                ;;
+              auth-failed)
+                verdict="did not review \`$short\`: the lane's Claude credential was rejected (${API_ERROR_STATUS:-unknown}). A repository admin must replace CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY; retrying will not help."
+                ;;
+              billing)
+                verdict="did not review \`$short\`: the Claude account behind this lane hit a billing limit (${API_ERROR_STATUS:-unknown}). Fix billing on the account, then comment \`@claude review\`."
+                ;;
+              model-unavailable)
+                verdict="did not review \`$short\`: the configured model is not allowed on this account (${API_ERROR_STATUS:-unknown}). Pick an allowed model in \`review.default_model\`."
+                ;;
+              request-too-large)
+                verdict="did not review \`$short\`: the request was too large for the model (${API_ERROR_STATUS:-unknown}). Split the pull request or narrow \`path_filters\`."
+                ;;
+              *)
+                verdict="did not review \`$short\`: the Claude API returned an error (${API_ERROR_STATUS:-unknown}). Read the [run log]($RUN_URL)."
+                ;;
+            esac
+            if [ "$partial" = "1" ]; then
+              verdict="$verdict Some findings were posted before the failure; this head's review is incomplete."
+            fi
           elif [ "$MODE" = "verify" ]; then
             # A hardened verify round posts nothing as claude[bot] — `mutate` posts as
             # `github-actions[bot]` — so the claude[bot] count below would report a
@@ -5157,6 +5430,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REVIEWABLE_LINES: ${{ needs.review.outputs.reviewable_lines }}
           MAX_REVIEWABLE_LINES: ${{ needs.review.outputs.max_reviewable_lines }}
+          FAILURE_CLASS: ${{ needs.review.outputs.failure_class }}
           # Set only when this event is the pause (#124); empty on every other reason.
           ACTOR: ${{ needs.announce.outputs.paused_by }}
           INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
@@ -5196,6 +5470,11 @@ jobs:
             reason="no-token"
           elif [ "$SKIP_REASON" = "refused-size" ]; then
             reason="refused-size"
+          # The reason enum is a closed Set, so a per-class suffix would need one
+          # entry per failure_class; the class itself already lives on the
+          # usage_records row this same round writes (gh-workflows#174).
+          elif [ -n "${FAILURE_CLASS:-}" ]; then
+            reason="api-error"
           # no-new-commits is deliberately NOT a lane event: nothing was skipped, there was simply nothing to review.
           fi
 
