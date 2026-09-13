@@ -53,6 +53,9 @@ case "$args" in
   # asks for the current head, not for inline comments.
   *".head.sha"*)              printf '%s' "$FAKE_CURRENT_HEAD"; exit 0 ;;
   *"pulls/"*)
+    if [ "${FAKE_INLINE_FAIL:-0}" = "1" ]; then
+      exit 1
+    fi
     # When FAKE_INLINE_JSON is set, return the JSON and let --jq filter it.
     if [ -n "${FAKE_INLINE_JSON:-}" ]; then
       jq_filter=""
@@ -84,7 +87,8 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
              mode="review", mutate_result="skipped", resolved="", open_="",
              verify_summary="", inline_json="", draft="", current_head=None,
              patch_fingerprint="", failure_class="", failure_reset_at="",
-             api_error_status="", failure_message="", num_turns="1"):
+             api_error_status="", failure_message="", num_turns="1",
+             inline_fail=""):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
@@ -118,6 +122,7 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
             API_ERROR_STATUS=api_error_status,
             FAILURE_MESSAGE=failure_message,
             NUM_TURNS=num_turns,
+            FAKE_INLINE_FAIL=inline_fail,
             # The head the PR is on right now. Unchanged unless a case moves it.
             FAKE_CURRENT_HEAD=(NEW if current_head is None else current_head),
         )
@@ -298,6 +303,18 @@ CASES = [
                                               api_error_status="401", inline=0, summary=0),
                                                                                          "1",  OLD,
                                          lambda v: "CLAUDE_CODE_OAUTH_TOKEN" in v and "ANTHROPIC_API_KEY" in v),
+    # A failed read of posted comments is not zero findings: the old code converted
+    # it to "[]", so the verdict asserted "did not review" as a certainty the code
+    # never established. This case forces num_turns>1 so the read is attempted at
+    # all, and FAKE_INLINE_FAIL makes gh_read exhaust its retries (CR #173, thread
+    # 4000816177).
+    ("api-error: a failed partial-inline read says so, never asserts none were posted",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=1 sha={OLD} -->",
+                                              result="failure", failure_class="rate-limited",
+                                              api_error_status="429", num_turns="3", inline_fail="1"),
+                                                                                         "1",  OLD,
+                                         lambda v: "could not be read" in v
+                                                   and "Some findings were posted" not in v),
 ]
 
 

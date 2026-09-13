@@ -5221,10 +5221,16 @@ jobs:
             # above already stays false, and nothing here sets reviewed_sha.
             verdict_kind="api-error"
             partial=0
+            # A failed read is not zero findings: converting it to "[]" makes a
+            # transient API error read as "no partial findings", and the verdict
+            # below would then assert "did not review" as a certainty the code
+            # never established (CR #173, thread 4000816177).
+            partial_read=ok
             if [ "${NUM_TURNS:-0}" -gt 1 ] 2>/dev/null; then
               partial_inline_raw=$(gh_read "repos/$REPO/pulls/$PR/comments" --paginate --jq \
                 "[.[] | select(.user.login==\"claude[bot]\")
-                      | select(.original_commit_id==\"$HEAD_SHA\") | .node_id // empty]") || partial_inline_raw="[]"
+                      | select(.original_commit_id==\"$HEAD_SHA\") | .node_id // empty]") \
+                || { partial_inline_raw="[]"; partial_read=failed; }
               partial_inline=$(jq -r 'if type == "array" then length else 0 end' <<< "${partial_inline_raw:-[]}" 2>/dev/null || echo 0)
               if [ "${partial_inline:-0}" -gt 0 ] 2>/dev/null; then
                 partial=1
@@ -5260,6 +5266,8 @@ jobs:
             esac
             if [ "$partial" = "1" ]; then
               verdict="$verdict Some findings were posted before the failure; this head's review is incomplete."
+            elif [ "$partial_read" = "failed" ]; then
+              verdict="$verdict Whether findings were posted before the failure could not be read."
             fi
           elif [ "$MODE" = "verify" ]; then
             # A hardened verify round posts nothing as claude[bot] — `mutate` posts as
