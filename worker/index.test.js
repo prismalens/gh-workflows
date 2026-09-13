@@ -279,7 +279,7 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 60);
+      assert.equal(query.args.length, 61);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
@@ -725,7 +725,7 @@ describe("Worker telemetry ingest", () => {
       assert.match(query.sql, /config_effective/);
       // config_effective sits 5 params before the end: level and level_source (#101),
       // context_repositories and context_lines (#90) were appended after it.
-      assert.equal(query.args[query.args.length - 9], JSON.stringify(configEffective));
+      assert.equal(query.args[query.args.length - 10], JSON.stringify(configEffective));
     });
 
     it("stores null for config_effective when the payload omits it (#75)", async () => {
@@ -742,7 +742,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 9], null);
+      assert.equal(query.args[query.args.length - 10], null);
     });
 
     it("stores level and level_source for a v2 payload that sets them (#101)", async () => {
@@ -761,8 +761,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 8], "high");
-      assert.equal(query.args[query.args.length - 7], "repo");
+      assert.equal(query.args[query.args.length - 9], "high");
+      assert.equal(query.args[query.args.length - 8], "repo");
     });
 
     it("stores null for level and level_source when the payload omits them (#101)", async () => {
@@ -779,8 +779,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 9], null);
       assert.equal(query.args[query.args.length - 8], null);
-      assert.equal(query.args[query.args.length - 7], null);
     });
 
     it("stores context_repositories and context_lines for a v2 payload that sets them (#90)", async () => {
@@ -799,8 +799,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 6], 2);
-      assert.equal(query.args[query.args.length - 5], 450);
+      assert.equal(query.args[query.args.length - 7], 2);
+      assert.equal(query.args[query.args.length - 6], 450);
     });
 
     it("stores null for context_repositories and context_lines when the payload omits them (#90)", async () => {
@@ -817,8 +817,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 7], null);
       assert.equal(query.args[query.args.length - 6], null);
-      assert.equal(query.args[query.args.length - 5], null);
     });
 
     it("returns 400 when context_repositories or context_lines is not a number (#90)", async () => {
@@ -855,10 +855,10 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 4], "account-limit");
-      assert.equal(query.args[query.args.length - 3], 0);
-      assert.equal(query.args[query.args.length - 2], "2026-09-13T10:10:00Z");
-      assert.equal(query.args[query.args.length - 1], 429);
+      assert.equal(query.args[query.args.length - 5], "account-limit");
+      assert.equal(query.args[query.args.length - 4], 0);
+      assert.equal(query.args[query.args.length - 3], "2026-09-13T10:10:00Z");
+      assert.equal(query.args[query.args.length - 2], 429);
     });
 
     it("stores null for failure_class, failure_retryable, failure_reset_at and api_error_status when the payload omits them (#174)", async () => {
@@ -875,10 +875,10 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 5], null);
       assert.equal(query.args[query.args.length - 4], null);
       assert.equal(query.args[query.args.length - 3], null);
       assert.equal(query.args[query.args.length - 2], null);
-      assert.equal(query.args[query.args.length - 1], null);
     });
 
     it("returns 400 when failure_retryable or api_error_status is not a number (#174)", async () => {
@@ -895,6 +895,41 @@ describe("Worker telemetry ingest", () => {
       const res = await worker.fetch(req, env);
       assert.equal(res.status, 400);
       assert.equal(db.queries.length, 0);
+    });
+
+    it("stores credential_type for a v2 payload that sets it (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-credential-1",
+          repository: "prismalens/gh-workflows",
+          credential_type: "api_key",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 1], "api_key");
+    });
+
+    it("stores null for credential_type when the payload omits it (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-credential-absent",
+          repository: "prismalens/gh-workflows",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 1], null);
     });
 
     it("returns 400 when level or level_source is not a string", async () => {

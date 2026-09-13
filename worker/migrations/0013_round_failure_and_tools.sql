@@ -8,3 +8,6 @@ ALTER TABLE usage_records ADD COLUMN failure_class TEXT;
 ALTER TABLE usage_records ADD COLUMN failure_retryable INTEGER;
 ALTER TABLE usage_records ADD COLUMN failure_reset_at TEXT;
 ALTER TABLE usage_records ADD COLUMN api_error_status INTEGER;
+
+-- Slice 6: which credential authenticated this round, 'oauth' or 'api_key'.
+ALTER TABLE usage_records ADD COLUMN credential_type TEXT;

@@ -92,6 +92,7 @@ const STRING_FIELDS = [
   // #174: account/auth/quota failure classification, and reset time when parsed.
   "failure_class",
   "failure_reset_at",
+  "credential_type",
 ];
 
 const JSON_ARRAY_FIELDS = ["comment_node_ids"];
@@ -734,6 +735,7 @@ async function handleRuns(url, env) {
     "failure_retryable",
     "failure_reset_at",
     "api_error_status",
+    "credential_type",
   ];
   if (includeBlobs) {
     columns.push(
@@ -1390,14 +1392,15 @@ async function handleIngest(request, env) {
           failure_class,
           failure_retryable,
           failure_reset_at,
-          api_error_status
+          api_error_status,
+          credential_type
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
           ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
           ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
           ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
-          ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60
+          ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61
         )
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
@@ -1460,7 +1463,8 @@ async function handleIngest(request, env) {
         payload.failure_class ?? null,
         payload.failure_retryable ?? null,
         payload.failure_reset_at ?? null,
-        payload.api_error_status ?? null
+        payload.api_error_status ?? null,
+        payload.credential_type ?? null
       );
 
       const agentStmts = [];

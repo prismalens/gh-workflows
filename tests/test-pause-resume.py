@@ -131,7 +131,8 @@ def run_mode_step(script, *, event="pull_request", summon="none", fake_liveness=
                 DIFF_LINES="100",
                 MIN_DIFF_LINES="0",
                 DEBOUNCE_MINUTES="0",
-                HAS_TOKEN="true",
+                HAS_OAUTH="true",
+                HAS_API_KEY="false",
                 FAKE_LIVENESS=fake_liveness,
             )
 

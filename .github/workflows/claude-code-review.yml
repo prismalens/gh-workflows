@@ -98,6 +98,10 @@ on:
         # empty — still create a run and reach `fork-notice`; `review` guards on the
         # token's presence instead of relying on caller-side validation. Story: prismalens/prismalens#415.
         required: false
+      ANTHROPIC_API_KEY:
+        # The alternative credential, used only when CLAUDE_CODE_OAUTH_TOKEN is absent
+        # (#174). Optional, so no consumer stub needs to change to keep working.
+        required: false
       REVIEW_TELEMETRY_URL:
         # required:false so a consumer that has not opted into telemetry still runs; the
         # telemetry job skips when either value is absent. Story: #41.
@@ -400,6 +404,8 @@ jobs:
       api_error_status: ${{ steps.classify-failure.outputs.api_error_status }}
       failure_message: ${{ steps.classify-failure.outputs.failure_message }}
       num_turns: ${{ steps.telemetry.outputs.num_turns }}
+      # Which credential authenticated this round, 'oauth' or 'api_key'. Story: gh-workflows#174.
+      credential_type: ${{ steps.mode.outputs.credential_type }}
 
     steps:
       - name: Record review start time
@@ -1153,8 +1159,9 @@ jobs:
           MIN_DIFF_LINES: ${{ inputs.min_diff_lines }}
           DEBOUNCE_MINUTES: ${{ inputs.debounce_minutes }}
           PATCH_FINGERPRINT: ${{ needs.resolve.outputs.patch_fingerprint }}
-          # Presence only — the token value never enters the shell.
-          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          # Presence only — neither credential's value ever enters the shell.
+          HAS_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
           set -euo pipefail
           emit() {
@@ -1170,6 +1177,20 @@ jobs:
               echo "range_head_short=${head:0:7}"
             } >> "$GITHUB_OUTPUT"
           }
+
+          # OAuth wins when both secrets are set (#174). Presence only, computed once,
+          # written unconditionally so every downstream reader (telemetry, the claude-review
+          # step's own credential choice) agrees, regardless of which branch below exits.
+          HAS_TOKEN="$HAS_OAUTH"
+          if [ "$HAS_OAUTH" = "true" ]; then
+            credential_type="oauth"
+          elif [ "$HAS_API_KEY" = "true" ]; then
+            credential_type="api_key"
+            HAS_TOKEN="true"
+          else
+            credential_type=""
+          fi
+          echo "credential_type=$credential_type" >> "$GITHUB_OUTPUT"
 
           resolve_range() {
             liveness_raw=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
@@ -1257,8 +1278,9 @@ jobs:
 
           # A missing secret must be loud, not a silent no-op: that trap class is #410.
           if [ "$HAS_TOKEN" != "true" ]; then
-            echo "::warning::No CLAUDE_CODE_OAUTH_TOKEN reached this lane, so nothing was reviewed." \
-                 "Map the secret explicitly in the caller stub — 'inherit' does not cross owners."
+            echo "::warning::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY reached this lane," \
+                 "so nothing was reviewed. Map one of the two secrets explicitly in the caller stub" \
+                 "— 'inherit' does not cross owners."
             emit skip no-token
             exit 0
           fi
@@ -3300,6 +3322,10 @@ jobs:
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # OAuth wins when both are set (#174): pass the key only when there is no
+          # OAuth token, so this call site is deterministic regardless of any
+          # precedence claude-code-action applies internally.
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
           # Full output required to diagnose silent permission-denial runs from logs.
           # Story: prismalens/prismalens#403.
           show_full_output: true
@@ -3844,6 +3870,7 @@ jobs:
           FAILURE_RETRYABLE: ${{ steps.classify-failure.outputs.failure_retryable }}
           FAILURE_RESET_AT: ${{ steps.classify-failure.outputs.failure_reset_at }}
           API_ERROR_STATUS: ${{ steps.classify-failure.outputs.api_error_status }}
+          CREDENTIAL_TYPE: ${{ steps.mode.outputs.credential_type }}
         run: |
           set -uo pipefail
 
@@ -3926,6 +3953,7 @@ jobs:
             --arg failure_retryable "${FAILURE_RETRYABLE:-}" \
             --arg failure_reset_at "${FAILURE_RESET_AT:-}" \
             --arg api_error_status "${API_ERROR_STATUS:-}" \
+            --arg credential_type "${CREDENTIAL_TYPE:-}" \
             '
             def num(s): if s == "" then null else (s | tonumber? // null) end;
             def denials:
@@ -3983,6 +4011,7 @@ jobs:
               failure_retryable: (if $failure_retryable == "" then null else ($failure_retryable | tonumber?) end),
               failure_reset_at: (if $failure_reset_at == "" then null else $failure_reset_at end),
               api_error_status: (if $api_error_status == "" then null else ($api_error_status | tonumber?) end),
+              credential_type: (if $credential_type == "" then null else $credential_type end),
               raw_result: (
                 . as $o
                 | ($o | del(.result, .permission_denials)) as $base
@@ -4364,6 +4393,10 @@ jobs:
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # OAuth wins when both are set (#174): pass the key only when there is no
+          # OAuth token, so this call site is deterministic regardless of any
+          # precedence claude-code-action applies internally.
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
           # WALL 1: a provided github_token reaches OVERRIDE_GITHUB_TOKEN and
           # setupGitHubToken returns it before any OIDC request. Do not remove.
           github_token: ${{ github.token }}
@@ -5002,8 +5035,9 @@ jobs:
             verdict_kind="unchanged-patch"
             reviewed_sha="$HEAD_SHA"
           elif [ "$SKIP_REASON" = "no-token" ]; then
-            verdict="did not run at \`$short\`: no CLAUDE_CODE_OAUTH_TOKEN reached this lane. \
-          This head has no machine review on record — map the secret explicitly in the caller stub."
+            verdict="did not run at \`$short\`: neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY \
+          reached this lane. This head has no machine review on record — map one of the two secrets \
+          explicitly in the caller stub."
             verdict_kind="no-token"
           elif [ "$SKIP_REASON" = "no-new-commits" ]; then
             verdict="no new commits since \`$short\` was last reviewed; nothing to re-review."
