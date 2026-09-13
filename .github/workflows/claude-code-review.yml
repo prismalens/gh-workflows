@@ -4004,6 +4004,8 @@ jobs:
           FAILURE_RESET_AT: ${{ steps.classify-failure.outputs.failure_reset_at }}
           API_ERROR_STATUS: ${{ steps.classify-failure.outputs.api_error_status }}
           CREDENTIAL_TYPE: ${{ steps.mode.outputs.credential_type }}
+          CONTEXT_REPOSITORIES: ${{ steps.context-checkout.outputs.context_repositories }}
+          CONTEXT_LINES_TELEMETRY: ${{ steps.context-checkout.outputs.context_lines }}
         run: |
           set -uo pipefail
 
@@ -4089,6 +4091,8 @@ jobs:
             --arg credential_type "${CREDENTIAL_TYPE:-}" \
             --arg base_pr_number "${BASE_PR_NUMBER:-}" \
             --arg round_patch_fingerprint "${RESOLVE_PATCH_FINGERPRINT:-}" \
+            --arg context_repositories "${CONTEXT_REPOSITORIES:-}" \
+            --arg context_lines "${CONTEXT_LINES_TELEMETRY:-}" \
             '
             def num(s): if s == "" then null else (s | tonumber? // null) end;
             def denials:
@@ -4149,6 +4153,8 @@ jobs:
               credential_type: (if $credential_type == "" then null else $credential_type end),
               base_pr_number: (if $base_pr_number == "" then null else ($base_pr_number | tonumber?) end),
               patch_fingerprint: (if $round_patch_fingerprint == "" then null else $round_patch_fingerprint end),
+              context_repositories: (if $context_repositories == "" then null else ($context_repositories | tonumber?) end),
+              context_lines: (if $context_lines == "" then null else ($context_lines | tonumber?) end),
               raw_result: (
                 . as $o
                 | ($o | del(.result, .permission_denials)) as $base

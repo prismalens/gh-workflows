@@ -108,7 +108,7 @@ def run_rollup_step(script, *,
         return proc.returncode, agents, proc.stdout + proc.stderr + f"\n__AGENTS_STATUS__={status}"
 
 
-def run_telemetry_step(script, *, execution_file_content, agents_json_str):
+def run_telemetry_step(script, *, execution_file_content, agents_json_str, env_overrides=None):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         ef = tdp / "execution.json"
@@ -137,6 +137,8 @@ def run_telemetry_step(script, *, execution_file_content, agents_json_str):
             VARIANT="control",
             GITHUB_OUTPUT=str(gh_output),
         )
+        if env_overrides:
+            env.update(env_overrides)
 
         proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
 
@@ -540,6 +542,41 @@ def main():
         fails.append(f"case 13: agents in record mismatch: {record.get('agents')}")
     else:
         print("  ok    telemetry step integration: includes agents in record under top-level key")
+
+    # -------------------------------------------------------------
+    # 13b. Telemetry step: context_repositories and context_lines reach the payload
+    # (CodeRabbit thread 4000816223, PR #173: both were review job outputs but
+    # never passed into this step, so the posted record always carried NULL.)
+    # -------------------------------------------------------------
+    rc, record, out = run_telemetry_step(
+        telemetry_script, execution_file_content=exec_content, agents_json_str=json.dumps(mock_agents),
+        env_overrides={"CONTEXT_REPOSITORIES": "2", "CONTEXT_LINES_TELEMETRY": "450"},
+    )
+    if rc != 0:
+        fails.append(f"case 13b: telemetry step exited {rc}: {out}")
+    elif not isinstance(record, dict):
+        fails.append(f"case 13b: telemetry record not a dict: {record}")
+    elif record.get("context_repositories") != 2 or record.get("context_lines") != 450:
+        fails.append(f"case 13b: want context_repositories=2 context_lines=450, got {record.get('context_repositories')!r} {record.get('context_lines')!r}")
+    else:
+        print("  ok    telemetry step: context_repositories and context_lines reach the payload (#173 thread 4000816223)")
+
+    # -------------------------------------------------------------
+    # 13c. Telemetry step: absent context metrics store null, not missing
+    # -------------------------------------------------------------
+    rc, record, out = run_telemetry_step(
+        telemetry_script, execution_file_content=exec_content, agents_json_str=json.dumps(mock_agents),
+    )
+    if rc != 0:
+        fails.append(f"case 13c: telemetry step exited {rc}: {out}")
+    elif not isinstance(record, dict):
+        fails.append(f"case 13c: telemetry record not a dict: {record}")
+    elif "context_repositories" not in record or record["context_repositories"] is not None:
+        fails.append(f"case 13c: want context_repositories key present and null, got {record.get('context_repositories', 'MISSING')!r}")
+    elif "context_lines" not in record or record["context_lines"] is not None:
+        fails.append(f"case 13c: want context_lines key present and null, got {record.get('context_lines', 'MISSING')!r}")
+    else:
+        print("  ok    telemetry step: absent context metrics store null, key still present")
 
     # -------------------------------------------------------------
     # Summary
