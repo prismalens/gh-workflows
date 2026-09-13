@@ -29,12 +29,14 @@ So open a draft, push to it freely, and mark it ready once.
 
 Verified 2026-09-13. The `main protection` ruleset (id 22383257, active since 2026-09-06)
 requires a pull request, squash merges only, linear history, and resolved review threads. It
-blocks deletion and force pushes. It has no required status checks and no up-to-date rule, so a
-red or stale branch can still merge (#130).
+blocks deletion and force pushes. Since 2026-09-13 it requires `test`, `dashboard`, `worker`,
+`Migrations`, `Migration guard` and `PR title` on an up-to-date branch (#130). A Dependabot PR
+behind `main` waits for `@dependabot rebase`. A new required check must run on every pull
+request, never behind a path filter, or it blocks every PR that skips it.
 
 ```bash
 gh api repos/prismalens/gh-workflows/rulesets --jq '.[] | "\(.id) \(.name) \(.enforcement)"'
-gh api repos/prismalens/gh-workflows/rulesets/22383257 --jq '[.rules[].type]'
+gh api repos/prismalens/gh-workflows/rulesets/22383257 --jq '[.rules[].type], [.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context]'
 ```
 
 `branches/main/protection` returns 404 here because the protection is a ruleset, so that
