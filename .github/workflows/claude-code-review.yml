@@ -1065,6 +1065,7 @@ jobs:
               "issue_context_byte_budget": issue_context_byte_budget,
               "issue_context_total_byte_budget": issue_context_total_byte_budget,
               "level": level,
+              "context": context_config,
           }
           config_hash = hashlib.sha256(
               json.dumps(resolved_config, sort_keys=True, separators=(",", ":")).encode("utf-8")

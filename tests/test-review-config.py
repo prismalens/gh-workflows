@@ -519,12 +519,15 @@ def main():
     check("config_effective unset max_reviewable_lines carries layer=workflow (not 'unavailable')",
           config_effective.get("max_reviewable_lines") == {"value": 6000, "layer": "workflow"},
           f"got {config_effective.get('max_reviewable_lines')!r}")
+    check("config_effective unset context carries layer=workflow, value=[] (#90, #12 fix)",
+          config_effective.get("context") == {"value": [], "layer": "workflow"},
+          f"got {config_effective.get('context')!r}")
     check("config_effective carries every key config_hash hashes, no more and no less",
           set(config_effective.keys()) == {
               "default_model", "auto_pause_rounds", "skip_authors", "escalation_paths",
               "path_filters", "path_instructions", "max_reviewable_lines", "max_file_lines",
               "language_map", "tool_findings", "issue_context_byte_budget",
-              "issue_context_total_byte_budget", "level",
+              "issue_context_total_byte_budget", "level", "context",
           },
           f"got keys {sorted(config_effective.keys())}")
     check("config_effective excludes variant, same as config_hash", "variant" not in config_effective, f"got keys {sorted(config_effective.keys())}")
@@ -627,6 +630,10 @@ def main():
           f"got {context_out!r}")
     check("valid context config produces no warning", "::warning::" not in stdout, f"stdout={stdout!r}")
     check("valid context config logs its source", "review.context=1 entries" in stdout, f"stdout={stdout!r}")
+    context_effective = json.loads(out.get("config_effective", "{}")).get("context")
+    check("valid context config folds into config_effective with layer=repo (gh-workflows#12 fix)",
+          context_effective == {"value": context_out, "layer": "repo"},
+          f"got {context_effective!r}")
 
     # 4b. Missing PyYAML warns and falls back rather than failing the step
     rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_FULL, no_pyyaml=True)
