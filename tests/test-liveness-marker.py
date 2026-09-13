@@ -297,12 +297,18 @@ CASES = [
                                               inline=0, summary=0),
                                                                                          "3",  OLD,
                                          lambda v: "2026-09-13T10:10:00Z" in v and "usage limit" in v),
+    # The case name promised "no retry advice", but the old predicate only checked
+    # the credential names, so a regression adding retry text would still pass
+    # (CR #173, thread 4000816208).
     ("api-error (auth-failed): names both credentials, no retry advice",
                                          dict(marker_body=f"<!-- claude-review-liveness rounds=1 sha={OLD} -->",
                                               result="failure", failure_class="auth-failed",
                                               api_error_status="401", inline=0, summary=0),
                                                                                          "1",  OLD,
-                                         lambda v: "CLAUDE_CODE_OAUTH_TOKEN" in v and "ANTHROPIC_API_KEY" in v),
+                                         lambda v: "CLAUDE_CODE_OAUTH_TOKEN" in v and "ANTHROPIC_API_KEY" in v
+                                                   and "@claude review" not in v
+                                                   and "try again" not in v
+                                                   and "transient" not in v),
     # A failed read of posted comments is not zero findings: the old code converted
     # it to "[]", so the verdict asserted "did not review" as a certainty the code
     # never established. This case forces num_turns>1 so the read is attempted at
