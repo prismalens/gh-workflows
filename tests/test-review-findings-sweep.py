@@ -75,6 +75,9 @@ def _safe(key: str) -> str:
 # fixture variable is unset fails (exit 1), simulating a permanent throttle on that page.
 GH_STUB = r"""#!/usr/bin/env bash
 args="$*"
+if [ -n "${GH_CALL_LOG:-}" ]; then
+  echo "$args" >> "$GH_CALL_LOG"
+fi
 case "$args" in
   *"pr list"*)
     printf '%s' "$FAKE_PR_LIST"
@@ -130,6 +133,16 @@ exit 1
 CURL_STUB = r"""#!/usr/bin/env bash
 body="$(cat)"
 printf '%s\n' "$body" >> "$CAPTURE"
+for arg in "$@"; do
+  case "$arg" in
+    @*)
+      f="${arg#@}"
+      if [ -f "$f" ] && [ -n "${CAPTURE_HDR:-}" ]; then
+        cat "$f" >> "$CAPTURE_HDR"
+      fi
+      ;;
+  esac
+done
 printf '%s' "${FAKE_HTTP_CODE:-200}"
 """
 
@@ -208,8 +221,21 @@ def overflow_page(*, comments, has_next=False, end_cursor=None):
     })
 
 
-def run_sweep(script, *, pr_list, main_fixtures, overflow_fixtures=None, http_code="200",
-              max_attempts=2, backoff=0, full_history="false", window_days="3"):
+class SweepResult(tuple):
+    def __new__(cls, proc, rows, auth_headers="", gh_calls="", summary=""):
+        obj = super().__new__(cls, (proc, rows))
+        obj.proc = proc
+        obj.rows = rows
+        obj.auth_headers = auth_headers
+        obj.gh_calls = gh_calls
+        obj.summary = summary
+        return obj
+
+
+def run_sweep(script, *, pr_list=None, main_fixtures, overflow_fixtures=None, http_code="200",
+              max_attempts=2, backoff=0, full_history="false", window_days="3",
+              pr_number=None, event_pr_number=None, auth_header=None, telemetry_share=None,
+              ingest_token="tok"):
     """
     main_fixtures: {pr_number: [page1_json, page2_json, ...]}. A PR whose list runs out
     before pagination is done (or an empty list) leaves later calls with no fixture, which
@@ -223,20 +249,34 @@ def run_sweep(script, *, pr_list, main_fixtures, overflow_fixtures=None, http_co
         binp = make_bin(td)
         capture = td / "capture.jsonl"
         capture.write_text("")
+        capture_hdr = td / "capture_hdr.txt"
+        capture_hdr.write_text("")
+        gh_calls = td / "gh_calls.txt"
+        gh_calls.write_text("")
+        summary_file = td / "summary.md"
+        summary_file.write_text("")
         call_dir = td / "calls"
         call_dir.mkdir()
 
+        pr_list = pr_list if pr_list is not None else []
         env = dict(os.environ)
         env.update(
             PATH=f"{binp}:{env['PATH']}",
             CAPTURE=str(capture),
+            CAPTURE_HDR=str(capture_hdr),
+            GH_CALL_LOG=str(gh_calls),
+            GITHUB_STEP_SUMMARY=str(summary_file),
             CALL_COUNTERS_DIR=str(call_dir),
             GH_TOKEN="x",
             REPOSITORY="prismalens/prismalens",
             FULL_HISTORY=full_history,
             WINDOW_DAYS=window_days,
+            PR_NUMBER=str(pr_number) if pr_number is not None else "0",
+            EVENT_PR_NUMBER=str(event_pr_number) if event_pr_number is not None else "",
+            AUTH_HEADER=str(auth_header) if auth_header is not None else "",
+            TELEMETRY_SHARE=str(telemetry_share) if telemetry_share is not None else "",
             INGEST_URL="https://example.com",
-            INGEST_TOKEN="tok",
+            INGEST_TOKEN=ingest_token,
             FAKE_PR_LIST=json.dumps([{"number": n} for n in pr_list]),
             FAKE_HTTP_CODE=http_code,
             SWEEP_MAX_ATTEMPTS=str(max_attempts),
@@ -259,7 +299,8 @@ def run_sweep(script, *, pr_list, main_fixtures, overflow_fixtures=None, http_co
             if not line.strip():
                 continue
             rows.extend(json.loads(line)["findings"])
-        return p, rows
+        return SweepResult(p, rows, capture_hdr.read_text(), gh_calls.read_text(), summary_file.read_text())
+
 
 
 def main():
@@ -499,6 +540,59 @@ def main():
     proc, rows = run_sweep(script, pr_list=[1, 2, 3], main_fixtures={}, max_attempts=1, backoff=0)
     check("PR-list truncation: a small listing gets no truncation warning",
           "truncat" not in proc.stdout.lower(), proc.stdout)
+
+    # ── 12. Single PR sweep with inputs.pr_number (#176) ──
+    fx_pr42 = main_page(head_sha=OID_A, commit_oids=[OID_A], threads=[
+        thread("T42", [comment("claude", "**Issue**: single PR sweep")])
+    ])
+    res = run_sweep(
+        script,
+        pr_number=42,
+        main_fixtures={42: [fx_pr42]},
+        max_attempts=1,
+    )
+    check("single-PR (pr_number): exits 0", res.proc.returncode == 0)
+    check("single-PR (pr_number): finding written for PR 42", len(res.rows) == 1 and res.rows[0]["pr_number"] == 42)
+    check("single-PR (pr_number): gh pr list was not called", "pr list" not in res.gh_calls)
+    check("single-PR (pr_number): stdout announces single PR sweep", "Sweeping single pull request #42" in res.proc.stdout)
+
+    # ── 13. Single PR sweep with EVENT_PR_NUMBER (#176) ──
+    fx_pr99 = main_page(head_sha=OID_A, commit_oids=[OID_A], threads=[
+        thread("T99", [comment("claude", "**Issue**: event PR sweep")])
+    ])
+    res = run_sweep(
+        script,
+        event_pr_number=99,
+        main_fixtures={99: [fx_pr99]},
+        max_attempts=1,
+    )
+    check("single-PR (event_pr_number): exits 0", res.proc.returncode == 0)
+    check("single-PR (event_pr_number): finding written for PR 99", len(res.rows) == 1 and res.rows[0]["pr_number"] == 99)
+    check("single-PR (event_pr_number): gh pr list was not called", "pr list" not in res.gh_calls)
+    check("single-PR (event_pr_number): stdout announces single PR sweep", "Sweeping single pull request #99" in res.proc.stdout)
+
+    # ── 14. Consent check: telemetry.share off skips sweep and updates summary (#176) ──
+    res = run_sweep(
+        script,
+        pr_number=42,
+        telemetry_share="off",
+        main_fixtures={42: [fx_pr42]},
+    )
+    check("telemetry.share off: exits 0", res.proc.returncode == 0)
+    check("telemetry.share off: no rows written", len(res.rows) == 0)
+    check("telemetry.share off: stdout notes skip", "telemetry.share: off" in res.proc.stdout)
+    check("telemetry.share off: step summary updated", "telemetry.share: off" in res.summary)
+
+    # ── 15. OIDC auth header delivery (#176) ──
+    res = run_sweep(
+        script,
+        pr_number=42,
+        auth_header="Bearer oidc-token-xyz-176",
+        main_fixtures={42: [fx_pr42]},
+    )
+    check("OIDC auth header: exits 0", res.proc.returncode == 0)
+    check("OIDC auth header: header delivered to curl", "authorization: Bearer oidc-token-xyz-176" in res.auth_headers)
+
 
     print()
     if fails:

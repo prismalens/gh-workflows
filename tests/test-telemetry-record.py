@@ -468,6 +468,18 @@ def main():
     else:
         print("  ok    telemetry non-https INGEST_URL: warns and exits 0")
 
+    # Telemetry share off exits 0 without posting (#176)
+    ret, payload, stdout, stderr = run_telemetry_post_step(telemetry_script, env_overrides={"TELEMETRY_SHARE": "off"})
+    if ret != 0:
+        fails.append(f"telemetry share off: expected exit 0, got {ret}")
+        print(f"  FAIL  telemetry share off returned non-zero ({ret})")
+    elif payload is not None:
+        fails.append("telemetry share off: unexpectedly attempted to POST")
+        print("  FAIL  telemetry share off attempted to POST")
+    else:
+        print("  ok    telemetry share off: exits 0 without posting")
+
+
     # -------------------------------------------------------------
     # 5. Announce verdict_kind 8-branch mapping test
     # -------------------------------------------------------------
@@ -592,6 +604,20 @@ def main():
         print(f"  FAIL  lane-event HTTP 500 exited {ret}")
     else:
         print("  ok    lane-event HTTP 500: warns and exits 0")
+
+    # Lane event share off exits 0 without posting (#176)
+    ret, payload, stdout, stderr = run_lane_event_step(
+        lane_event_script, env_overrides={"TELEMETRY_SHARE": "off", "SKIP_REASON": "no-token"}
+    )
+    if ret != 0:
+        fails.append(f"lane-event share off: expected exit 0, got {ret}")
+        print(f"  FAIL  lane-event share off exited {ret}")
+    elif payload is not None:
+        fails.append("lane-event share off: unexpectedly attempted to POST")
+        print("  FAIL  lane-event share off attempted to POST")
+    else:
+        print("  ok    lane-event share off: exits 0 without posting")
+
 
     print()
     if fails:

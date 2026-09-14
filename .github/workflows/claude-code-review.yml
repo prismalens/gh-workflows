@@ -4398,14 +4398,25 @@ jobs:
     if: ${{ !cancelled() && needs.review.outputs.telemetry_record != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      id-token: write
     steps:
+      - name: Authenticate telemetry ingest
+        id: auth
+        uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
+        with:
+          url: ${{ secrets.REVIEW_TELEMETRY_URL || 'https://review-telemetry.sfun.cloud' }}
+          bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          share: ${{ needs.review.outputs.telemetry_share }}
+
       - name: Post the review round record
         env:
           RECORD: ${{ needs.review.outputs.telemetry_record }}
           LANE_VERSION: ${{ env.LANE_VERSION }}
           INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
           INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          AUTH_HEADER: ${{ steps.auth.outputs.authorization }}
+          TELEMETRY_SHARE: ${{ steps.auth.outputs.share }}
           FALLBACK_REASON: ${{ needs.review.outputs.fallback_reason }}
           RANGE_BASE: ${{ needs.review.outputs.range_base }}
           RANGE_HEAD: ${{ needs.review.outputs.range_head }}
@@ -4427,11 +4438,21 @@ jobs:
         run: |
           set -uo pipefail
 
-          if [ -z "${INGEST_URL:-}" ] || [ -z "${INGEST_TOKEN:-}" ]; then
+          # Consent check: if telemetry.share is off, skip and log to summary (#176).
+          if [ "${TELEMETRY_SHARE:-}" = "off" ]; then
+            echo "Telemetry sharing is disabled (telemetry.share: off); review round record not posted."
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              echo "Telemetry sharing is turned off (telemetry.share: off). Review round record was not posted." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
+          if [ -z "${AUTH_HEADER:-}" ] && [ -z "${INGEST_TOKEN:-}" ]; then
             echo "Telemetry is not configured for this repository; skipping."
             exit 0
           fi
 
+          INGEST_URL="${INGEST_URL:-https://review-telemetry.sfun.cloud}"
           case "$INGEST_URL" in
             https://*) ;;
             *)
@@ -4495,7 +4516,11 @@ jobs:
           hdr="$(mktemp)"
           trap 'rm -f "$hdr"' EXIT
           umask 077
-          printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+          if [ -n "${AUTH_HEADER:-}" ]; then
+            printf 'authorization: %s\ncontent-type: application/json\n' "$AUTH_HEADER" > "$hdr"
+          else
+            printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+          fi
 
           code=$(printf '%s' "$merged" | curl -sS -m 10 \
             --proto '=https' \
@@ -5666,8 +5691,17 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      id-token: write
     steps:
+      - name: Authenticate telemetry ingest
+        id: auth
+        uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
+        with:
+          url: ${{ secrets.REVIEW_TELEMETRY_URL || 'https://review-telemetry.sfun.cloud' }}
+          bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          share: ${{ needs.review.outputs.telemetry_share }}
+
       - name: Record lane event
         env:
           IS_FORK: >-
@@ -5690,9 +5724,20 @@ jobs:
           ACTOR: ${{ needs.announce.outputs.paused_by }}
           INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
           INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          AUTH_HEADER: ${{ steps.auth.outputs.authorization }}
+          TELEMETRY_SHARE: ${{ steps.auth.outputs.share }}
           LANE_VERSION: ${{ env.LANE_VERSION }}
         run: |
           set -uo pipefail
+
+          # Consent check: if telemetry.share is off, skip and log to summary (#176).
+          if [ "${TELEMETRY_SHARE:-}" = "off" ]; then
+            echo "Telemetry sharing is disabled (telemetry.share: off); lane event not recorded."
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              echo "Telemetry sharing is turned off (telemetry.share: off). Lane event was not recorded." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
 
           reason=""
           rounds_used=""
@@ -5738,7 +5783,7 @@ jobs:
             exit 0
           fi
 
-          if [ -z "${INGEST_URL:-}" ] || [ -z "${INGEST_TOKEN:-}" ]; then
+          if [ -z "${AUTH_HEADER:-}" ] && [ -z "${INGEST_TOKEN:-}" ]; then
             if [ "$reason" = "fork-head" ]; then
               echo "::warning::lane-event: REVIEW_TELEMETRY_TOKEN is empty (expected on fork pull_request runs without secrets access); fork-head lane event was not posted."
             else
@@ -5747,6 +5792,7 @@ jobs:
             exit 0
           fi
 
+          INGEST_URL="${INGEST_URL:-https://review-telemetry.sfun.cloud}"
           case "$INGEST_URL" in
             https://*) ;;
             *)
@@ -5792,7 +5838,11 @@ jobs:
           hdr="$(mktemp)"
           trap 'rm -f "$hdr"' EXIT
           umask 077
-          printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+          if [ -n "${AUTH_HEADER:-}" ]; then
+            printf 'authorization: %s\ncontent-type: application/json\n' "$AUTH_HEADER" > "$hdr"
+          else
+            printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+          fi
 
           code=$(printf '%s' "$payload" | curl -sS -m 10 \
             --proto '=https' \
