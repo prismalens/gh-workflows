@@ -2670,6 +2670,100 @@ describe("Worker telemetry read API", () => {
       assert.equal(data.canary_last_seen_at, "2026-08-31T21:00:00.000Z");
       assert.deepEqual(data.verdict_kinds, {});
     });
+
+    describe("Did-not-run verdicts from lane_events (#176)", () => {
+      function summaryHandler({ laneRows = [], usageRunIdRows = [] } = {}) {
+        return (sql) => {
+          if (sql.includes("FROM canary_pings")) return null;
+          if (sql.includes("COUNT(*) as rows")) return { rows: 10, first_recorded_at: "2026-08-01T00:00:00.000Z" };
+          if (sql.includes("DISTINCT repository")) return [{ repository: "prismalens/gh-workflows" }];
+          if (sql.includes("GROUP BY repository")) return [];
+          if (sql.includes("WHERE verdict_kind IS NOT NULL")) return [{ verdict_kind: "clean", cnt: 8 }];
+          if (sql.includes("WHERE fallback_reason IS NOT NULL")) return [];
+          if (sql.includes("WHERE model_source IS NOT NULL")) return [];
+          if (sql.includes("FROM lane_events") && sql.includes("reason IN")) return laneRows;
+          if (sql.includes("SELECT run_id FROM usage_records")) return usageRunIdRows;
+          return null;
+        };
+      }
+
+      it("counts a skip-trivial lane event as skipped-trivial", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb({
+          handler: summaryHandler({
+            laneRows: [{ reason: "skip-trivial", run_id: 501 }],
+          }),
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data.verdict_kinds, { clean: 8, "skipped-trivial": 1 });
+      });
+
+      it("counts a lane event and a usage row sharing a run_id once, usage_records winning", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb({
+          handler: summaryHandler({
+            // api-error rounds write both a lane event and a usage_records row (#174).
+            laneRows: [{ reason: "api-error", run_id: 777 }],
+            usageRunIdRows: [{ run_id: 777 }],
+          }),
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data.verdict_kinds, { clean: 8 });
+      });
+
+      it("adds nothing for fork-head, which maps to no verdict kind", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb({
+          handler: summaryHandler({
+            laneRows: [], // fork-head is not in LANE_REASON_TO_VERDICT_KIND, so it is never
+            // even in the reason IN (...) bind list; the stub returns nothing for it.
+          }),
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data.verdict_kinds, { clean: 8 });
+
+        const laneQuery = db.queries.find((q) => q.sql.includes("FROM lane_events") && q.sql.includes("reason IN"));
+        assert.ok(laneQuery, "expected a lane_events query");
+        assert.ok(!laneQuery.args.includes("fork-head"), "fork-head must never be bound into the reason filter");
+      });
+
+      it("scopes the lane_events query the same as the usage query: every repository, unfiltered", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb({
+          handler: summaryHandler({
+            laneRows: [
+              { reason: "draft", run_id: 1 },
+              { reason: "draft", run_id: 2 },
+            ],
+          }),
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        // Both rows count, across whatever repositories they came from: the
+        // lane_events query carries no repository or date restriction the
+        // usage_records query above it does not also carry.
+        assert.deepEqual(data.verdict_kinds, { clean: 8, draft: 2 });
+
+        const laneQuery = db.queries.find((q) => q.sql.includes("FROM lane_events") && q.sql.includes("reason IN"));
+        assert.ok(!/repository\s*=/.test(laneQuery.sql), "lane_events query must not filter by repository");
+        assert.ok(!/recorded_at/.test(laneQuery.sql), "lane_events query must not filter by a date window");
+      });
+    });
   });
 
   describe("GET /api/lane-events (Filtering, Pagination & Ordering)", () => {

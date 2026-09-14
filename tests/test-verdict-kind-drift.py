@@ -16,6 +16,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/claude-code-review.yml"
 VERDICT_TS = ROOT / "dashboard/src/honesty/verdict.ts"
+WORKER_INDEX = ROOT / "worker/index.js"
 
 
 def emitted_kinds() -> set[str]:
@@ -44,6 +45,26 @@ def mapped_kinds(const_name: str) -> set[str]:
     return set(re.findall(r'^\s*"?([a-z-]+)"?:', block.group(1), re.M))
 
 
+def lane_reason_to_verdict_kind() -> dict[str, str]:
+    text = WORKER_INDEX.read_text(encoding="utf-8")
+    block = re.search(r"const LANE_REASON_TO_VERDICT_KIND = \{(.*?)\n\};", text, re.S)
+    if not block:
+        print("::error::LANE_REASON_TO_VERDICT_KIND not found in worker/index.js")
+        sys.exit(1)
+    # Matches both quoted-key and bare-identifier-key entries, e.g.
+    # `"skip-trivial": "skipped-trivial",` and `superseded: "superseded",`.
+    return dict(re.findall(r'^\s*"?([a-zA-Z-]+)"?:\s*"([a-z-]+)",?\s*$', block.group(1), re.M))
+
+
+def valid_lane_event_reasons() -> set[str]:
+    text = WORKER_INDEX.read_text(encoding="utf-8")
+    block = re.search(r"const VALID_LANE_EVENT_REASONS = new Set\(\[(.*?)\n\]\);", text, re.S)
+    if not block:
+        print("::error::VALID_LANE_EVENT_REASONS not found in worker/index.js")
+        sys.exit(1)
+    return set(re.findall(r'"([a-z-]+)"', block.group(1)))
+
+
 def main() -> None:
     emitted = emitted_kinds()
     known = known_kinds()
@@ -69,7 +90,36 @@ def main() -> None:
         if unmapped:
             fails.append(f"{const_name} has no entry for: {', '.join(unmapped)}")
 
+    # worker/index.js's LANE_REASON_TO_VERDICT_KIND (#176): a lane event with no
+    # usage_records row still needs a verdict kind the workflow emits and the
+    # dashboard's VERDICT_KIND_MAP already knows, and a key that is a real reason.
+    lane_map = lane_reason_to_verdict_kind()
+    lane_reasons = valid_lane_event_reasons()
+    verdict_kind_map_keys = mapped_kinds("VERDICT_KIND_MAP")
+
+    bad_values = sorted(v for v in lane_map.values() if v and v not in emitted)
+    if bad_values:
+        fails.append(
+            "LANE_REASON_TO_VERDICT_KIND maps to a kind the workflow never emits: "
+            f"{', '.join(bad_values)}"
+        )
+
+    bad_values_dashboard = sorted(v for v in lane_map.values() if v and v not in verdict_kind_map_keys)
+    if bad_values_dashboard:
+        fails.append(
+            "LANE_REASON_TO_VERDICT_KIND maps to a kind absent from the dashboard's "
+            f"VERDICT_KIND_MAP: {', '.join(bad_values_dashboard)}"
+        )
+
+    bad_keys = sorted(k for k in lane_map.keys() if k not in lane_reasons)
+    if bad_keys:
+        fails.append(
+            "LANE_REASON_TO_VERDICT_KIND has a key that is not a VALID_LANE_EVENT_REASONS "
+            f"reason: {', '.join(bad_keys)}"
+        )
+
     print(f"{len(emitted)} kind(s) emitted, {len(known)} known to the dashboard")
+    print(f"{len(lane_map)} lane_events reason(s) mapped in worker/index.js")
     if fails:
         for f in fails:
             print(f"::error::Verdict kind drift: {f}")

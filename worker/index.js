@@ -125,6 +125,21 @@ const VALID_LANE_EVENT_REASONS = new Set([
   "api-error", // #174: account, auth or quota failure; the class is on usage_records.failure_class
 ]);
 
+// A round that did not run writes no usage_records row, so its verdict never
+// reached verdict_kinds until now. fork-head and skip-author map to nothing:
+// no liveness verdict is posted for either (#176).
+const LANE_REASON_TO_VERDICT_KIND = {
+  "auto-paused": "auto-paused",
+  "paused-by-request": "paused-by-request",
+  "skip-trivial": "skipped-trivial",
+  superseded: "superseded",
+  "unchanged-patch": "unchanged-patch",
+  draft: "draft",
+  "refused-size": "refused-size",
+  "no-token": "no-token",
+  "api-error": "api-error",
+};
+
 const LANE_EVENT_NUMERIC_FIELDS = [
   "pr_number",
   "rounds_used",
@@ -339,7 +354,7 @@ async function authenticateIngest(request, env, { getKey } = {}) {
   return new Response(null, { status: 401 });
 }
 
-export { computeVariantKey, authenticateIngest };
+export { computeVariantKey, authenticateIngest, LANE_REASON_TO_VERDICT_KIND };
 
 /**
  * Reads the body, stopping at `max` bytes. Returns null once the stream goes
@@ -612,6 +627,30 @@ async function handleSummary(env) {
   const verdict_kinds = {};
   for (const r of verdictRows.results ?? []) {
     verdict_kinds[r.verdict_kind] = r.cnt;
+  }
+
+  // Did-not-run verdicts: a round with a mapped lane_events reason but no
+  // usage_records row (the telemetry job never ran) has no verdict_kind of its
+  // own until this query supplies one, in the same unwindowed scope as the
+  // usage query above. Dedup happens in JS, the same pattern as
+  // queryAccountedRuns/handleAccountedRuns: a lane event whose run_id already
+  // produced a usage_records row is excluded, usage_records wins (#176).
+  const mappedReasons = Object.keys(LANE_REASON_TO_VERDICT_KIND);
+  if (mappedReasons.length > 0) {
+    const placeholders = mappedReasons.map(() => "?").join(", ");
+    const laneRows = await env.DB.prepare(
+      `SELECT reason, run_id FROM lane_events WHERE reason IN (${placeholders})`
+    ).bind(...mappedReasons).all();
+    const usageRunIdRows = await env.DB.prepare(
+      "SELECT run_id FROM usage_records WHERE run_id IS NOT NULL"
+    ).all();
+    const usageRunIds = new Set((usageRunIdRows.results ?? []).map((r) => r.run_id));
+    for (const r of laneRows.results ?? []) {
+      const mapped = LANE_REASON_TO_VERDICT_KIND[r.reason];
+      if (!mapped) continue;
+      if (r.run_id !== null && r.run_id !== undefined && usageRunIds.has(r.run_id)) continue;
+      verdict_kinds[mapped] = (verdict_kinds[mapped] ?? 0) + 1;
+    }
   }
 
   const fallbackRows = await env.DB.prepare(
