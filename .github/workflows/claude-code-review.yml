@@ -5043,6 +5043,7 @@ jobs:
           SKIP_REASON: ${{ needs.review.outputs.skip_reason }}
           REVIEW_RESULT: ${{ needs.review.result }}
           DRAFT: ${{ needs.resolve.outputs.draft }}
+          SUMMON: ${{ needs.resolve.outputs.summon }}
           MUTATE_RESULT: ${{ needs.mutate.result }}
           RESOLVED: ${{ needs.mutate.outputs.resolved }}
           OPEN: ${{ needs.mutate.outputs.open }}
@@ -5135,8 +5136,19 @@ jobs:
           fi
 
           # Determine if lane should be in paused state (#124)
+          # A draft summon skips `review`, so pause and resume are read here: a pause set
+          # while drafting must stop the ready_for_review round. Other summons review nothing
+          # on a draft, so they leave the pause alone.
           is_paused=0
-          if [ "$SKIP_REASON" = "paused-by-request" ]; then
+          draft_summon=""
+          [ "$REVIEW_RESULT" = "skipped" ] && [ "${DRAFT:-}" = "true" ] && draft_summon="${SUMMON:-}"
+          if [ -n "$draft_summon" ]; then
+            case "$draft_summon" in
+              pause) is_paused=1 ;;
+              resume) is_paused=0 ;;
+              *) is_paused=$prev_paused ;;
+            esac
+          elif [ "$SKIP_REASON" = "paused-by-request" ]; then
             is_paused=1
           elif [ "$EVENT_NAME" = "pull_request" ] && [ "$prev_paused" = "1" ]; then
             is_paused=1
@@ -5165,7 +5177,11 @@ jobs:
           # `review` reaches `skipped` only on the draft path here: this job's own `if`
           # admits nothing else that could skip it. Nothing reviews a draft, summons
           # included, so say so rather than leave a spent run silent. Story: #153.
-          if [ "$REVIEW_RESULT" = "skipped" ] && [ "${DRAFT:-}" = "true" ]; then
+          if [ "$draft_summon" = "pause" ]; then
+            verdict="paused by request at \`$short\` while a draft: marking it ready starts no round. \
+          Resume with \`@claude resume\`."
+            verdict_kind="paused-by-request"
+          elif [ "$REVIEW_RESULT" = "skipped" ] && [ "${DRAFT:-}" = "true" ]; then
             verdict="not reviewed at \`$short\`: the pull request is a draft, and nothing reviews a draft — \
           summons included. Mark it ready for review and the lane takes the whole diff in one round."
             verdict_kind="draft"
