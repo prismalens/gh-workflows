@@ -99,17 +99,25 @@ runs:
               sys.exit(0)
 
           def parse_yaml_share(text):
+              # Returns (resolved, warn, raw): resolved is None when the key is
+              # unset (caller falls through to the next layer). warn is set only
+              # for a value that is present but neither full/off nor True/False,
+              # which fails closed rather than falling through (#176).
               try:
                   data = yaml.safe_load(text)
               except Exception:
-                  return None
-              if isinstance(data, dict):
-                  tel = data.get(\"telemetry\")
-                  if isinstance(tel, dict):
-                      s = tel.get(\"share\")
-                      if s in (\"full\", \"off\"):
-                          return s
-              return None
+                  return None, False, None
+              if not isinstance(data, dict):
+                  return None, False, None
+              tel = data.get(\"telemetry\")
+              if not isinstance(tel, dict) or \"share\" not in tel:
+                  return None, False, None
+              s = tel.get(\"share\")
+              if s == \"full\" or s is True:
+                  return \"full\", False, None
+              if s == \"off\" or s is False:
+                  return \"off\", False, None
+              return \"off\", True, s
 
           def fetch_content(repo, ref, path):
               url = f\"repos/{repo}/contents/{path}\"
@@ -126,16 +134,21 @@ runs:
 
           repo = os.environ.get(\"GITHUB_REPOSITORY\", \"\")
           res = None
+          warn = False
+          warn_val = None
 
           if repo:
               content = fetch_content(repo, None, \".github/claude-review.yml\")
               if content is not None:
-                  res = parse_yaml_share(content)
+                  res, warn, warn_val = parse_yaml_share(content)
 
           if res is None:
               content = fetch_content(\"prismalens/gh-workflows\", \"main\", \".github/claude-review-defaults.yml\")
               if content is not None:
-                  res = parse_yaml_share(content)
+                  res, warn, warn_val = parse_yaml_share(content)
+
+          if warn:
+              print(f\"::warning::telemetry.share has invalid value {warn_val!r}; treating as off (#176)\", file=sys.stderr)
 
           print(res if res in (\"full\", \"off\") else \"full\")
           '''))")"

@@ -550,6 +550,23 @@ jobs:
           ALLOWED_TOOL_NAMES = {"actionlint", "shellcheck", "tsc", "eslint", "biome"}
           MAX_LANGUAGE_MAP_ENTRIES = 64
 
+          # Consent is a privacy decision, so an unset key is not the same as an
+          # invalid one: unset falls through to the next layer, invalid fails
+          # closed right here. PyYAML reads unquoted `off`/`on` as False/True,
+          # so those two spellings are accepted alongside the string values (#176).
+          def resolve_telemetry_share(data):
+              if not isinstance(data, dict):
+                  return None, False
+              telemetry = data.get("telemetry")
+              if not isinstance(telemetry, dict) or "share" not in telemetry:
+                  return None, False
+              s = telemetry["share"]
+              if s == "full" or s is True:
+                  return "full", False
+              if s == "off" or s is False:
+                  return "off", False
+              return "off", True
+
           def validate_config(data, filename=".github/claude-review.yml"):
               errors = []
               if data is None:
@@ -817,10 +834,10 @@ jobs:
 
                       if "share" in telemetry:
                           s = telemetry["share"]
-                          if not isinstance(s, str) or s not in ALLOWED_TELEMETRY_SHARE:
+                          if not (isinstance(s, bool) or (isinstance(s, str) and s in ALLOWED_TELEMETRY_SHARE)):
                               errors.append(
                                   f"Invalid value for 'telemetry.share' in {filename}: {s!r}. "
-                                  f"Allowed values: {sorted(ALLOWED_TELEMETRY_SHARE)}"
+                                  f"Allowed values: full, off (true/false also accepted)"
                               )
 
               return errors
@@ -879,6 +896,13 @@ jobs:
 
                   if org_data != "MALFORMED":
                       org_errors = validate_config(org_data, filename=".github/claude-review-defaults.yml")
+
+                      # Independent of the rest of the schema: consent still fails
+                      # closed even when some other org default is rejected (#176).
+                      org_share, _org_share_invalid = resolve_telemetry_share(org_data)
+                      if org_share is not None:
+                          telemetry_share = org_share
+                          sources["telemetry_share"] = "org defaults"
 
                   if org_errors:
                       org_outcome = "unparseable" if org_data == "MALFORMED" else "schema-rejected"
@@ -961,12 +985,10 @@ jobs:
                               for k in findings:
                                   org_unconsumed.append(f"findings.{k}")
 
-                          telemetry = org_data.get("telemetry", {})
-                          if isinstance(telemetry, dict):
-                              if "share" in telemetry:
-                                  telemetry_share = telemetry["share"]
-                                  sources["telemetry_share"] = "org defaults"
-                                  org_consumed.append(f"telemetry.share={telemetry_share}")
+                          # Resolved above, ahead of the schema gate (#176); only the
+                          # consumed-keys summary is left to build here.
+                          if org_share is not None:
+                              org_consumed.append(f"telemetry.share={telemetry_share}")
 
                           print(f"Consumed configuration from .github/claude-review-defaults.yml (ref {org_ref}): {', '.join(org_consumed) if org_consumed else 'none'}")
                           if org_unconsumed:
@@ -1012,6 +1034,13 @@ jobs:
 
                   if data != "MALFORMED":
                       errors = validate_config(data, filename=".github/claude-review.yml")
+
+                      # Independent of the rest of the schema: consent still fails
+                      # closed even when some other repo key is rejected (#176).
+                      repo_share, _repo_share_invalid = resolve_telemetry_share(data)
+                      if repo_share is not None:
+                          telemetry_share = repo_share
+                          sources["telemetry_share"] = "repo config"
 
                   if errors:
                       repo_outcome = "unparseable" if data == "MALFORMED" else "schema-rejected"
@@ -1098,12 +1127,10 @@ jobs:
                               for k in findings:
                                   unconsumed.append(f"findings.{k}")
 
-                          telemetry = data.get("telemetry", {})
-                          if isinstance(telemetry, dict):
-                              if "share" in telemetry:
-                                  telemetry_share = telemetry["share"]
-                                  sources["telemetry_share"] = "repo config"
-                                  consumed.append(f"telemetry.share={telemetry_share}")
+                          # Resolved above, ahead of the schema gate (#176); only the
+                          # consumed-keys summary is left to build here.
+                          if repo_share is not None:
+                              consumed.append(f"telemetry.share={telemetry_share}")
 
                           print(f"Consumed configuration from .github/claude-review.yml (base ref {ref_name}): {', '.join(consumed) if consumed else 'none (defaults applied)'}")
                           if unconsumed:

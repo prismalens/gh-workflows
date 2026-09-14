@@ -290,6 +290,66 @@ def main():
     else:
         print("  ok    Case 10: default share=full")
 
+    # Case 12: unquoted 'off' is the YAML boolean False, and still resolves off (#176)
+    proc, outputs = run_action_step(
+        script,
+        repo_config="telemetry:\n  share: off\n",
+    )
+    if outputs.get("share") != "off":
+        fails.append(f"Case 12 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 12: unquoted 'off' resolves off")
+    else:
+        print("  ok    Case 12: unquoted 'off' resolves off")
+
+    # Case 13: an explicit 'false' also resolves off (#176)
+    proc, outputs = run_action_step(
+        script,
+        repo_config="telemetry:\n  share: false\n",
+    )
+    if outputs.get("share") != "off":
+        fails.append(f"Case 13 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 13: 'false' resolves off")
+    else:
+        print("  ok    Case 13: 'false' resolves off")
+
+    # Case 14: an explicit 'true' resolves full (#176)
+    proc, outputs = run_action_step(
+        script,
+        repo_config="telemetry:\n  share: true\n",
+    )
+    if outputs.get("share") != "full":
+        fails.append(f"Case 14 expected share=full, got {outputs.get('share')}")
+        print("  FAIL  Case 14: 'true' resolves full")
+    else:
+        print("  ok    Case 14: 'true' resolves full")
+
+    # Case 15: an invalid value fails closed to off, with a warning naming it (#176)
+    proc, outputs = run_action_step(
+        script,
+        repo_config="telemetry:\n  share: maybe\n",
+    )
+    if outputs.get("share") != "off":
+        fails.append(f"Case 15 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 15: invalid value resolves off")
+    elif "::warning::telemetry.share has invalid value" not in proc.stdout and "::warning::telemetry.share has invalid value" not in proc.stderr:
+        fails.append(f"Case 15: expected an invalid-value warning, stdout={proc.stdout!r} stderr={proc.stderr!r}")
+        print("  FAIL  Case 15: missing invalid-value warning")
+    else:
+        print("  ok    Case 15: invalid value resolves off with a warning")
+
+    # Case 16: no telemetry key in the repository file falls through to an org
+    # default of off (#176)
+    proc, outputs = run_action_step(
+        script,
+        repo_config="review:\n  level: medium\n",
+        org_config="telemetry:\n  share: off\n",
+    )
+    if outputs.get("share") != "off":
+        fails.append(f"Case 16 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 16: repo file with no telemetry key falls through to org off")
+    else:
+        print("  ok    Case 16: repo file with no telemetry key falls through to org off")
+
     # Case 11: the action's url input is required, with no invented default host
     action = yaml.safe_load(ACTION_FILE.read_text())
     url_input = action.get("inputs", {}).get("url", {})

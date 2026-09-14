@@ -491,6 +491,20 @@ telemetry:
   share: "invalid"
 """
 
+REPO_CONFIG_TELEMETRY_SHARE_UNQUOTED_OFF = """
+version: 1
+
+telemetry:
+  share: off
+"""
+
+MALFORMED_TELEMETRY_SHARE_MAYBE = """
+version: 1
+
+telemetry:
+  share: maybe
+"""
+
 MALFORMED_TELEMETRY_NOT_MAPPING = """
 version: 1
 
@@ -772,11 +786,29 @@ def main():
     check("telemetry unknown key: applies default full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
     check("telemetry unknown key: emits warning", "::warning::" in stdout and "Unknown configuration key 'telemetry.unknown'" in stdout, f"stdout: {stdout}")
 
-    # Malformed telemetry in repo config: invalid share value
+    # Malformed telemetry in repo config: invalid share value fails closed to
+    # off (#176), the validation error is kept, and other keys still fall
+    # back to their workflow defaults.
     rc, out, stdout, stderr = run_config_case(config_script, config_yaml=MALFORMED_TELEMETRY_INVALID_SHARE)
     check("telemetry invalid share: exits 0", rc == 0, f"rc={rc}")
-    check("telemetry invalid share: applies default full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
-    check("telemetry invalid share: emits warning", "::warning::" in stdout and "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
+    check("telemetry invalid share: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry invalid share: applies default_model default", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
+    check("telemetry invalid share: keeps validation error", "::warning::" in stdout and "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
+    check("telemetry invalid share: error names both spellings", "true/false also accepted" in stdout, f"stdout: {stdout}")
+
+    # Unquoted 'off' is the YAML boolean False, and now passes validation and
+    # resolves off, with no error (#176).
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=REPO_CONFIG_TELEMETRY_SHARE_UNQUOTED_OFF)
+    check("telemetry unquoted off: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry unquoted off: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry unquoted off: no validation error", "Invalid value for 'telemetry.share'" not in stdout, f"stdout: {stdout}")
+
+    # 'share: maybe' is not full/off/true/false: fails validation and still
+    # fails closed to off (#176).
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=MALFORMED_TELEMETRY_SHARE_MAYBE)
+    check("telemetry share maybe: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry share maybe: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry share maybe: fails validation", "::warning::" in stdout and "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
 
     # Malformed telemetry in repo config: not a mapping
     rc, out, stdout, stderr = run_config_case(config_script, config_yaml=MALFORMED_TELEMETRY_NOT_MAPPING)
@@ -784,10 +816,10 @@ def main():
     check("telemetry not mapping: applies default full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
     check("telemetry not mapping: emits warning", "::warning::" in stdout and "expected mapping" in stdout, f"stdout: {stdout}")
 
-    # Malformed telemetry in org config
+    # Malformed telemetry in org config: also fails closed to off (#176)
     rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=MALFORMED_TELEMETRY_INVALID_SHARE, is_404=True)
     check("telemetry malformed org: exits 0", rc == 0, f"rc={rc}")
-    check("telemetry malformed org: applies default full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+    check("telemetry malformed org: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
     check("telemetry malformed org: emits warning", "::warning::" in stdout and "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
 
     # Prove telemetry.share does NOT change config_hash
