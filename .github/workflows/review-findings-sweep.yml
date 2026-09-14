@@ -93,6 +93,7 @@ jobs:
           WINDOW_DAYS: ${{ inputs.window_days }}
           PR_NUMBER: ${{ inputs.pr_number }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ACTION: ${{ github.event.action }}
           INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
           INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
           AUTH_HEADER: ${{ steps.auth.outputs.authorization }}
@@ -145,8 +146,10 @@ jobs:
           fi
 
           TARGET_PR="${PR_NUMBER:-0}"
+          TARGET_PR_FROM_EVENT=0
           if [ "$TARGET_PR" -eq 0 ] 2>/dev/null && [ -n "${EVENT_PR_NUMBER:-}" ]; then
             TARGET_PR="$EVENT_PR_NUMBER"
+            TARGET_PR_FROM_EVENT=1
           fi
 
           if [ "$FULL_HISTORY" != "true" ] && [ -n "$TARGET_PR" ] && [ "$TARGET_PR" -ne 0 ] 2>/dev/null; then
@@ -154,6 +157,15 @@ jobs:
             pr_list_count=1
             list_truncated=0
             echo "Sweeping single pull request #${TARGET_PR}."
+            # A caller triggered directly by pull_request narrowed the scope to this one
+            # PR; record that an event, not an operator, made the call (#177, thread 4006669623).
+            if [ "$TARGET_PR_FROM_EVENT" -eq 1 ]; then
+              narrowed_msg="Swept only PR #${TARGET_PR}: triggered by pull_request ${EVENT_ACTION:-unknown} (#176)."
+              echo "$narrowed_msg"
+              if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                echo "$narrowed_msg" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            fi
           elif [ "$FULL_HISTORY" = "true" ]; then
             PR_LIST_LIMIT=1000
             pr_list_json=$(gh pr list --repo "$REPOSITORY" --state all --limit "$PR_LIST_LIMIT" --json number) || {

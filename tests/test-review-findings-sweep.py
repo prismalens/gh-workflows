@@ -234,8 +234,8 @@ class SweepResult(tuple):
 
 def run_sweep(script, *, pr_list=None, main_fixtures, overflow_fixtures=None, http_code="200",
               max_attempts=2, backoff=0, full_history="false", window_days="3",
-              pr_number=None, event_pr_number=None, auth_header=None, telemetry_share=None,
-              ingest_token="tok"):
+              pr_number=None, event_pr_number=None, event_action=None, auth_header=None,
+              telemetry_share=None, ingest_token="tok"):
     """
     main_fixtures: {pr_number: [page1_json, page2_json, ...]}. A PR whose list runs out
     before pagination is done (or an empty list) leaves later calls with no fixture, which
@@ -273,6 +273,7 @@ def run_sweep(script, *, pr_list=None, main_fixtures, overflow_fixtures=None, ht
             WINDOW_DAYS=window_days,
             PR_NUMBER=str(pr_number) if pr_number is not None else "0",
             EVENT_PR_NUMBER=str(event_pr_number) if event_pr_number is not None else "",
+            EVENT_ACTION=str(event_action) if event_action is not None else "",
             AUTH_HEADER=str(auth_header) if auth_header is not None else "",
             TELEMETRY_SHARE=str(telemetry_share) if telemetry_share is not None else "",
             INGEST_URL="https://example.com",
@@ -555,14 +556,19 @@ def main():
     check("single-PR (pr_number): finding written for PR 42", len(res.rows) == 1 and res.rows[0]["pr_number"] == 42)
     check("single-PR (pr_number): gh pr list was not called", "pr list" not in res.gh_calls)
     check("single-PR (pr_number): stdout announces single PR sweep", "Sweeping single pull request #42" in res.proc.stdout)
+    check("single-PR (pr_number): an operator input never records an event-narrowed sweep (#177)",
+          "Swept only PR #" not in res.proc.stdout and "Swept only PR #" not in res.summary,
+          f"stdout={res.proc.stdout!r} summary={res.summary!r}")
 
-    # ── 13. Single PR sweep with EVENT_PR_NUMBER (#176) ──
+    # ── 13. Single PR sweep with EVENT_PR_NUMBER (#176), records the narrowing event
+    # to stdout and the Step Summary (#177, thread 4006669623) ──
     fx_pr99 = main_page(head_sha=OID_A, commit_oids=[OID_A], threads=[
         thread("T99", [comment("claude", "**Issue**: event PR sweep")])
     ])
     res = run_sweep(
         script,
         event_pr_number=99,
+        event_action="closed",
         main_fixtures={99: [fx_pr99]},
         max_attempts=1,
     )
@@ -570,6 +576,12 @@ def main():
     check("single-PR (event_pr_number): finding written for PR 99", len(res.rows) == 1 and res.rows[0]["pr_number"] == 99)
     check("single-PR (event_pr_number): gh pr list was not called", "pr list" not in res.gh_calls)
     check("single-PR (event_pr_number): stdout announces single PR sweep", "Sweeping single pull request #99" in res.proc.stdout)
+    check("single-PR (event_pr_number): stdout records the narrowing event (#177)",
+          "Swept only PR #99: triggered by pull_request closed (#176)." in res.proc.stdout,
+          res.proc.stdout)
+    check("single-PR (event_pr_number): Step Summary records the narrowing event (#177)",
+          "Swept only PR #99: triggered by pull_request closed (#176)." in res.summary,
+          res.summary)
 
     # ── 14. Consent check: telemetry.share off skips sweep and updates summary (#176) ──
     res = run_sweep(
