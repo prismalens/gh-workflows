@@ -485,7 +485,12 @@ jobs:
           # code is read. No workflow input either — org/repo config only, default medium.
           # 'low' is schema-rejected this release (see ALLOWED_LEVELS below).
           level = "medium"
-          telemetry_share = "full"
+          # Without PyYAML neither config layer can be read, so consent can't be
+          # verified either; that fails closed to off, not the workflow default (#177,
+          # thread 4006669598).
+          telemetry_share = "off" if yaml is None else "full"
+          if yaml is None:
+              print("::warning::telemetry.share: PyYAML is not installed, so repo/org config can't be read; resolving off (#177)")
 
           sources = {
               "default_model": "workflow default",
@@ -554,11 +559,18 @@ jobs:
           # invalid one: unset falls through to the next layer, invalid fails
           # closed right here. PyYAML reads unquoted `off`/`on` as False/True,
           # so those two spellings are accepted alongside the string values (#176).
+          # A `telemetry` key present but not a mapping also fails closed rather
+          # than falling through, since it can't be told apart from a deliberate
+          # but malformed override (#177, thread 4006669598).
           def resolve_telemetry_share(data):
               if not isinstance(data, dict):
                   return None, False
               telemetry = data.get("telemetry")
-              if not isinstance(telemetry, dict) or "share" not in telemetry:
+              if telemetry is None:
+                  return None, False
+              if not isinstance(telemetry, dict):
+                  return "off", True
+              if "share" not in telemetry:
                   return None, False
               s = telemetry["share"]
               if s == "full" or s is True:
@@ -867,6 +879,10 @@ jobs:
 
           org_unconsumed = []
           org_outcome = "absent"
+          # Consent fails closed on a fetch or parse failure for this layer; only a
+          # true 404 falls through to the next layer (#177, thread 4006669598).
+          org_telemetry_forced_off = False
+          org_telemetry_forced_off_reason = ""
           if yaml is not None:
               org_fetch_cmd = ["gh", "api", f"repos/{org_repo}/contents/.github/claude-review-defaults.yml?ref={org_ref}", "--jq", ".content"]
               org_res = subprocess.run(org_fetch_cmd, capture_output=True, text=True)
@@ -878,13 +894,19 @@ jobs:
                           org_config_content = base64.b64decode(org_res.stdout.strip()).decode("utf-8")
                       except Exception as e:
                           org_outcome = "unparseable"
+                          org_telemetry_forced_off = True
+                          org_telemetry_forced_off_reason = f"failed to decode .github/claude-review-defaults.yml at ref {org_ref} as base64: {e}"
                           print(f"::warning::.github/claude-review-defaults.yml at ref {org_ref} failed to decode base64: {e}; ignoring org defaults.")
                   else:
                       org_config_content = ""
+                      org_telemetry_forced_off = True
+                      org_telemetry_forced_off_reason = f".github/claude-review-defaults.yml at ref {org_ref} returned empty content"
               elif "404" in org_res.stderr:
                   print(f"No .github/claude-review-defaults.yml found at ref {org_ref}; applying workflow defaults.")
               else:
                   err = org_res.stderr.strip() if org_res.stderr else f"exit code {org_res.returncode}"
+                  org_telemetry_forced_off = True
+                  org_telemetry_forced_off_reason = f"failed to fetch .github/claude-review-defaults.yml at ref {org_ref}: {err}"
                   print(f"::warning::Failed to fetch .github/claude-review-defaults.yml at ref {org_ref}: {err}; applying workflow defaults.")
 
               if org_config_content is not None:
@@ -893,6 +915,8 @@ jobs:
                   except Exception as exc:
                       org_data = "MALFORMED"
                       org_errors = [f"Malformed YAML in .github/claude-review-defaults.yml: {exc}"]
+                      org_telemetry_forced_off = True
+                      org_telemetry_forced_off_reason = f"malformed YAML in .github/claude-review-defaults.yml at ref {org_ref}: {exc}"
 
                   if org_data != "MALFORMED":
                       org_errors = validate_config(org_data, filename=".github/claude-review-defaults.yml")
@@ -994,6 +1018,11 @@ jobs:
                           if org_unconsumed:
                               print(f"::warning::Configuration key(s) in .github/claude-review-defaults.yml accepted by schema but not yet wired in this workflow: {', '.join(sorted(org_unconsumed))}")
 
+          if org_telemetry_forced_off:
+              telemetry_share = "off"
+              sources["telemetry_share"] = "org defaults"
+              print(f"::warning::telemetry.share: {org_telemetry_forced_off_reason}; resolving off (#177)")
+
           layers["org_defaults"] = {
               "outcome": org_outcome,
               "unconsumed": sorted(org_unconsumed),
@@ -1001,6 +1030,10 @@ jobs:
 
           unconsumed = []
           repo_outcome = "absent"
+          # Consent fails closed on a fetch or parse failure for this layer; only a
+          # true 404 falls through to the next layer (#177, thread 4006669598).
+          repo_telemetry_forced_off = False
+          repo_telemetry_forced_off_reason = ""
           if yaml is not None:
               # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
               # Reading from head would let a pull request modify its own review policy
@@ -1016,13 +1049,19 @@ jobs:
                           config_content = base64.b64decode(repo_res.stdout.strip()).decode("utf-8")
                       except Exception as e:
                           repo_outcome = "unparseable"
+                          repo_telemetry_forced_off = True
+                          repo_telemetry_forced_off_reason = f"failed to decode .github/claude-review.yml at base ref {ref_name} as base64: {e}"
                           print(f"::warning::.github/claude-review.yml at base ref {ref_name} failed to decode base64: {e}; applying workflow defaults.")
                   else:
                       config_content = ""
+                      repo_telemetry_forced_off = True
+                      repo_telemetry_forced_off_reason = f".github/claude-review.yml at base ref {ref_name} returned empty content"
               elif "404" in repo_res.stderr:
                   print(f"No .github/claude-review.yml found at base ref {ref_name}; applying workflow defaults.")
               else:
                   err = repo_res.stderr.strip() if repo_res.stderr else f"exit code {repo_res.returncode}"
+                  repo_telemetry_forced_off = True
+                  repo_telemetry_forced_off_reason = f"failed to fetch .github/claude-review.yml at base ref {ref_name}: {err}"
                   print(f"::warning::Failed to fetch .github/claude-review.yml at base ref {ref_name}: {err}; applying workflow defaults.")
 
               if config_content is not None:
@@ -1031,6 +1070,8 @@ jobs:
                   except Exception as exc:
                       data = "MALFORMED"
                       errors = [f"Malformed YAML in .github/claude-review.yml: {exc}"]
+                      repo_telemetry_forced_off = True
+                      repo_telemetry_forced_off_reason = f"malformed YAML in .github/claude-review.yml at base ref {ref_name}: {exc}"
 
                   if data != "MALFORMED":
                       errors = validate_config(data, filename=".github/claude-review.yml")
@@ -1135,6 +1176,11 @@ jobs:
                           print(f"Consumed configuration from .github/claude-review.yml (base ref {ref_name}): {', '.join(consumed) if consumed else 'none (defaults applied)'}")
                           if unconsumed:
                               print(f"::warning::Configuration key(s) accepted by schema but not yet wired in this workflow: {', '.join(sorted(unconsumed))}")
+
+          if repo_telemetry_forced_off:
+              telemetry_share = "off"
+              sources["telemetry_share"] = "repo config"
+              print(f"::warning::telemetry.share: {repo_telemetry_forced_off_reason}; resolving off (#177)")
 
           layers["repo_config"] = {
               "outcome": repo_outcome,

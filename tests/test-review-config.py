@@ -68,6 +68,10 @@ case "$args" in
       echo "gh stub: 500 Internal Server Error" >&2
       exit 1
     fi
+    if [ -n "${FAKE_CONFIG_BAD_BASE64:-}" ]; then
+      printf '%s\n' "$FAKE_CONFIG_BAD_BASE64"
+      exit 0
+    fi
     printf '%s\n' "$FAKE_CONFIG_B64"
     exit 0 ;;
   *"pulls/"*"/files"*)
@@ -93,6 +97,7 @@ exit 1
 
 def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=False,
                     config_yaml=None, is_404=False, config_fail=False,
+                    config_bad_base64=None,
                     input_default_model="claude-sonnet-5",
                     input_auto_pause_rounds="5",
                     input_skip_authors="dependabot[bot]",
@@ -124,6 +129,9 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
             org_is_404 = False
 
         if config_fail:
+            is_404 = False
+
+        if config_bad_base64 is not None:
             is_404 = False
 
         if expected_base_sha is None:
@@ -163,6 +171,7 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
             FAKE_CONFIG_404="1" if is_404 else "0",
             FAKE_CONFIG_FAIL="1" if config_fail else "0",
             FAKE_CONFIG_B64=fake_b64,
+            FAKE_CONFIG_BAD_BASE64=config_bad_base64 or "",
         )
 
         p = subprocess.run(["bash", "-c", script], env=env,
@@ -471,6 +480,13 @@ telemetry:
 """
 
 REPO_CONFIG_TELEMETRY_SHARE_FULL = """
+version: 1
+
+telemetry:
+  share: "full"
+"""
+
+ORG_CONFIG_TELEMETRY_SHARE_FULL = """
 version: 1
 
 telemetry:
@@ -810,10 +826,12 @@ def main():
     check("telemetry share maybe: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
     check("telemetry share maybe: fails validation", "::warning::" in stdout and "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
 
-    # Malformed telemetry in repo config: not a mapping
+    # Malformed telemetry in repo config: not a mapping. Fails closed to off,
+    # not the workflow default (#177, thread 4006669598): a non-mapping
+    # telemetry key can't be told apart from a deliberate but broken override.
     rc, out, stdout, stderr = run_config_case(config_script, config_yaml=MALFORMED_TELEMETRY_NOT_MAPPING)
     check("telemetry not mapping: exits 0", rc == 0, f"rc={rc}")
-    check("telemetry not mapping: applies default full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+    check("telemetry not mapping: resolves off (#177)", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
     check("telemetry not mapping: emits warning", "::warning::" in stdout and "expected mapping" in stdout, f"stdout: {stdout}")
 
     # Malformed telemetry in org config: also fails closed to off (#176)
@@ -821,6 +839,57 @@ def main():
     check("telemetry malformed org: exits 0", rc == 0, f"rc={rc}")
     check("telemetry malformed org: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
     check("telemetry malformed org: emits warning", "::warning::" in stdout and "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
+
+    # A 500 on the repository fetch (non-404) fails closed to off, with a
+    # dedicated telemetry warning (#177, thread 4006669598).
+    rc, out, stdout, stderr = run_config_case(config_script, config_fail=True, is_404=False)
+    check("telemetry repo fetch 500: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry repo fetch 500: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry repo fetch 500: emits a telemetry-specific warning",
+          "::warning::telemetry.share:" in stdout and "resolving off" in stdout,
+          f"stdout: {stdout}")
+
+    # A 500 on the org defaults fetch (non-404) fails closed to off too.
+    rc, out, stdout, stderr = run_config_case(config_script, org_fail=True, is_404=True)
+    check("telemetry org fetch 500: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry org fetch 500: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry org fetch 500: emits a telemetry-specific warning",
+          "::warning::telemetry.share:" in stdout and "resolving off" in stdout,
+          f"stdout: {stdout}")
+
+    # Bad base64 in the repository file fails closed to off (#177, thread 4006669598).
+    rc, out, stdout, stderr = run_config_case(config_script, config_bad_base64="abc")
+    check("telemetry bad base64: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry bad base64: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry bad base64: emits a telemetry-specific warning",
+          "::warning::telemetry.share:" in stdout and "resolving off" in stdout,
+          f"stdout: {stdout}")
+
+    # Malformed YAML in the repository file fails closed to off, in addition
+    # to the existing generic malformed-config warning (#177, thread 4006669598).
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=MALFORMED_YAML_SYNTAX)
+    check("telemetry malformed repo YAML: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry malformed repo YAML: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry malformed repo YAML: emits a telemetry-specific warning",
+          "::warning::telemetry.share:" in stdout and "resolving off" in stdout,
+          f"stdout: {stdout}")
+
+    # A 404 on the repository file plus an org default of full resolves full
+    # (#177, thread 4006669598): absence is the one thing that still falls
+    # through.
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_TELEMETRY_SHARE_FULL, is_404=True)
+    check("telemetry 404 repo + org full: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry 404 repo + org full: resolves full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+    check("telemetry 404 repo + org full: no telemetry warning", "::warning::telemetry.share:" not in stdout, f"stdout: {stdout}")
+
+    # Without PyYAML, neither config layer can be read, so consent fails
+    # closed to off rather than the workflow default (#177, thread 4006669598).
+    rc, out, stdout, stderr = run_config_case(config_script, no_pyyaml=True, is_404=True)
+    check("telemetry missing pyyaml: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry missing pyyaml: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry missing pyyaml: emits a telemetry-specific warning",
+          "::warning::telemetry.share:" in stdout and "PyYAML" in stdout,
+          f"stdout: {stdout}")
 
     # Prove telemetry.share does NOT change config_hash
     rc_base, out_base, _, _ = run_config_case(config_script, is_404=True)

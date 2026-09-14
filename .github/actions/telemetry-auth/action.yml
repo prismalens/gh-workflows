@@ -86,76 +86,102 @@ runs:
         # ── 2. Resolve telemetry.share ───────────────────────────────────────────
         # Config is read from refs only, never a local working tree, because a
         # working tree can be a PR head and config is never read from a head (#33).
+        # Consent fails closed on errors; only absence falls through to the next
+        # layer or to the default (#177, thread 4006669598).
         RESOLVED_SHARE="${SHARE_OVERRIDE:-}"
-        if [ -z "$RESOLVED_SHARE" ]; then
-          RESOLVED_SHARE="$(python3 -c "import textwrap; exec(textwrap.dedent(r'''\
+        if [ -n "$RESOLVED_SHARE" ]; then
+          case "$RESOLVED_SHARE" in
+            full|true)
+              RESOLVED_SHARE="full"
+              ;;
+            off|false)
+              RESOLVED_SHARE="off"
+              ;;
+            *)
+              echo "::warning::telemetry.share override '${RESOLVED_SHARE}' is invalid; resolving off (#177)"
+              RESOLVED_SHARE="off"
+              ;;
+          esac
+        else
+          RESOLVED_SHARE="$(python3 -c "import textwrap; exec(textwrap.dedent(r'''
           import base64, os, subprocess, sys
 
           try:
               import yaml
           except ImportError as e:
-              print(f\"::warning::PyYAML unavailable ({e}); resolving telemetry.share as full (#176)\", file=sys.stderr)
-              print(\"full\")
+              print(f'::warning::PyYAML unavailable ({e}); resolving telemetry.share as off (#177)', file=sys.stderr)
+              print('off')
               sys.exit(0)
 
-          def parse_yaml_share(text):
-              # Returns (resolved, warn, raw): resolved is None when the key is
-              # unset (caller falls through to the next layer). warn is set only
-              # for a value that is present but neither full/off nor True/False,
-              # which fails closed rather than falling through (#176).
+          def resolve_layer(text):
+              # Returns (share, warn): share is None when the key is unset
+              # (caller falls through to the next layer or the default).
+              # warn holds the reason whenever share is forced to off by
+              # anything other than an explicit off value (#177, thread 4006669598).
               try:
                   data = yaml.safe_load(text)
-              except Exception:
-                  return None, False, None
+              except Exception as exc:
+                  return 'off', f'malformed YAML ({exc}); resolving telemetry.share as off'
               if not isinstance(data, dict):
-                  return None, False, None
-              tel = data.get(\"telemetry\")
-              if not isinstance(tel, dict) or \"share\" not in tel:
-                  return None, False, None
-              s = tel.get(\"share\")
-              if s == \"full\" or s is True:
-                  return \"full\", False, None
-              if s == \"off\" or s is False:
-                  return \"off\", False, None
-              return \"off\", True, s
+                  return None, None
+              tel = data.get('telemetry')
+              if tel is None:
+                  return None, None
+              if not isinstance(tel, dict):
+                  return 'off', f'telemetry is not a mapping ({tel!r}); resolving telemetry.share as off'
+              if 'share' not in tel:
+                  return None, None
+              s = tel.get('share')
+              if s == 'full' or s is True:
+                  return 'full', None
+              if s == 'off' or s is False:
+                  return 'off', None
+              return 'off', f'telemetry.share has invalid value {s!r}; resolving telemetry.share as off'
 
-          def fetch_content(repo, ref, path):
-              url = f\"repos/{repo}/contents/{path}\"
+          def fetch_layer(repo, ref, path):
+              # Same (share, warn) shape as resolve_layer. A 404 falls
+              # through (file absent); any other fetch failure, empty or
+              # undecodable content fails closed to off.
+              url = f'repos/{repo}/contents/{path}'
               if ref:
-                  url += f\"?ref={ref}\"
-              cmd = [\"gh\", \"api\", url, \"--jq\", \".content\"]
-              p = subprocess.run(cmd, capture_output=True, text=True)
-              if p.returncode == 0 and p.stdout.strip():
-                  try:
-                      return base64.b64decode(p.stdout.strip()).decode(\"utf-8\", errors=\"replace\")
-                  except Exception:
-                      return None
-              return None
+                  url += f'?ref={ref}'
+              p = subprocess.run(['gh', 'api', url, '--jq', '.content'], capture_output=True, text=True)
+              if p.returncode != 0:
+                  stderr = p.stderr or ''
+                  if '404' in stderr:
+                      return None, None
+                  return 'off', f'failed to fetch {path}: {stderr.strip() or p.returncode}; resolving telemetry.share as off'
+              raw = p.stdout.strip()
+              if not raw:
+                  return 'off', f'{path} returned empty content; resolving telemetry.share as off'
+              try:
+                  text = base64.b64decode(raw).decode('utf-8', errors='replace')
+              except Exception as exc:
+                  return 'off', f'failed to decode {path}: {exc}; resolving telemetry.share as off'
+              return resolve_layer(text)
 
-          repo = os.environ.get(\"GITHUB_REPOSITORY\", \"\")
-          res = None
-          warn = False
-          warn_val = None
+          repo_name = os.environ.get('GITHUB_REPOSITORY') or ''
+          repo_share, repo_warn = (None, None)
+          if repo_name:
+              repo_share, repo_warn = fetch_layer(repo_name, None, '.github/claude-review.yml')
 
-          if repo:
-              content = fetch_content(repo, None, \".github/claude-review.yml\")
-              if content is not None:
-                  res, warn, warn_val = parse_yaml_share(content)
+          org_share, org_warn = (None, None)
+          if repo_share is None:
+              org_share, org_warn = fetch_layer('prismalens/gh-workflows', 'main', '.github/claude-review-defaults.yml')
 
-          if res is None:
-              content = fetch_content(\"prismalens/gh-workflows\", \"main\", \".github/claude-review-defaults.yml\")
-              if content is not None:
-                  res, warn, warn_val = parse_yaml_share(content)
+          result = repo_share if repo_share is not None else org_share
+          warn = repo_warn if repo_share is not None else org_warn
 
           if warn:
-              print(f\"::warning::telemetry.share has invalid value {warn_val!r}; treating as off (#176)\", file=sys.stderr)
+              print(f'::warning::{warn} (#177)', file=sys.stderr)
 
-          print(res if res in (\"full\", \"off\") else \"full\")
+          print(result if result in ('full', 'off') else 'full')
           '''))")"
         fi
 
-        if [ "$RESOLVED_SHARE" != "off" ]; then
-          RESOLVED_SHARE="full"
+        if [ "$RESOLVED_SHARE" != "off" ] && [ "$RESOLVED_SHARE" != "full" ]; then
+          echo "::warning::telemetry.share resolver returned an unexpected value; resolving off (#177)"
+          RESOLVED_SHARE="off"
         fi
 
         # ── 3. Write outputs ─────────────────────────────────────────────────────

@@ -44,6 +44,8 @@ def run_action_step(
     org_config=None,
     stub_curl_resp=None,
     stub_curl_fail=False,
+    repo_fetch_fail=False,
+    repo_bad_base64=None,
 ):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
@@ -81,6 +83,14 @@ exit 0
 path="$2"
 case "$path" in
   repos/*/contents/.github/claude-review.yml)
+    if [ "{1 if repo_fetch_fail else 0}" = "1" ]; then
+      echo "HTTP 500: Internal Server Error" >&2
+      exit 1
+    fi
+    if [ -n "{repo_bad_base64 or ''}" ]; then
+      echo "{repo_bad_base64 or ''}"
+      exit 0
+    fi
     if [ -n "{repo_b64}" ]; then
       echo "{repo_b64}"
       exit 0
@@ -349,6 +359,76 @@ def main():
         print("  FAIL  Case 16: repo file with no telemetry key falls through to org off")
     else:
         print("  ok    Case 16: repo file with no telemetry key falls through to org off")
+
+    # Case 17: a 500 on the repository fetch resolves off, with a warning (#177,
+    # thread 4006669598)
+    proc, outputs = run_action_step(
+        script,
+        repo_fetch_fail=True,
+        org_config="telemetry:\n  share: full\n",
+    )
+    if outputs.get("share") != "off":
+        fails.append(f"Case 17 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 17: repo fetch failure resolves off")
+    elif "::warning::failed to fetch" not in proc.stdout and "::warning::failed to fetch" not in proc.stderr:
+        fails.append(f"Case 17: expected a fetch-failure warning, stdout={proc.stdout!r} stderr={proc.stderr!r}")
+        print("  FAIL  Case 17: missing fetch-failure warning")
+    else:
+        print("  ok    Case 17: a 500 on the repository fetch resolves off with a warning")
+
+    # Case 18: bad base64 in the repository file resolves off (#177, thread 4006669598)
+    proc, outputs = run_action_step(script, repo_bad_base64="abc")
+    if outputs.get("share") != "off":
+        fails.append(f"Case 18 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 18: bad base64 resolves off")
+    elif "::warning::failed to decode" not in proc.stdout and "::warning::failed to decode" not in proc.stderr:
+        fails.append(f"Case 18: expected a decode-failure warning, stdout={proc.stdout!r} stderr={proc.stderr!r}")
+        print("  FAIL  Case 18: missing decode-failure warning")
+    else:
+        print("  ok    Case 18: bad base64 resolves off with a warning")
+
+    # Case 19: malformed YAML resolves off (#177, thread 4006669598)
+    proc, outputs = run_action_step(script, repo_config="telemetry: [unterminated\n")
+    if outputs.get("share") != "off":
+        fails.append(f"Case 19 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 19: malformed YAML resolves off")
+    elif "::warning::malformed YAML" not in proc.stdout and "::warning::malformed YAML" not in proc.stderr:
+        fails.append(f"Case 19: expected a malformed-YAML warning, stdout={proc.stdout!r} stderr={proc.stderr!r}")
+        print("  FAIL  Case 19: missing malformed-YAML warning")
+    else:
+        print("  ok    Case 19: malformed YAML resolves off with a warning")
+
+    # Case 20: telemetry present but not a mapping resolves off (#177, thread 4006669598)
+    proc, outputs = run_action_step(script, repo_config='telemetry: "off"\n')
+    if outputs.get("share") != "off":
+        fails.append(f"Case 20 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 20: non-mapping telemetry resolves off")
+    elif "::warning::telemetry is not a mapping" not in proc.stdout and "::warning::telemetry is not a mapping" not in proc.stderr:
+        fails.append(f"Case 20: expected a non-mapping warning, stdout={proc.stdout!r} stderr={proc.stderr!r}")
+        print("  FAIL  Case 20: missing non-mapping warning")
+    else:
+        print("  ok    Case 20: telemetry present but not a mapping resolves off with a warning")
+
+    # Case 21: a 404 on the repository file plus an org default of full resolves
+    # full (#177, thread 4006669598)
+    proc, outputs = run_action_step(script, org_config="telemetry:\n  share: full\n")
+    if outputs.get("share") != "full":
+        fails.append(f"Case 21 expected share=full, got {outputs.get('share')}")
+        print("  FAIL  Case 21: 404 repo plus org full resolves full")
+    else:
+        print("  ok    Case 21: a 404 on the repository file plus an org default of full resolves full")
+
+    # Case 22: an invalid share override on the action resolves off, with a
+    # warning (#177, thread 4006669598)
+    proc, outputs = run_action_step(script, env_vars={"SHARE_OVERRIDE": "maybe"})
+    if outputs.get("share") != "off":
+        fails.append(f"Case 22 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 22: invalid override resolves off")
+    elif "::warning::telemetry.share override" not in proc.stdout and "::warning::telemetry.share override" not in proc.stderr:
+        fails.append(f"Case 22: expected an invalid-override warning, stdout={proc.stdout!r} stderr={proc.stderr!r}")
+        print("  FAIL  Case 22: missing invalid-override warning")
+    else:
+        print("  ok    Case 22: an invalid share override resolves off with a warning")
 
     # Case 11: the action's url input is required, with no invented default host
     action = yaml.safe_load(ACTION_FILE.read_text())
