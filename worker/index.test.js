@@ -4583,4 +4583,282 @@ describe("Worker telemetry read API", () => {
       });
     });
   });
+
+  describe("Health report ingest (POST /ingest/health) (#176)", () => {
+    let keyPair;
+    let getLocalKey;
+
+    before(async () => {
+      const { publicKey, privateKey } = await generateKeyPair("RS256");
+      keyPair = { publicKey, privateKey };
+      const jwk = await exportJWK(publicKey);
+      getLocalKey = createLocalJWKSet({ keys: [jwk] });
+    });
+
+    async function mintOidcToken({
+      issuer = "https://token.actions.githubusercontent.com",
+      audience = "https://review-telemetry.sfun.cloud",
+      repository = "prismalens/gh-workflows",
+      repository_id = 12345,
+      expiresIn = "1h",
+    } = {}) {
+      const jwt = new SignJWT({
+        repository,
+        repository_id,
+      }).setProtectedHeader({ alg: "RS256" });
+
+      if (issuer) jwt.setIssuer(issuer);
+      if (audience) jwt.setAudience(audience);
+      if (expiresIn) jwt.setExpirationTime(expiresIn);
+
+      return jwt.sign(keyPair.privateKey);
+    }
+
+    function sampleHealthPayload(overrides = {}) {
+      return {
+        repository: "prismalens/gh-workflows",
+        report_version: "1",
+        generated_at: "2026-09-14T10:00:00.000Z",
+        window_start: "2026-09-07T00:00:00.000Z",
+        window_end: "2026-09-14T00:00:00.000Z",
+        workflow_runs: 5,
+        workflow_run_ids: [1001, 1002, 1003, 1004, 1005],
+        sweep_findings: 12,
+        pr_state_count: 8,
+        ...overrides,
+      };
+    }
+
+    it("returns 401 when authorization header is missing", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 401 when authorization token is wrong", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: "Bearer invalid-token" },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("rejects repository mismatch under OIDC (403, writes nothing)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ repository: "other-org/other-repo" });
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${token}` },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 403);
+      assert.deepEqual(await res.json(), { error: "repository mismatch" });
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when repository is missing or not a string", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      for (const badRepo of [undefined, null, "", 123]) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload({ repository: badRepo }),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when report_version is not '1'", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      for (const badVersion of ["2", 1, null, undefined]) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload({ report_version: badVersion }),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when timestamp fields are invalid", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      for (const field of ["generated_at", "window_start", "window_end"]) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload({ [field]: "not-a-timestamp" }),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when window_end precedes window_start", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: sampleHealthPayload({
+          window_start: "2026-09-14T00:00:00.000Z",
+          window_end: "2026-09-07T00:00:00.000Z",
+        }),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when workflow_runs is negative or not an integer", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      for (const badRuns of [-1, 1.5, "5", null]) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload({ workflow_runs: badRuns }),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when workflow_run_ids is invalid or exceeds 1000 items", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      for (const badIds of ["not-array", [1, "two", 3], [1.5], Array(1001).fill(1)]) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload({ workflow_run_ids: badIds }),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when sweep_findings or pr_state_count is invalid", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      for (const patch of [{ sweep_findings: -1 }, { sweep_findings: "none" }, { pr_state_count: -1 }, { pr_state_count: "none" }]) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload(patch),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("computes reconciliation and records health report under bearer auth", async () => {
+      const db = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return {
+              results: [
+                { run_id: 1001, source_table: "usage_records" },
+                { run_id: 1002, source_table: "usage_records" },
+                { run_id: 1002, source_table: "lane_events" },
+                { run_id: 1003, source_table: "lane_events" },
+              ],
+            };
+          }
+          return { results: [] };
+        },
+      });
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: sampleHealthPayload({ workflow_run_ids: [1001, 1002, 1003, 1004, 1005] }),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.status, "ok");
+      assert.ok(typeof data.id === "string" && data.id.length > 0);
+
+      assert.equal(db.queries.length, 2);
+      const insertQuery = db.queries[1];
+      assert.match(insertQuery.sql, /INSERT INTO health_reports/);
+      assert.equal(insertQuery.args[0], data.id);
+      assert.equal(insertQuery.args[1], "prismalens/gh-workflows");
+      assert.equal(insertQuery.args[2], null); // repository_id is null for bearer
+      assert.equal(insertQuery.args[3], "2026-09-14T10:00:00.000Z");
+      assert.equal(insertQuery.args[4], "2026-09-07T00:00:00.000Z");
+      assert.equal(insertQuery.args[5], "2026-09-14T00:00:00.000Z");
+      assert.equal(insertQuery.args[6], 5); // workflow_runs
+      assert.equal(insertQuery.args[7], 2); // telemetry_records (1001, 1002)
+      assert.equal(insertQuery.args[8], 2); // lane_events (1002, 1003)
+      assert.equal(insertQuery.args[9], 2); // missing_runs (1004, 1005)
+      assert.equal(insertQuery.args[10], JSON.stringify([1004, 1005]));
+      assert.equal(insertQuery.args[11], 12); // sweep_findings
+      assert.equal(insertQuery.args[12], 8); // pr_state_count
+      assert.equal(insertQuery.args[13], "bearer"); // ingest_auth
+      assert.equal(insertQuery.args[14], "1"); // report_version
+    });
+
+    it("records health report with repository_id and oidc ingest_auth under OIDC", async () => {
+      const db = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return {
+              results: [
+                { run_id: 2001, source_table: "usage_records" },
+              ],
+            };
+          }
+          return { results: [] };
+        },
+      });
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({
+        repository: "prismalens/gh-workflows",
+        repository_id: 998877,
+      });
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${token}` },
+        body: sampleHealthPayload({ workflow_runs: 1, workflow_run_ids: [2001] }),
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.status, "ok");
+
+      assert.equal(db.queries.length, 2);
+      const insertQuery = db.queries[1];
+      assert.equal(insertQuery.args[2], 998877); // repository_id
+      assert.equal(insertQuery.args[7], 1); // telemetry_records
+      assert.equal(insertQuery.args[8], 0); // lane_events
+      assert.equal(insertQuery.args[9], 0); // missing_runs
+      assert.equal(insertQuery.args[10], "[]");
+      assert.equal(insertQuery.args[13], "oidc"); // ingest_auth
+    });
+
+    it("returns 500 when database throws an error", async () => {
+      const db = createFakeDb({ shouldThrow: true });
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 500);
+      assert.deepEqual(await res.json(), { error: "database error" });
+    });
+  });
 });

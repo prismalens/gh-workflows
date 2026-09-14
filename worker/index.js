@@ -1189,15 +1189,9 @@ async function handleAccountedRuns(request, url, env) {
   const sinceIso = sinceDate.toISOString();
   const untilIso = untilDate.toISOString();
 
-  const query = `SELECT run_id FROM usage_records WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
-UNION
-SELECT run_id FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
-ORDER BY run_id ASC`;
-
   let results;
   try {
-    const res = await env.DB.prepare(query).bind(repository, sinceIso, untilIso, repository, sinceIso, untilIso).all();
-    results = res?.results ?? [];
+    results = await queryAccountedRuns(env.DB, repository, sinceIso, untilIso);
   } catch {
     return new Response(JSON.stringify({ error: "database error" }), {
       status: 500,
@@ -1222,6 +1216,262 @@ ORDER BY run_id ASC`;
     }),
     { headers: READ_HEADERS }
   );
+}
+
+// Queries runs across usage_records and lane_events for reconciliation (#176).
+async function queryAccountedRuns(db, repository, sinceIso, untilIso) {
+  const query = `SELECT run_id, 'usage_records' AS source_table FROM usage_records WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
+UNION ALL
+SELECT run_id, 'lane_events' AS source_table FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
+ORDER BY run_id ASC`;
+  const res = await db.prepare(query).bind(repository, sinceIso, untilIso, repository, sinceIso, untilIso).all();
+  return res?.results ?? [];
+}
+
+async function handleHealth(request, env, { getKey } = {}) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+
+  const auth = await authenticateIngest(request, env, { getKey });
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const contentLength = request.headers.get("content-length");
+  if (contentLength && parseInt(contentLength, 10) > MAX_INGEST_BYTES) {
+    return new Response(null, { status: 413 });
+  }
+
+  const rawText = await readBoundedText(request, MAX_INGEST_BYTES);
+  if (rawText === null) {
+    return new Response(null, { status: 413 });
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(rawText);
+  } catch {
+    return new Response(JSON.stringify({ error: "invalid JSON" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return new Response(JSON.stringify({ error: "invalid payload" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (
+    auth.method === "oidc" &&
+    (typeof payload.repository !== "string" ||
+      payload.repository.toLowerCase() !== auth.repository.toLowerCase())
+  ) {
+    return new Response(JSON.stringify({ error: "repository mismatch" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (typeof payload.repository !== "string" || !payload.repository.trim()) {
+    return new Response(JSON.stringify({ error: "missing or invalid repository" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (payload.report_version !== "1") {
+    return new Response(JSON.stringify({ error: "missing or invalid report_version" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const isoUtcPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]00(?::?00)?)$/;
+
+  if (
+    typeof payload.generated_at !== "string" ||
+    !isoUtcPattern.test(payload.generated_at) ||
+    Number.isNaN(new Date(payload.generated_at).getTime())
+  ) {
+    return new Response(JSON.stringify({ error: "invalid generated_at" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (
+    typeof payload.window_start !== "string" ||
+    !isoUtcPattern.test(payload.window_start) ||
+    Number.isNaN(new Date(payload.window_start).getTime())
+  ) {
+    return new Response(JSON.stringify({ error: "invalid window_start" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (
+    typeof payload.window_end !== "string" ||
+    !isoUtcPattern.test(payload.window_end) ||
+    Number.isNaN(new Date(payload.window_end).getTime())
+  ) {
+    return new Response(JSON.stringify({ error: "invalid window_end" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const startDate = new Date(payload.window_start);
+  const endDate = new Date(payload.window_end);
+  if (endDate.getTime() < startDate.getTime()) {
+    return new Response(JSON.stringify({ error: "invalid window: window_end precedes window_start" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (
+    typeof payload.workflow_runs !== "number" ||
+    !Number.isInteger(payload.workflow_runs) ||
+    payload.workflow_runs < 0
+  ) {
+    return new Response(JSON.stringify({ error: "missing or invalid workflow_runs" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (
+    !Array.isArray(payload.workflow_run_ids) ||
+    payload.workflow_run_ids.length > 1000 ||
+    !payload.workflow_run_ids.every((id) => typeof id === "number" && Number.isInteger(id))
+  ) {
+    return new Response(JSON.stringify({ error: "missing or invalid workflow_run_ids" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (
+    typeof payload.sweep_findings !== "number" ||
+    !Number.isInteger(payload.sweep_findings) ||
+    payload.sweep_findings < 0
+  ) {
+    return new Response(JSON.stringify({ error: "missing or invalid sweep_findings" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (
+    typeof payload.pr_state_count !== "number" ||
+    !Number.isInteger(payload.pr_state_count) ||
+    payload.pr_state_count < 0
+  ) {
+    return new Response(JSON.stringify({ error: "missing or invalid pr_state_count" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const sinceIso = startDate.toISOString();
+  const untilIso = endDate.toISOString();
+
+  let results;
+  try {
+    results = await queryAccountedRuns(env.DB, payload.repository, sinceIso, untilIso);
+  } catch {
+    return new Response(JSON.stringify({ error: "database error" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const usageRunIds = new Set();
+  const laneRunIds = new Set();
+  const accountedRunIds = new Set();
+
+  for (const r of results) {
+    const id = Number(r.run_id);
+    if (!Number.isInteger(id)) continue;
+    accountedRunIds.add(id);
+    if (r.source_table === "usage_records") {
+      usageRunIds.add(id);
+    } else if (r.source_table === "lane_events") {
+      laneRunIds.add(id);
+    } else {
+      usageRunIds.add(id);
+      laneRunIds.add(id);
+    }
+  }
+
+  const distinctPayloadRunIds = Array.from(new Set(payload.workflow_run_ids));
+  const telemetryRecords = payload.telemetry_records !== undefined && Number.isInteger(payload.telemetry_records)
+    ? payload.telemetry_records
+    : distinctPayloadRunIds.filter((id) => usageRunIds.has(id)).length;
+  const laneEvents = payload.lane_events !== undefined && Number.isInteger(payload.lane_events)
+    ? payload.lane_events
+    : distinctPayloadRunIds.filter((id) => laneRunIds.has(id)).length;
+  const missingRunIds = distinctPayloadRunIds.filter((id) => !accountedRunIds.has(id));
+  const missingRuns = payload.missing_runs !== undefined && Number.isInteger(payload.missing_runs)
+    ? payload.missing_runs
+    : missingRunIds.length;
+
+  const id = crypto.randomUUID();
+  const repositoryId = auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null;
+  const missingRunIdsJson = JSON.stringify(missingRunIds);
+
+  try {
+    await env.DB.prepare(
+      `INSERT INTO health_reports (
+        id,
+        repository,
+        repository_id,
+        generated_at,
+        window_start,
+        window_end,
+        workflow_runs,
+        telemetry_records,
+        lane_events,
+        missing_runs,
+        missing_run_ids,
+        sweep_findings,
+        pr_state_count,
+        ingest_auth,
+        report_version
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`
+    ).bind(
+      id,
+      truncateString(payload.repository, 512),
+      repositoryId,
+      truncateString(payload.generated_at, 128),
+      truncateString(payload.window_start, 128),
+      truncateString(payload.window_end, 128),
+      payload.workflow_runs,
+      telemetryRecords,
+      laneEvents,
+      missingRuns,
+      missingRunIdsJson,
+      payload.sweep_findings,
+      payload.pr_state_count,
+      auth.method,
+      String(payload.report_version)
+    ).run();
+  } catch {
+    return new Response(JSON.stringify({ error: "database error" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  return new Response(JSON.stringify({ status: "ok", id }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
 }
 
 async function handleIngest(request, env, { getKey } = {}) {
@@ -2511,6 +2761,10 @@ export default {
 
     if (method === "POST" && (pathname === "/ingest" || pathname === "/")) {
       return handleIngest(request, env, authOptions);
+    }
+
+    if (method === "POST" && pathname === "/ingest/health") {
+      return handleHealth(request, env, authOptions);
     }
 
     if (method === "POST" && pathname === "/pr-state") {
