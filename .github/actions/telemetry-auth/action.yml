@@ -155,7 +155,9 @@ runs:
               if not raw:
                   return 'off', f'{path} returned empty content; resolving telemetry.share as off'
               try:
-                  text = base64.b64decode(raw).decode('utf-8', errors='replace')
+                  text = base64.b64decode(raw).decode('utf-8', errors='strict')
+              except UnicodeDecodeError:
+                  return 'off', 'config content is not valid UTF-8; resolving telemetry.share as off'
               except Exception as exc:
                   return 'off', f'failed to decode {path}: {exc}; resolving telemetry.share as off'
               return resolve_layer(text)

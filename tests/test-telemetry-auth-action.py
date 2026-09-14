@@ -430,6 +430,19 @@ def main():
     else:
         print("  ok    Case 22: an invalid share override resolves off with a warning")
 
+    # Case 23: repository content whose base64 decodes to invalid UTF-8 resolves
+    # off with the invalid-UTF-8 warning (#177, thread 4006669598)
+    invalid_utf8_b64 = base64.b64encode(b"\xff\xfetelemetry:\n  share: full\n").decode("ascii")
+    proc, outputs = run_action_step(script, repo_bad_base64=invalid_utf8_b64)
+    if outputs.get("share") != "off":
+        fails.append(f"Case 23 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 23: invalid UTF-8 resolves off")
+    elif "::warning::config content is not valid UTF-8; resolving telemetry.share as off (#177)" not in proc.stdout and "::warning::config content is not valid UTF-8; resolving telemetry.share as off (#177)" not in proc.stderr:
+        fails.append(f"Case 23: expected an invalid-UTF-8 warning, stdout={proc.stdout!r} stderr={proc.stderr!r}")
+        print("  FAIL  Case 23: missing invalid-UTF-8 warning")
+    else:
+        print("  ok    Case 23: invalid UTF-8 decodes strictly and resolves off with a warning")
+
     # Case 11: the action's url input is required, with no invented default host
     action = yaml.safe_load(ACTION_FILE.read_text())
     url_input = action.get("inputs", {}).get("url", {})
