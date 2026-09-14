@@ -146,6 +146,9 @@ jobs:
       - name: Verify tool allowlist
         run: python3 tests/test-verify-tool-allowlist.py
 
+      - name: Verify round telemetry
+        run: python3 tests/test-verify-round-telemetry.py
+
       # Runs the real setup-repo.sh issue-template sync section against a stub gh (#67).
       - name: setup-repo.sh issue-template sync behaviour
         run: python3 tests/test-setup-repo-templates.py

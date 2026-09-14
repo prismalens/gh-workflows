@@ -4049,222 +4049,44 @@ jobs:
             exit 0
           fi
 
-      # Reads result.modelUsage, never result.usage: usage counts only the main thread and
-      # undercounts cache reads 9.55x, because a round runs six or more subagents (#45).
+      # Body lives in .github/actions/round-telemetry (#176): the verify job needs
+      # the same extraction and cannot duplicate it without the two drifting.
       - name: Extract review round telemetry
         id: telemetry
         if: always()
-        env:
-          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
-          AGENTS: ${{ steps.agent-rollup.outputs.agents }}
-          AGENTS_STATUS: ${{ steps.agent-rollup.outputs.agents_status }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-          SERVER_URL: ${{ github.server_url }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          ROUND_TYPE: ${{ steps.mode.outputs.mode }}
-          MODEL: ${{ steps.model.outputs.model }}
-          RESOLVE_CHANGED_FILES: ${{ needs.resolve.outputs.changed_files }}
-          RESOLVE_DIFF_LINES: ${{ needs.resolve.outputs.diff_lines }}
-          BASE_PR_NUMBER: ${{ needs.resolve.outputs.base_pr_number }}
-          RESOLVE_PATCH_FINGERPRINT: ${{ needs.resolve.outputs.patch_fingerprint }}
-          CLAUDE_OUTCOME: ${{ steps.claude-review.outcome }}
-          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
-          PROMPT_HASH: ${{ steps.build-prompt.outputs.prompt_hash }}
-          ACTION_VERSION: ${{ env.ACTION_VERSION }}
-          CONFIG_HASH: ${{ steps.config.outputs.config_hash }}
-          VARIANT: ${{ steps.config.outputs.variant }}
-          LEVEL: ${{ steps.model.outputs.level }}
-          LEVEL_SOURCE: ${{ steps.model.outputs.level_source }}
-          REVIEWABLE_LINES: ${{ steps.manifest.outputs.reviewable_lines }}
-          SIZE_OVERRIDE: ${{ steps.manifest.outputs.size_override }}
-          FAILURE_CLASS: ${{ steps.classify-failure.outputs.failure_class }}
-          FAILURE_RETRYABLE: ${{ steps.classify-failure.outputs.failure_retryable }}
-          FAILURE_RESET_AT: ${{ steps.classify-failure.outputs.failure_reset_at }}
-          API_ERROR_STATUS: ${{ steps.classify-failure.outputs.api_error_status }}
-          CREDENTIAL_TYPE: ${{ steps.mode.outputs.credential_type }}
-          CONTEXT_REPOSITORIES: ${{ steps.context-checkout.outputs.context_repositories }}
-          CONTEXT_LINES_TELEMETRY: ${{ steps.context-checkout.outputs.context_lines }}
-        run: |
-          set -uo pipefail
-
-          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
-            if [ "${CLAUDE_OUTCOME:-skipped}" = "skipped" ]; then
-              echo "telemetry: no review ran in this round; nothing to record."
-            else
-              echo "::warning::telemetry: execution file is missing (path: '${EXECUTION_FILE:-}'); this round will not be recorded."
-            fi
-            exit 0
-          fi
-          if ! jq empty "$EXECUTION_FILE" 2>/dev/null; then
-            echo "::warning::telemetry: execution file does not parse as JSON; this round will not be recorded."
-            exit 0
-          fi
-
-          result=$(jq -c '[.[] | select(.type == "result")] | last // empty' "$EXECUTION_FILE" 2>/dev/null || true)
-          if [ -z "$result" ]; then
-            echo "::warning::telemetry: no result object in the execution file; this round will not be recorded."
-            exit 0
-          fi
-
-          if [ "$(printf '%s' "$result" | jq -r 'has("modelUsage")' 2>/dev/null || echo false)" != "true" ]; then
-            echo "::warning::telemetry: the result object carries no modelUsage; token counts will record as zero. The pinned action may have renamed the field."
-          fi
-
-          changed_files="${RESOLVE_CHANGED_FILES:-}"
-          diff_lines="${RESOLVE_DIFF_LINES:-}"
-          changed_files_raw="${RESOLVE_CHANGED_FILES:-}"
-          diff_lines_raw="${RESOLVE_DIFF_LINES:-}"
-          if [ -f /tmp/incremental-range.json ]; then
-            range_files=$(jq -r '.files | length' /tmp/incremental-range.json 2>/dev/null || true)
-            range_lines=$(jq -r '[.files[]? | (.additions // 0) + (.deletions // 0)] | add // 0' /tmp/incremental-range.json 2>/dev/null || true)
-            if [ -n "${range_files:-}" ] && [ "$range_files" != "null" ]; then
-              changed_files="$range_files"
-              changed_files_raw="$range_files"
-            fi
-            if [ -n "${range_lines:-}" ] && [ "$range_lines" != "null" ]; then
-              diff_lines="$range_lines"
-              diff_lines_raw="$range_lines"
-            fi
-          fi
-          if [ -f /tmp/claude-path-filters-result.json ]; then
-            pf_cf=$(jq -r '.changed_files // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
-            pf_dl=$(jq -r '.diff_lines // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
-            pf_cfr=$(jq -r '.changed_files_raw // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
-            pf_dlr=$(jq -r '.diff_lines_raw // empty' /tmp/claude-path-filters-result.json 2>/dev/null || true)
-            if [ -n "$pf_cf" ]; then changed_files="$pf_cf"; fi
-            if [ -n "$pf_dl" ]; then diff_lines="$pf_dl"; fi
-            if [ -n "$pf_cfr" ]; then changed_files_raw="$pf_cfr"; fi
-            if [ -n "$pf_dlr" ]; then diff_lines_raw="$pf_dlr"; fi
-          fi
-
-          # The store never takes model-authored or attacker-influencable text, so .result
-          # is dropped and denials keep only tool names and counts, never tool_input (#41).
-          record=$(printf '%s' "$result" | jq -c \
-            --arg repo "$REPO" \
-            --arg pr "${PR_NUMBER:-}" \
-            --arg server "$SERVER_URL" \
-            --arg run_id "$RUN_ID" \
-            --arg run_attempt "$RUN_ATTEMPT" \
-            --arg round_type "${ROUND_TYPE:-}" \
-            --arg model "${MODEL:-}" \
-            --arg head_sha "${HEAD_SHA:-}" \
-            --arg changed_files "${changed_files:-}" \
-            --arg diff_lines "${diff_lines:-}" \
-            --arg changed_files_raw "${changed_files_raw:-}" \
-            --arg diff_lines_raw "${diff_lines_raw:-}" \
-            --arg prompt_hash "${PROMPT_HASH:-}" \
-            --arg action_version "${ACTION_VERSION:-}" \
-            --arg config_hash "${CONFIG_HASH:-}" \
-            --arg variant "${VARIANT:-}" \
-            --arg level "${LEVEL:-}" \
-            --arg level_source "${LEVEL_SOURCE:-}" \
-            --arg reviewable_lines "${REVIEWABLE_LINES:-}" \
-            --arg size_override "${SIZE_OVERRIDE:-}" \
-            --arg agents "${AGENTS:-[]}" \
-            --arg agents_status "${AGENTS_STATUS:-}" \
-            --arg failure_class "${FAILURE_CLASS:-}" \
-            --arg failure_retryable "${FAILURE_RETRYABLE:-}" \
-            --arg failure_reset_at "${FAILURE_RESET_AT:-}" \
-            --arg api_error_status "${API_ERROR_STATUS:-}" \
-            --arg credential_type "${CREDENTIAL_TYPE:-}" \
-            --arg base_pr_number "${BASE_PR_NUMBER:-}" \
-            --arg round_patch_fingerprint "${RESOLVE_PATCH_FINGERPRINT:-}" \
-            --arg context_repositories "${CONTEXT_REPOSITORIES:-}" \
-            --arg context_lines "${CONTEXT_LINES_TELEMETRY:-}" \
-            '
-            def num(s): if s == "" then null else (s | tonumber? // null) end;
-            def denials:
-              (.permission_denials
-               | if type == "array" then length
-                 elif type == "number" then .
-                 else 0 end);
-            def denial_tools:
-              [ .permission_denials[]?
-                | (.tool_name? // "unknown")
-                | if type == "string" and test("^[A-Za-z0-9_]{1,64}$") then . else "other" end ]
-              | group_by(.) | map({tool: .[0], count: length});
-            def safe_strings:
-              {type, subtype, session_id, uuid, stop_reason, terminal_reason,
-               api_error_status, fast_mode_state}
-              | with_entries(select(.value != null));
-            {
-              session_id: .session_id,
-              recorded_at: (now | todateiso8601),
-              repository: $repo,
-              pr_number: num($pr),
-              pr_url: (if $pr == "" then null else "\($server)/\($repo)/pull/\($pr)" end),
-              head_sha: (if $head_sha == "" then null else $head_sha end),
-              run_id: num($run_id),
-              run_attempt: num($run_attempt),
-              run_url: "\($server)/\($repo)/actions/runs/\($run_id)",
-              round_type: (if $round_type == "" then null else $round_type end),
-              model: (if $model == "" then null else $model end),
-              input_tokens: ([.modelUsage[]? | .inputTokens // 0] | add // 0),
-              output_tokens: ([.modelUsage[]? | .outputTokens // 0] | add // 0),
-              cache_read_input_tokens: ([.modelUsage[]? | .cacheReadInputTokens // 0] | add // 0),
-              cache_creation_input_tokens: ([.modelUsage[]? | .cacheCreationInputTokens // 0] | add // 0),
-              total_cost_usd: .total_cost_usd,
-              duration_ms: .duration_ms,
-              duration_api_ms: .duration_api_ms,
-              num_turns: .num_turns,
-              permission_denials: denials,
-              changed_files: num($changed_files),
-              diff_lines: num($diff_lines),
-              changed_files_raw: num($changed_files_raw),
-              diff_lines_raw: num($diff_lines_raw),
-              prompt_hash: (if $prompt_hash == "" then null else $prompt_hash end),
-              action_version: (if $action_version == "" then null else $action_version end),
-              config_hash: (if $config_hash == "" then null else $config_hash end),
-              variant: (if $variant == "" then null else $variant end),
-              level: (if $level == "" then null else $level end),
-              level_source: (if $level_source == "" then null else $level_source end),
-              reviewable_lines: num($reviewable_lines),
-              size_override: (if $size_override == "true" then 1 elif $size_override == "false" then 0 else null end),
-              per_model_usage: ((.modelUsage // {}) | tojson),
-              subagent_stats: (if .subagent_stats == null then null else (.subagent_stats | tojson) end),
-              agents: (if $agents == "" or $agents == "null" then [] else (try ($agents | fromjson) catch []) end),
-              agents_status: (if $agents_status == "" then null else $agents_status end),
-              failure_class: (if $failure_class == "" then null else $failure_class end),
-              failure_retryable: (if $failure_retryable == "" then null else ($failure_retryable | tonumber?) end),
-              failure_reset_at: (if $failure_reset_at == "" then null else $failure_reset_at end),
-              api_error_status: (if $api_error_status == "" then null else ($api_error_status | tonumber?) end),
-              credential_type: (if $credential_type == "" then null else $credential_type end),
-              base_pr_number: (if $base_pr_number == "" then null else ($base_pr_number | tonumber?) end),
-              patch_fingerprint: (if $round_patch_fingerprint == "" then null else $round_patch_fingerprint end),
-              context_repositories: (if $context_repositories == "" then null else ($context_repositories | tonumber?) end),
-              context_lines: (if $context_lines == "" then null else ($context_lines | tonumber?) end),
-              raw_result: (
-                . as $o
-                | ($o | del(.result, .permission_denials)) as $base
-                | ($base | walk(if type == "string" then null else . end))
-                  * ($base | safe_strings)
-                  + {denial_tools: ($o | denial_tools)}
-                | tojson)
-            }' 2>/dev/null || true)
-
-          if [ -z "$record" ]; then
-            echo "::warning::telemetry: could not build the record from the result object; this round will not be recorded."
-            exit 0
-          fi
-
-          session_id=$(printf '%s' "$record" | jq -r '.session_id // empty')
-          if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then
-            echo "::warning::telemetry: result object carries no session_id; this round will not be recorded."
-            exit 0
-          fi
-
-          {
-            echo "record<<TELEMETRY_EOF"
-            printf '%s\n' "$record"
-            echo "TELEMETRY_EOF"
-            # A plain output beside the record blob: the announce job wants num_turns
-            # on its own to decide `partial` without parsing the whole record (#174).
-            echo "num_turns=$(printf '%s' "$record" | jq -r '.num_turns // 0')"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "Extracted telemetry for session $session_id: $(printf '%s' "$record" | jq -r '"\(.num_turns) turns, \(.permission_denials) denials, \(.duration_ms)ms"')"
+        uses: prismalens/gh-workflows/.github/actions/round-telemetry@main
+        with:
+          execution_file: ${{ steps.claude-review.outputs.execution_file }}
+          agents: ${{ steps.agent-rollup.outputs.agents }}
+          agents_status: ${{ steps.agent-rollup.outputs.agents_status }}
+          repo: ${{ github.repository }}
+          pr_number: ${{ github.event.pull_request.number || github.event.issue.number }}
+          server_url: ${{ github.server_url }}
+          run_id: ${{ github.run_id }}
+          run_attempt: ${{ github.run_attempt }}
+          round_type: ${{ steps.mode.outputs.mode }}
+          model: ${{ steps.model.outputs.model }}
+          resolve_changed_files: ${{ needs.resolve.outputs.changed_files }}
+          resolve_diff_lines: ${{ needs.resolve.outputs.diff_lines }}
+          base_pr_number: ${{ needs.resolve.outputs.base_pr_number }}
+          resolve_patch_fingerprint: ${{ needs.resolve.outputs.patch_fingerprint }}
+          claude_outcome: ${{ steps.claude-review.outcome }}
+          head_sha: ${{ needs.resolve.outputs.head_sha }}
+          prompt_hash: ${{ steps.build-prompt.outputs.prompt_hash }}
+          action_version: ${{ env.ACTION_VERSION }}
+          config_hash: ${{ steps.config.outputs.config_hash }}
+          variant: ${{ steps.config.outputs.variant }}
+          level: ${{ steps.model.outputs.level }}
+          level_source: ${{ steps.model.outputs.level_source }}
+          reviewable_lines: ${{ steps.manifest.outputs.reviewable_lines }}
+          size_override: ${{ steps.manifest.outputs.size_override }}
+          failure_class: ${{ steps.classify-failure.outputs.failure_class }}
+          failure_retryable: ${{ steps.classify-failure.outputs.failure_retryable }}
+          failure_reset_at: ${{ steps.classify-failure.outputs.failure_reset_at }}
+          api_error_status: ${{ steps.classify-failure.outputs.api_error_status }}
+          credential_type: ${{ steps.mode.outputs.credential_type }}
+          context_repositories: ${{ steps.context-checkout.outputs.context_repositories }}
+          context_lines_telemetry: ${{ steps.context-checkout.outputs.context_lines }}
 
       # Render the round's reasoning and cost into the Actions Step Summary so
       # diagnosing a bad round does not require excavating the raw job log.
@@ -4421,13 +4243,21 @@ jobs:
   # Holds the ingest credential, so it lives outside the read-only review job that handles
   # attacker-influencable diff text. A failure here warns and never fails the run (#41).
   telemetry:
-    needs: [resolve, review, announce]
-    if: ${{ !cancelled() && needs.review.outputs.telemetry_record != '' }}
+    needs: [resolve, review, verify, announce]
+    if: ${{ !cancelled() && (needs.review.outputs.telemetry_record != '' || needs.verify.outputs.telemetry_record != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       id-token: write
     steps:
+      # A run is either review or verify mode, never both (#176). Both non-empty
+      # means the two extractions disagreed about which round ran; the review
+      # record still posts, this just makes the disagreement visible.
+      - name: Warn if both review and verify produced a record
+        if: ${{ needs.review.outputs.telemetry_record != '' && needs.verify.outputs.telemetry_record != '' }}
+        run: |
+          echo "::warning::telemetry: both review and verify produced a record for this run; posting the review record."
+
       - name: Authenticate telemetry ingest
         id: auth
         uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
@@ -4438,7 +4268,8 @@ jobs:
 
       - name: Post the review round record
         env:
-          RECORD: ${{ needs.review.outputs.telemetry_record }}
+          # review wins when both are non-empty; see the warning step above.
+          RECORD: ${{ needs.review.outputs.telemetry_record != '' && needs.review.outputs.telemetry_record || needs.verify.outputs.telemetry_record }}
           LANE_VERSION: ${{ env.LANE_VERSION }}
           INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
           INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
@@ -4588,6 +4419,7 @@ jobs:
       issues: read
     outputs:
       verdicts: ${{ steps.claude-verify.outputs.structured_output }}
+      telemetry_record: ${{ steps.telemetry.outputs.record }}
 
     steps:
       # Permanent tripwire, not a canary. The OIDC request environment is injected only
@@ -4680,6 +4512,39 @@ jobs:
             --allowed-tools
             "Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*)"
             --model ${{ needs.review.outputs.model }}
+
+      # Same extraction the review job calls, so a verify round writes telemetry too
+      # (#87 cause 2, #176). This job never gets id-token: write (tripwire above); the
+      # telemetry job posts this record, since it alone holds that permission.
+      - name: Extract verify round telemetry
+        id: telemetry
+        if: always()
+        uses: prismalens/gh-workflows/.github/actions/round-telemetry@main
+        with:
+          execution_file: ${{ steps.claude-verify.outputs.execution_file }}
+          repo: ${{ github.repository }}
+          pr_number: ${{ github.event.pull_request.number || github.event.issue.number }}
+          server_url: ${{ github.server_url }}
+          run_id: ${{ github.run_id }}
+          run_attempt: ${{ github.run_attempt }}
+          round_type: verify
+          model: ${{ needs.review.outputs.model }}
+          resolve_changed_files: ${{ needs.resolve.outputs.changed_files }}
+          resolve_diff_lines: ${{ needs.resolve.outputs.diff_lines }}
+          base_pr_number: ${{ needs.resolve.outputs.base_pr_number }}
+          resolve_patch_fingerprint: ${{ needs.resolve.outputs.patch_fingerprint }}
+          claude_outcome: ${{ steps.claude-verify.outcome }}
+          head_sha: ${{ needs.resolve.outputs.head_sha }}
+          action_version: ${{ env.ACTION_VERSION }}
+          config_hash: ${{ needs.review.outputs.config_hash }}
+          variant: ${{ needs.review.outputs.variant }}
+          level: ${{ needs.review.outputs.level }}
+          level_source: ${{ needs.review.outputs.level_source }}
+          reviewable_lines: ${{ needs.review.outputs.reviewable_lines }}
+          size_override: ${{ needs.review.outputs.size_override }}
+          credential_type: ${{ needs.review.outputs.credential_type }}
+          context_repositories: ${{ needs.review.outputs.context_repositories }}
+          context_lines_telemetry: ${{ needs.review.outputs.context_lines }}
 
       # Client-side schema validation replaced server-side constrained decoding, so the
       # loud failure has to be added back: a green job is never evidence. Story: gh-workflows#20.
