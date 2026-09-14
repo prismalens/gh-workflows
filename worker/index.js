@@ -338,6 +338,23 @@ async function authenticateIngest(request, env, { getKey } = {}) {
         return new Response(null, { status: 401 });
       }
 
+      // OIDC allowlist: only approved repository IDs may write telemetry (#177).
+      // Unset or empty var rejects all OIDC tokens fail-closed (#177).
+      const allowedIds = (env?.OIDC_ALLOWED_REPOSITORY_IDS || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const repoIdStr =
+        payload.repository_id !== undefined && payload.repository_id !== null
+          ? String(payload.repository_id)
+          : "";
+      if (!repoIdStr || !allowedIds.includes(repoIdStr)) {
+        return new Response(JSON.stringify({ error: "repository not allowed" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
       return {
         method: "oidc",
         repository: payload.repository,
@@ -2033,6 +2050,14 @@ async function handleIngest(request, env, { getKey } = {}) {
   }
 
   if (eventKind === "canary") {
+    // Canary pings accept bearer auth only; OIDC gets 403 and writes nothing (#177).
+    if (auth.method !== "bearer") {
+      return new Response(JSON.stringify({ error: "bearer auth required" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     for (const field of CANARY_STRING_FIELDS) {
       const val = payload[field];
       if (val !== undefined && val !== null && typeof val !== "string") {

@@ -191,7 +191,7 @@ describe("Worker telemetry ingest", () => {
   describe("GitHub Actions OIDC Authentication (#176)", () => {
     it("accepts a valid OIDC token and records ingest_auth and repository_id", async () => {
       const db = createFakeDb();
-      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: "12345" };
       const token = await mintOidcToken();
       const req = makeRequest("/ingest", {
         headers: { authorization: `Bearer ${token}` },
@@ -246,7 +246,7 @@ describe("Worker telemetry ingest", () => {
 
     it("rejects a repository mismatch under OIDC (403, writes nothing)", async () => {
       const db = createFakeDb();
-      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: "12345" };
       const token = await mintOidcToken({ repository: "other-org/other-repo" });
       const req = makeRequest("/ingest", {
         headers: { authorization: `Bearer ${token}` },
@@ -260,7 +260,7 @@ describe("Worker telemetry ingest", () => {
 
     it("allows case-insensitive repository match under OIDC", async () => {
       const db = createFakeDb();
-      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: "12345" };
       const token = await mintOidcToken({ repository: "PrismaLens/GH-Workflows" });
       const req = makeRequest("/ingest", {
         headers: { authorization: `Bearer ${token}` },
@@ -300,7 +300,7 @@ describe("Worker telemetry ingest", () => {
 
     it("rejects repository mismatch on findings under OIDC (403, writes nothing)", async () => {
       const db = createFakeDb();
-      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: "12345" };
       const token = await mintOidcToken({ repository: "prismalens/gh-workflows" });
       const req = makeRequest("/ingest/findings", {
         headers: { authorization: `Bearer ${token}` },
@@ -320,7 +320,7 @@ describe("Worker telemetry ingest", () => {
     // validateFinding, so this is a 403 naming the mismatch, not a generic 400.
     it("rejects a finding with a non-string repository under OIDC (403, writes nothing)", async () => {
       const db = createFakeDb();
-      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: "12345" };
       const token = await mintOidcToken({ repository: "prismalens/gh-workflows" });
       const req = makeRequest("/ingest/findings", {
         headers: { authorization: `Bearer ${token}` },
@@ -4809,7 +4809,7 @@ describe("Worker telemetry read API", () => {
 
     it("rejects repository mismatch under OIDC (403, writes nothing)", async () => {
       const db = healthDb();
-      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: "12345" };
       const token = await mintOidcToken({ repository: "other-org/other-repo" });
       const req = makeRequest("/ingest/health", {
         headers: { authorization: `Bearer ${token}` },
@@ -5034,7 +5034,7 @@ describe("Worker telemetry read API", () => {
 
     it("records health report with repository_id and oidc ingest_auth under OIDC", async () => {
       const db = healthDb();
-      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: "998877" };
       const token = await mintOidcToken({
         repository: "prismalens/gh-workflows",
         repository_id: 998877,
@@ -5063,6 +5063,77 @@ describe("Worker telemetry read API", () => {
       const res = await worker.fetch(req, env);
       assert.equal(res.status, 500);
       assert.deepEqual(await res.json(), { error: "database error" });
+    });
+  });
+
+  describe("OIDC repository allowlist and canary auth restriction (#177, outside-diff)", () => {
+    const ALLOWED_IDS = "1124040129,1191857183,1331752084,1256451611";
+
+    it("an allowed repository_id passes", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: ALLOWED_IDS };
+      const token = await mintOidcToken({ repository_id: "1331752084", repository: "prismalens/gh-workflows" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-allowed", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+    });
+
+    it("a disallowed one gets 403 with nothing written", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: ALLOWED_IDS };
+      const token = await mintOidcToken({ repository_id: "9999999999", repository: "prismalens/gh-workflows" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-disallowed", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 403);
+      assert.deepEqual(await res.json(), { error: "repository not allowed" });
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("an unset var rejects OIDC", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ repository_id: "1331752084", repository: "prismalens/gh-workflows" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-unset-var", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 403);
+      assert.deepEqual(await res.json(), { error: "repository not allowed" });
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("a canary under OIDC gets 403", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: ALLOWED_IDS };
+      const token = await mintOidcToken({ repository_id: "1331752084", repository: "prismalens/gh-workflows" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { event_kind: "canary", run_url: "https://example.com/run/1" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 403);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("a canary under bearer still gets 204", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: ALLOWED_IDS };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: { event_kind: "canary", run_url: "https://example.com/run/1" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+      assert.match(db.queries[0].sql, /INSERT INTO canary_pings/);
     });
   });
 });
