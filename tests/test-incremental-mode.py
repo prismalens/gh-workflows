@@ -298,6 +298,18 @@ CASES = [
      dict(event="issue_comment", summon="incremental", fake_threads="[]",
           fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + NEW + " -->", head_sha=NEW),
      "review", "identical-summon", "", False),
+
+    ("in-thread reply, 2 unresolved threads (#178)",
+     dict(event="pull_request_review_comment", summon="reply",
+          fake_threads=json.dumps([
+              {"thread_id": "T1", "path": "a.js", "root_id": 1, "url": "u1", "body": "b1"},
+              {"thread_id": "T2", "path": "b.js", "root_id": 2, "url": "u2", "body": "b2"}
+          ])),
+     "verify", "", "", False),
+
+    ("in-thread reply, no threads skips with reply-no-threads (#178)",
+     dict(event="pull_request_review_comment", summon="reply", fake_threads="[]"),
+     "skip", "", "reply-no-threads", False),
 ]
 
 

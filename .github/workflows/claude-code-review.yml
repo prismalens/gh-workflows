@@ -195,7 +195,8 @@ jobs:
             ${{ github.event_name == 'pull_request' && 'none'
               || (contains(github.event.comment.body, '@claude pause') && 'pause'
               || (contains(github.event.comment.body, '@claude resume') && 'resume'
-              || (contains(github.event.comment.body, '@claude full review') && 'full' || 'incremental'))) }}
+              || (contains(github.event.comment.body, '@claude full review') && 'full'
+              || (contains(github.event.comment.body, '@claude review') && 'incremental' || 'reply')))) }}
         run: echo "summon=$SUMMON" >> "$GITHUB_OUTPUT"
 
       - name: Fetch PR metadata and validate origin
@@ -1525,6 +1526,14 @@ jobs:
             exit 0
           fi
           echo "unresolved claude[bot] threads: $count"
+
+          # An in-thread reply without a @claude verb verifies unresolved claude[bot]
+          # threads if any exist, and otherwise skips review entirely (#178).
+          if [ "$SUMMON" = "reply" ]; then
+            echo "skipping review: in-thread reply with no unresolved claude[bot] threads"
+            emit skip reply-no-threads
+            exit 0
+          fi
 
           resolve_range
 
@@ -5013,6 +5022,7 @@ jobs:
         needs.review.result != 'skipped' ||
         (needs.resolve.outputs.draft == 'true' &&
          needs.resolve.outputs.summon != 'none' &&
+         needs.resolve.outputs.summon != 'reply' &&
          needs.resolve.outputs.admitted == 'true' &&
          needs.resolve.outputs.same_repo == 'true')
       )
@@ -5068,6 +5078,11 @@ jobs:
           set -euo pipefail
           if [ "${SKIP_REASON:-}" = "skipped-author" ]; then
             echo "PR author matches skip_authors; skipping liveness comment."
+            exit 0
+          fi
+          # A verb-less reply with no open claude threads leaves liveness untouched (#178).
+          if [ "${SKIP_REASON:-}" = "reply-no-threads" ]; then
+            echo "in-thread reply has no unresolved claude[bot] threads; skipping liveness comment."
             exit 0
           fi
           short=${HEAD_SHA:0:8}
@@ -5140,7 +5155,9 @@ jobs:
           # A draft summon skips `review`, so pause and resume are read here: a pause set
           # while drafting must stop the ready_for_review round. Other summons review nothing
           # on a draft, so they leave the pause alone.
-          is_paused=0
+          # A pause clears only for explicit summons; replies and non-summons keep
+          # prev_paused and prev_paused_by (#178).
+          is_paused=$prev_paused
           draft_summon=""
           [ "$REVIEW_RESULT" = "skipped" ] && [ "${DRAFT:-}" = "true" ] && draft_summon="${SUMMON:-}"
           if [ -n "$draft_summon" ]; then
@@ -5151,8 +5168,8 @@ jobs:
             esac
           elif [ "$SKIP_REASON" = "paused-by-request" ]; then
             is_paused=1
-          elif [ "$EVENT_NAME" = "pull_request" ] && [ "$prev_paused" = "1" ]; then
-            is_paused=1
+          elif [ "${SUMMON:-}" = "incremental" ] || [ "${SUMMON:-}" = "full" ] || [ "${SUMMON:-}" = "resume" ]; then
+            is_paused=0
           fi
 
           # Who paused it (#124): recorded once, at pause time, and never updated after.
@@ -5622,6 +5639,7 @@ jobs:
         (
           needs.resolve.outputs.draft == 'true' &&
           needs.resolve.outputs.summon != 'none' &&
+          needs.resolve.outputs.summon != 'reply' &&
           needs.resolve.outputs.admitted == 'true' &&
           needs.resolve.outputs.same_repo == 'true'
         )
