@@ -27,6 +27,10 @@ jobs:
       - name: Incremental review mode behaviour
         run: python3 tests/test-incremental-mode.py
 
+      # Extracts and runs the real script out of claude-code-review.yml. Story: #162.
+      - name: Patch fingerprint behaviour
+        run: python3 tests/test-patch-fingerprint.py
+
       # Extracts and runs the real script out of claude-code-review.yml. Story: #33, #34.
       - name: Review config and model escalation behaviour
         run: python3 tests/test-review-config.py
@@ -96,6 +100,16 @@ jobs:
       - name: Review context behaviour
         run: python3 tests/test-review-context.py
 
+      # Extracts and runs the real 'Check out declared context repositories'
+      # script out of claude-code-review.yml against a stubbed gh and git. Story: #90.
+      - name: Context checkout behaviour
+        run: python3 tests/test-context-checkout.py
+
+      # Extracts and runs the real 'Classify the round's outcome' script out of
+      # claude-code-review.yml: the failure_class table and reset_at parsing. Story: #174.
+      - name: Round failure classification behaviour
+        run: python3 tests/test-round-failure-class.py
+
       # Both actionlint installs carry one version and one checksum (#163).
       - name: actionlint pin drift
         run: python3 tests/test-actionlint-pin-drift.py
@@ -133,6 +147,14 @@ jobs:
 
       - name: Verify tool allowlist
         run: python3 tests/test-verify-tool-allowlist.py
+
+      # Runs the real setup-repo.sh issue-template sync section against a stub gh (#67).
+      - name: setup-repo.sh issue-template sync behaviour
+        run: python3 tests/test-setup-repo-templates.py
+
+      # Runs the real rotate-telemetry-token.sh against stub gh, openssl and npx (#156).
+      - name: rotate-telemetry-token.sh behaviour
+        run: python3 tests/test-rotate-telemetry-token.py
 
       # A test file this job does not name is a test that never runs (#130).
       - name: Every test file is wired into this job

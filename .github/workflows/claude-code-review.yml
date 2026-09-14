@@ -45,9 +45,16 @@ on:
           after status and path filters) exceeds this cap. Posts nothing inline; the
           liveness comment and telemetry record `refused-size` with both numbers.
           0 disables the cap. `@claude full review` overrides it for that one round.
-          Story: #105.
+          A stacked PR is measured against its own base, so a stack is the supported
+          way to review an over-cap change in slices (#162). Story: #105.
         type: number
         default: 6000
+      max_context_lines:
+        description: >-
+          Total line budget across all declared context repositories checked out under
+          .claude-context/ into reviewable_lines. 0 disables context checkout. Story: #90.
+        type: number
+        default: 3000
       max_file_lines:
         description: >-
           A single added or modified file above this many changed lines is listed in
@@ -90,6 +97,10 @@ on:
         # required:false so fork pull_request runs — where the secrets context is always
         # empty — still create a run and reach `fork-notice`; `review` guards on the
         # token's presence instead of relying on caller-side validation. Story: prismalens/prismalens#415.
+        required: false
+      ANTHROPIC_API_KEY:
+        # The alternative credential, used only when CLAUDE_CODE_OAUTH_TOKEN is absent
+        # (#174). Optional, so no consumer stub needs to change to keep working.
         required: false
       REVIEW_TELEMETRY_URL:
         # required:false so a consumer that has not opted into telemetry still runs; the
@@ -159,6 +170,9 @@ jobs:
       pr_state: ${{ steps.pr.outputs.pr_state }}
       pr_base_ref: ${{ steps.pr.outputs.pr_base_ref }}
       pr_head_ref: ${{ steps.pr.outputs.pr_head_ref }}
+      base_pr_number: ${{ steps.pr.outputs.base_pr_number }}
+      base_pr_title: ${{ steps.pr.outputs.base_pr_title }}
+      patch_fingerprint: ${{ steps.fingerprint.outputs.patch_fingerprint }}
 
     steps:
       - name: Admit commenter
@@ -204,6 +218,26 @@ jobs:
           pr_base_ref="$(jq -r '.base.ref // ""' <<< "$pr")"
           pr_head_ref="$(jq -r '.head.ref // ""' <<< "$pr")"
 
+          # Unmerged base PR lookup failure must never fail the job (#162). `resolve`
+          # is the single owner of this lookup, recovery included -- the manifest
+          # step used to retry it independently, which could recover a PR resolve's
+          # own attempt missed while telemetry still read resolve's empty result
+          # (CR #173, thread 4000816174). One retry on an empty first attempt is
+          # the whole recovery path; both consumers read this job's final result.
+          owner="${GITHUB_REPOSITORY%%/*}"
+          base_pr_number=""
+          base_pr_title=""
+          if [ -n "$pr_base_ref" ]; then
+            base_pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${owner}:${pr_base_ref}" --jq '.[0] | {number, title} // empty' 2>/dev/null || true)"
+            if [ -z "$base_pr_json" ]; then
+              base_pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${owner}:${pr_base_ref}" --jq '.[0] | {number, title} // empty' 2>/dev/null || true)"
+            fi
+            if [ -n "$base_pr_json" ]; then
+              base_pr_number="$(jq -r '.number // ""' <<< "$base_pr_json" 2>/dev/null || true)"
+              base_pr_title="$(jq -r '.title // ""' <<< "$base_pr_json" 2>/dev/null || true)"
+            fi
+          fi
+
           {
             echo "number=${PR_NUMBER}"
             echo "head_sha=${head_sha}"
@@ -211,6 +245,7 @@ jobs:
             echo "draft=$(jq -r '.draft' <<< "$pr")"
             echo "changed_files=$(jq -r '.changed_files // ""' <<< "$pr")"
             echo "diff_lines=$(jq -r 'if .additions == null and .deletions == null then "" else ((.additions // 0) + (.deletions // 0)) end' <<< "$pr")"
+            echo "base_pr_number=${base_pr_number}"
           } >> "$GITHUB_OUTPUT"
 
           delim="$(openssl rand -hex 16 2>/dev/null || echo "PR_DELIM_${RANDOM}_$$")"
@@ -230,6 +265,9 @@ jobs:
             echo "pr_head_ref<<${delim}"
             echo "${pr_head_ref}"
             echo "${delim}"
+            echo "base_pr_title<<${delim}"
+            echo "${base_pr_title}"
+            echo "${delim}"
           } >> "$GITHUB_OUTPUT"
 
           # Comment events check out the default branch by default, which is not the code
@@ -247,6 +285,64 @@ jobs:
           else
             echo "same_repo=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Compute patch fingerprint
+        id: fingerprint
+        if: steps.admit.outputs.admitted == 'true' || github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          # Patch fingerprint: sha256 of sorted filenames and patch +/- lines (#162).
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import sys
+
+          repo = os.environ.get("GITHUB_REPOSITORY", "")
+          base_sha = os.environ.get("BASE_SHA", "")
+          head_sha = os.environ.get("HEAD_SHA", "")
+          gh_output = os.environ.get("GITHUB_OUTPUT", "")
+
+          fingerprint = ""
+          if repo and base_sha and head_sha:
+              try:
+                  res = subprocess.run(
+                      ["gh", "api", f"repos/{repo}/compare/{base_sha}...{head_sha}"],
+                      capture_output=True,
+                      text=True,
+                  )
+                  if res.returncode == 0 and res.stdout.strip():
+                      data = json.loads(res.stdout)
+                      files = data.get("files")
+                      if isinstance(files, list) and len(files) < 300:
+                          h = hashlib.sha256()
+                          valid = True
+                          for f in sorted(files, key=lambda x: x.get("filename", "") if isinstance(x, dict) else ""):
+                              if not isinstance(f, dict) or "patch" not in f or f["patch"] is None:
+                                  valid = False
+                                  break
+                              filename = f.get("filename", "")
+                              h.update(f"{filename}\n".encode("utf-8"))
+                              for line in f["patch"].splitlines():
+                                  if (line.startswith("+") or line.startswith("-")) and not (line.startswith("+++") or line.startswith("---")):
+                                      h.update(f"{line}\n".encode("utf-8"))
+                          if valid:
+                              fingerprint = h.hexdigest()
+              except Exception:
+                  fingerprint = ""
+
+          if gh_output:
+              with open(gh_output, "a", encoding="utf-8") as f:
+                  f.write(f"patch_fingerprint={fingerprint}\n")
+          else:
+              print(fingerprint)
+          PY
 
   review:
     needs: resolve
@@ -304,8 +400,20 @@ jobs:
       config_hash: ${{ steps.config.outputs.config_hash }}
       config_effective: ${{ steps.config.outputs.config_effective }}
       variant: ${{ steps.config.outputs.variant }}
+      context_repositories: ${{ steps.context-checkout.outputs.context_repositories }}
+      context_lines: ${{ steps.context-checkout.outputs.context_lines }}
       prompt_hash: ${{ steps.build-prompt.outputs.prompt_hash }}
       telemetry_record: ${{ steps.telemetry.outputs.record }}
+      # Account, auth and quota failures classified once, from the round's own result
+      # item, so liveness, the rollup and telemetry all agree. Story: gh-workflows#174.
+      failure_class: ${{ steps.classify-failure.outputs.failure_class }}
+      failure_retryable: ${{ steps.classify-failure.outputs.failure_retryable }}
+      failure_reset_at: ${{ steps.classify-failure.outputs.failure_reset_at }}
+      api_error_status: ${{ steps.classify-failure.outputs.api_error_status }}
+      failure_message: ${{ steps.classify-failure.outputs.failure_message }}
+      num_turns: ${{ steps.telemetry.outputs.num_turns }}
+      # Which credential authenticated this round, 'oauth' or 'api_key'. Story: gh-workflows#174.
+      credential_type: ${{ steps.mode.outputs.credential_type }}
 
     steps:
       - name: Record review start time
@@ -370,6 +478,8 @@ jobs:
           # No workflow input backs this: it is an experiment handle read from the repo
           # config only, and absent means control. Story: #47 amendment.
           variant = ""
+          # review.context (#90): declared public context repositories, read at base ref only.
+          context_config = []
           # review.level (#101 ruling): effort per unit of reviewed code, never which
           # code is read. No workflow input either — org/repo config only, default medium.
           # 'low' is schema-rejected this release (see ALLOWED_LEVELS below).
@@ -390,6 +500,7 @@ jobs:
               "issue_context_total_byte_budget": "workflow default",
               "variant": "control",
               "level": "workflow default",
+              "context": "workflow default",
           }
 
           # Schema lives here and only here (#33).
@@ -411,10 +522,14 @@ jobs:
               "issue_context_total_byte_budget",
               "variant",
               "level",
+              "context",
           }
           # Story: #47 amendment. An optional operator label for A/B comparison; empty is control.
           MAX_VARIANT_LENGTH = 64
           ALLOWED_PATH_INSTRUCTION_KEYS = {"path", "instructions"}
+          ALLOWED_CONTEXT_ENTRY_KEYS = {"repository", "ref", "paths"}
+          MAX_CONTEXT_ENTRIES = 3
+          MAX_CONTEXT_PATHS = 20
           ALLOWED_FINDINGS_KEYS = {
               "suppress_below",
               "enable_ai_fix_prompt",
@@ -597,6 +712,68 @@ jobs:
                                           f"Missing or invalid required key 'instructions' in 'review.path_instructions[{i}]' in {filename}"
                                       )
 
+                      if "context" in review:
+                          ctx = review["context"]
+                          if not isinstance(ctx, list):
+                              errors.append(
+                                  f"Invalid value for 'review.context' in {filename}: expected list of mappings"
+                              )
+                          elif len(ctx) > MAX_CONTEXT_ENTRIES:
+                              errors.append(
+                                  f"Invalid value for 'review.context' in {filename}: at most {MAX_CONTEXT_ENTRIES} entries allowed"
+                              )
+                          else:
+                              for i, item in enumerate(ctx):
+                                  if not isinstance(item, dict):
+                                      errors.append(
+                                          f"Invalid value for 'review.context[{i}]' in {filename}: expected mapping"
+                                      )
+                                      continue
+                                  for k in item:
+                                      if k not in ALLOWED_CONTEXT_ENTRY_KEYS:
+                                          errors.append(
+                                              f"Unknown configuration key 'review.context[{i}].{k}' in {filename}"
+                                          )
+                                  repo_val = item.get("repository")
+                                  # "../.." passes the character-class regex below (both are
+                                  # allowed characters), and the checkout step joins it as
+                                  # .claude-context/${repository}, escaping the workspace
+                                  # (CR #173, thread 4000816212). Reject a "." or ".."
+                                  # component, or one starting with ".", on each side.
+                                  repo_parts_ok = (
+                                      isinstance(repo_val, str)
+                                      and re.fullmatch(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo_val)
+                                      and not any(
+                                          part in {".", ".."} or part.startswith(".")
+                                          for part in repo_val.split("/")
+                                      )
+                                  )
+                                  if not repo_parts_ok:
+                                      errors.append(
+                                          f"Missing or invalid required key 'repository' in 'review.context[{i}]' in {filename}"
+                                      )
+                                  ref_val = item.get("ref")
+                                  if not isinstance(ref_val, str) or not ref_val:
+                                      errors.append(
+                                          f"Missing or invalid required key 'ref' in 'review.context[{i}]' in {filename}"
+                                      )
+                                  paths_val = item.get("paths")
+                                  if (
+                                      not isinstance(paths_val, list)
+                                      or not (1 <= len(paths_val) <= MAX_CONTEXT_PATHS)
+                                      or not all(
+                                          isinstance(p, str)
+                                          and p
+                                          and not p.startswith("/")
+                                          and ".." not in p.split("/")
+                                          for p in paths_val
+                                      )
+                                  ):
+                                      errors.append(
+                                          f"Missing or invalid required key 'paths' in 'review.context[{i}]' in {filename}: "
+                                          f"expected 1 to {MAX_CONTEXT_PATHS} relative paths without '..' segments"
+                                      )
+
               if "findings" in data:
                   findings = data["findings"]
                   if not isinstance(findings, dict):
@@ -744,6 +921,10 @@ jobs:
                               # never an org-wide default. Story: #47 amendment.
                               if "variant" in review:
                                   org_unconsumed.append("review.variant")
+                              # context is public reference code for THIS repo only,
+                              # never an org-wide default. Story: #90.
+                              if "context" in review:
+                                  org_unconsumed.append("review.context")
                               if "path_instructions" in review:
                                   org_instructions = review["path_instructions"]
                                   path_instructions = [
@@ -878,6 +1059,10 @@ jobs:
                                       else "repo config"
                                   )
                                   consumed.append(f"review.path_instructions={len(repo_instructions)} entries")
+                              if "context" in review:
+                                  context_config = review["context"]
+                                  sources["context"] = "repo config"
+                                  consumed.append(f"review.context={len(context_config)} entries")
 
                           findings = data.get("findings", {})
                           if isinstance(findings, dict):
@@ -912,6 +1097,7 @@ jobs:
               "issue_context_byte_budget": issue_context_byte_budget,
               "issue_context_total_byte_budget": issue_context_total_byte_budget,
               "level": level,
+              "context": context_config,
           }
           config_hash = hashlib.sha256(
               json.dumps(resolved_config, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -968,6 +1154,7 @@ jobs:
                   f.write(f"config_effective={config_effective_json}\n")
                   f.write(f"variant={variant}\n")
                   f.write(f"level={level}\n")
+                  f.write(f"context={json.dumps(context_config, separators=(',', ':'))}\n")
           PY
 
       # Mode switch (#403 incremental re-review): on non-bot replies or summons,
@@ -989,8 +1176,10 @@ jobs:
           DIFF_LINES: ${{ needs.resolve.outputs.diff_lines }}
           MIN_DIFF_LINES: ${{ inputs.min_diff_lines }}
           DEBOUNCE_MINUTES: ${{ inputs.debounce_minutes }}
-          # Presence only — the token value never enters the shell.
-          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          PATCH_FINGERPRINT: ${{ needs.resolve.outputs.patch_fingerprint }}
+          # Presence only — neither credential's value ever enters the shell.
+          HAS_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
           set -euo pipefail
           emit() {
@@ -1007,11 +1196,26 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           }
 
+          # OAuth wins when both secrets are set (#174). Presence only, computed once,
+          # written unconditionally so every downstream reader (telemetry, the claude-review
+          # step's own credential choice) agrees, regardless of which branch below exits.
+          HAS_TOKEN="$HAS_OAUTH"
+          if [ "$HAS_OAUTH" = "true" ]; then
+            credential_type="oauth"
+          elif [ "$HAS_API_KEY" = "true" ]; then
+            credential_type="api_key"
+            HAS_TOKEN="true"
+          else
+            credential_type=""
+          fi
+          echo "credential_type=$credential_type" >> "$GITHUB_OUTPUT"
+
           resolve_range() {
-            baseline=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            liveness_raw=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
               "[.[] | select(.user.login==\"github-actions[bot]\")
-                    | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty" \
-              | head -1 | grep -oE 'sha=[0-9a-f]{40}' | head -1 | cut -d= -f2 || true)
+                    | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty")
+            baseline=$(printf '%s\n' "$liveness_raw" | head -1 | grep -oE 'sha=[0-9a-f]{40}' | head -1 | cut -d= -f2 || true)
+            stored_patch=$(printf '%s\n' "$liveness_raw" | head -1 | grep -oE 'patch=[0-9a-f]{64}' | head -1 | cut -d= -f2 || true)
 
             if [ -z "$baseline" ]; then
               echo "fallback to full review: no baseline sha found in liveness marker"
@@ -1045,6 +1249,12 @@ jobs:
             case "$files_count" in ''|*[!0-9]*) files_count=0 ;; esac
 
             if [ "$status" = "diverged" ] || [ "$status" = "behind" ]; then
+              # A diverged push with identical patch fingerprint skips review; summons never skip (#162).
+              if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$stored_patch" ] && [ "$stored_patch" = "${PATCH_FINGERPRINT:-}" ]; then
+                echo "skipping review: diverged push has unchanged patch fingerprint $stored_patch"
+                emit skip unchanged-patch unchanged-patch
+                exit 0
+              fi
               echo "fallback to full review: compare status between $baseline and $HEAD_SHA is '$status'"
               emit review "" diverged
               exit 0
@@ -1086,8 +1296,9 @@ jobs:
 
           # A missing secret must be loud, not a silent no-op: that trap class is #410.
           if [ "$HAS_TOKEN" != "true" ]; then
-            echo "::warning::No CLAUDE_CODE_OAUTH_TOKEN reached this lane, so nothing was reviewed." \
-                 "Map the secret explicitly in the caller stub — 'inherit' does not cross owners."
+            echo "::warning::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY reached this lane," \
+                 "so nothing was reviewed. Map one of the two secrets explicitly in the caller stub" \
+                 "— 'inherit' does not cross owners."
             emit skip no-token
             exit 0
           fi
@@ -1162,6 +1373,8 @@ jobs:
 
             rounds=$(echo "$liveness_comment" | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
             rounds=${rounds:-0}
+            # The round budget and `@claude pause` are both per pull request, stacks
+            # included: each PR in a stack keeps its own counter and its own pause (#162).
             # A non-integer limit would make `-ge` abort the gate and review anyway.
             limit=$MAX_ROUNDS
             case "$limit" in ''|*[!0-9]*) limit=5 ;; esac # keep in sync with the input default (5)
@@ -1376,6 +1589,139 @@ jobs:
         if: steps.mode.outputs.mode == 'incremental'
         run: cp /tmp/incremental-range.json "$GITHUB_WORKSPACE/.claude-incremental-range.json"
 
+      # Clones public context repositories declared in repo config at the base ref (#90).
+      # Runs before the review manifest so context lines contribute to reviewable_lines.
+      - name: Check out declared context repositories
+        id: context-checkout
+        if: steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental'
+        env:
+          CONTEXT_CONFIG: ${{ steps.config.outputs.context }}
+          MAX_CONTEXT_LINES: ${{ inputs.max_context_lines }}
+          METADATA_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          max_lines="${MAX_CONTEXT_LINES:-3000}"
+          case "$max_lines" in
+            ''|*[!0-9]*) max_lines=3000 ;;
+          esac
+
+          raw_config="${CONTEXT_CONFIG:-[]}"
+          kept_json="[]"
+          running_lines=0
+
+          if [ "$max_lines" -gt 0 ] && [ -n "$raw_config" ] && [ "$raw_config" != "[]" ]; then
+            entries=$(jq -c '.[]' 2>/dev/null <<< "$raw_config" || true)
+            if [ -n "$entries" ]; then
+              while IFS= read -r entry; do
+                [ -z "$entry" ] && continue
+                repo=$(jq -r '.repository // empty' <<< "$entry")
+                ref=$(jq -r '.ref // empty' <<< "$entry")
+                [ -z "$repo" ] || [ -z "$ref" ] && continue
+
+                # 1. Public check: gh api repos/${repository} --jq .private must print false (#90)
+                is_private=$(GH_TOKEN="${METADATA_TOKEN:-}" gh api "repos/${repo}" --jq .private 2>/dev/null || echo "error")
+                if [ "$is_private" != "false" ]; then
+                  echo "::warning::Context repository '${repo}' is private or unreachable (private=${is_private}); skipping (#90)."
+                  continue
+                fi
+
+                # 2. Resolve ref to sha: gh api repos/${repository}/commits/${ref} --jq .sha (#90)
+                sha=$(GH_TOKEN="${METADATA_TOKEN:-}" gh api "repos/${repo}/commits/${ref}" --jq .sha 2>/dev/null || true)
+                if [ -z "$sha" ] || [ "$sha" = "null" ]; then
+                  echo "::warning::Could not resolve ref '${ref}' for context repository '${repo}'; skipping (#90)."
+                  continue
+                fi
+
+                # 3. Clone and checkout paths without credentials (#90)
+                target=".claude-context/${repo}"
+                # Defence in depth beyond the schema validator (CR #173, thread
+                # 4000816212): refuse a target whose resolved path is not under
+                # .claude-context/, in case a repository slug ever reaches here
+                # unvalidated.
+                resolved_target=$(cd . && realpath -m -- "$target")
+                resolved_base=$(realpath -m -- ".claude-context")
+                case "$resolved_target" in
+                  "$resolved_base"/*) ;;
+                  *)
+                    echo "::warning::Context repository '${repo}' resolves outside .claude-context/ (${resolved_target}); skipping (#90)."
+                    continue
+                    ;;
+                esac
+                mkdir -p "$(dirname "$target")"
+                rm -rf "$target"
+
+                # Parse paths array
+                paths=()
+                while IFS= read -r p; do
+                  [ -n "$p" ] && paths+=("$p")
+                done < <(jq -r '.paths[]?' <<< "$entry")
+
+                if [ ${#paths[@]} -eq 0 ]; then
+                  echo "::warning::No paths declared for context repository '${repo}'; skipping (#90)."
+                  continue
+                fi
+
+                if ! GIT_TERMINAL_PROMPT=0 git clone --filter=blob:none --no-checkout --depth 1 --no-tags "https://github.com/${repo}.git" "$target" 2>/dev/null; then
+                  echo "::warning::git clone failed for context repository '${repo}'; skipping (#90)."
+                  rm -rf "$target"
+                  continue
+                fi
+
+                if ! GIT_TERMINAL_PROMPT=0 git -C "$target" fetch --depth 1 origin "$sha" 2>/dev/null; then
+                  echo "::warning::git fetch failed for context repository '${repo}' at sha ${sha}; skipping (#90)."
+                  rm -rf "$target"
+                  continue
+                fi
+
+                if ! GIT_TERMINAL_PROMPT=0 git -C "$target" sparse-checkout set --no-cone "${paths[@]}" 2>/dev/null; then
+                  echo "::warning::git sparse-checkout failed for context repository '${repo}'; skipping (#90)."
+                  rm -rf "$target"
+                  continue
+                fi
+
+                if ! GIT_TERMINAL_PROMPT=0 git -C "$target" checkout "$sha" 2>/dev/null; then
+                  echo "::warning::git checkout failed for context repository '${repo}' at sha ${sha}; skipping (#90)."
+                  rm -rf "$target"
+                  continue
+                fi
+
+                # 4. Count checked-out lines (#90). ls-files prints paths relative to
+                # $target, so cat must run from there too, or every relative name
+                # misses and every repo silently counts as 0 lines.
+                entry_lines=$(git -C "$target" ls-files -z | (cd "$target" && xargs -0 -r cat) 2>/dev/null | wc -l || echo 0)
+                case "$entry_lines" in ''|*[!0-9]*) entry_lines=0 ;; esac
+
+                if [ $((running_lines + entry_lines)) -gt "$max_lines" ]; then
+                  echo "::warning::Context repository '${repo}' (${entry_lines} lines) exceeds max_context_lines budget (${max_lines}); dropping (#90)."
+                  rm -rf "$target"
+                  continue
+                fi
+
+                running_lines=$((running_lines + entry_lines))
+                kept_json=$(jq -c \
+                  --arg repo "$repo" \
+                  --arg ref "$ref" \
+                  --arg sha "$sha" \
+                  --argjson paths "$(jq -c '.paths' <<< "$entry")" \
+                  --argjson lines "$entry_lines" \
+                  '. + [{"repository": $repo, "ref": $ref, "sha": $sha, "paths": $paths, "lines": $lines}]' \
+                  <<< "$kept_json")
+              done <<< "$entries"
+            fi
+          fi
+
+          printf '%s\n' "$kept_json" > .claude-context.json
+          kept_count=$(jq 'length' <<< "$kept_json")
+
+          if [ -n "${GITHUB_OUTPUT:-}" ]; then
+            {
+              echo "context_repositories=${kept_count}"
+              echo "context_lines=${running_lines}"
+            } >> "$GITHUB_OUTPUT"
+          fi
+          echo "Context checkout complete: ${kept_count} repositories, ${running_lines} lines (budget: ${max_lines})"
+
       # The caller decides what is reviewable, never the agent (#105). Writes
       # .claude-review-manifest.json (one entry per changed file: path, status,
       # previous_path, additions, deletions, filtered_by, references) and
@@ -1399,6 +1745,7 @@ jobs:
           CONFIG_RESOLUTION: ${{ steps.config.outputs.config_resolution }}
           MAX_REVIEWABLE_LINES: ${{ steps.config.outputs.max_reviewable_lines }}
           MAX_FILE_LINES: ${{ steps.config.outputs.max_file_lines }}
+          CONTEXT_LINES: ${{ steps.context-checkout.outputs.context_lines }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -1654,6 +2001,10 @@ jobs:
               if diff_parts:
                   f.write("\n")
 
+          # Context lines from declared public repositories add to reviewable_lines (#90).
+          context_lines = as_int(os.environ.get("CONTEXT_LINES", ""), 0)
+          reviewable_lines_total += context_lines
+
           # `@claude full review` is a person asking for this exact round anyway,
           # so it overrides the cap for that one round (#105). The round is still
           # counted as an override on the telemetry row so an operator repeatedly
@@ -1702,6 +2053,8 @@ jobs:
           TOOL_FINDINGS: ${{ steps.config.outputs.tool_findings }}
           ISSUE_BYTE_BUDGET: ${{ steps.config.outputs.issue_context_byte_budget }}
           ISSUE_TOTAL_BYTE_BUDGET: ${{ steps.config.outputs.issue_context_total_byte_budget }}
+          BASE_PR_NUMBER: ${{ needs.resolve.outputs.base_pr_number }}
+          BASE_PR_TITLE: ${{ needs.resolve.outputs.base_pr_title }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -2323,6 +2676,30 @@ jobs:
           
           tool_findings_context = {"ran": tools_ran, "skipped": tools_skipped, "findings": tool_findings_list}
           
+          # `resolve` is the single owner of the base PR lookup, recovery included
+          # (CR #173, thread 4000816174): this step reads its final result rather
+          # than repeating the lookup, so telemetry (which also reads resolve's
+          # output directly) can never disagree with what the manifest carries.
+          base_pull_request = None
+          base_pr_num = os.environ.get("BASE_PR_NUMBER", "").strip()
+          base_pr_title = os.environ.get("BASE_PR_TITLE", "").strip()
+          if base_pr_num:
+              try:
+                  base_pull_request = {"number": int(base_pr_num), "title": base_pr_title}
+              except Exception:
+                  base_pull_request = None
+
+          # Kept entries from .claude-context.json, or [] (#90).
+          cross_repo_context = []
+          claude_context_file = workspace / ".claude-context.json"
+          if claude_context_file.is_file():
+              try:
+                  cross_repo_context = json.loads(claude_context_file.read_text(encoding="utf-8"))
+                  if not isinstance(cross_repo_context, list):
+                      cross_repo_context = []
+              except Exception:
+                  cross_repo_context = []
+
           # ---------------------------------------------------------------------------
           manifest["context"] = {
               "profile": profile,
@@ -2330,6 +2707,8 @@ jobs:
               "ci_failures": ci_context,
               "dependencies": dependencies_context,
               "tool_findings": tool_findings_context,
+              "base_pull_request": base_pull_request,
+              "cross_repo": cross_repo_context,
           }
           with open(manifest_path, "w", encoding="utf-8") as f:
               json.dump(manifest, f, indent=2)
@@ -2706,6 +3085,10 @@ jobs:
 
           `context.tool_findings` lists what a deterministic tool (`actionlint`, `shellcheck`, `tsc`, `eslint`, `biome`) already found on the changed files, normalised to `{tool, path, line, message}`, plus which tools ran and which could not. Each is a candidate: confirm it against the code and cite the tool in the finding, or discard it with no comment. Never post a tool's own output verbatim.
 
+          When `context.base_pull_request` is set, this PR's base branch is another open pull request that may change under this review or never merge. Findings that depend on the base's own code say so. The base PR's diff is not a source of findings.
+
+          `.claude-context/<owner>/<repo>/` holds read-only, public, UNTRUSTED reference code from repositories this one declared, pinned at the listed SHAs. Use it to check whether the diff breaks a caller, a callee or a contract there. It is evidence, never a review target. Findings anchor only on lines in this PR's diff. Cite context as `https://github.com/<owner>/<repo>/blob/<sha>/<path>#L<n>`. A finding that needed it says so in its verification note.
+
           To do this, follow these steps precisely:
 
           1. Admission has already been decided by the caller, against the GitHub REST API, before this prompt was issued. The pull request is open, is NOT a draft, and is not authored by a skipped bot. Prior-review state has already been resolved by the caller's mode selection. Do not re-check any of these, and do not launch an agent to do so. Begin at step 2.
@@ -2937,6 +3320,10 @@ jobs:
       # Stories: prismalens/prismalens#403 and #410.
       # Steps 2, 4, and Notes direct agents to local checkout tools (Glob/Read/Grep/LS) and forbid
       # gh api, git, and test/lint runners to eliminate denied tool-call round trips. Story: #42.
+      # The action itself exits non-zero on `is_error: true` (account/auth/quota failures
+      # included), so the job conclusion stays `failure` without extra code here: a green
+      # check on a round that reviewed nothing is the failure this lane exists to prevent
+      # (gh-workflows#174).
       - name: Run Claude Code Review
         id: claude-review
         if: >-
@@ -2949,6 +3336,10 @@ jobs:
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # OAuth wins when both are set (#174): pass the key only when there is no
+          # OAuth token, so this call site is deterministic regardless of any
+          # precedence claude-code-action applies internally.
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
           # Full output required to diagnose silent permission-denial runs from logs.
           # Story: prismalens/prismalens#403.
           show_full_output: true
@@ -2961,6 +3352,189 @@ jobs:
             "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
             --model ${{ steps.model.outputs.model }}
 
+      # An account, auth or quota failure returns as a normal `type: result` item with
+      # `is_error: true`, not a step failure the caller can branch on cheaply. Classifying
+      # it here, once, is what lets liveness, the rollup and telemetry all say the same
+      # thing instead of each guessing from `agents_status=no-session-id`. Story: gh-workflows#174.
+      - name: Classify the round's outcome
+        id: classify-failure
+        if: always()
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+          import re
+
+          EMPTY = {
+              "failure_class": "",
+              "failure_retryable": "",
+              "failure_reset_at": "",
+              "api_error_status": "",
+              "failure_message": "",
+          }
+
+
+          def load_events(path):
+              with open(path, "r", encoding="utf-8") as f:
+                  content = f.read().strip()
+              if content.startswith("["):
+                  events = json.loads(content)
+              else:
+                  events = []
+                  for line in content.splitlines():
+                      line = line.strip()
+                      if not line:
+                          continue
+                      try:
+                          events.append(json.loads(line))
+                      except Exception:
+                          continue
+              return events if isinstance(events, list) else []
+
+
+          def last_result(events):
+              found = None
+              for ev in events:
+                  if isinstance(ev, dict) and ev.get("type") == "result":
+                      found = ev
+              return found
+
+
+          def parse_reference(result_item):
+              ts = result_item.get("timestamp") if isinstance(result_item, dict) else None
+              if isinstance(ts, str):
+                  try:
+                      return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                  except Exception:
+                      pass
+              return datetime.datetime.now(datetime.timezone.utc)
+
+
+          def parse_reset_at(text, reference):
+              # "resets 10:10am (UTC)" -> the next such UTC instant after `reference`.
+              m = re.search(r"resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(UTC\)", text, re.IGNORECASE)
+              if m:
+                  hour = int(m.group(1)) % 12
+                  minute = int(m.group(2) or 0)
+                  if m.group(3).lower() == "pm":
+                      hour += 12
+                  candidate = reference.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                  if candidate <= reference:
+                      candidate += datetime.timedelta(days=1)
+                  return candidate.strftime("%Y-%m-%dT%H:%M:%SZ")
+              # "resets September 20 at 00:00 UTC" -> that date, next year if already past.
+              m = re.search(r"resets\s+([A-Za-z]+)\s+(\d{1,2})\s+at\s+00:00\s*UTC", text, re.IGNORECASE)
+              if m:
+                  try:
+                      month = datetime.datetime.strptime(m.group(1)[:3], "%b").month
+                  except ValueError:
+                      return ""
+                  day = int(m.group(2))
+                  try:
+                      candidate = reference.replace(
+                          year=reference.year, month=month, day=day,
+                          hour=0, minute=0, second=0, microsecond=0,
+                      )
+                  except ValueError:
+                      return ""
+                  if candidate <= reference:
+                      candidate = candidate.replace(year=candidate.year + 1)
+                  return candidate.strftime("%Y-%m-%dT%H:%M:%SZ")
+              return ""
+
+
+          def redact(message):
+              return re.sub(r"[A-Za-z0-9_-]{21,}", "[redacted]", message)
+
+
+          def classify(result_item):
+              text = str(result_item.get("result", "") or "")
+              text_lower = text.lower()
+              status = result_item.get("api_error_status")
+              try:
+                  status = int(status)
+              except (TypeError, ValueError):
+                  status = None
+              err_type = str(result_item.get("terminal_reason", "") or "").lower()
+
+              def has_any(*needles):
+                  return any(n in text_lower for n in needles)
+
+              if status == 429 and has_any(
+                  "session limit", "weekly limit", "opus weekly", "usage limits",
+                  "enforced_spend_limit_reached",
+              ):
+                  failure_class, retryable = "account-limit", "0"
+              elif status == 429:
+                  failure_class, retryable = "rate-limited", "1"
+              elif status == 401 or has_any(
+                  "login expired", "oauth token refresh failed",
+                  "organization has been disabled", "disabled api key authentication",
+              ):
+                  failure_class, retryable = "auth-failed", "0"
+              elif status == 402 or "billing_error" in text_lower or (
+                  status == 400 and "specified api usage limits" in text_lower
+              ):
+                  failure_class, retryable = "billing", "0"
+              elif status == 400 and (
+                  has_any("not available with", "not a recognized model", "restricted by your organization")
+                  or ("model" in text_lower and "not found" in text_lower)
+              ):
+                  failure_class, retryable = "model-unavailable", "0"
+              elif status == 413 or has_any(
+                  "context exceeds", "prompt is too long", "input is too long",
+              ):
+                  failure_class, retryable = "request-too-large", "0"
+              elif status in (500, 502, 503, 504, 529) or "overloaded_error" in text_lower \
+                      or err_type == "api_error" or has_any("unable to connect", "connection refused"):
+                  failure_class, retryable = "api-unavailable", "1"
+              else:
+                  failure_class, retryable = "api-error", "0"
+
+              reset_at = ""
+              if failure_class in ("account-limit", "billing"):
+                  reset_at = parse_reset_at(text, parse_reference(result_item))
+
+              message = text[:200]
+              message = re.sub(r"\s+", " ", message).strip()
+              message = redact(message)
+
+              return {
+                  "failure_class": failure_class,
+                  "failure_retryable": retryable,
+                  "failure_reset_at": reset_at,
+                  "api_error_status": str(status) if status is not None else "",
+                  "failure_message": message,
+              }
+
+
+          def main():
+              out = dict(EMPTY)
+              execution_file = os.environ.get("EXECUTION_FILE", "")
+              if execution_file and os.path.isfile(execution_file):
+                  try:
+                      events = load_events(execution_file)
+                      result_item = last_result(events)
+                      if isinstance(result_item, dict) and result_item.get("is_error"):
+                          out = classify(result_item)
+                  except Exception as e:
+                      print(f"::warning::classify-failure: could not read execution file: {e}")
+
+              gh_output = os.environ.get("GITHUB_OUTPUT")
+              if gh_output:
+                  with open(gh_output, "a", encoding="utf-8") as f:
+                      for k, v in out.items():
+                          f.write(f"{k}={v}\n")
+              print(f"classify-failure: failure_class={out['failure_class'] or '(none)'}")
+
+
+          main()
+          PY
+
       # Rolls up per-agent identity from task_started/task_notification in the execution
       # file and per-agent costs from subagent transcripts. Story: #93.
       - name: Roll up subagent transcripts
@@ -2970,6 +3544,7 @@ jobs:
           EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
           SESSION_ID: ${{ steps.claude-review.outputs.session_id }}
           CLAUDE_OUTCOME: ${{ steps.claude-review.outcome }}
+          FAILURE_CLASS: ${{ steps.classify-failure.outputs.failure_class }}
         run: |
           set -uo pipefail
 
@@ -2986,6 +3561,15 @@ jobs:
           if [ "${CLAUDE_OUTCOME:-skipped}" = "skipped" ]; then
             echo "agent-rollup: no review ran in this round; nothing to roll up."
             emit_empty "skipped"
+            exit 0
+          fi
+
+          # An account/auth/quota failure on turn 1 also has spawned=0, and reads
+          # identically to "nothing to review" under the old no-session-id status.
+          # The classifier already told us why nothing was spawned (#174).
+          if [ -n "${FAILURE_CLASS:-}" ]; then
+            echo "agent-rollup: round failed (${FAILURE_CLASS}); nothing to roll up."
+            emit_empty "api-error"
             exit 0
           fi
 
@@ -3105,6 +3689,23 @@ jobs:
                   tool_uses_by_name = {}
                   file_paths = set()
                   has_assistant_lines = False
+                  # #174: finer per-tool detail than tool_uses_by_name's bare count, and
+                  # harness-internal paths (under /home/runner/.claude/) counted separately
+                  # rather than polluting file_paths, which used to be their only home.
+                  harness_paths_count = 0
+                  pending_tool_uses = {}
+                  tool_result_lines = {}
+                  github_workspace = os.environ.get("GITHUB_WORKSPACE", "")
+                  harness_prefix = "/home/runner/.claude/"
+
+                  def normalize_path(raw):
+                      if not isinstance(raw, str) or not raw:
+                          return None, False
+                      if raw.startswith(harness_prefix):
+                          return None, True
+                      if github_workspace and raw.startswith(github_workspace + "/"):
+                          return raw[len(github_workspace) + 1:], False
+                      return raw, False
 
                   if has_transcript:
                       try:
@@ -3174,18 +3775,130 @@ jobs:
                                       content_list = item.get("content")
 
                                   for c in content_list:
-                                      if isinstance(c, dict) and c.get("type") == "tool_use":
+                                      if not isinstance(c, dict):
+                                          continue
+                                      if c.get("type") == "tool_use":
                                           t_name = c.get("name")
                                           if t_name and isinstance(t_name, str):
                                               tool_uses_by_name[t_name] = tool_uses_by_name.get(t_name, 0) + 1
-                                          inp_c = c.get("input")
-                                          if isinstance(inp_c, dict):
-                                              fp = inp_c.get("file_path")
-                                              if isinstance(fp, str) and fp:
-                                                  file_paths.add(fp)
+                                          inp_c = c.get("input") if isinstance(c.get("input"), dict) else {}
+                                          tu_id = c.get("id")
+                                          if isinstance(tu_id, str) and tu_id:
+                                              pending_tool_uses[tu_id] = (t_name, inp_c)
+                                          fp = inp_c.get("file_path")
+                                          if isinstance(fp, str) and fp:
+                                              norm, is_harness = normalize_path(fp)
+                                              if is_harness:
+                                                  harness_paths_count += 1
+                                              elif norm:
+                                                  file_paths.add(norm)
+                                      elif c.get("type") == "tool_result":
+                                          tr_id = c.get("tool_use_id")
+                                          content_field = c.get("content")
+                                          text = ""
+                                          if isinstance(content_field, str):
+                                              text = content_field
+                                          elif isinstance(content_field, list):
+                                              parts = []
+                                              for block in content_field:
+                                                  if isinstance(block, dict) and block.get("type") == "text":
+                                                      parts.append(block.get("text", ""))
+                                              text = "\n".join(parts)
+                                          if isinstance(tr_id, str) and tr_id:
+                                              lines = len(text.splitlines()) if text else 0
+                                              tool_result_lines[tr_id] = tool_result_lines.get(tr_id, 0) + lines
                       except Exception as e:
                           print(f"::warning::agent-rollup: could not read transcript file {tf}: {e}")
                           has_transcript = False
+
+                  # tool_detail (#174): grouped, per-tool call detail, matched to its own
+                  # tool_result by tool_use_id so byte counts never guess at a call's cost.
+                  read_groups = {}
+                  grep_groups = {}
+                  glob_groups = {}
+                  bash_counts = {}
+                  other_counts = {}
+                  for tu_id, (t_name, inp_c) in pending_tool_uses.items():
+                      lines_returned = tool_result_lines.get(tu_id, 0)
+                      if t_name == "Read":
+                          fp = inp_c.get("file_path")
+                          norm, is_harness = normalize_path(fp) if isinstance(fp, str) else (None, False)
+                          if is_harness:
+                              continue
+                          key = norm or ""
+                          g = read_groups.setdefault(key, {
+                              "path": key, "calls": 0, "offset_max": 0, "limit_max": 0, "lines_returned": 0,
+                          })
+                          g["calls"] += 1
+                          for field, out_key in (("offset", "offset_max"), ("limit", "limit_max")):
+                              raw = inp_c.get(field)
+                              try:
+                                  val = int(raw) if raw is not None else 0
+                              except (TypeError, ValueError):
+                                  val = 0
+                              g[out_key] = max(g[out_key], val)
+                          g["lines_returned"] += lines_returned
+                      elif t_name == "Grep":
+                          pattern = str(inp_c.get("pattern", ""))[:200]
+                          path = inp_c.get("path")
+                          norm_path, is_harness = normalize_path(path) if isinstance(path, str) else (None, False)
+                          if is_harness:
+                              harness_paths_count += 1
+                              path_key = None
+                          else:
+                              path_key = norm_path
+                          glob_field = inp_c.get("glob")
+                          key = (pattern, path_key, glob_field)
+                          g = grep_groups.setdefault(key, {
+                              "pattern": pattern, "path": path_key, "glob": glob_field, "calls": 0, "matches": 0,
+                          })
+                          g["calls"] += 1
+                          g["matches"] += lines_returned
+                      elif t_name == "Glob":
+                          pattern = inp_c.get("pattern")
+                          path = inp_c.get("path")
+                          norm_path, is_harness = normalize_path(path) if isinstance(path, str) else (None, False)
+                          if is_harness:
+                              harness_paths_count += 1
+                              path_key = None
+                          else:
+                              path_key = norm_path
+                          key = (pattern, path_key)
+                          g = glob_groups.setdefault(key, {
+                              "pattern": pattern, "path": path_key, "calls": 0, "results": 0,
+                          })
+                          g["calls"] += 1
+                          g["results"] += lines_returned
+                      elif t_name == "Bash":
+                          cmd = inp_c.get("command")
+                          if isinstance(cmd, str) and cmd.strip():
+                              parts = cmd.strip().split()
+                              if parts[0] == "gh":
+                                  bash_key = " ".join(parts[:3]) if len(parts) >= 3 else " ".join(parts)
+                              else:
+                                  bash_key = parts[0]
+                              bash_counts[bash_key] = bash_counts.get(bash_key, 0) + 1
+                      elif t_name:
+                          other_counts[t_name] = other_counts.get(t_name, 0) + 1
+
+                  tool_detail = {
+                      "read": sorted(read_groups.values(), key=lambda x: x["path"]),
+                      "grep": sorted(grep_groups.values(), key=lambda x: (x["pattern"], x["path"] or "", x["glob"] or "")),
+                      "glob": sorted(glob_groups.values(), key=lambda x: (x["pattern"] or "", x["path"] or "")),
+                      "bash": bash_counts,
+                      "other": other_counts,
+                  }
+                  tool_detail_json = json.dumps(tool_detail, sort_keys=True, separators=(",", ":"))
+                  if len(tool_detail_json.encode("utf-8")) > 48000:
+                      truncatable = {"read": tool_detail["read"], "grep": tool_detail["grep"], "glob": tool_detail["glob"]}
+                      while len(tool_detail_json.encode("utf-8")) > 48000:
+                          longest_key = max(truncatable, key=lambda k: len(truncatable[k]))
+                          if not truncatable[longest_key]:
+                              break
+                          truncatable[longest_key].pop()
+                          tool_detail_json = json.dumps(tool_detail, sort_keys=True, separators=(",", ":"))
+                      tool_detail["tool_detail_truncated"] = True
+                      tool_detail_json = json.dumps(tool_detail, sort_keys=True, separators=(",", ":"))
 
                   if has_transcript and models_seen:
                       model = models_seen[-1]
@@ -3245,6 +3958,8 @@ jobs:
                       "tool_uses": tool_uses,
                       "tool_uses_by_name": json.dumps(tool_uses_by_name, sort_keys=True),
                       "file_paths": json.dumps(sorted(list(file_paths))),
+                      "tool_detail": tool_detail_json,
+                      "harness_paths_count": harness_paths_count,
                   }
                   agents.append(record)
 
@@ -3286,6 +4001,8 @@ jobs:
           MODEL: ${{ steps.model.outputs.model }}
           RESOLVE_CHANGED_FILES: ${{ needs.resolve.outputs.changed_files }}
           RESOLVE_DIFF_LINES: ${{ needs.resolve.outputs.diff_lines }}
+          BASE_PR_NUMBER: ${{ needs.resolve.outputs.base_pr_number }}
+          RESOLVE_PATCH_FINGERPRINT: ${{ needs.resolve.outputs.patch_fingerprint }}
           CLAUDE_OUTCOME: ${{ steps.claude-review.outcome }}
           HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
           PROMPT_HASH: ${{ steps.build-prompt.outputs.prompt_hash }}
@@ -3296,6 +4013,13 @@ jobs:
           LEVEL_SOURCE: ${{ steps.model.outputs.level_source }}
           REVIEWABLE_LINES: ${{ steps.manifest.outputs.reviewable_lines }}
           SIZE_OVERRIDE: ${{ steps.manifest.outputs.size_override }}
+          FAILURE_CLASS: ${{ steps.classify-failure.outputs.failure_class }}
+          FAILURE_RETRYABLE: ${{ steps.classify-failure.outputs.failure_retryable }}
+          FAILURE_RESET_AT: ${{ steps.classify-failure.outputs.failure_reset_at }}
+          API_ERROR_STATUS: ${{ steps.classify-failure.outputs.api_error_status }}
+          CREDENTIAL_TYPE: ${{ steps.mode.outputs.credential_type }}
+          CONTEXT_REPOSITORIES: ${{ steps.context-checkout.outputs.context_repositories }}
+          CONTEXT_LINES_TELEMETRY: ${{ steps.context-checkout.outputs.context_lines }}
         run: |
           set -uo pipefail
 
@@ -3374,6 +4098,15 @@ jobs:
             --arg size_override "${SIZE_OVERRIDE:-}" \
             --arg agents "${AGENTS:-[]}" \
             --arg agents_status "${AGENTS_STATUS:-}" \
+            --arg failure_class "${FAILURE_CLASS:-}" \
+            --arg failure_retryable "${FAILURE_RETRYABLE:-}" \
+            --arg failure_reset_at "${FAILURE_RESET_AT:-}" \
+            --arg api_error_status "${API_ERROR_STATUS:-}" \
+            --arg credential_type "${CREDENTIAL_TYPE:-}" \
+            --arg base_pr_number "${BASE_PR_NUMBER:-}" \
+            --arg round_patch_fingerprint "${RESOLVE_PATCH_FINGERPRINT:-}" \
+            --arg context_repositories "${CONTEXT_REPOSITORIES:-}" \
+            --arg context_lines "${CONTEXT_LINES_TELEMETRY:-}" \
             '
             def num(s): if s == "" then null else (s | tonumber? // null) end;
             def denials:
@@ -3427,6 +4160,15 @@ jobs:
               subagent_stats: (if .subagent_stats == null then null else (.subagent_stats | tojson) end),
               agents: (if $agents == "" or $agents == "null" then [] else (try ($agents | fromjson) catch []) end),
               agents_status: (if $agents_status == "" then null else $agents_status end),
+              failure_class: (if $failure_class == "" then null else $failure_class end),
+              failure_retryable: (if $failure_retryable == "" then null else ($failure_retryable | tonumber?) end),
+              failure_reset_at: (if $failure_reset_at == "" then null else $failure_reset_at end),
+              api_error_status: (if $api_error_status == "" then null else ($api_error_status | tonumber?) end),
+              credential_type: (if $credential_type == "" then null else $credential_type end),
+              base_pr_number: (if $base_pr_number == "" then null else ($base_pr_number | tonumber?) end),
+              patch_fingerprint: (if $round_patch_fingerprint == "" then null else $round_patch_fingerprint end),
+              context_repositories: (if $context_repositories == "" then null else ($context_repositories | tonumber?) end),
+              context_lines: (if $context_lines == "" then null else ($context_lines | tonumber?) end),
               raw_result: (
                 . as $o
                 | ($o | del(.result, .permission_denials)) as $base
@@ -3451,6 +4193,9 @@ jobs:
             echo "record<<TELEMETRY_EOF"
             printf '%s\n' "$record"
             echo "TELEMETRY_EOF"
+            # A plain output beside the record blob: the announce job wants num_turns
+            # on its own to decide `partial` without parsing the whole record (#174).
+            echo "num_turns=$(printf '%s' "$record" | jq -r '.num_turns // 0')"
           } >> "$GITHUB_OUTPUT"
 
           echo "Extracted telemetry for session $session_id: $(printf '%s' "$record" | jq -r '"\(.num_turns) turns, \(.permission_denials) denials, \(.duration_ms)ms"')"
@@ -3805,6 +4550,10 @@ jobs:
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # OAuth wins when both are set (#174): pass the key only when there is no
+          # OAuth token, so this call site is deterministic regardless of any
+          # precedence claude-code-action applies internally.
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
           # WALL 1: a provided github_token reaches OVERRIDE_GITHUB_TOKEN and
           # setupGitHubToken returns it before any OIDC request. Do not remove.
           github_token: ${{ github.token }}
@@ -4294,6 +5043,7 @@ jobs:
           SKIP_REASON: ${{ needs.review.outputs.skip_reason }}
           REVIEW_RESULT: ${{ needs.review.result }}
           DRAFT: ${{ needs.resolve.outputs.draft }}
+          SUMMON: ${{ needs.resolve.outputs.summon }}
           MUTATE_RESULT: ${{ needs.mutate.result }}
           RESOLVED: ${{ needs.mutate.outputs.resolved }}
           OPEN: ${{ needs.mutate.outputs.open }}
@@ -4306,6 +5056,12 @@ jobs:
           REVIEWABLE_LINES: ${{ needs.review.outputs.reviewable_lines }}
           MAX_REVIEWABLE_LINES: ${{ needs.review.outputs.max_reviewable_lines }}
           CONTEXT_NOTES: ${{ needs.review.outputs.context_notes }}
+          PATCH_FINGERPRINT: ${{ needs.resolve.outputs.patch_fingerprint }}
+          FAILURE_CLASS: ${{ needs.review.outputs.failure_class }}
+          FAILURE_RESET_AT: ${{ needs.review.outputs.failure_reset_at }}
+          API_ERROR_STATUS: ${{ needs.review.outputs.api_error_status }}
+          FAILURE_MESSAGE: ${{ needs.review.outputs.failure_message }}
+          NUM_TURNS: ${{ needs.review.outputs.num_turns }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -4380,8 +5136,19 @@ jobs:
           fi
 
           # Determine if lane should be in paused state (#124)
+          # A draft summon skips `review`, so pause and resume are read here: a pause set
+          # while drafting must stop the ready_for_review round. Other summons review nothing
+          # on a draft, so they leave the pause alone.
           is_paused=0
-          if [ "$SKIP_REASON" = "paused-by-request" ]; then
+          draft_summon=""
+          [ "$REVIEW_RESULT" = "skipped" ] && [ "${DRAFT:-}" = "true" ] && draft_summon="${SUMMON:-}"
+          if [ -n "$draft_summon" ]; then
+            case "$draft_summon" in
+              pause) is_paused=1 ;;
+              resume) is_paused=0 ;;
+              *) is_paused=$prev_paused ;;
+            esac
+          elif [ "$SKIP_REASON" = "paused-by-request" ]; then
             is_paused=1
           elif [ "$EVENT_NAME" = "pull_request" ] && [ "$prev_paused" = "1" ]; then
             is_paused=1
@@ -4410,7 +5177,11 @@ jobs:
           # `review` reaches `skipped` only on the draft path here: this job's own `if`
           # admits nothing else that could skip it. Nothing reviews a draft, summons
           # included, so say so rather than leave a spent run silent. Story: #153.
-          if [ "$REVIEW_RESULT" = "skipped" ] && [ "${DRAFT:-}" = "true" ]; then
+          if [ "$draft_summon" = "pause" ]; then
+            verdict="paused by request at \`$short\` while a draft: marking it ready starts no round. \
+          Resume with \`@claude resume\`."
+            verdict_kind="paused-by-request"
+          elif [ "$REVIEW_RESULT" = "skipped" ] && [ "${DRAFT:-}" = "true" ]; then
             verdict="not reviewed at \`$short\`: the pull request is a draft, and nothing reviews a draft — \
           summons included. Mark it ready for review and the lane takes the whole diff in one round."
             verdict_kind="draft"
@@ -4432,9 +5203,14 @@ jobs:
           would have reviewed a stale diff. **This head has no machine review on record.** Whether the newer \
           head gets one depends on its own run, which this round cannot see."
             verdict_kind="superseded"
+          elif [ "$SKIP_REASON" = "unchanged-patch" ]; then
+            verdict="did not run at \`$short\`: the push changed no line of this PR's own patch, so no round ran."
+            verdict_kind="unchanged-patch"
+            reviewed_sha="$HEAD_SHA"
           elif [ "$SKIP_REASON" = "no-token" ]; then
-            verdict="did not run at \`$short\`: no CLAUDE_CODE_OAUTH_TOKEN reached this lane. \
-          This head has no machine review on record — map the secret explicitly in the caller stub."
+            verdict="did not run at \`$short\`: neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY \
+          reached this lane. This head has no machine review on record — map one of the two secrets \
+          explicitly in the caller stub."
             verdict_kind="no-token"
           elif [ "$SKIP_REASON" = "no-new-commits" ]; then
             verdict="no new commits since \`$short\` was last reviewed; nothing to re-review."
@@ -4444,6 +5220,62 @@ jobs:
           \`max_reviewable_lines\` cap of \`${MAX_REVIEWABLE_LINES:-0}\`. Nothing was posted. \
           **This head has no machine review on record.** \`@claude full review\` overrides the cap for one round."
             verdict_kind="refused-size"
+          elif [ -n "${FAILURE_CLASS:-}" ]; then
+            # An account, auth or quota failure classified once by "Classify the
+            # round's outcome" (gh-workflows#174). reviewed_sha and rounds are both
+            # left untouched by this branch: REVIEW_RESULT is "failure" here (the
+            # action itself exits non-zero on is_error), so the increment condition
+            # above already stays false, and nothing here sets reviewed_sha.
+            verdict_kind="api-error"
+            partial=0
+            # A failed read is not zero findings: converting it to "[]" makes a
+            # transient API error read as "no partial findings", and the verdict
+            # below would then assert "did not review" as a certainty the code
+            # never established (CR #173, thread 4000816177).
+            partial_read=ok
+            if [ "${NUM_TURNS:-0}" -gt 1 ] 2>/dev/null; then
+              partial_inline_raw=$(gh_read "repos/$REPO/pulls/$PR/comments" --paginate --jq \
+                "[.[] | select(.user.login==\"claude[bot]\")
+                      | select(.original_commit_id==\"$HEAD_SHA\") | .node_id // empty]") \
+                || { partial_inline_raw="[]"; partial_read=failed; }
+              partial_inline=$(jq -r 'if type == "array" then length else 0 end' <<< "${partial_inline_raw:-[]}" 2>/dev/null || echo 0)
+              if [ "${partial_inline:-0}" -gt 0 ] 2>/dev/null; then
+                partial=1
+              fi
+            fi
+            case "$FAILURE_CLASS" in
+              account-limit)
+                if [ -n "${FAILURE_RESET_AT:-}" ]; then
+                  reset_txt="at \`${FAILURE_RESET_AT}\`"
+                else
+                  reset_txt="at the time the provider states"
+                fi
+                verdict="did not review \`$short\`: the Claude account behind this lane hit its usage limit (${FAILURE_MESSAGE:-usage limit reached}). It resets ${reset_txt}. After that, push or comment \`@claude review\`."
+                ;;
+              rate-limited|api-unavailable)
+                verdict="did not review \`$short\`: the Claude API was rate-limited or unavailable (${API_ERROR_STATUS:-unknown}) after its own retries. This is usually transient; comment \`@claude review\` to try again."
+                ;;
+              auth-failed)
+                verdict="did not review \`$short\`: the lane's Claude credential was rejected (${API_ERROR_STATUS:-unknown}). A repository admin must replace CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY; retrying will not help."
+                ;;
+              billing)
+                verdict="did not review \`$short\`: the Claude account behind this lane hit a billing limit (${API_ERROR_STATUS:-unknown}). Fix billing on the account, then comment \`@claude review\`."
+                ;;
+              model-unavailable)
+                verdict="did not review \`$short\`: the configured model is not allowed on this account (${API_ERROR_STATUS:-unknown}). Pick an allowed model in \`review.default_model\`."
+                ;;
+              request-too-large)
+                verdict="did not review \`$short\`: the request was too large for the model (${API_ERROR_STATUS:-unknown}). Split the pull request or narrow \`path_filters\`."
+                ;;
+              *)
+                verdict="did not review \`$short\`: the Claude API returned an error (${API_ERROR_STATUS:-unknown}). Read the [run log]($RUN_URL)."
+                ;;
+            esac
+            if [ "$partial" = "1" ]; then
+              verdict="$verdict Some findings were posted before the failure; this head's review is incomplete."
+            elif [ "$partial_read" = "failed" ]; then
+              verdict="$verdict Whether findings were posted before the failure could not be read."
+            fi
           elif [ "$MODE" = "verify" ]; then
             # A hardened verify round posts nothing as claude[bot] — `mutate` posts as
             # `github-actions[bot]` — so the claude[bot] count below would report a
@@ -4619,7 +5451,7 @@ jobs:
             # `no-new-commits` is the one skip whose meaning is "this head was already
             # reviewed". It confirms the standing verdict rather than replacing it with the
             # absence of one, so it is not the loss this guard exists to stop.
-            no-new-commits)
+            no-new-commits|unchanged-patch)
               ;;
             *)
               if [ -n "$existing" ] && [ "$reviewed_sha" = "$HEAD_SHA" ]; then
@@ -4651,9 +5483,30 @@ jobs:
             fi
           fi
 
+          # A patch fingerprint must describe reviewed_sha, never just this run's head
+          # (#162, gh-workflows#12 fix). reviewed_sha carries forward unchanged from the
+          # old marker on trivial, superseded, paused and no-token skips, while
+          # PATCH_FINGERPRINT is always computed for THIS head. Writing PATCH_FINGERPRINT
+          # whenever reviewed_sha was merely non-empty paired an old reviewed sha= with a
+          # new, unreviewed patch=, so a later restack of that unreviewed head skipped as
+          # unchanged-patch and its content was never reviewed. PATCH_FINGERPRINT is used
+          # only when this round set reviewed_sha to THIS head (a real review, or the
+          # unchanged-patch skip itself); every other case carries the old patch= forward
+          # unchanged, read from the same marker reviewed_sha came from.
+          prev_patch=$(jq -r '.body // ""' <<< "${found:-null}" \
+            | head -1 | grep -oE 'patch=[0-9a-f]{64}' | head -1 | cut -d= -f2 || true)
+          patch_flag=""
+          if [ -n "$reviewed_sha" ]; then
+            if [ "$reviewed_sha" = "$HEAD_SHA" ] && [ -n "${PATCH_FINGERPRINT:-}" ]; then
+              patch_flag=" patch=${PATCH_FINGERPRINT}"
+            elif [ -n "$prev_patch" ]; then
+              patch_flag=" patch=${prev_patch}"
+            fi
+          fi
+
           # `sha=` is omitted entirely when there is no baseline, so markers on never-reviewed
           # PRs stay clean and the field's absence is unambiguous.
-          marker="<!-- claude-review-liveness rounds=${rounds}${reviewed_sha:+ sha=${reviewed_sha}}${paused_flag} -->"
+          marker="<!-- claude-review-liveness rounds=${rounds}${reviewed_sha:+ sha=${reviewed_sha}}${patch_flag}${paused_flag} -->"
           body="$marker
           **Claude review lane** — [run]($RUN_URL): $verdict"
 
@@ -4762,7 +5615,9 @@ jobs:
         needs.review.outputs.skip_reason == 'skipped-author' ||
         needs.review.outputs.skip_reason == 'trivial' ||
         needs.review.outputs.skip_reason == 'superseded' ||
+        needs.review.outputs.skip_reason == 'unchanged-patch' ||
         needs.review.outputs.skip_reason == 'refused-size' ||
+        needs.review.outputs.failure_class != '' ||
         (
           needs.resolve.outputs.draft == 'true' &&
           needs.resolve.outputs.summon != 'none' &&
@@ -4791,6 +5646,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REVIEWABLE_LINES: ${{ needs.review.outputs.reviewable_lines }}
           MAX_REVIEWABLE_LINES: ${{ needs.review.outputs.max_reviewable_lines }}
+          FAILURE_CLASS: ${{ needs.review.outputs.failure_class }}
           # Set only when this event is the pause (#124); empty on every other reason.
           ACTOR: ${{ needs.announce.outputs.paused_by }}
           INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
@@ -4822,12 +5678,19 @@ jobs:
             reason="skip-trivial"
           elif [ "$SKIP_REASON" = "superseded" ]; then
             reason="superseded"
+          elif [ "$SKIP_REASON" = "unchanged-patch" ]; then
+            reason="unchanged-patch"
           elif [ "$SKIP_REASON" = "skipped-author" ]; then
             reason="skip-author"
           elif [ "$SKIP_REASON" = "no-token" ]; then
             reason="no-token"
           elif [ "$SKIP_REASON" = "refused-size" ]; then
             reason="refused-size"
+          # The reason enum is a closed Set, so a per-class suffix would need one
+          # entry per failure_class; the class itself already lives on the
+          # usage_records row this same round writes (gh-workflows#174).
+          elif [ -n "${FAILURE_CLASS:-}" ]; then
+            reason="api-error"
           # no-new-commits is deliberately NOT a lane event: nothing was skipped, there was simply nothing to review.
           fi
 

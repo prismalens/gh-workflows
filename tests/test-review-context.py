@@ -22,6 +22,8 @@ against a stubbed `gh`, verifying:
    FIRST resolved issue too, not just the second and later ones. A per-issue budget
    (issue_context_byte_budget) configured larger than the total must not let one
    oversized entry slip through the total budget unresolved-and-unrecorded.
+8. `context.base_pull_request`: set to `{number, title}` when stubbed pulls lookup
+   returns a PR, and `null` when it returns `[]` (#162).
 
 Run: python3 tests/test-review-context.py
 """
@@ -86,6 +88,8 @@ def run_context_step(
     issue_total_byte_budget="",
     config_resolution=None,
     actionlint_json=None,
+    base_pr_number="",
+    base_pr_title="",
 ):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
@@ -126,6 +130,8 @@ exit 1
             TOOL_FINDINGS=json.dumps(tool_findings) if tool_findings is not None else "[]",
             ISSUE_BYTE_BUDGET=str(issue_byte_budget),
             ISSUE_TOTAL_BYTE_BUDGET=str(issue_total_byte_budget),
+            BASE_PR_NUMBER=str(base_pr_number),
+            BASE_PR_TITLE=str(base_pr_title),
         )
         if actionlint_json is not None:
             env["FAKE_ACTIONLINT_JSON"] = json.dumps(actionlint_json)
@@ -486,6 +492,57 @@ fi
             fails.append(f"case 7: want the budget-exhausted reason, got {issues['unresolved'][0]}")
         else:
             print("  ok    the total issue-context byte budget is enforced on the first resolved issue too")
+
+    # -------------------------------------------------------------
+    # 8. context.base_pull_request reads resolve's own final result -- BASE_PR_NUMBER
+    # and BASE_PR_TITLE -- and never re-runs the lookup itself. `resolve` is the
+    # single lookup owner, recovery included (CR #173, thread 4000816174); this is
+    # the path production actually uses, not the deleted fallback the old fixture
+    # exercised exclusively (CodeRabbit nitpick on the same thread).
+    # -------------------------------------------------------------
+    gh_routes = r"""
+if [[ "$args" == *"pulls/105"* ]]; then
+  echo '{"body":""}'
+  exit 0
+fi
+if [[ "$args" == *"check-runs"* ]]; then
+  echo '{"check_runs":[]}'
+  exit 0
+fi
+if [[ "$args" == *"pulls?state=open"* ]]; then
+  echo '[{"number":999,"title":"Should never be reached: the manifest step must read resolve final result, never call this lookup itself"}]'
+  exit 0
+fi
+"""
+    rc, outs, manifest, stdout, stderr = run_context_step(
+        script,
+        manifest_files=[{"path": "README.md", "status": "modified"}],
+        gh_routes=gh_routes,
+        base_pr_number="42",
+        base_pr_title="Stacked Base PR",
+    )
+    if rc != 0:
+        fails.append(f"case 8 (PR found) failed with rc={rc}: {stderr}")
+    else:
+        bpr = manifest["context"].get("base_pull_request")
+        if bpr != {"number": 42, "title": "Stacked Base PR"}:
+            fails.append(f"case 8: want base_pull_request={{'number': 42, 'title': 'Stacked Base PR'}}, got {bpr}")
+        else:
+            print("  ok    base_pull_request reads resolve's BASE_PR_NUMBER/BASE_PR_TITLE directly")
+
+    rc, outs, manifest, stdout, stderr = run_context_step(
+        script,
+        manifest_files=[{"path": "README.md", "status": "modified"}],
+        gh_routes=gh_routes,
+    )
+    if rc != 0:
+        fails.append(f"case 8 (empty) failed with rc={rc}: {stderr}")
+    else:
+        bpr = manifest["context"].get("base_pull_request")
+        if bpr is not None:
+            fails.append(f"case 8: want base_pull_request=None (null) when BASE_PR_NUMBER is empty, got {bpr}")
+        else:
+            print("  ok    base_pull_request is null when BASE_PR_NUMBER is empty, with no lookup of its own")
 
     print()
     if fails:

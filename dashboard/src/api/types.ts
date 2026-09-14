@@ -177,6 +177,10 @@ export interface RoundAgentRow {
   tool_uses: number | null;
   tool_uses_by_name: string | null;
   file_paths: string | null;
+  // #174: per-tool call detail (JSON) and how many tool calls touched the
+  // harness's own files rather than the checkout.
+  tool_detail: string | null;
+  harness_paths_count: number | null;
 }
 
 export interface RoundAgentsResponse {

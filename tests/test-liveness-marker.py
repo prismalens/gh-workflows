@@ -53,6 +53,9 @@ case "$args" in
   # asks for the current head, not for inline comments.
   *".head.sha"*)              printf '%s' "$FAKE_CURRENT_HEAD"; exit 0 ;;
   *"pulls/"*)
+    if [ "${FAKE_INLINE_FAIL:-0}" = "1" ]; then
+      exit 1
+    fi
     # When FAKE_INLINE_JSON is set, return the JSON and let --jq filter it.
     if [ -n "${FAKE_INLINE_JSON:-}" ]; then
       jq_filter=""
@@ -82,7 +85,10 @@ exit 1
 def run_case(script, *, marker_body=None, inline=0, summary=0,
              event="pull_request", skip_reason="", result="success",
              mode="review", mutate_result="skipped", resolved="", open_="",
-             verify_summary="", inline_json="", draft="", current_head=None):
+             verify_summary="", inline_json="", draft="", current_head=None,
+             patch_fingerprint="", failure_class="", failure_reset_at="",
+             api_error_status="", failure_message="", num_turns="1",
+             inline_fail=""):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
@@ -110,6 +116,13 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
             MUTATE_RESULT=mutate_result, RESOLVED=resolved, OPEN=open_,
             STARTED_AT="2026-01-01T00:00:00Z", RUN_URL="http://run",
             DRAFT=draft,
+            PATCH_FINGERPRINT=patch_fingerprint,
+            FAILURE_CLASS=failure_class,
+            FAILURE_RESET_AT=failure_reset_at,
+            API_ERROR_STATUS=api_error_status,
+            FAILURE_MESSAGE=failure_message,
+            NUM_TURNS=num_turns,
+            FAKE_INLINE_FAIL=inline_fail,
             # The head the PR is on right now. Unchanged unless a case moves it.
             FAKE_CURRENT_HEAD=(NEW if current_head is None else current_head),
         )
@@ -126,7 +139,8 @@ def run_case(script, *, marker_body=None, inline=0, summary=0,
 def parse_marker(line):
     rounds = re.search(r"rounds=(\d+)", line)
     sha = re.search(r"sha=([0-9a-f]{40})", line)
-    return (rounds.group(1) if rounds else None, sha.group(1) if sha else None)
+    patch = re.search(r"patch=([0-9a-f]{64})", line)
+    return (rounds.group(1) if rounds else None, sha.group(1) if sha else None, patch.group(1) if patch else None)
 
 
 # The reader in `Detect verification mode` parses rounds off the marker with this
@@ -134,6 +148,14 @@ def parse_marker(line):
 def reader_rounds(line):
     p = subprocess.run(
         "head -1 | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true",
+        shell=True, input=line, capture_output=True, text=True)
+    return p.stdout.strip()
+
+
+# Old readers parse sha= off the marker with this exact expression (#162).
+def reader_sha(line):
+    p = subprocess.run(
+        "head -1 | grep -oE 'sha=[0-9a-f]{40}' | head -1 | cut -d= -f2 || true",
         shell=True, input=line, capture_output=True, text=True)
     return p.stdout.strip()
 
@@ -246,6 +268,59 @@ CASES = [
                                                "original_commit_id": OLD}]),
                                               summary=0),                                "1",  None,
                                          lambda v: "posted **nothing**" in v),
+    ("review with patch: marker carries patch and reader parses sha (#162)",
+                                         dict(inline=1, summary=1, patch_fingerprint="f" * 64),
+                                                                                         "1",  NEW,
+                                         None, "f" * 64),
+    ("unchanged-patch skip: advances sha and carries patch (#162)",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} patch={'e' * 64} -->",
+                                              mode="skip", skip_reason="unchanged-patch", patch_fingerprint="e" * 64),
+                                                                                         "2",  NEW,
+                                         lambda v: "changed no line of this PR's own patch" in v,
+                                         "e" * 64),
+    # reviewed_sha carries forward unchanged on a trivial skip, but PATCH_FINGERPRINT is
+    # always computed for THIS (new, unreviewed) head. Pairing the old sha= with the new
+    # fingerprint would let a later restack of this same unreviewed head skip as
+    # unchanged-patch. The marker must keep the OLD patch=, not the new head's (gh-workflows#12).
+    ("trivial skip on a new head: keeps old patch=, never this head's fingerprint (gh-workflows#12)",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} patch={'d' * 64} -->",
+                                              skip_reason="trivial", patch_fingerprint="9" * 64),
+                                                                                         "2",  OLD,
+                                         None, "d" * 64),
+    # An account/auth/quota failure classified by "Classify the round's outcome" must
+    # not advance the baseline or the round counter: nothing was reviewed (#174).
+    ("api-error (account-limit): does not advance sha= or rounds=, names the reset time",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=3 sha={OLD} -->",
+                                              result="failure", failure_class="account-limit",
+                                              failure_reset_at="2026-09-13T10:10:00Z",
+                                              failure_message="You've hit your session limit · resets 10:10am (UTC)",
+                                              inline=0, summary=0),
+                                                                                         "3",  OLD,
+                                         lambda v: "2026-09-13T10:10:00Z" in v and "usage limit" in v),
+    # The case name promised "no retry advice", but the old predicate only checked
+    # the credential names, so a regression adding retry text would still pass
+    # (CR #173, thread 4000816208).
+    ("api-error (auth-failed): names both credentials, no retry advice",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=1 sha={OLD} -->",
+                                              result="failure", failure_class="auth-failed",
+                                              api_error_status="401", inline=0, summary=0),
+                                                                                         "1",  OLD,
+                                         lambda v: "CLAUDE_CODE_OAUTH_TOKEN" in v and "ANTHROPIC_API_KEY" in v
+                                                   and "@claude review" not in v
+                                                   and "try again" not in v
+                                                   and "transient" not in v),
+    # A failed read of posted comments is not zero findings: the old code converted
+    # it to "[]", so the verdict asserted "did not review" as a certainty the code
+    # never established. This case forces num_turns>1 so the read is attempted at
+    # all, and FAKE_INLINE_FAIL makes gh_read exhaust its retries (CR #173, thread
+    # 4000816177).
+    ("api-error: a failed partial-inline read says so, never asserts none were posted",
+                                         dict(marker_body=f"<!-- claude-review-liveness rounds=1 sha={OLD} -->",
+                                              result="failure", failure_class="rate-limited",
+                                              api_error_status="429", num_turns="3", inline_fail="1"),
+                                                                                         "1",  OLD,
+                                         lambda v: "could not be read" in v
+                                                   and "Some findings were posted" not in v),
 ]
 
 
@@ -257,18 +332,26 @@ def main():
     for case in CASES:
         name, kw, want_rounds, want_sha = case[:4]
         verdict_check = case[4] if len(case) > 4 else None
+        want_patch = case[5] if len(case) > 5 else None
         res, err = run_case(script, **kw)
         if err:
             fails.append(f"{name}: {err}")
             print(f"  ERROR  {name}: {err}")
             continue
         line, verdict = res
-        got_rounds, got_sha = parse_marker(line)
+        got_rounds, got_sha, got_patch = parse_marker(line)
         ok = got_rounds == want_rounds and got_sha == want_sha
+        if want_patch is not None and got_patch != want_patch:
+            ok = False
+            fails.append(f"{name}: want patch={want_patch}, got {got_patch}")
         # the existing reader must still see the same rounds value
         if reader_rounds(line) != (want_rounds or ""):
             ok = False
-            err = f"reader parsed rounds={reader_rounds(line)!r}"
+            fails.append(f"{name}: reader parsed rounds={reader_rounds(line)!r}")
+        # old readers parse sha= off the marker (#162)
+        if reader_sha(line) != (want_sha or ""):
+            ok = False
+            fails.append(f"{name}: reader parsed sha={reader_sha(line)!r}")
         if verdict_check and not verdict_check(verdict):
             ok = False
             fails.append(f"{name}: verdict assertion failed on {verdict!r}")

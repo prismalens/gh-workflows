@@ -279,7 +279,7 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 54);
+      assert.equal(query.args.length, 63);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
@@ -331,6 +331,10 @@ describe("Worker telemetry ingest", () => {
       // level (52) and level_source (53) are the #101 fields; a v1 payload predates them too.
       assert.equal(query.args[52], null);
       assert.equal(query.args[53], null);
+
+      // context_repositories (54) and context_lines (55) are the #90 fields; a v1 payload predates them too.
+      assert.equal(query.args[54], null);
+      assert.equal(query.args[55], null);
     });
 
     it("inserts a full v2 payload and binds every new column with given values", async () => {
@@ -719,9 +723,9 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /config_effective/);
-      // config_effective sits 3 params before the end: level and level_source (#101)
-      // were appended after it.
-      assert.equal(query.args[query.args.length - 3], JSON.stringify(configEffective));
+      // config_effective sits 5 params before the end: level and level_source (#101),
+      // context_repositories and context_lines (#90) were appended after it.
+      assert.equal(query.args[query.args.length - 12], JSON.stringify(configEffective));
     });
 
     it("stores null for config_effective when the payload omits it (#75)", async () => {
@@ -738,7 +742,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 3], null);
+      assert.equal(query.args[query.args.length - 12], null);
     });
 
     it("stores level and level_source for a v2 payload that sets them (#101)", async () => {
@@ -757,8 +761,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 2], "high");
-      assert.equal(query.args[query.args.length - 1], "repo");
+      assert.equal(query.args[query.args.length - 11], "high");
+      assert.equal(query.args[query.args.length - 10], "repo");
     });
 
     it("stores null for level and level_source when the payload omits them (#101)", async () => {
@@ -775,8 +779,157 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 2], null);
-      assert.equal(query.args[query.args.length - 1], null);
+      assert.equal(query.args[query.args.length - 11], null);
+      assert.equal(query.args[query.args.length - 10], null);
+    });
+
+    it("stores context_repositories and context_lines for a v2 payload that sets them (#90)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-context-1",
+          repository: "prismalens/gh-workflows",
+          context_repositories: 2,
+          context_lines: 450,
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 9], 2);
+      assert.equal(query.args[query.args.length - 8], 450);
+    });
+
+    it("stores null for context_repositories and context_lines when the payload omits them (#90)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-context-absent",
+          repository: "prismalens/gh-workflows",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 9], null);
+      assert.equal(query.args[query.args.length - 8], null);
+    });
+
+    it("returns 400 when context_repositories or context_lines is not a number (#90)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-context-bad",
+          repository: "prismalens/gh-workflows",
+          context_repositories: "not-a-number",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("stores failure_class, failure_retryable, failure_reset_at and api_error_status for a v2 payload that sets them (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-failure-1",
+          repository: "prismalens/gh-workflows",
+          failure_class: "account-limit",
+          failure_retryable: 0,
+          failure_reset_at: "2026-09-13T10:10:00Z",
+          api_error_status: 429,
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 7], "account-limit");
+      assert.equal(query.args[query.args.length - 6], 0);
+      assert.equal(query.args[query.args.length - 5], "2026-09-13T10:10:00Z");
+      assert.equal(query.args[query.args.length - 4], 429);
+    });
+
+    it("stores null for failure_class, failure_retryable, failure_reset_at and api_error_status when the payload omits them (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-failure-absent",
+          repository: "prismalens/gh-workflows",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 7], null);
+      assert.equal(query.args[query.args.length - 6], null);
+      assert.equal(query.args[query.args.length - 5], null);
+      assert.equal(query.args[query.args.length - 4], null);
+    });
+
+    it("returns 400 when failure_retryable or api_error_status is not a number (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-failure-bad",
+          repository: "prismalens/gh-workflows",
+          failure_retryable: "not-a-number",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("stores credential_type for a v2 payload that sets it (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-credential-1",
+          repository: "prismalens/gh-workflows",
+          credential_type: "api_key",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 3], "api_key");
+    });
+
+    it("stores null for credential_type when the payload omits it (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-credential-absent",
+          repository: "prismalens/gh-workflows",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 3], null);
     });
 
     it("returns 400 when level or level_source is not a string", async () => {
@@ -793,6 +946,44 @@ describe("Worker telemetry ingest", () => {
       const res = await worker.fetch(req, env);
       assert.equal(res.status, 400);
       assert.equal(db.queries.length, 0);
+    });
+
+    it("stores base_pr_number and patch_fingerprint for a v2 payload that sets them (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-backfill-1",
+          repository: "prismalens/gh-workflows",
+          base_pr_number: 90,
+          patch_fingerprint: "f".repeat(64),
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 2], 90);
+      assert.equal(query.args[query.args.length - 1], "f".repeat(64));
+    });
+
+    it("stores null for base_pr_number and patch_fingerprint when the payload omits them (#174)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-backfill-absent",
+          repository: "prismalens/gh-workflows",
+        },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 204);
+
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 2], null);
+      assert.equal(query.args[query.args.length - 1], null);
     });
   });
 
@@ -837,6 +1028,8 @@ describe("Worker telemetry ingest", () => {
             tool_uses: 5,
             tool_uses_by_name: { ReadFile: 3, RunCommand: 2 },
             file_paths: ["src/index.js", "src/util.js"],
+            tool_detail: { read: [{ path: "src/index.js", calls: 1, offset_max: 0, limit_max: 0, lines_returned: 10 }], grep: [], glob: [], bash: {}, other: {} },
+            harness_paths_count: 2,
           },
           {
             agent_id: "agent-beta",
@@ -880,12 +1073,20 @@ describe("Worker telemetry ingest", () => {
       assert.equal(db.queries[1].args[11], 5);
       assert.equal(db.queries[1].args[12], JSON.stringify({ ReadFile: 3, RunCommand: 2 }));
       assert.equal(db.queries[1].args[13], JSON.stringify(["src/index.js", "src/util.js"]));
+      assert.equal(
+        db.queries[1].args[14],
+        JSON.stringify({ read: [{ path: "src/index.js", calls: 1, offset_max: 0, limit_max: 0, lines_returned: 10 }], grep: [], glob: [], bash: {}, other: {} })
+      );
+      assert.equal(db.queries[1].args[15], 2);
 
       assert.match(db.queries[2].sql, /INSERT INTO round_agents/);
       assert.equal(db.queries[2].args[0], "s-with-agents-1");
       assert.equal(db.queries[2].args[1], "agent-beta");
       assert.equal(db.queries[2].args[2], "reviewer");
       assert.equal(db.queries[2].args[3], 2);
+      // agent-beta sets neither field (#174): both bind null, not undefined.
+      assert.equal(db.queries[2].args[14], null);
+      assert.equal(db.queries[2].args[15], null);
     });
 
     it("a session_id inside an agent entry is ignored in favour of the top-level one", async () => {
@@ -1043,6 +1244,69 @@ describe("Worker telemetry ingest", () => {
       const emptyIdBody = await emptyIdRes.json();
       assert.match(emptyIdBody.error, /index 0/);
       assert.equal(db.queries.length, 0);
+    });
+
+    it("rejects a malformed tool_detail or a negative harness_paths_count before batching (#174, CR #173 thread 4000816218)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+
+      // tool_detail: a string that is not JSON
+      const notJsonReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-tool-detail-not-json",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: "agent-0", tool_detail: "not-json" }],
+        },
+      });
+      const notJsonRes = await worker.fetch(notJsonReq, env);
+      assert.equal(notJsonRes.status, 400);
+      const notJsonBody = await notJsonRes.json();
+      assert.match(notJsonBody.error, /tool_detail/);
+      assert.equal(db.queries.length, 0);
+
+      // tool_detail: a JSON array, not an object
+      const arrayReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-tool-detail-array",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: "agent-0", tool_detail: [1, 2, 3] }],
+        },
+      });
+      const arrayRes = await worker.fetch(arrayReq, env);
+      assert.equal(arrayRes.status, 400);
+      const arrayBody = await arrayRes.json();
+      assert.match(arrayBody.error, /tool_detail/);
+      assert.equal(db.queries.length, 0);
+
+      // harness_paths_count: -1
+      const negativeReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-harness-negative",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: "agent-0", harness_paths_count: -1 }],
+        },
+      });
+      const negativeRes = await worker.fetch(negativeReq, env);
+      assert.equal(negativeRes.status, 400);
+      const negativeBody = await negativeRes.json();
+      assert.match(negativeBody.error, /harness_paths_count/);
+      assert.equal(db.queries.length, 0);
+
+      // Valid values still insert, proving the rejection is on shape, not presence.
+      const validReq = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: {
+          session_id: "s-tool-detail-valid",
+          repository: "prismalens/gh-workflows",
+          agents: [{ agent_id: "agent-0", tool_detail: { read: [] }, harness_paths_count: 0 }],
+        },
+      });
+      const validRes = await worker.fetch(validReq, env);
+      assert.equal(validRes.status, 204);
+      assert.equal(db.queries.length, 2);
     });
 
     it("integer fields that are not integers become null and string fields are truncated", async () => {
@@ -1211,7 +1475,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(query.args[11], 6000);
     });
 
-    it("supports all nine valid reasons: no-token, auto-paused, paused-by-request, fork-head, skip-author, refused-size, draft, skip-trivial, superseded (#154)", async () => {
+    it("supports all valid reasons: no-token, auto-paused, paused-by-request, fork-head, skip-author, refused-size, draft, skip-trivial, superseded, unchanged-patch (#154, #162)", async () => {
       const reasons = [
         "no-token",
         "auto-paused",
@@ -1222,6 +1486,7 @@ describe("Worker telemetry ingest", () => {
         "draft",
         "skip-trivial",
         "superseded",
+        "unchanged-patch",
       ];
       for (const reason of reasons) {
         const db = createFakeDb();
@@ -1849,6 +2114,81 @@ describe("Worker telemetry read API", () => {
       assert.ok(query.sql.includes("level_source"));
     });
 
+    it("selects context_repositories and context_lines in the default response (#90)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return {
+              results: [
+                {
+                  session_id: "s-context-read-1",
+                  context_repositories: 2,
+                  context_lines: 450,
+                },
+                {
+                  session_id: "s-context-read-2",
+                  context_repositories: null,
+                  context_lines: null,
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/runs", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].context_repositories, 2);
+      assert.equal(data.rows[0].context_lines, 450);
+      assert.equal(data.rows[1].context_repositories, null);
+      assert.equal(data.rows[1].context_lines, null);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("context_repositories"));
+      assert.ok(query.sql.includes("context_lines"));
+    });
+
+    it("selects failure_class, failure_retryable, failure_reset_at and api_error_status in the default response (#174)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return {
+              results: [
+                {
+                  session_id: "s-failure-read-1",
+                  failure_class: "account-limit",
+                  failure_retryable: 0,
+                  failure_reset_at: "2026-09-13T10:10:00Z",
+                  api_error_status: 429,
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/runs", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].failure_class, "account-limit");
+      assert.equal(data.rows[0].failure_retryable, 0);
+      assert.equal(data.rows[0].failure_reset_at, "2026-09-13T10:10:00Z");
+      assert.equal(data.rows[0].api_error_status, 429);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("failure_class"));
+      assert.ok(query.sql.includes("api_error_status"));
+    });
+
     it("returns config_effective only under include=blobs, preserving an unknown config key (#75)", async () => {
       const helper = await getAccessHelper();
       const configEffective = {
@@ -2436,6 +2776,39 @@ describe("Worker telemetry read API", () => {
       const dataC = await resC.json();
       assert.deepEqual(dataC.rows, []);
       assert.equal(dataC.next_cursor, null);
+    });
+
+    it("selects tool_detail and harness_paths_count in the default response (#174)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM round_agents")) {
+            return {
+              results: [
+                {
+                  session_id: "s-detail-1",
+                  agent_id: "agent-01",
+                  tool_detail: JSON.stringify({ read: [], grep: [], glob: [], bash: {}, other: {} }),
+                  harness_paths_count: 3,
+                },
+              ],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/round-agents?session_id=s-detail-1", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].tool_detail, JSON.stringify({ read: [], grep: [], glob: [], bash: {}, other: {} }));
+      assert.equal(data.rows[0].harness_paths_count, 3);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("tool_detail"));
+      assert.ok(query.sql.includes("harness_paths_count"));
     });
 
     it("honors the limit query parameter instead of the hardcoded 64 (#141)", async () => {

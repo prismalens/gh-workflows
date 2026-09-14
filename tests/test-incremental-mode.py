@@ -61,12 +61,12 @@ exit 1
 """
 
 
-def run_case(script, *, event="pull_request", has_token="true", summon="none",
+def run_case(script, *, event="pull_request", has_oauth="true", has_api_key="false", summon="none",
              max_rounds="5", head_sha=NEW, fake_liveness="", fake_threads="[]",
              fake_compare_json="{}", fake_compare_404="0",
              skip_authors="dependabot[bot]", pr_author="",
              diff_lines="", min_diff_lines="0", debounce_minutes="0",
-             debounced_head=""):
+             debounced_head="", patch_fingerprint=""):
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         binp = td / "bin"
@@ -95,11 +95,14 @@ def run_case(script, *, event="pull_request", has_token="true", summon="none",
             EVENT_NAME=event,
             SUMMON=summon,
             MAX_ROUNDS=str(max_rounds),
-            HAS_TOKEN=has_token,
+            HAS_OAUTH=has_oauth,
+            HAS_API_KEY=has_api_key,
             DIFF_LINES=diff_lines,
             MIN_DIFF_LINES=min_diff_lines,
             DEBOUNCE_MINUTES=debounce_minutes,
+            DEBOUNCED_HEAD=debounced_head or head_sha,
             FAKE_DEBOUNCED_HEAD=debounced_head or head_sha,
+            PATCH_FINGERPRINT=patch_fingerprint,
             SKIP_AUTHORS=str(skip_authors),
             PR_AUTHOR=str(pr_author),
             FAKE_LIVENESS=fake_liveness,
@@ -124,7 +127,7 @@ def run_case(script, *, event="pull_request", has_token="true", summon="none",
 CASES = [
     # name, kwargs, want_mode, want_fallback_reason, want_skip_reason, want_range
     ("no token",
-     dict(has_token="false"),
+     dict(has_oauth="false"),
      "skip", "", "no-token", False),
 
     ("pull_request, rounds at limit",
@@ -147,6 +150,32 @@ CASES = [
     ("pull_request, compare diverged",
      dict(fake_liveness="<!-- claude-review-liveness rounds=1 sha=" + OLD + " -->",
           fake_compare_json=json.dumps({"status": "diverged", "files": [{}]})),
+     "review", "diverged", "", False),
+
+    ("pull_request, compare diverged with equal patch fingerprint gives unchanged-patch skip (#162)",
+     dict(fake_liveness=f"<!-- claude-review-liveness rounds=1 sha={OLD} patch={'e' * 64} -->",
+          fake_compare_json=json.dumps({"status": "diverged", "files": [{}]}),
+          patch_fingerprint="e" * 64),
+     "skip", "unchanged-patch", "unchanged-patch", False),
+
+    ("pull_request, compare diverged with different patch fingerprint gives full review (#162)",
+     dict(fake_liveness=f"<!-- claude-review-liveness rounds=1 sha={OLD} patch={'e' * 64} -->",
+          fake_compare_json=json.dumps({"status": "diverged", "files": [{}]}),
+          patch_fingerprint="f" * 64),
+     "review", "diverged", "", False),
+
+    ("pull_request, compare diverged with empty stored patch fingerprint gives full review (#162)",
+     dict(fake_liveness=f"<!-- claude-review-liveness rounds=1 sha={OLD} -->",
+          fake_compare_json=json.dumps({"status": "diverged", "files": [{}]}),
+          patch_fingerprint="e" * 64),
+     "review", "diverged", "", False),
+
+    ("issue_comment summon, compare diverged with equal patch fingerprint still reviews (#162)",
+     dict(event="issue_comment", summon="incremental",
+          fake_threads="[]",
+          fake_liveness=f"<!-- claude-review-liveness rounds=1 sha={OLD} patch={'e' * 64} -->",
+          fake_compare_json=json.dumps({"status": "diverged", "files": [{}]}),
+          patch_fingerprint="e" * 64),
      "review", "diverged", "", False),
 
     ("pull_request, compare behind",
@@ -195,11 +224,11 @@ CASES = [
     # A dependabot pull_request gets no secrets, so both guards fire. The author reason is
     # the honest one; reporting no-token sends a reader hunting for broken credentials (#121).
     ("pull_request, dependabot author with no token reports the author reason (#121)",
-     dict(has_token="false", pr_author="dependabot[bot]"),
+     dict(has_oauth="false", pr_author="dependabot[bot]"),
      "skip", "", "skipped-author", False),
 
     ("pull_request, no token and a non-skipped author still reports no-token (#121)",
-     dict(has_token="false", pr_author="Sumit1993"),
+     dict(has_oauth="false", pr_author="Sumit1993"),
      "skip", "", "no-token", False),
 
     # #113: the debounce re-reads the head after waiting.
@@ -313,6 +342,46 @@ def main():
                 f"got mode={got_mode!r} fallback={got_fallback!r} skip={got_skip!r}"
             )
         print(f"  {'ok  ' if ok else 'FAIL'}  {name:<48} mode={got_mode} fallback={got_fallback or '-'}")
+
+    # credential_type (#174): OAuth wins when both are set; either alone authenticates;
+    # neither is the existing no-token skip, unchanged by the new credential.
+    print("\ncredential_type combinations\n")
+    CREDENTIAL_CASES = [
+        ("oauth only", dict(has_oauth="true", has_api_key="false"), "oauth", "review"),
+        ("api key only", dict(has_oauth="false", has_api_key="true"), "api_key", "review"),
+        ("both set: oauth wins", dict(has_oauth="true", has_api_key="true"), "oauth", "review"),
+        ("neither set: no-token skip, empty credential_type", dict(has_oauth="false", has_api_key="false"), "", "skip"),
+    ]
+    for name, kw, want_credential, want_mode in CREDENTIAL_CASES:
+        outputs, err = run_case(script, **kw)
+        if err:
+            fails.append(f"{name}: {err}")
+            print(f"  ERROR  {name}: {err}")
+            continue
+        got_credential = outputs.get("credential_type", "")
+        got_mode = outputs.get("mode")
+        ok = got_credential == want_credential and got_mode == want_mode
+        if not ok:
+            fails.append(f"{name}: want credential_type={want_credential!r} mode={want_mode!r}, got credential_type={got_credential!r} mode={got_mode!r}")
+        print(f"  {'ok  ' if ok else 'FAIL'}  {name:<48} credential_type={got_credential or '-'} mode={got_mode}")
+
+    # The API key's VALUE must reach the action only through `with:`, never a `run:`
+    # shell body where it could be echoed, logged, or shell-expanded. A step's own env
+    # block can carry it (e.g. as HAS_API_KEY presence, never the value); the literal
+    # `secrets.ANTHROPIC_API_KEY` expression is what actually yields the value (#174).
+    import yaml as _yaml
+    wf = _yaml.safe_load(WF.read_text())
+    leaks = []
+    for job_name, job in wf["jobs"].items():
+        for step in job.get("steps", []) or []:
+            run_body = step.get("run")
+            if run_body and "secrets.ANTHROPIC_API_KEY" in run_body:
+                leaks.append(f"{job_name}/{step.get('name', step.get('id', '?'))}")
+    if leaks:
+        fails.append(f"secrets.ANTHROPIC_API_KEY referenced in a run: body: {leaks}")
+        print(f"  FAIL  the key's value never appears in a run: body: {leaks}")
+    else:
+        print("  ok    the key's value never appears in any run: body")
 
     print()
     if fails:

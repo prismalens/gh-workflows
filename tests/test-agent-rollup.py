@@ -108,7 +108,7 @@ def run_rollup_step(script, *,
         return proc.returncode, agents, proc.stdout + proc.stderr + f"\n__AGENTS_STATUS__={status}"
 
 
-def run_telemetry_step(script, *, execution_file_content, agents_json_str):
+def run_telemetry_step(script, *, execution_file_content, agents_json_str, env_overrides=None):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         ef = tdp / "execution.json"
@@ -137,6 +137,8 @@ def run_telemetry_step(script, *, execution_file_content, agents_json_str):
             VARIANT="control",
             GITHUB_OUTPUT=str(gh_output),
         )
+        if env_overrides:
+            env.update(env_overrides)
 
         proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
 
@@ -398,6 +400,92 @@ def main():
         print("  ok    model change mid-transcript: reports last model and warns")
 
     # -------------------------------------------------------------
+    # 9b. tool_detail (#174): Read (offset/limit), Grep, Glob, three Bash calls
+    # (gh pr diff, gh pr view, ls) and a harness path.
+    # -------------------------------------------------------------
+    workspace = "/home/runner/work/repo/repo"
+    detail_lines = "\n".join([
+        json.dumps({"type": "assistant", "message": {"model": "claude-sonnet-5", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Read",
+             "input": {"file_path": f"{workspace}/src/foo.py", "offset": 10, "limit": 50}},
+            {"type": "tool_use", "id": "t2", "name": "Grep",
+             "input": {"pattern": "needle", "path": f"{workspace}/src", "glob": "*.py"}},
+            {"type": "tool_use", "id": "t3", "name": "Glob",
+             "input": {"pattern": "*.ts", "path": f"{workspace}/src"}},
+            {"type": "tool_use", "id": "t4", "name": "Bash", "input": {"command": "gh pr diff 123"}},
+            {"type": "tool_use", "id": "t5", "name": "Bash", "input": {"command": "gh pr view 123"}},
+            {"type": "tool_use", "id": "t6", "name": "Bash", "input": {"command": "ls -la"}},
+            {"type": "tool_use", "id": "t7", "name": "Read",
+             "input": {"file_path": "/home/runner/.claude/projects/x/tool-results/blah.txt"}},
+        ]}}),
+        json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "line1\nline2\nline3"},
+            {"type": "tool_result", "tool_use_id": "t2", "content": "match1\nmatch2"},
+            {"type": "tool_result", "tool_use_id": "t3", "content": "a.ts\nb.ts\nc.ts"},
+            {"type": "tool_result", "tool_use_id": "t7", "content": "harness content, never counted as a repo file"},
+        ]}}),
+    ])
+    rc, agents, output = run_rollup_step(
+        script, execution_events=[], transcript_files={"agent-detail.jsonl": detail_lines},
+        env_overrides={"GITHUB_WORKSPACE": workspace},
+    )
+    if rc != 0:
+        fails.append(f"case 9b: exited {rc}: {output}")
+    elif not isinstance(agents, list) or len(agents) != 1:
+        fails.append(f"case 9b: expected 1 agent, got {agents}")
+    else:
+        a = agents[0]
+        detail = json.loads(a["tool_detail"])
+        want = {
+            "read": [{"path": "src/foo.py", "calls": 1, "offset_max": 10, "limit_max": 50, "lines_returned": 3}],
+            "grep": [{"pattern": "needle", "path": "src", "glob": "*.py", "calls": 1, "matches": 2}],
+            "glob": [{"pattern": "*.ts", "path": "src", "calls": 1, "results": 3}],
+            "bash": {"gh pr diff": 1, "gh pr view": 1, "ls": 1},
+            "other": {},
+        }
+        if detail != want:
+            fails.append(f"case 9b: tool_detail mismatch, want {want}, got {detail}")
+        elif a["harness_paths_count"] != 1:
+            fails.append(f"case 9b: want harness_paths_count=1, got {a['harness_paths_count']}")
+        elif "harness" in json.dumps(detail) or "tool-results" in json.dumps(detail):
+            fails.append(f"case 9b: harness path leaked into tool_detail: {detail}")
+        else:
+            print("  ok    tool_detail: Read/Grep/Glob/Bash grouped exactly, harness path excluded and counted")
+
+    # -------------------------------------------------------------
+    # 9c. tool_detail truncation: an oversized read list is trimmed and flagged
+    # -------------------------------------------------------------
+    big_tool_uses = [
+        {"type": "tool_use", "id": f"r{i}", "name": "Read", "input": {"file_path": f"{workspace}/file{i}.py"}}
+        for i in range(2000)
+    ]
+    big_results = [
+        {"type": "tool_result", "tool_use_id": f"r{i}", "content": "x" * 40}
+        for i in range(2000)
+    ]
+    big_lines = "\n".join([
+        json.dumps({"type": "assistant", "message": {"model": "claude-sonnet-5", "content": big_tool_uses}}),
+        json.dumps({"type": "user", "message": {"content": big_results}}),
+    ])
+    rc, agents, output = run_rollup_step(
+        script, execution_events=[], transcript_files={"agent-big.jsonl": big_lines},
+        env_overrides={"GITHUB_WORKSPACE": workspace},
+    )
+    if rc != 0:
+        fails.append(f"case 9c: exited {rc}: {output}")
+    elif not isinstance(agents, list) or len(agents) != 1:
+        fails.append(f"case 9c: expected 1 agent, got {agents}")
+    else:
+        raw = agents[0]["tool_detail"]
+        detail = json.loads(raw)
+        if len(raw.encode("utf-8")) > 48000:
+            fails.append(f"case 9c: tool_detail is {len(raw.encode('utf-8'))} bytes, over the 48000 budget")
+        elif detail.get("tool_detail_truncated") is not True:
+            fails.append(f"case 9c: expected tool_detail_truncated=true, got {detail.get('tool_detail_truncated')!r}")
+        else:
+            print("  ok    tool_detail: a 2000-entry read list is trimmed under 48000 bytes and flagged truncated")
+
+    # -------------------------------------------------------------
     # 10. Absent session_id: emits [], warns, exit 0
     # -------------------------------------------------------------
     rc, agents, output = run_rollup_step(script, execution_events=exec_events_1, session_id="")
@@ -454,6 +542,41 @@ def main():
         fails.append(f"case 13: agents in record mismatch: {record.get('agents')}")
     else:
         print("  ok    telemetry step integration: includes agents in record under top-level key")
+
+    # -------------------------------------------------------------
+    # 13b. Telemetry step: context_repositories and context_lines reach the payload
+    # (CodeRabbit thread 4000816223, PR #173: both were review job outputs but
+    # never passed into this step, so the posted record always carried NULL.)
+    # -------------------------------------------------------------
+    rc, record, out = run_telemetry_step(
+        telemetry_script, execution_file_content=exec_content, agents_json_str=json.dumps(mock_agents),
+        env_overrides={"CONTEXT_REPOSITORIES": "2", "CONTEXT_LINES_TELEMETRY": "450"},
+    )
+    if rc != 0:
+        fails.append(f"case 13b: telemetry step exited {rc}: {out}")
+    elif not isinstance(record, dict):
+        fails.append(f"case 13b: telemetry record not a dict: {record}")
+    elif record.get("context_repositories") != 2 or record.get("context_lines") != 450:
+        fails.append(f"case 13b: want context_repositories=2 context_lines=450, got {record.get('context_repositories')!r} {record.get('context_lines')!r}")
+    else:
+        print("  ok    telemetry step: context_repositories and context_lines reach the payload (#173 thread 4000816223)")
+
+    # -------------------------------------------------------------
+    # 13c. Telemetry step: absent context metrics store null, not missing
+    # -------------------------------------------------------------
+    rc, record, out = run_telemetry_step(
+        telemetry_script, execution_file_content=exec_content, agents_json_str=json.dumps(mock_agents),
+    )
+    if rc != 0:
+        fails.append(f"case 13c: telemetry step exited {rc}: {out}")
+    elif not isinstance(record, dict):
+        fails.append(f"case 13c: telemetry record not a dict: {record}")
+    elif "context_repositories" not in record or record["context_repositories"] is not None:
+        fails.append(f"case 13c: want context_repositories key present and null, got {record.get('context_repositories', 'MISSING')!r}")
+    elif "context_lines" not in record or record["context_lines"] is not None:
+        fails.append(f"case 13c: want context_lines key present and null, got {record.get('context_lines', 'MISSING')!r}")
+    else:
+        print("  ok    telemetry step: absent context metrics store null, key still present")
 
     # -------------------------------------------------------------
     # Summary

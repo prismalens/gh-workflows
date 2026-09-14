@@ -346,6 +346,71 @@ review:
   path_instructions: "not-a-list"
 """
 
+# review.context (#90): valid entry and four rejected shapes.
+VALID_CONFIG_CONTEXT = """
+version: 1
+
+review:
+  context:
+    - repository: "octo-org/octo-lib"
+      ref: "main"
+      paths:
+        - "src/api.ts"
+        - "docs/contract.md"
+"""
+
+MALFORMED_CONTEXT_TOO_MANY = """
+version: 1
+review:
+  context:
+    - {repository: "a/b", ref: "main", paths: ["x"]}
+    - {repository: "a/c", ref: "main", paths: ["x"]}
+    - {repository: "a/d", ref: "main", paths: ["x"]}
+    - {repository: "a/e", ref: "main", paths: ["x"]}
+"""
+
+MALFORMED_CONTEXT_MISSING_PATHS = """
+version: 1
+review:
+  context:
+    - repository: "a/b"
+      ref: "main"
+"""
+
+MALFORMED_CONTEXT_DOTDOT_PATH = """
+version: 1
+review:
+  context:
+    - repository: "a/b"
+      ref: "main"
+      paths:
+        - "../secrets"
+"""
+
+MALFORMED_CONTEXT_BAD_REPO = """
+version: 1
+review:
+  context:
+    - repository: "not-a-repo-slug"
+      ref: "main"
+      paths:
+        - "x"
+"""
+
+# "../.." passes the character-class regex (both chars are allowed), and the
+# checkout step joins it as .claude-context/${repository} -- escaping the
+# workspace unless the owner/name components are rejected explicitly (CR #173,
+# thread 4000816212).
+MALFORMED_CONTEXT_DOTDOT_REPO = """
+version: 1
+review:
+  context:
+    - repository: "../.."
+      ref: "main"
+      paths:
+        - "x"
+"""
+
 ORG_CONFIG_FULL = """
 version: 1
 
@@ -468,12 +533,15 @@ def main():
     check("config_effective unset max_reviewable_lines carries layer=workflow (not 'unavailable')",
           config_effective.get("max_reviewable_lines") == {"value": 6000, "layer": "workflow"},
           f"got {config_effective.get('max_reviewable_lines')!r}")
+    check("config_effective unset context carries layer=workflow, value=[] (#90, #12 fix)",
+          config_effective.get("context") == {"value": [], "layer": "workflow"},
+          f"got {config_effective.get('context')!r}")
     check("config_effective carries every key config_hash hashes, no more and no less",
           set(config_effective.keys()) == {
               "default_model", "auto_pause_rounds", "skip_authors", "escalation_paths",
               "path_filters", "path_instructions", "max_reviewable_lines", "max_file_lines",
               "language_map", "tool_findings", "issue_context_byte_budget",
-              "issue_context_total_byte_budget", "level",
+              "issue_context_total_byte_budget", "level", "context",
           },
           f"got keys {sorted(config_effective.keys())}")
     check("config_effective excludes variant, same as config_hash", "variant" not in config_effective, f"got keys {sorted(config_effective.keys())}")
@@ -513,6 +581,11 @@ def main():
         ("invalid model", MALFORMED_INVALID_MODEL, "Invalid value for 'review.default_model'"),
         ("level low, schema-rejected this release (#101)", MALFORMED_LEVEL_LOW, "Invalid value for 'review.level'"),
         ("yaml syntax error", MALFORMED_YAML_SYNTAX, "Malformed YAML"),
+        ("context: too many entries (#90)", MALFORMED_CONTEXT_TOO_MANY, "'review.context' in"),
+        ("context: missing paths (#90)", MALFORMED_CONTEXT_MISSING_PATHS, "'paths' in 'review.context[0]'"),
+        ("context: '..' path segment (#90)", MALFORMED_CONTEXT_DOTDOT_PATH, "'paths' in 'review.context[0]'"),
+        ("context: bad repository slug (#90)", MALFORMED_CONTEXT_BAD_REPO, "'repository' in 'review.context[0]'"),
+        ("context: '../..' repository escapes the workspace (CR #173, thread 4000816212)", MALFORMED_CONTEXT_DOTDOT_REPO, "'repository' in 'review.context[0]'"),
     ]:
         rc, out, stdout, stderr = run_config_case(config_script, config_yaml=malformed_yaml)
         check(f"malformed config ({label}) exits 0", rc == 0, f"rc={rc}")
@@ -558,6 +631,24 @@ def main():
     check("valid config warns and names unconsumed keys (losing path_instructions)",
           has_warning and (not warns_path_instructions) and warns_suppress_below and warns_ai_fix and warns_verification,
           f"stdout={stdout!r}")
+
+    # 4a2. review.context (#90): a valid entry is accepted and consumed as compact JSON.
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_CONTEXT)
+    check("valid context config exits 0", rc == 0, f"rc={rc}")
+    context_out = json.loads(out.get("context", "null"))
+    check("valid context config is consumed as the declared entry",
+          context_out == [{
+              "repository": "octo-org/octo-lib",
+              "ref": "main",
+              "paths": ["src/api.ts", "docs/contract.md"],
+          }],
+          f"got {context_out!r}")
+    check("valid context config produces no warning", "::warning::" not in stdout, f"stdout={stdout!r}")
+    check("valid context config logs its source", "review.context=1 entries" in stdout, f"stdout={stdout!r}")
+    context_effective = json.loads(out.get("config_effective", "{}")).get("context")
+    check("valid context config folds into config_effective with layer=repo (gh-workflows#12 fix)",
+          context_effective == {"value": context_out, "layer": "repo"},
+          f"got {context_effective!r}")
 
     # 4b. Missing PyYAML warns and falls back rather than failing the step
     rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_FULL, no_pyyaml=True)

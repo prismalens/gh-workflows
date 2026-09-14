@@ -575,6 +575,8 @@ describe("round agents API (#131, #89)", () => {
       tool_uses: 5,
       tool_uses_by_name: JSON.stringify({ ReadFile: 3, EditFile: 2 }),
       file_paths: JSON.stringify(["src/index.ts"]),
+      tool_detail: null,
+      harness_paths_count: null,
     };
     const agentApi = makeFixtureApi([], [], [], [mockAgent]);
     const response = await agentApi.fetchRoundAgents("session-abc");

@@ -35,6 +35,21 @@ def emitted_reasons() -> set[str]:
     return found
 
 
+def ungated_body_conditions() -> list[str]:
+    # The job gate is a fourth layer: a body branch the gate never admits is dead code,
+    # which is how `api-error` shipped unreachable in #173. Story: gh-workflows#154.
+    text = WORKFLOW.read_text(encoding="utf-8")
+    job = text[text.index("\n  lane-event:"):]
+    gate = job[: job.index("runs-on:")]
+    missing = []
+    for skip in re.findall(r'"\$SKIP_REASON" = "([a-z-]+)"', job):
+        if f"needs.review.outputs.skip_reason == '{skip}'" not in gate:
+            missing.append(f"skip_reason {skip}")
+    if "FAILURE_CLASS" in job and "needs.review.outputs.failure_class != ''" not in gate:
+        missing.append("failure_class")
+    return missing
+
+
 def worker_reasons() -> set[str]:
     text = WORKER_INDEX.read_text(encoding="utf-8")
     block = re.search(
@@ -89,6 +104,13 @@ def main() -> None:
         fails.append(
             "known to the dashboard but never emitted by the workflow "
             f"(dead dashboard entries): {', '.join(stale_in_dashboard)}"
+        )
+
+    ungated = ungated_body_conditions()
+    if ungated:
+        fails.append(
+            "derived by the lane-event body but never admitted by its job gate "
+            f"(unreachable): {', '.join(ungated)}"
         )
 
     print(

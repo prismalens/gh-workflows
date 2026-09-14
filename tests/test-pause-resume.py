@@ -131,7 +131,8 @@ def run_mode_step(script, *, event="pull_request", summon="none", fake_liveness=
                 DIFF_LINES="100",
                 MIN_DIFF_LINES="0",
                 DEBOUNCE_MINUTES="0",
-                HAS_TOKEN="true",
+                HAS_OAUTH="true",
+                HAS_API_KEY="false",
                 FAKE_LIVENESS=fake_liveness,
             )
 
@@ -151,7 +152,8 @@ def run_mode_step(script, *, event="pull_request", summon="none", fake_liveness=
 
 
 def run_announce_step(script, *, marker_body=None, skip_reason="", event="pull_request",
-                      mode="review", result="success", head_sha=NEW, actor_login=""):
+                      mode="review", result="success", head_sha=NEW, actor_login="",
+                      draft="false", summon="none"):
     cleanup_tmp()
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -194,6 +196,8 @@ def run_announce_step(script, *, marker_body=None, skip_reason="", event="pull_r
                 MODEL_SOURCE="default",
                 RUN_URL="https://github.com/prismalens/test-repo/actions/runs/124",
                 ACTOR_LOGIN=actor_login,
+                DRAFT=draft,
+                SUMMON=summon,
             )
 
             p = subprocess.run(["bash", "-c", script], env=env,
@@ -516,6 +520,50 @@ def main():
         fails.append(f"case 11b: want actor=null on skip-author, got {payload.get('actor')!r}")
     else:
         print("  ok    lane_event row carries actor=null on a non-pause skip")
+
+    # -------------------------------------------------------------
+    # 12. A pause on a draft is recorded, and stops the ready_for_review round
+    # -------------------------------------------------------------
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=None, event="issue_comment", mode="",
+        result="skipped", draft="true", summon="pause", actor_login="alice",
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0:
+        fails.append(f"case 12: announce exited {rc}: {err}")
+    elif "paused=1" not in marker_line or "paused_by=alice" not in marker_line:
+        fails.append(f"case 12: draft pause did not write paused=1 paused_by=alice: {marker_line!r}")
+    elif outs.get("verdict_kind") != "paused-by-request":
+        fails.append(f"case 12: draft pause verdict_kind: want paused-by-request, got {outs.get('verdict_kind')!r}")
+    else:
+        rc2, mouts, err2 = run_mode_step(mode_script, event="pull_request", fake_liveness=marker_line)
+        if mouts.get("skip_reason") != "paused-by-request":
+            fails.append(f"case 12: ready round after a draft pause did not skip: {mouts!r} {err2}")
+        else:
+            print("  ok    @claude pause on a draft is recorded and skips the ready_for_review round")
+
+    paused_marker = f"<!-- claude-review-liveness rounds=0 paused=1 paused_by=alice -->"
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=paused_marker, event="issue_comment", mode="",
+        result="skipped", draft="true", summon="resume", actor_login="alice",
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0 or "paused=1" in marker_line:
+        fails.append(f"case 12b: resume on a draft did not clear the pause: {marker_line!r} {err}")
+    else:
+        print("  ok    @claude resume on a draft clears the pause")
+
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=paused_marker, event="issue_comment", mode="",
+        result="skipped", draft="true", summon="review", actor_login="bob",
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0 or "paused=1 paused_by=alice" not in marker_line:
+        fails.append(f"case 12c: @claude review on a draft dropped the pause: {marker_line!r} {err}")
+    elif outs.get("verdict_kind") != "draft":
+        fails.append(f"case 12c: want draft verdict, got {outs.get('verdict_kind')!r}")
+    else:
+        print("  ok    @claude review on a draft reviews nothing and keeps the pause")
 
     print()
     if fails:

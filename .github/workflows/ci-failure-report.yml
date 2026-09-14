@@ -46,13 +46,13 @@ jobs:
           WORKFLOW_FILE: ci-failure-report.yml
           WINDOW_HOURS: ${{ inputs.window_hours || 0 }}
           HEARTBEAT: ${{ inputs.heartbeat || github.event.schedule == '37 7 * * 1' }}
-          SLACK_CI_FAILURES_WEBHOOK: ${{ secrets.SLACK_CI_FAILURES_WEBHOOK }}
+          SLACK_CI_WEBHOOK: ${{ secrets.SLACK_CI_WEBHOOK }}
           PAYLOAD_FILE: ${{ runner.temp }}/slack-payload.json
         run: |
           set -euo pipefail
 
-          if [ -z "${SLACK_CI_FAILURES_WEBHOOK:-}" ]; then
-            echo "::error::SLACK_CI_FAILURES_WEBHOOK is not set. Create a Slack incoming webhook for the failures channel and store it as a repository secret; until then no failure is reported anywhere (#169)."
+          if [ -z "${SLACK_CI_WEBHOOK:-}" ]; then
+            echo "::error::SLACK_CI_WEBHOOK is not set. Create a Slack incoming webhook for the failures channel and store it as a repository secret; until then no failure is reported anywhere (#169)."
             exit 1
           fi
 
@@ -175,7 +175,7 @@ jobs:
         if: steps.collect.outputs.post == 'true'
         uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
         with:
-          webhook: ${{ secrets.SLACK_CI_FAILURES_WEBHOOK }}
+          webhook: ${{ secrets.SLACK_CI_WEBHOOK }}
           webhook-type: incoming-webhook
           payload-file-path: ${{ runner.temp }}/slack-payload.json
           errors: true
