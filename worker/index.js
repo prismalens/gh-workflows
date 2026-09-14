@@ -1,6 +1,13 @@
+import { jwtVerify, createRemoteJWKSet } from "jose";
+
 let cachedCerts = null;
 let certsExpiry = 0;
 let lastRefetchTime = 0;
+
+const GITHUB_ACTIONS_JWKS = createRemoteJWKSet(
+  new URL("https://token.actions.githubusercontent.com/.well-known/jwks")
+);
+const GITHUB_ACTIONS_ISSUER = "https://token.actions.githubusercontent.com";
 
 // D1 refuses a row over 2,000,000 bytes. Every stored column is re-serialised
 // from this body and re-serialising never grows it, so half the row limit keeps
@@ -293,9 +300,46 @@ async function computeVariantKey(promptHash, model, actionVersion, configHash, r
   return sha256Hex(JSON.stringify(components));
 }
 
-// Exported for direct unit testing (worker/index.test.js); the Workers runtime only ever
-// uses the default export below.
-export { computeVariantKey };
+// Accepts either shared secret bearer or GitHub Actions OIDC JWT (#176).
+async function authenticateIngest(request, env, { getKey } = {}) {
+  const authHeader = request.headers.get("authorization");
+  const token = env?.REVIEW_TELEMETRY_TOKEN;
+
+  if (token && authHeader && timingSafeEqual(authHeader, `Bearer ${token}`)) {
+    return { method: "bearer" };
+  }
+
+  if (authHeader && /^Bearer\s+/i.test(authHeader)) {
+    const tokenStr = authHeader.replace(/^Bearer\s+/i, "").trim();
+    try {
+      const keySource = getKey || GITHUB_ACTIONS_JWKS;
+      const { payload } = await jwtVerify(tokenStr, keySource, {
+        issuer: GITHUB_ACTIONS_ISSUER,
+        audience: new URL(request.url).origin,
+        algorithms: ["RS256"],
+      });
+
+      if (!payload.repository || typeof payload.repository !== "string") {
+        return new Response(null, { status: 401 });
+      }
+
+      return {
+        method: "oidc",
+        repository: payload.repository,
+        repository_id: payload.repository_id ?? null,
+        repository_owner_id: payload.repository_owner_id ?? null,
+        job_workflow_ref: payload.job_workflow_ref ?? null,
+        run_id: payload.run_id ?? null,
+      };
+    } catch {
+      return new Response(null, { status: 401 });
+    }
+  }
+
+  return new Response(null, { status: 401 });
+}
+
+export { computeVariantKey, authenticateIngest };
 
 /**
  * Reads the body, stopping at `max` bytes. Returns null once the stream goes
@@ -1180,16 +1224,14 @@ ORDER BY run_id ASC`;
   );
 }
 
-async function handleIngest(request, env) {
+async function handleIngest(request, env, { getKey } = {}) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
   }
 
-  // Reject missing or empty secret to prevent open access (#41).
-  const token = env?.REVIEW_TELEMETRY_TOKEN;
-  const authHeader = request.headers.get("authorization");
-  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
-    return new Response(null, { status: 401 });
+  const auth = await authenticateIngest(request, env, { getKey });
+  if (auth instanceof Response) {
+    return auth;
   }
 
   const contentLength = request.headers.get("content-length");
@@ -1232,6 +1274,16 @@ async function handleIngest(request, env) {
       typeof payload.repository !== "string"
     ) {
       return new Response(null, { status: 400 });
+    }
+
+    if (
+      auth.method === "oidc" &&
+      payload.repository.toLowerCase() !== auth.repository.toLowerCase()
+    ) {
+      return new Response(JSON.stringify({ error: "repository mismatch" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
     }
 
     for (const field of NUMERIC_FIELDS) {
@@ -1426,14 +1478,17 @@ async function handleIngest(request, env) {
           api_error_status,
           credential_type,
           base_pr_number,
-          patch_fingerprint
+          patch_fingerprint,
+          ingest_auth,
+          repository_id
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
           ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
           ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
           ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
-          ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61, ?62, ?63
+          ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61, ?62, ?63,
+          ?64, ?65
         )
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
@@ -1499,7 +1554,9 @@ async function handleIngest(request, env) {
         payload.api_error_status ?? null,
         payload.credential_type ?? null,
         payload.base_pr_number ?? null,
-        payload.patch_fingerprint ?? null
+        payload.patch_fingerprint ?? null,
+        auth.method,
+        auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
       );
 
       const agentStmts = [];
@@ -1592,6 +1649,16 @@ async function handleIngest(request, env) {
       });
     }
 
+    if (
+      auth.method === "oidc" &&
+      payload.repository.toLowerCase() !== auth.repository.toLowerCase()
+    ) {
+      return new Response(JSON.stringify({ error: "repository mismatch" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     if (!VALID_LANE_EVENT_REASONS.has(payload.reason)) {
       return new Response(JSON.stringify({ error: "invalid reason" }), {
         status: 400,
@@ -1634,8 +1701,10 @@ async function handleIngest(request, env) {
           lane_version,
           reviewable_lines,
           max_reviewable_lines,
-          actor
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+          actor,
+          ingest_auth,
+          repository_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
         ON CONFLICT(run_id, run_attempt) DO NOTHING`
       ).bind(
         payload.run_id,
@@ -1650,7 +1719,9 @@ async function handleIngest(request, env) {
         payload.lane_version ?? null,
         payload.reviewable_lines ?? null,
         payload.max_reviewable_lines ?? null,
-        payload.actor ?? null
+        payload.actor ?? null,
+        auth.method,
+        auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
       ).run();
     } catch {
       return new Response(null, { status: 500 });
@@ -1703,15 +1774,14 @@ async function handleIngest(request, env) {
   });
 }
 
-async function handlePrState(request, env) {
+async function handlePrState(request, env, { getKey } = {}) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
   }
 
-  const token = env?.REVIEW_TELEMETRY_TOKEN;
-  const authHeader = request.headers.get("authorization");
-  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
-    return new Response(null, { status: 401 });
+  const auth = await authenticateIngest(request, env, { getKey });
+  if (auth instanceof Response) {
+    return auth;
   }
 
   const contentLength = request.headers.get("content-length");
@@ -1747,6 +1817,16 @@ async function handlePrState(request, env) {
   if (typeof payload.repository !== "string" || payload.repository.trim().length === 0) {
     return new Response(JSON.stringify({ error: "missing or invalid repository" }), {
       status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (
+    auth.method === "oidc" &&
+    payload.repository.toLowerCase() !== auth.repository.toLowerCase()
+  ) {
+    return new Response(JSON.stringify({ error: "repository mismatch" }), {
+      status: 403,
       headers: { "content-type": "application/json" },
     });
   }
@@ -1820,8 +1900,10 @@ async function handlePrState(request, env) {
         merged_at,
         closed_at,
         updated_at,
-        source
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        source,
+        ingest_auth,
+        repository_id
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
       ON CONFLICT(repository, pr_number) DO UPDATE SET
         state = COALESCE(excluded.state, prs.state),
         title = COALESCE(excluded.title, prs.title),
@@ -1832,7 +1914,9 @@ async function handlePrState(request, env) {
         merged_at = COALESCE(excluded.merged_at, prs.merged_at),
         closed_at = COALESCE(excluded.closed_at, prs.closed_at),
         updated_at = excluded.updated_at,
-        source = excluded.source
+        source = excluded.source,
+        ingest_auth = excluded.ingest_auth,
+        repository_id = COALESCE(excluded.repository_id, prs.repository_id)
       WHERE excluded.updated_at >= prs.updated_at`
     ).bind(
       truncateString(payload.repository, 512),
@@ -1846,7 +1930,9 @@ async function handlePrState(request, env) {
       truncateString(payload.merged_at, 512),
       truncateString(payload.closed_at, 512),
       updatedAt,
-      payload.source
+      payload.source,
+      auth.method,
+      auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
     ).run();
   } catch {
     return new Response(null, { status: 500 });
@@ -1906,15 +1992,14 @@ function validateFinding(finding) {
   return null;
 }
 
-async function handleIngestFindings(request, env) {
+async function handleIngestFindings(request, env, { getKey } = {}) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
   }
 
-  const token = env?.REVIEW_TELEMETRY_TOKEN;
-  const authHeader = request.headers.get("authorization");
-  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
-    return new Response(null, { status: 401 });
+  const auth = await authenticateIngest(request, env, { getKey });
+  if (auth instanceof Response) {
+    return auth;
   }
 
   const contentLength = request.headers.get("content-length");
@@ -1964,6 +2049,18 @@ async function handleIngestFindings(request, env) {
     }
   }
 
+  if (auth.method === "oidc") {
+    const mismatch = payload.findings.some(
+      (f) => typeof f.repository === "string" && f.repository.toLowerCase() !== auth.repository.toLowerCase()
+    );
+    if (mismatch) {
+      return new Response(JSON.stringify({ error: "repository mismatch" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
   if (payload.findings.length === 0) {
     return new Response(null, { status: 204 });
   }
@@ -1990,8 +2087,10 @@ async function handleIngestFindings(request, env) {
       verify_verdict,
       head_sha_reviewed,
       last_swept_at,
-      row_set_incomplete
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+      row_set_incomplete,
+      ingest_auth,
+      repository_id
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
     -- A thread is mutable state, not an immutable event (#47): every column is overwritten
     -- from the latest sweep pass rather than only filled in when currently null, so a newly
     -- resolved thread or an edited comment settles here on the very next sweep.
@@ -2015,7 +2114,9 @@ async function handleIngestFindings(request, env) {
       verify_verdict = excluded.verify_verdict,
       head_sha_reviewed = excluded.head_sha_reviewed,
       last_swept_at = excluded.last_swept_at,
-      row_set_incomplete = excluded.row_set_incomplete`
+      row_set_incomplete = excluded.row_set_incomplete,
+      ingest_auth = excluded.ingest_auth,
+      repository_id = COALESCE(excluded.repository_id, review_findings.repository_id)`
   );
 
   const stmts = payload.findings.map((finding) =>
@@ -2040,7 +2141,9 @@ async function handleIngestFindings(request, env) {
       finding.verify_verdict ?? null,
       truncateString(finding.head_sha_reviewed, 128),
       truncateString(finding.last_swept_at, 512),
-      finding.row_set_incomplete
+      finding.row_set_incomplete,
+      auth.method,
+      auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
     )
   );
 
@@ -2397,21 +2500,25 @@ async function handleDeleteChange(id, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx, options = {}) {
+    const opts = (ctx && typeof ctx === "object" && typeof ctx.getKey === "function") ? ctx : (options || {});
+    const getKey = opts.getKey || env?.getKey;
+    const authOptions = getKey ? { getKey } : {};
+
     const url = new URL(request.url);
     const { pathname } = url;
     const { method } = request;
 
     if (method === "POST" && (pathname === "/ingest" || pathname === "/")) {
-      return handleIngest(request, env);
+      return handleIngest(request, env, authOptions);
     }
 
     if (method === "POST" && pathname === "/pr-state") {
-      return handlePrState(request, env);
+      return handlePrState(request, env, authOptions);
     }
 
     if (method === "POST" && pathname === "/ingest/findings") {
-      return handleIngestFindings(request, env);
+      return handleIngestFindings(request, env, authOptions);
     }
 
     if (

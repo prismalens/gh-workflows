@@ -1,5 +1,6 @@
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from "jose";
 import worker, { computeVariantKey } from "./index.js";
 
 function createFakeDb(options = {}) {
@@ -157,6 +158,197 @@ describe("Worker telemetry ingest", () => {
     });
   });
 
+  describe("GitHub Actions OIDC Authentication (#176)", () => {
+    let keyPair;
+    let getLocalKey;
+
+    before(async () => {
+      const { publicKey, privateKey } = await generateKeyPair("RS256");
+      keyPair = { publicKey, privateKey };
+      const jwk = await exportJWK(publicKey);
+      getLocalKey = createLocalJWKSet({ keys: [jwk] });
+    });
+
+    async function mintOidcToken({
+      issuer = "https://token.actions.githubusercontent.com",
+      audience = "https://review-telemetry.sfun.cloud",
+      repository = "prismalens/gh-workflows",
+      repository_id = 12345,
+      repository_owner_id = 6789,
+      job_workflow_ref = "prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main",
+      run_id = 9999,
+      expiresIn = "1h",
+    } = {}) {
+      const jwt = new SignJWT({
+        repository,
+        repository_id,
+        repository_owner_id,
+        job_workflow_ref,
+        run_id,
+      }).setProtectedHeader({ alg: "RS256" });
+
+      if (issuer) jwt.setIssuer(issuer);
+      if (audience) jwt.setAudience(audience);
+      if (expiresIn) jwt.setExpirationTime(expiresIn);
+
+      return jwt.sign(keyPair.privateKey);
+    }
+
+    it("accepts a valid OIDC token and records ingest_auth and repository_id", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken();
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-1", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 2], "oidc");
+      assert.equal(query.args[query.args.length - 1], 12345);
+    });
+
+    it("rejects an OIDC token with wrong audience (401)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ audience: "https://wrong-audience.com" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-2", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("rejects an OIDC token with wrong issuer (401)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ issuer: "https://evil-issuer.com" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-3", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("rejects an expired OIDC token (401)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ expiresIn: "-10s" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-4", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("rejects a repository mismatch under OIDC (403, writes nothing)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ repository: "other-org/other-repo" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-5", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 403);
+      assert.deepEqual(await res.json(), { error: "repository mismatch" });
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("allows case-insensitive repository match under OIDC", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ repository: "PrismaLens/GH-Workflows" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-6", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+    });
+
+    function sampleFinding(overrides = {}) {
+      return {
+        thread_node_id: "PRRT_1",
+        repository: "prismalens/gh-workflows",
+        pr_number: 42,
+        path: "worker/index.js",
+        original_line: 100,
+        line: 100,
+        is_resolved: 0,
+        is_outdated: 0,
+        resolved_by_login: null,
+        thread_created_at: "2026-09-01T00:00:00Z",
+        header_raw: "Bug",
+        body_excerpt: "This looks off.",
+        diff_hunk: "@@ -1,3 +1,3 @@",
+        human_reply_count: 0,
+        human_reply_sha: null,
+        fix_sha: null,
+        fix_sha_source: null,
+        verify_verdict: null,
+        head_sha_reviewed: "abc1234",
+        last_swept_at: "2026-09-01T01:00:00Z",
+        row_set_incomplete: 0,
+        ...overrides,
+      };
+    }
+
+    it("rejects repository mismatch on findings under OIDC (403, writes nothing)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ repository: "prismalens/gh-workflows" });
+      const req = makeRequest("/ingest/findings", {
+        headers: { authorization: `Bearer ${token}` },
+        body: {
+          findings: [
+            sampleFinding({ repository: "other-org/other-repo" }),
+          ],
+        },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 403);
+      assert.deepEqual(await res.json(), { error: "repository mismatch" });
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("accepts valid bearer token alongside OIDC and records ingest_auth as bearer", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: { session_id: "s-bearer-1", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 2], "bearer");
+      assert.equal(query.args[query.args.length - 1], null);
+    });
+
+    it("rejects request when neither bearer nor valid OIDC token is present (401)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: "Bearer invalid-junk-token" },
+        body: { session_id: "s-none-1", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+  });
+
   describe("Rate limiting (#60)", () => {
     it("returns 429 when the INGEST_RATE_LIMITER binding refuses the request", async () => {
       const db = createFakeDb();
@@ -279,7 +471,9 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 63);
+      assert.equal(query.args.length, 65);
+      assert.equal(query.args[63], "bearer");
+      assert.equal(query.args[64], null);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
@@ -725,7 +919,7 @@ describe("Worker telemetry ingest", () => {
       assert.match(query.sql, /config_effective/);
       // config_effective sits 5 params before the end: level and level_source (#101),
       // context_repositories and context_lines (#90) were appended after it.
-      assert.equal(query.args[query.args.length - 12], JSON.stringify(configEffective));
+      assert.equal(query.args[query.args.length - 14], JSON.stringify(configEffective));
     });
 
     it("stores null for config_effective when the payload omits it (#75)", async () => {
@@ -742,7 +936,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 12], null);
+      assert.equal(query.args[query.args.length - 14], null);
     });
 
     it("stores level and level_source for a v2 payload that sets them (#101)", async () => {
@@ -761,8 +955,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 11], "high");
-      assert.equal(query.args[query.args.length - 10], "repo");
+      assert.equal(query.args[query.args.length - 13], "high");
+      assert.equal(query.args[query.args.length - 12], "repo");
     });
 
     it("stores null for level and level_source when the payload omits them (#101)", async () => {
@@ -779,8 +973,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 11], null);
-      assert.equal(query.args[query.args.length - 10], null);
+      assert.equal(query.args[query.args.length - 13], null);
+      assert.equal(query.args[query.args.length - 12], null);
     });
 
     it("stores context_repositories and context_lines for a v2 payload that sets them (#90)", async () => {
@@ -799,8 +993,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 9], 2);
-      assert.equal(query.args[query.args.length - 8], 450);
+      assert.equal(query.args[query.args.length - 11], 2);
+      assert.equal(query.args[query.args.length - 10], 450);
     });
 
     it("stores null for context_repositories and context_lines when the payload omits them (#90)", async () => {
@@ -817,8 +1011,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 9], null);
-      assert.equal(query.args[query.args.length - 8], null);
+      assert.equal(query.args[query.args.length - 11], null);
+      assert.equal(query.args[query.args.length - 10], null);
     });
 
     it("returns 400 when context_repositories or context_lines is not a number (#90)", async () => {
@@ -855,10 +1049,10 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 7], "account-limit");
-      assert.equal(query.args[query.args.length - 6], 0);
-      assert.equal(query.args[query.args.length - 5], "2026-09-13T10:10:00Z");
-      assert.equal(query.args[query.args.length - 4], 429);
+      assert.equal(query.args[query.args.length - 9], "account-limit");
+      assert.equal(query.args[query.args.length - 8], 0);
+      assert.equal(query.args[query.args.length - 7], "2026-09-13T10:10:00Z");
+      assert.equal(query.args[query.args.length - 6], 429);
     });
 
     it("stores null for failure_class, failure_retryable, failure_reset_at and api_error_status when the payload omits them (#174)", async () => {
@@ -875,10 +1069,10 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 9], null);
+      assert.equal(query.args[query.args.length - 8], null);
       assert.equal(query.args[query.args.length - 7], null);
       assert.equal(query.args[query.args.length - 6], null);
-      assert.equal(query.args[query.args.length - 5], null);
-      assert.equal(query.args[query.args.length - 4], null);
     });
 
     it("returns 400 when failure_retryable or api_error_status is not a number (#174)", async () => {
@@ -912,7 +1106,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 3], "api_key");
+      assert.equal(query.args[query.args.length - 5], "api_key");
     });
 
     it("stores null for credential_type when the payload omits it (#174)", async () => {
@@ -929,7 +1123,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 3], null);
+      assert.equal(query.args[query.args.length - 5], null);
     });
 
     it("returns 400 when level or level_source is not a string", async () => {
@@ -964,8 +1158,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 2], 90);
-      assert.equal(query.args[query.args.length - 1], "f".repeat(64));
+      assert.equal(query.args[query.args.length - 4], 90);
+      assert.equal(query.args[query.args.length - 3], "f".repeat(64));
     });
 
     it("stores null for base_pr_number and patch_fingerprint when the payload omits them (#174)", async () => {
@@ -982,8 +1176,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 2], null);
-      assert.equal(query.args[query.args.length - 1], null);
+      assert.equal(query.args[query.args.length - 4], null);
+      assert.equal(query.args[query.args.length - 3], null);
     });
   });
 
@@ -1440,6 +1634,8 @@ describe("Worker telemetry ingest", () => {
         null,
         // actor (#124): null on a payload that carries no pause actor.
         null,
+        "bearer",
+        null,
       ]);
     });
 
@@ -1602,7 +1798,9 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 1], "octocat");
+      assert.equal(query.args[query.args.length - 3], "octocat");
+      assert.equal(query.args[query.args.length - 2], "bearer");
+      assert.equal(query.args[query.args.length - 1], null);
     });
 
     it("stores actor as null when the payload omits it (#124)", async () => {
@@ -1622,6 +1820,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 3], null);
+      assert.equal(query.args[query.args.length - 2], "bearer");
       assert.equal(query.args[query.args.length - 1], null);
     });
 
