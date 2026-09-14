@@ -414,6 +414,7 @@ jobs:
       num_turns: ${{ steps.telemetry.outputs.num_turns }}
       # Which credential authenticated this round, 'oauth' or 'api_key'. Story: gh-workflows#174.
       credential_type: ${{ steps.mode.outputs.credential_type }}
+      telemetry_share: ${{ steps.config.outputs.telemetry_share }}
 
     steps:
       - name: Record review start time
@@ -484,6 +485,7 @@ jobs:
           # code is read. No workflow input either — org/repo config only, default medium.
           # 'low' is schema-rejected this release (see ALLOWED_LEVELS below).
           level = "medium"
+          telemetry_share = "full"
 
           sources = {
               "default_model": "workflow default",
@@ -501,12 +503,15 @@ jobs:
               "variant": "control",
               "level": "workflow default",
               "context": "workflow default",
+              "telemetry_share": "workflow default",
           }
 
           # Schema lives here and only here (#33).
           # The callee runs inside the consumer's checkout where this repository's
           # tools/ directory does not exist at runtime.
-          ALLOWED_TOP_LEVEL_KEYS = {"version", "review", "findings"}
+          ALLOWED_TOP_LEVEL_KEYS = {"version", "review", "findings", "telemetry"}
+          ALLOWED_TELEMETRY_KEYS = {"share"}
+          ALLOWED_TELEMETRY_SHARE = {"full", "off"}
           ALLOWED_REVIEW_KEYS = {
               "default_model",
               "auto_pause_rounds",
@@ -801,6 +806,23 @@ jobs:
                           if not isinstance(ivn, bool):
                               errors.append(f"Invalid value for 'findings.include_verification_note' in {filename}: expected boolean")
 
+              if "telemetry" in data:
+                  telemetry = data["telemetry"]
+                  if not isinstance(telemetry, dict):
+                      errors.append(f"Invalid value for 'telemetry' in {filename}: expected mapping, got {type(telemetry).__name__}")
+                  else:
+                      for key in telemetry:
+                          if key not in ALLOWED_TELEMETRY_KEYS:
+                              errors.append(f"Unknown configuration key 'telemetry.{key}' in {filename}")
+
+                      if "share" in telemetry:
+                          s = telemetry["share"]
+                          if not isinstance(s, str) or s not in ALLOWED_TELEMETRY_SHARE:
+                              errors.append(
+                                  f"Invalid value for 'telemetry.share' in {filename}: {s!r}. "
+                                  f"Allowed values: {sorted(ALLOWED_TELEMETRY_SHARE)}"
+                              )
+
               return errors
 
           # Org defaults are read from prismalens/gh-workflows at main (#54).
@@ -939,6 +961,13 @@ jobs:
                               for k in findings:
                                   org_unconsumed.append(f"findings.{k}")
 
+                          telemetry = org_data.get("telemetry", {})
+                          if isinstance(telemetry, dict):
+                              if "share" in telemetry:
+                                  telemetry_share = telemetry["share"]
+                                  sources["telemetry_share"] = "org defaults"
+                                  org_consumed.append(f"telemetry.share={telemetry_share}")
+
                           print(f"Consumed configuration from .github/claude-review-defaults.yml (ref {org_ref}): {', '.join(org_consumed) if org_consumed else 'none'}")
                           if org_unconsumed:
                               print(f"::warning::Configuration key(s) in .github/claude-review-defaults.yml accepted by schema but not yet wired in this workflow: {', '.join(sorted(org_unconsumed))}")
@@ -955,23 +984,23 @@ jobs:
               # Reading from head would let a pull request modify its own review policy
               # (e.g. raise auto_pause_rounds, change model, skip authors) in the commit under review.
               ref_name = base_sha[:8] if base_sha else "unknown"
-              fetch_cmd = ["gh", "api", f"repos/{repo}/contents/.github/claude-review.yml?ref={base_sha}", "--jq", ".content"]
-              res = subprocess.run(fetch_cmd, capture_output=True, text=True)
+              repo_fetch_cmd = ["gh", "api", f"repos/{repo}/contents/.github/claude-review.yml?ref={base_sha}", "--jq", ".content"]
+              repo_res = subprocess.run(repo_fetch_cmd, capture_output=True, text=True)
 
               config_content = None
-              if res.returncode == 0:
-                  if res.stdout.strip():
+              if repo_res.returncode == 0:
+                  if repo_res.stdout.strip():
                       try:
-                          config_content = base64.b64decode(res.stdout.strip()).decode("utf-8")
+                          config_content = base64.b64decode(repo_res.stdout.strip()).decode("utf-8")
                       except Exception as e:
                           repo_outcome = "unparseable"
                           print(f"::warning::.github/claude-review.yml at base ref {ref_name} failed to decode base64: {e}; applying workflow defaults.")
                   else:
                       config_content = ""
-              elif "404" in res.stderr:
+              elif "404" in repo_res.stderr:
                   print(f"No .github/claude-review.yml found at base ref {ref_name}; applying workflow defaults.")
               else:
-                  err = res.stderr.strip() if res.stderr else f"exit code {res.returncode}"
+                  err = repo_res.stderr.strip() if repo_res.stderr else f"exit code {repo_res.returncode}"
                   print(f"::warning::Failed to fetch .github/claude-review.yml at base ref {ref_name}: {err}; applying workflow defaults.")
 
               if config_content is not None:
@@ -1069,6 +1098,13 @@ jobs:
                               for k in findings:
                                   unconsumed.append(f"findings.{k}")
 
+                          telemetry = data.get("telemetry", {})
+                          if isinstance(telemetry, dict):
+                              if "share" in telemetry:
+                                  telemetry_share = telemetry["share"]
+                                  sources["telemetry_share"] = "repo config"
+                                  consumed.append(f"telemetry.share={telemetry_share}")
+
                           print(f"Consumed configuration from .github/claude-review.yml (base ref {ref_name}): {', '.join(consumed) if consumed else 'none (defaults applied)'}")
                           if unconsumed:
                               print(f"::warning::Configuration key(s) accepted by schema but not yet wired in this workflow: {', '.join(sorted(unconsumed))}")
@@ -1083,6 +1119,7 @@ jobs:
           # config_hash covers what changes reviewer behaviour, not variant (an explicit label,
           # excluded so it never rides into variant_key through config_hash). Sorted keys and no
           # whitespace variance, or the hash would drift without the config changing. #47 amendment.
+          # telemetry (share) is excluded: consent controls ingest reporting, not reviewer behaviour (#176).
           resolved_config = {
               "auto_pause_rounds": auto_pause_rounds,
               "default_model": default_model,
@@ -1132,6 +1169,7 @@ jobs:
           print(f"  review.issue_context_total_byte_budget: {issue_context_total_byte_budget} (source: {sources['issue_context_total_byte_budget']})")
           print(f"  review.variant: {variant or '(control)'} (source: {sources['variant']})")
           print(f"  review.level: {level} (source: {sources['level']})")
+          print(f"  telemetry.share: {telemetry_share} (source: {sources['telemetry_share']})")
           print(f"  config_hash: {config_hash}")
 
           github_output = os.environ.get("GITHUB_OUTPUT", "")
@@ -1155,6 +1193,7 @@ jobs:
                   f.write(f"variant={variant}\n")
                   f.write(f"level={level}\n")
                   f.write(f"context={json.dumps(context_config, separators=(',', ':'))}\n")
+                  f.write(f"telemetry_share={telemetry_share}\n")
           PY
 
       # Mode switch (#403 incremental re-review): on non-bot replies or summons,

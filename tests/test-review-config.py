@@ -456,6 +456,48 @@ review:
       instructions: "Repo instruction for repo-src."
 """
 
+ORG_CONFIG_TELEMETRY_SHARE_OFF = """
+version: 1
+
+telemetry:
+  share: "off"
+"""
+
+REPO_CONFIG_TELEMETRY_SHARE_OFF = """
+version: 1
+
+telemetry:
+  share: "off"
+"""
+
+REPO_CONFIG_TELEMETRY_SHARE_FULL = """
+version: 1
+
+telemetry:
+  share: "full"
+"""
+
+MALFORMED_TELEMETRY_UNKNOWN_KEY = """
+version: 1
+
+telemetry:
+  unknown: true
+"""
+
+MALFORMED_TELEMETRY_INVALID_SHARE = """
+version: 1
+
+telemetry:
+  share: "invalid"
+"""
+
+MALFORMED_TELEMETRY_NOT_MAPPING = """
+version: 1
+
+telemetry: "off"
+"""
+
+
 
 def main():
     config_script = extract_step_script(CONFIG_STEP)
@@ -693,6 +735,67 @@ def main():
     # 4g. Whitespace in skip_authors is stripped cleanly
     rc, out, stdout, stderr = run_config_case(config_script, input_skip_authors=" dependabot[bot] , renovate[bot] , custom-bot ", is_404=True)
     check("skip_authors input with whitespace is stripped", out.get("skip_authors") == "dependabot[bot],renovate[bot],custom-bot", f"got {out.get('skip_authors')}")
+
+    print("\n=== Testing Telemetry Configuration (#176) ===")
+
+    # Default: telemetry_share is "full", source is workflow default
+    rc, out, stdout, stderr = run_config_case(config_script, org_is_404=True, is_404=True)
+    check("telemetry default: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry default: share is full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+    check("telemetry default: logs workflow default source", "telemetry.share: full (source: workflow default)" in stdout, f"stdout: {stdout}")
+
+    # Org defaults set share to off
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_TELEMETRY_SHARE_OFF, is_404=True)
+    check("telemetry org defaults: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry org defaults: share is off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry org defaults: logs org defaults source", "telemetry.share: off (source: org defaults)" in stdout, f"stdout: {stdout}")
+
+    # Repo config sets share to off
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=REPO_CONFIG_TELEMETRY_SHARE_OFF)
+    check("telemetry repo config: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry repo config: share is off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry repo config: logs repo config source", "telemetry.share: off (source: repo config)" in stdout, f"stdout: {stdout}")
+
+    # Repo config overrides org defaults
+    rc, out, stdout, stderr = run_config_case(
+        config_script,
+        org_config_yaml=ORG_CONFIG_TELEMETRY_SHARE_OFF,
+        config_yaml=REPO_CONFIG_TELEMETRY_SHARE_FULL,
+    )
+    check("telemetry repo overrides org: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry repo overrides org: share is full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+    check("telemetry repo overrides org: logs repo config source", "telemetry.share: full (source: repo config)" in stdout, f"stdout: {stdout}")
+
+    # Malformed telemetry in repo config: unknown key
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=MALFORMED_TELEMETRY_UNKNOWN_KEY)
+    check("telemetry unknown key: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry unknown key: applies default full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+    check("telemetry unknown key: emits warning", "::warning::" in stdout and "Unknown configuration key 'telemetry.unknown'" in stdout, f"stdout: {stdout}")
+
+    # Malformed telemetry in repo config: invalid share value
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=MALFORMED_TELEMETRY_INVALID_SHARE)
+    check("telemetry invalid share: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry invalid share: applies default full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+    check("telemetry invalid share: emits warning", "::warning::" in stdout and "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
+
+    # Malformed telemetry in repo config: not a mapping
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=MALFORMED_TELEMETRY_NOT_MAPPING)
+    check("telemetry not mapping: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry not mapping: applies default full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+    check("telemetry not mapping: emits warning", "::warning::" in stdout and "expected mapping" in stdout, f"stdout: {stdout}")
+
+    # Malformed telemetry in org config
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=MALFORMED_TELEMETRY_INVALID_SHARE, is_404=True)
+    check("telemetry malformed org: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry malformed org: applies default full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+    check("telemetry malformed org: emits warning", "::warning::" in stdout and "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
+
+    # Prove telemetry.share does NOT change config_hash
+    rc_base, out_base, _, _ = run_config_case(config_script, is_404=True)
+    rc_off, out_off, _, _ = run_config_case(config_script, config_yaml=REPO_CONFIG_TELEMETRY_SHARE_OFF)
+    check("telemetry config_hash invariance: exits 0", rc_base == 0 and rc_off == 0)
+    check("telemetry config_hash invariance: hash matches", out_base.get("config_hash") == out_off.get("config_hash"),
+          f"base={out_base.get('config_hash')} off={out_off.get('config_hash')}")
 
     print("\n=== Testing Model Escalation (Part B: #34) ===")
 
