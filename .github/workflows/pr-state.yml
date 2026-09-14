@@ -33,12 +33,12 @@ jobs:
         id: auth
         uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
         with:
-          url: ${{ secrets.REVIEW_TELEMETRY_URL || vars.PR_STATE_URL || 'https://review-telemetry.sfun.cloud' }}
+          url: ${{ secrets.REVIEW_TELEMETRY_URL || vars.PR_STATE_URL || 'https://assayer.sfun.cloud/pr-state' }}
           bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
 
       - name: Post PR state
         env:
-          INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL || vars.PR_STATE_URL || 'https://review-telemetry.sfun.cloud/pr-state' }}
+          INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL || vars.PR_STATE_URL || 'https://assayer.sfun.cloud/pr-state' }}
           INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
           AUTH_HEADER: ${{ steps.auth.outputs.authorization }}
           TELEMETRY_SHARE: ${{ steps.auth.outputs.share }}

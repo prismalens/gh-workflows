@@ -81,7 +81,7 @@ jobs:
         id: auth
         uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
         with:
-          url: ${{ secrets.REVIEW_TELEMETRY_URL || 'https://review-telemetry.sfun.cloud' }}
+          url: ${{ secrets.REVIEW_TELEMETRY_URL }}
           bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
 
       - name: Sweep review findings
@@ -111,12 +111,11 @@ jobs:
 
           # Telemetry must never fail a run: an unconfigured consumer just skips (same
           # contract as the round telemetry POST in claude-code-review.yml).
-          if [ -z "${AUTH_HEADER:-}" ] && [ -z "${INGEST_TOKEN:-}" ]; then
+          if { [ -z "${AUTH_HEADER:-}" ] && [ -z "${INGEST_TOKEN:-}" ]; } || [ -z "${INGEST_URL:-}" ]; then
             echo "Review findings ingest is not configured for this repository; skipping."
             exit 0
           fi
 
-          INGEST_URL="${INGEST_URL:-https://review-telemetry.sfun.cloud}"
           case "$INGEST_URL" in
             https://*) ;;
             *)

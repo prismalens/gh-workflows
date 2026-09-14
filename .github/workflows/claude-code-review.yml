@@ -4405,7 +4405,7 @@ jobs:
         id: auth
         uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
         with:
-          url: ${{ secrets.REVIEW_TELEMETRY_URL || 'https://review-telemetry.sfun.cloud' }}
+          url: ${{ secrets.REVIEW_TELEMETRY_URL }}
           bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
           share: ${{ needs.review.outputs.telemetry_share }}
 
@@ -4447,12 +4447,11 @@ jobs:
             exit 0
           fi
 
-          if [ -z "${AUTH_HEADER:-}" ] && [ -z "${INGEST_TOKEN:-}" ]; then
+          if { [ -z "${AUTH_HEADER:-}" ] && [ -z "${INGEST_TOKEN:-}" ]; } || [ -z "${INGEST_URL:-}" ]; then
             echo "Telemetry is not configured for this repository; skipping."
             exit 0
           fi
 
-          INGEST_URL="${INGEST_URL:-https://review-telemetry.sfun.cloud}"
           case "$INGEST_URL" in
             https://*) ;;
             *)
@@ -5698,7 +5697,7 @@ jobs:
         id: auth
         uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
         with:
-          url: ${{ secrets.REVIEW_TELEMETRY_URL || 'https://review-telemetry.sfun.cloud' }}
+          url: ${{ secrets.REVIEW_TELEMETRY_URL }}
           bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
           share: ${{ needs.review.outputs.telemetry_share }}
 
@@ -5783,7 +5782,7 @@ jobs:
             exit 0
           fi
 
-          if [ -z "${AUTH_HEADER:-}" ] && [ -z "${INGEST_TOKEN:-}" ]; then
+          if { [ -z "${AUTH_HEADER:-}" ] && [ -z "${INGEST_TOKEN:-}" ]; } || [ -z "${INGEST_URL:-}" ]; then
             if [ "$reason" = "fork-head" ]; then
               echo "::warning::lane-event: REVIEW_TELEMETRY_TOKEN is empty (expected on fork pull_request runs without secrets access); fork-head lane event was not posted."
             else
@@ -5792,7 +5791,6 @@ jobs:
             exit 0
           fi
 
-          INGEST_URL="${INGEST_URL:-https://review-telemetry.sfun.cloud}"
           case "$INGEST_URL" in
             https://*) ;;
             *)
