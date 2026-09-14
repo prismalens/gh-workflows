@@ -7,11 +7,14 @@ stubs for curl and gh, verifying:
   2. Fallback to bearer on OIDC mint failure
   3. Fallback to bearer when ACTIONS_ID_TOKEN_REQUEST_URL is unset
   4. Output method=none when neither is available
-  5. Resolution of telemetry.share (override, local config, default full)
+  5. An empty url mints nothing and resolves method=none
+  6. Resolution of telemetry.share: override, repository file over org
+     defaults, org defaults with no repository file, a local working-tree
+     file ignored, and default full
 
 Run: python3 tests/test-telemetry-auth-action.py
 """
-import json
+import base64
 import os
 import pathlib
 import subprocess
@@ -21,6 +24,7 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ACTION_FILE = ROOT / ".github" / "actions" / "telemetry-auth" / "action.yml"
+TEST_URL = "https://telemetry.example.test/ingest"
 
 
 def extract_script():
@@ -31,12 +35,23 @@ def extract_script():
     sys.exit(f"step 'auth' not found in {ACTION_FILE}")
 
 
-def run_action_step(script, *, env_vars=None, local_config=None, stub_curl_resp=None, stub_curl_fail=False):
+def run_action_step(
+    script,
+    *,
+    env_vars=None,
+    local_config=None,
+    repo_config=None,
+    org_config=None,
+    stub_curl_resp=None,
+    stub_curl_fail=False,
+):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
         binp.mkdir()
 
+        # A local working-tree config file. F2: the action must never read this;
+        # it is only here to prove that (#176).
         if local_config is not None:
             gh_dir = tdp / ".github"
             gh_dir.mkdir(parents=True, exist_ok=True)
@@ -57,9 +72,35 @@ exit 0
         curl_bin.write_text(curl_script)
         curl_bin.chmod(0o755)
 
-        # Stub gh
-        gh_script = """#!/usr/bin/env bash
-exit 1
+        # Stub gh: answers repository-contents lookups for the repository's own
+        # claude-review.yml (default branch, no ref) and for the org defaults
+        # file at prismalens/gh-workflows@main. Anything else 404s.
+        repo_b64 = base64.b64encode(repo_config.encode()).decode() if repo_config is not None else ""
+        org_b64 = base64.b64encode(org_config.encode()).decode() if org_config is not None else ""
+        gh_script = f"""#!/usr/bin/env bash
+path="$2"
+case "$path" in
+  repos/*/contents/.github/claude-review.yml)
+    if [ -n "{repo_b64}" ]; then
+      echo "{repo_b64}"
+      exit 0
+    fi
+    echo "404: Not Found" >&2
+    exit 1
+    ;;
+  repos/prismalens/gh-workflows/contents/.github/claude-review-defaults.yml?ref=main)
+    if [ -n "{org_b64}" ]; then
+      echo "{org_b64}"
+      exit 0
+    fi
+    echo "404: Not Found" >&2
+    exit 1
+    ;;
+  *)
+    echo "404: Not Found" >&2
+    exit 1
+    ;;
+esac
 """
         gh_bin = binp / "gh"
         gh_bin.write_text(gh_script)
@@ -73,9 +114,10 @@ exit 1
             PATH=f"{binp}:{env['PATH']}",
             GITHUB_OUTPUT=str(output_file),
             RUNNER_TEMP=str(tdp),
-            TARGET_URL="https://review-telemetry.sfun.cloud",
+            TARGET_URL=TEST_URL,
             BEARER_TOKEN="",
             SHARE_OVERRIDE="",
+            GITHUB_REPOSITORY="acme/widgets",
         )
         if env_vars:
             env.update(env_vars)
@@ -177,32 +219,85 @@ def main():
     else:
         print("  ok    Case 4: neither available outputs method=none")
 
-    # Case 5: share override
-    proc, outputs = run_action_step(script, env_vars={"SHARE_OVERRIDE": "off"})
-    if outputs.get("share") != "off":
-        fails.append(f"Case 5 expected share=off, got {outputs.get('share')}")
-        print("  FAIL  Case 5: share override 'off'")
-    else:
-        print("  ok    Case 5: share override 'off' respected")
-
-    # Case 6: share resolved from local config file
+    # Case 5: an empty url mints nothing and gives method=none
     proc, outputs = run_action_step(
         script,
-        local_config="telemetry:\n  share: off\n",
+        env_vars={
+            "TARGET_URL": "",
+            "ACTIONS_ID_TOKEN_REQUEST_URL": "https://actions.github.com/token?foo=bar",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "mock-runner-token",
+            "BEARER_TOKEN": "fallback-bearer",
+        },
+        stub_curl_resp='{"value": "minted-oidc-token-123"}',
     )
+    if proc.returncode != 0:
+        fails.append(f"Case 5 exited non-zero: {proc.stderr}")
+        print("  FAIL  Case 5: exited non-zero")
+    elif outputs.get("method") != "none" or outputs.get("authorization") != "":
+        fails.append(f"Case 5 invalid outputs: {outputs}")
+        print("  FAIL  Case 5: unexpected outputs")
+    else:
+        print("  ok    Case 5: empty url mints nothing, method=none")
+
+    # Case 6: share override
+    proc, outputs = run_action_step(script, env_vars={"SHARE_OVERRIDE": "off"})
     if outputs.get("share") != "off":
         fails.append(f"Case 6 expected share=off, got {outputs.get('share')}")
-        print("  FAIL  Case 6: local config share=off")
+        print("  FAIL  Case 6: share override 'off'")
     else:
-        print("  ok    Case 6: local config share=off respected")
+        print("  ok    Case 6: share override 'off' respected")
 
-    # Case 7: share defaults to full
+    # Case 7: a local .github/claude-review.yml is never read (#33); with no
+    # repository or org file reachable, share still resolves to the default.
+    proc, outputs = run_action_step(
+        script,
+        local_config="telemetry:\n  share: 'off'\n",
+    )
+    if outputs.get("share") != "full":
+        fails.append(f"Case 7 expected share=full (local file ignored), got {outputs.get('share')}")
+        print("  FAIL  Case 7: local config is ignored")
+    else:
+        print("  ok    Case 7: local .github/claude-review.yml is ignored")
+
+    # Case 8: the repository file's share wins over an org default of 'full'
+    proc, outputs = run_action_step(
+        script,
+        repo_config="telemetry:\n  share: 'off'\n",
+        org_config="telemetry:\n  share: full\n",
+    )
+    if outputs.get("share") != "off":
+        fails.append(f"Case 8 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 8: repository share overrides org default")
+    else:
+        print("  ok    Case 8: repository share overrides org default")
+
+    # Case 9: org default of 'off' applies with no repository file
+    proc, outputs = run_action_step(
+        script,
+        org_config="telemetry:\n  share: 'off'\n",
+    )
+    if outputs.get("share") != "off":
+        fails.append(f"Case 9 expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 9: org default applies with no repository file")
+    else:
+        print("  ok    Case 9: org default applies with no repository file")
+
+    # Case 10: share defaults to full when nothing is configured anywhere
     proc, outputs = run_action_step(script)
     if outputs.get("share") != "full":
-        fails.append(f"Case 7 expected share=full, got {outputs.get('share')}")
-        print("  FAIL  Case 7: default share=full")
+        fails.append(f"Case 10 expected share=full, got {outputs.get('share')}")
+        print("  FAIL  Case 10: default share=full")
     else:
-        print("  ok    Case 7: share defaults to full")
+        print("  ok    Case 10: default share=full")
+
+    # Case 11: the action's url input is required, with no invented default host
+    action = yaml.safe_load(ACTION_FILE.read_text())
+    url_input = action.get("inputs", {}).get("url", {})
+    if not url_input.get("required") or "default" in url_input:
+        fails.append(f"Case 11: url input must be required with no default, got {url_input}")
+        print("  FAIL  Case 11: url input is not a bare required input")
+    else:
+        print("  ok    Case 11: url input is required with no default")
 
     print()
     if fails:

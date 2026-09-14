@@ -6,8 +6,7 @@ description: >-
 inputs:
   url:
     description: Target telemetry Worker URL
-    required: false
-    default: 'https://review-telemetry.sfun.cloud'
+    required: true
   bearer:
     description: Optional fallback bearer token
     required: false
@@ -51,95 +50,94 @@ runs:
         METHOD="none"
 
         # ── 1. Authenticate via GitHub Actions OIDC or Fallback to Bearer ─────────
-        if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
-          URL="${TARGET_URL:-https://review-telemetry.sfun.cloud}"
-          AUDIENCE="$(python3 -c "import sys; from urllib.parse import urlparse; u = urlparse(sys.argv[1]); print(f'{u.scheme}://{u.netloc}')" "$URL" 2>/dev/null || echo "$URL")"
+        # An empty url mints nothing: no target to mint an audience for or POST to (#176).
+        if [ -n "${TARGET_URL:-}" ]; then
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            AUDIENCE="$(python3 -c "import sys; from urllib.parse import urlparse; u = urlparse(sys.argv[1]); print(f'{u.scheme}://{u.netloc}')" "$TARGET_URL" 2>/dev/null || echo "$TARGET_URL")"
 
-          OIDC_TOKEN=""
-          err_file="$RUNNER_TEMP/oidc_mint_err.$$"
-          if RESP="$(curl -sS -m 10 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" 2>"$err_file")"; then
-            OIDC_TOKEN="$(echo "$RESP" | jq -r '.value // empty' 2>/dev/null || true)"
+            OIDC_TOKEN=""
+            err_file="$RUNNER_TEMP/oidc_mint_err.$$"
+            if RESP="$(curl -sS -m 10 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" 2>"$err_file")"; then
+              OIDC_TOKEN="$(echo "$RESP" | jq -r '.value // empty' 2>/dev/null || true)"
+            fi
+            rm -f "$err_file"
+
+            if [ -n "$OIDC_TOKEN" ]; then
+              echo "::add-mask::${OIDC_TOKEN}"
+              AUTH_HEADER="Bearer ${OIDC_TOKEN}"
+              METHOD="oidc"
+            else
+              echo "::warning::Could not mint GitHub Actions OIDC token; falling back to bearer (#176)"
+            fi
           fi
-          rm -f "$err_file"
 
-          if [ -n "$OIDC_TOKEN" ]; then
-            echo "::add-mask::${OIDC_TOKEN}"
-            AUTH_HEADER="Bearer ${OIDC_TOKEN}"
-            METHOD="oidc"
-          else
-            echo "::warning::Could not mint GitHub Actions OIDC token; falling back to bearer (#176)"
-          fi
-        fi
-
-        if [ "$METHOD" = "none" ]; then
-          if [ -n "${BEARER_TOKEN:-}" ]; then
-            echo "::add-mask::${BEARER_TOKEN}"
-            AUTH_HEADER="Bearer ${BEARER_TOKEN}"
-            METHOD="bearer"
-          else
-            AUTH_HEADER=""
-            METHOD="none"
+          if [ "$METHOD" = "none" ]; then
+            if [ -n "${BEARER_TOKEN:-}" ]; then
+              echo "::add-mask::${BEARER_TOKEN}"
+              AUTH_HEADER="Bearer ${BEARER_TOKEN}"
+              METHOD="bearer"
+            else
+              AUTH_HEADER=""
+              METHOD="none"
+            fi
           fi
         fi
 
         # ── 2. Resolve telemetry.share ───────────────────────────────────────────
+        # Config is read from refs only, never a local working tree, because a
+        # working tree can be a PR head and config is never read from a head (#33).
         RESOLVED_SHARE="${SHARE_OVERRIDE:-}"
         if [ -z "$RESOLVED_SHARE" ]; then
           RESOLVED_SHARE="$(python3 -c "import textwrap; exec(textwrap.dedent(r'''\
-          import base64, os, re, subprocess, sys
+          import base64, os, subprocess, sys
+
+          try:
+              import yaml
+          except ImportError as e:
+              print(f\"::warning::PyYAML unavailable ({e}); resolving telemetry.share as full (#176)\", file=sys.stderr)
+              print(\"full\")
+              sys.exit(0)
 
           def parse_yaml_share(text):
               try:
-                  import yaml
                   data = yaml.safe_load(text)
-                  if isinstance(data, dict):
-                      tel = data.get('telemetry')
-                      if isinstance(tel, dict):
-                          s = tel.get('share')
-                          if s in ('full', 'off'):
-                              return s
               except Exception:
-                  pass
-              m = re.search(r'(?:^|\n)telemetry\s*:\s*(?:[^\n]*\n|\s*\{)[^}\n]*share\s*:\s*[\x22\x27]?(full|off)[\x22\x27]?', text)
-              if m:
-                  return m.group(1)
+                  return None
+              if isinstance(data, dict):
+                  tel = data.get(\"telemetry\")
+                  if isinstance(tel, dict):
+                      s = tel.get(\"share\")
+                      if s in (\"full\", \"off\"):
+                          return s
               return None
 
-          repo = os.environ.get('GITHUB_REPOSITORY', '')
+          def fetch_content(repo, ref, path):
+              url = f\"repos/{repo}/contents/{path}\"
+              if ref:
+                  url += f\"?ref={ref}\"
+              cmd = [\"gh\", \"api\", url, \"--jq\", \".content\"]
+              p = subprocess.run(cmd, capture_output=True, text=True)
+              if p.returncode == 0 and p.stdout.strip():
+                  try:
+                      return base64.b64decode(p.stdout.strip()).decode(\"utf-8\", errors=\"replace\")
+                  except Exception:
+                      return None
+              return None
+
+          repo = os.environ.get(\"GITHUB_REPOSITORY\", \"\")
           res = None
 
-          for local_name in ('.github/claude-review.yml', '.github/claude-review.yaml'):
-              if os.path.exists(local_name):
-                  try:
-                      with open(local_name, 'r', encoding='utf-8') as f:
-                          res = parse_yaml_share(f.read())
-                          if res:
-                              break
-                  except Exception:
-                      pass
+          if repo:
+              content = fetch_content(repo, None, \".github/claude-review.yml\")
+              if content is not None:
+                  res = parse_yaml_share(content)
 
-          if not res and repo:
-              try:
-                  cmd = ['gh', 'api', f'repos/{repo}/contents/.github/claude-review.yml', '--jq', '.content']
-                  p = subprocess.run(cmd, capture_output=True, text=True)
-                  if p.returncode == 0 and p.stdout.strip():
-                      content = base64.b64decode(p.stdout.strip()).decode('utf-8', errors='replace')
-                      res = parse_yaml_share(content)
-              except Exception:
-                  pass
+          if res is None:
+              content = fetch_content(\"prismalens/gh-workflows\", \"main\", \".github/claude-review-defaults.yml\")
+              if content is not None:
+                  res = parse_yaml_share(content)
 
-          if not res and '/' in repo:
-              owner = repo.split('/')[0]
-              try:
-                  cmd = ['gh', 'api', f'repos/{owner}/.github/contents/.github/claude-review-defaults.yml', '--jq', '.content']
-                  p = subprocess.run(cmd, capture_output=True, text=True)
-                  if p.returncode == 0 and p.stdout.strip():
-                      content = base64.b64decode(p.stdout.strip()).decode('utf-8', errors='replace')
-                      res = parse_yaml_share(content)
-              except Exception:
-                  pass
-
-          print(res if res in ('full', 'off') else 'full')
+          print(res if res in (\"full\", \"off\") else \"full\")
           '''))")"
         fi
 
