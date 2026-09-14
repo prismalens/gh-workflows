@@ -632,24 +632,25 @@ async function handleSummary(env) {
   // Did-not-run verdicts: a round with a mapped lane_events reason but no
   // usage_records row (the telemetry job never ran) has no verdict_kind of its
   // own until this query supplies one, in the same unwindowed scope as the
-  // usage query above. Dedup happens in JS, the same pattern as
-  // queryAccountedRuns/handleAccountedRuns: a lane event whose run_id already
-  // produced a usage_records row is excluded, usage_records wins (#176).
+  // usage query above. The dedup that used to walk two unbounded result sets
+  // in JS is now one aggregate query: a lane event whose run_id already has a
+  // usage_records row is excluded by NOT EXISTS, usage_records still wins, and
+  // a null run_id still counts (NOT EXISTS is true when the correlated
+  // equality can never match) (#177, thread 4006669679).
   const mappedReasons = Object.keys(LANE_REASON_TO_VERDICT_KIND);
   if (mappedReasons.length > 0) {
     const placeholders = mappedReasons.map(() => "?").join(", ");
-    const laneRows = await env.DB.prepare(
-      `SELECT reason, run_id FROM lane_events WHERE reason IN (${placeholders})`
+    const laneCountRows = await env.DB.prepare(
+      `SELECT le.reason, COUNT(*) as cnt
+       FROM lane_events le
+       WHERE le.reason IN (${placeholders})
+         AND NOT EXISTS (SELECT 1 FROM usage_records ur WHERE ur.run_id = le.run_id)
+       GROUP BY le.reason`
     ).bind(...mappedReasons).all();
-    const usageRunIdRows = await env.DB.prepare(
-      "SELECT run_id FROM usage_records WHERE run_id IS NOT NULL"
-    ).all();
-    const usageRunIds = new Set((usageRunIdRows.results ?? []).map((r) => r.run_id));
-    for (const r of laneRows.results ?? []) {
+    for (const r of laneCountRows.results ?? []) {
       const mapped = LANE_REASON_TO_VERDICT_KIND[r.reason];
       if (!mapped) continue;
-      if (r.run_id !== null && r.run_id !== undefined && usageRunIds.has(r.run_id)) continue;
-      verdict_kinds[mapped] = (verdict_kinds[mapped] ?? 0) + 1;
+      verdict_kinds[mapped] = (verdict_kinds[mapped] ?? 0) + r.cnt;
     }
   }
 

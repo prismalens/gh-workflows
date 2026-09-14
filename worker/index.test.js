@@ -2671,8 +2671,11 @@ describe("Worker telemetry read API", () => {
       assert.deepEqual(data.verdict_kinds, {});
     });
 
-    describe("Did-not-run verdicts from lane_events (#176)", () => {
-      function summaryHandler({ laneRows = [], usageRunIdRows = [] } = {}) {
+    describe("Did-not-run verdicts from lane_events (#176, #177 thread 4006669679)", () => {
+      // One aggregate query now does the dedup that used to walk two unbounded
+      // result sets in JS: the stub supplies the {reason, cnt} rows that query
+      // would have returned, since the fake DB does not execute real SQL.
+      function summaryHandler({ laneCountRows = [] } = {}) {
         return (sql) => {
           if (sql.includes("FROM canary_pings")) return null;
           if (sql.includes("COUNT(*) as rows")) return { rows: 10, first_recorded_at: "2026-08-01T00:00:00.000Z" };
@@ -2681,8 +2684,7 @@ describe("Worker telemetry read API", () => {
           if (sql.includes("WHERE verdict_kind IS NOT NULL")) return [{ verdict_kind: "clean", cnt: 8 }];
           if (sql.includes("WHERE fallback_reason IS NOT NULL")) return [];
           if (sql.includes("WHERE model_source IS NOT NULL")) return [];
-          if (sql.includes("FROM lane_events") && sql.includes("reason IN")) return laneRows;
-          if (sql.includes("SELECT run_id FROM usage_records")) return usageRunIdRows;
+          if (sql.includes("FROM lane_events") && sql.includes("reason IN")) return laneCountRows;
           return null;
         };
       }
@@ -2691,7 +2693,7 @@ describe("Worker telemetry read API", () => {
         const helper = await getAccessHelper();
         const db = createFakeDb({
           handler: summaryHandler({
-            laneRows: [{ reason: "skip-trivial", run_id: 501 }],
+            laneCountRows: [{ reason: "skip-trivial", cnt: 1 }],
           }),
         });
         const env = { ...helper.env, DB: db };
@@ -2706,9 +2708,9 @@ describe("Worker telemetry read API", () => {
         const helper = await getAccessHelper();
         const db = createFakeDb({
           handler: summaryHandler({
-            // api-error rounds write both a lane event and a usage_records row (#174).
-            laneRows: [{ reason: "api-error", run_id: 777 }],
-            usageRunIdRows: [{ run_id: 777 }],
+            // api-error rounds write both a lane event and a usage_records row (#174);
+            // the query's NOT EXISTS clause excludes it, so the aggregate never sees it.
+            laneCountRows: [],
           }),
         });
         const env = { ...helper.env, DB: db };
@@ -2723,8 +2725,8 @@ describe("Worker telemetry read API", () => {
         const helper = await getAccessHelper();
         const db = createFakeDb({
           handler: summaryHandler({
-            laneRows: [], // fork-head is not in LANE_REASON_TO_VERDICT_KIND, so it is never
-            // even in the reason IN (...) bind list; the stub returns nothing for it.
+            laneCountRows: [], // fork-head is not in LANE_REASON_TO_VERDICT_KIND, so it is
+            // never even in the reason IN (...) bind list; the stub returns nothing for it.
           }),
         });
         const env = { ...helper.env, DB: db };
@@ -2743,10 +2745,7 @@ describe("Worker telemetry read API", () => {
         const helper = await getAccessHelper();
         const db = createFakeDb({
           handler: summaryHandler({
-            laneRows: [
-              { reason: "draft", run_id: 1 },
-              { reason: "draft", run_id: 2 },
-            ],
+            laneCountRows: [{ reason: "draft", cnt: 2 }],
           }),
         });
         const env = { ...helper.env, DB: db };
@@ -2762,6 +2761,30 @@ describe("Worker telemetry read API", () => {
         const laneQuery = db.queries.find((q) => q.sql.includes("FROM lane_events") && q.sql.includes("reason IN"));
         assert.ok(!/repository\s*=/.test(laneQuery.sql), "lane_events query must not filter by repository");
         assert.ok(!/recorded_at/.test(laneQuery.sql), "lane_events query must not filter by a date window");
+      });
+
+      it("is one aggregate query, not two unbounded result sets deduped in JS (#177)", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb({
+          handler: summaryHandler({
+            laneCountRows: [{ reason: "draft", cnt: 3 }],
+          }),
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+
+        const laneEventQueries = db.queries.filter((q) => q.sql.includes("FROM lane_events"));
+        assert.equal(laneEventQueries.length, 1, "expected exactly one lane_events query");
+        assert.match(laneEventQueries[0].sql, /GROUP BY\s+le\.reason/);
+        assert.match(laneEventQueries[0].sql, /NOT EXISTS/);
+        assert.match(laneEventQueries[0].sql, /FROM usage_records/);
+
+        const usageRunIdQuery = db.queries.find(
+          (q) => q.sql.includes("SELECT run_id FROM usage_records") && !q.sql.includes("NOT EXISTS")
+        );
+        assert.equal(usageRunIdQuery, undefined, "the separate unbounded usage_records run_id query must be gone");
       });
     });
   });
