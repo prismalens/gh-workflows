@@ -165,9 +165,63 @@ jobs:
     secrets:
       REVIEW_TELEMETRY_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
       REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+    # The callee's own job permissions, granted here because a `workflow_call` callee can only
+    # downgrade what its caller passes (AGENTS.md, "A callee permission is a caller change").
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
 ```
 
 Both secrets are `required: false` on the callee: a consumer that has not opted into review-findings ingest still runs the workflow, and the sweep step skips itself with a plain notice rather than failing the run, the same contract `claude-code-review.yml`'s own telemetry job already uses for `REVIEW_TELEMETRY_URL` / `REVIEW_TELEMETRY_TOKEN`. A normal (non-`full_history`) run only looks back `window_days` (default 3), wider than the daily cadence on purpose so a delayed or missed run cannot drop a day.
+
+### Worked-Example Consumer Stub (Telemetry Health)
+
+[`.github/workflows/telemetry-health.yml`](.github/workflows/telemetry-health.yml) reports how many
+of a repository's recent workflow runs never produced a telemetry row, so a gap in the pipeline
+shows up as a Worker-side report rather than silence. It skips itself entirely on
+`prismalens/gh-workflows`, the repository that hosts it.
+
+```yaml
+# This is a managed caller stub.
+# Logic lives in prismalens/gh-workflows/.github/workflows/telemetry-health.yml.
+# Do not add logic here.
+
+name: Telemetry Health
+
+on:
+  schedule:
+    # Daily, off the hour on purpose: GitHub delays cron at peak hours (#44).
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: 'Number of days to look back for workflow runs and health reporting'
+        required: false
+        default: 7
+        type: number
+
+jobs:
+  health:
+    uses: prismalens/gh-workflows/.github/workflows/telemetry-health.yml@main
+    with:
+      window_days: ${{ inputs.window_days || 7 }}
+    # explicit mapping, not `secrets: inherit` — Sumit1993/mage-memory sits outside the
+    # prismalens org, and inherit does not cross that boundary (Stub Rule 3, above).
+    secrets:
+      REVIEW_TELEMETRY_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
+      REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+    # The callee's own job permissions, granted here because a `workflow_call` callee can only
+    # downgrade what its caller passes (AGENTS.md, "A callee permission is a caller change").
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+```
+
+Both secrets are `required: false` on the callee, the same consent-first contract as the sweep and
+the review lane's own telemetry job: a consumer that has not opted in still runs, and the report
+step skips itself with a Step Summary line rather than failing the run.
 
 ---
 
