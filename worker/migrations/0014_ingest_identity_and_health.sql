@@ -13,21 +13,20 @@ ALTER TABLE prs ADD COLUMN ingest_auth TEXT;
 ALTER TABLE prs ADD COLUMN repository_id INTEGER;
 
 CREATE TABLE health_reports (
-  id TEXT PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   repository TEXT NOT NULL,
   repository_id INTEGER,
-  generated_at TEXT NOT NULL,
   window_start TEXT NOT NULL,
   window_end TEXT NOT NULL,
-  workflow_runs INTEGER NOT NULL,
-  telemetry_records INTEGER NOT NULL,
-  lane_events INTEGER NOT NULL,
-  missing_runs INTEGER NOT NULL,
-  missing_run_ids TEXT NOT NULL,
-  sweep_findings INTEGER NOT NULL,
-  pr_state_count INTEGER NOT NULL,
+  runs_seen INTEGER NOT NULL,
+  runs_accounted INTEGER NOT NULL,
+  unaccounted_runs TEXT NOT NULL,
+  startup_failures INTEGER NOT NULL,
+  lane_events_by_reason TEXT NOT NULL,
+  findings_swept INTEGER NOT NULL,
+  share TEXT NOT NULL,
   ingest_auth TEXT NOT NULL,
-  report_version TEXT NOT NULL
+  received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_health_reports_repo_time ON health_reports(repository, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_health_reports_repo_time ON health_reports(repository, received_at DESC);

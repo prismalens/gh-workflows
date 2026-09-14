@@ -9,7 +9,7 @@ const getLocalKey = createLocalJWKSet({ keys: [jwk] });
 
 async function mintOidcToken({
   issuer = "https://token.actions.githubusercontent.com",
-  audience = "https://review-telemetry.sfun.cloud",
+  audience = "https://telemetry.example.test",
   repository = "prismalens/gh-workflows",
   repository_id = 12345,
   repository_owner_id = 6789,
@@ -34,6 +34,7 @@ async function mintOidcToken({
 
 function createFakeDb(options = {}) {
   const queries = [];
+  let nextRowId = options.firstRowId ?? 1;
   const handleQuery = (sql, args) => {
     queries.push({ sql, args });
     if (options.shouldThrow) {
@@ -65,7 +66,7 @@ function createFakeDb(options = {}) {
                 throw new Error("D1 run error");
               }
               queries.push({ sql, args });
-              return { success: true };
+              return { success: true, meta: { last_row_id: nextRowId++ } };
             },
             async first() {
               const res = handleQuery(sql, args);
@@ -102,7 +103,7 @@ function makeRequest(path, { method = "POST", headers = {}, body } = {}) {
   if (body !== undefined) {
     init.body = typeof body === "string" ? body : JSON.stringify(body);
   }
-  return new Request(`https://review-telemetry.sfun.cloud${path}`, init);
+  return new Request(`https://telemetry.example.test${path}`, init);
 }
 
 const VALID_TOKEN = "secret-token-123";
@@ -306,6 +307,26 @@ describe("Worker telemetry ingest", () => {
         body: {
           findings: [
             sampleFinding({ repository: "other-org/other-repo" }),
+          ],
+        },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 403);
+      assert.deepEqual(await res.json(), { error: "repository mismatch" });
+      assert.equal(db.queries.length, 0);
+    });
+
+    // F5 (#176): a non-string repository is a mismatch too, checked before
+    // validateFinding, so this is a 403 naming the mismatch, not a generic 400.
+    it("rejects a finding with a non-string repository under OIDC (403, writes nothing)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ repository: "prismalens/gh-workflows" });
+      const req = makeRequest("/ingest/findings", {
+        headers: { authorization: `Bearer ${token}` },
+        body: {
+          findings: [
+            sampleFinding({ repository: 12345 }),
           ],
         },
       });
@@ -4563,7 +4584,7 @@ describe("Worker telemetry read API", () => {
         assert.deepEqual(data.run_ids, []);
       });
 
-      it("accepts GET /ingest/accounted-runs with valid bearer token (#176)", async () => {
+      it("accepts GET /ingest/accounted-runs with valid bearer token, bearer only (F7, #176)", async () => {
         const db = createFakeDb({
           handler: () => ({ results: [{ run_id: 1001 }] }),
         });
@@ -4578,10 +4599,10 @@ describe("Worker telemetry read API", () => {
         assert.deepEqual(data.run_ids, [1001]);
       });
 
-      it("accepts GET /ingest/accounted-runs with valid OIDC token (#176)", async () => {
-        const db = createFakeDb({
-          handler: () => ({ results: [{ run_id: 1001 }] }),
-        });
+      // This route sits behind Cloudflare Access and never accepted OIDC on main;
+      // slice 9 (#176) shared queryAccountedRuns, not this route's auth (F7).
+      it("rejects GET /ingest/accounted-runs with an OIDC token (bearer only)", async () => {
+        const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
         const token = await mintOidcToken({ repository: validRepo });
         const req = makeRequest(`/ingest/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
@@ -4589,21 +4610,7 @@ describe("Worker telemetry read API", () => {
           headers: { authorization: `Bearer ${token}` },
         });
         const res = await worker.fetch(req, env, { getKey: getLocalKey });
-        assert.equal(res.status, 200);
-        const data = await res.json();
-        assert.deepEqual(data.run_ids, [1001]);
-      });
-
-      it("rejects GET /ingest/accounted-runs when OIDC repository does not match (403) (#176)", async () => {
-        const db = createFakeDb();
-        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-        const token = await mintOidcToken({ repository: "other/repo" });
-        const req = makeRequest(`/ingest/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
-          method: "GET",
-          headers: { authorization: `Bearer ${token}` },
-        });
-        const res = await worker.fetch(req, env, { getKey: getLocalKey });
-        assert.equal(res.status, 403);
+        assert.equal(res.status, 401);
       });
 
       it("returns 500 when database throws an error", async () => {
@@ -4624,21 +4631,44 @@ describe("Worker telemetry read API", () => {
   describe("Health report ingest (POST /ingest/health) (#176)", () => {
     function sampleHealthPayload(overrides = {}) {
       return {
+        schema_version: 1,
         repository: "prismalens/gh-workflows",
-        report_version: "1",
-        generated_at: "2026-09-14T10:00:00.000Z",
         window_start: "2026-09-07T00:00:00.000Z",
         window_end: "2026-09-14T00:00:00.000Z",
-        workflow_runs: 5,
-        workflow_run_ids: [1001, 1002, 1003, 1004, 1005],
-        sweep_findings: 12,
-        pr_state_count: 8,
+        share: "full",
+        runs: [
+          { id: 1001, conclusion: "success", created_at: "2026-09-08T00:00:00.000Z", event: "pull_request" },
+          { id: 1002, conclusion: "success", created_at: "2026-09-08T01:00:00.000Z", event: "pull_request" },
+          { id: 1003, conclusion: "success", created_at: "2026-09-08T02:00:00.000Z", event: "pull_request" },
+          { id: 1004, conclusion: "startup_failure", created_at: "2026-09-08T03:00:00.000Z", event: "pull_request" },
+          { id: 1005, conclusion: "cancelled", created_at: "2026-09-08T04:00:00.000Z", event: "pull_request" },
+        ],
         ...overrides,
       };
     }
 
+    // Every SELECT the health route can issue, routed by SQL text so a test that
+    // only cares about one of them can leave the rest at their empty default.
+    function healthDb(overrides = {}, options = {}) {
+      return createFakeDb({
+        ...options,
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return { results: overrides.accounted ?? [] };
+          }
+          if (sql.includes("FROM lane_events")) {
+            return { results: overrides.laneEvents ?? [] };
+          }
+          if (sql.includes("FROM review_findings")) {
+            return { first: { count: overrides.findingsSwept ?? 0 } };
+          }
+          return { results: [] };
+        },
+      });
+    }
+
     it("returns 401 when authorization header is missing", async () => {
-      const db = createFakeDb();
+      const db = healthDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
       const req = makeRequest("/ingest/health", {
         body: sampleHealthPayload(),
@@ -4649,7 +4679,7 @@ describe("Worker telemetry read API", () => {
     });
 
     it("returns 401 when authorization token is wrong", async () => {
-      const db = createFakeDb();
+      const db = healthDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
       const req = makeRequest("/ingest/health", {
         headers: { authorization: "Bearer invalid-token" },
@@ -4661,7 +4691,7 @@ describe("Worker telemetry read API", () => {
     });
 
     it("rejects repository mismatch under OIDC (403, writes nothing)", async () => {
-      const db = createFakeDb();
+      const db = healthDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
       const token = await mintOidcToken({ repository: "other-org/other-repo" });
       const req = makeRequest("/ingest/health", {
@@ -4675,7 +4705,7 @@ describe("Worker telemetry read API", () => {
     });
 
     it("returns 400 when repository is missing or not a string", async () => {
-      const db = createFakeDb();
+      const db = healthDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
       for (const badRepo of [undefined, null, "", 123]) {
         const req = makeRequest("/ingest/health", {
@@ -4688,13 +4718,13 @@ describe("Worker telemetry read API", () => {
       assert.equal(db.queries.length, 0);
     });
 
-    it("returns 400 when report_version is not '1'", async () => {
-      const db = createFakeDb();
+    it("returns 400 when schema_version is not 1", async () => {
+      const db = healthDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-      for (const badVersion of ["2", 1, null, undefined]) {
+      for (const badVersion of ["1", 2, null, undefined]) {
         const req = makeRequest("/ingest/health", {
           headers: { authorization: `Bearer ${VALID_TOKEN}` },
-          body: sampleHealthPayload({ report_version: badVersion }),
+          body: sampleHealthPayload({ schema_version: badVersion }),
         });
         const res = await worker.fetch(req, env);
         assert.equal(res.status, 400);
@@ -4703,9 +4733,9 @@ describe("Worker telemetry read API", () => {
     });
 
     it("returns 400 when timestamp fields are invalid", async () => {
-      const db = createFakeDb();
+      const db = healthDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-      for (const field of ["generated_at", "window_start", "window_end"]) {
+      for (const field of ["window_start", "window_end"]) {
         const req = makeRequest("/ingest/health", {
           headers: { authorization: `Bearer ${VALID_TOKEN}` },
           body: sampleHealthPayload({ [field]: "not-a-timestamp" }),
@@ -4717,7 +4747,7 @@ describe("Worker telemetry read API", () => {
     });
 
     it("returns 400 when window_end precedes window_start", async () => {
-      const db = createFakeDb();
+      const db = healthDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
       const req = makeRequest("/ingest/health", {
         headers: { authorization: `Bearer ${VALID_TOKEN}` },
@@ -4731,13 +4761,13 @@ describe("Worker telemetry read API", () => {
       assert.equal(db.queries.length, 0);
     });
 
-    it("returns 400 when workflow_runs is negative or not an integer", async () => {
-      const db = createFakeDb();
+    it("returns 400 when share is not 'full' or 'off'", async () => {
+      const db = healthDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-      for (const badRuns of [-1, 1.5, "5", null]) {
+      for (const badShare of ["on", "true", 1, null, undefined]) {
         const req = makeRequest("/ingest/health", {
           headers: { authorization: `Bearer ${VALID_TOKEN}` },
-          body: sampleHealthPayload({ workflow_runs: badRuns }),
+          body: sampleHealthPayload({ share: badShare }),
         });
         const res = await worker.fetch(req, env);
         assert.equal(res.status, 400);
@@ -4745,13 +4775,14 @@ describe("Worker telemetry read API", () => {
       assert.equal(db.queries.length, 0);
     });
 
-    it("returns 400 when workflow_run_ids is invalid or exceeds 1000 items", async () => {
-      const db = createFakeDb();
+    it("returns 400 when runs is invalid or exceeds 1000 items", async () => {
+      const db = healthDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-      for (const badIds of ["not-array", [1, "two", 3], [1.5], Array(1001).fill(1)]) {
+      const oneRun = { id: 1, conclusion: "success", created_at: "2026-09-08T00:00:00.000Z", event: "pull_request" };
+      for (const badRuns of ["not-array", Array(1001).fill(oneRun)]) {
         const req = makeRequest("/ingest/health", {
           headers: { authorization: `Bearer ${VALID_TOKEN}` },
-          body: sampleHealthPayload({ workflow_run_ids: badIds }),
+          body: sampleHealthPayload({ runs: badRuns }),
         });
         const res = await worker.fetch(req, env);
         assert.equal(res.status, 400);
@@ -4759,80 +4790,133 @@ describe("Worker telemetry read API", () => {
       assert.equal(db.queries.length, 0);
     });
 
-    it("returns 400 when sweep_findings or pr_state_count is invalid", async () => {
-      const db = createFakeDb();
+    it("returns 400 when a run entry is malformed", async () => {
+      const db = healthDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-      for (const patch of [{ sweep_findings: -1 }, { sweep_findings: "none" }, { pr_state_count: -1 }, { pr_state_count: "none" }]) {
+      const base = { id: 1, conclusion: "success", created_at: "2026-09-08T00:00:00.000Z", event: "pull_request" };
+      const badRuns = [
+        [{ ...base, id: "1" }],
+        [{ ...base, id: 1.5 }],
+        [{ ...base, conclusion: 5 }],
+        [{ ...base, created_at: "not-a-timestamp" }],
+        [{ ...base, event: 5 }],
+        ["not-an-object"],
+      ];
+      for (const runs of badRuns) {
         const req = makeRequest("/ingest/health", {
           headers: { authorization: `Bearer ${VALID_TOKEN}` },
-          body: sampleHealthPayload(patch),
+          body: sampleHealthPayload({ runs }),
         });
         const res = await worker.fetch(req, env);
-        assert.equal(res.status, 400);
+        assert.equal(res.status, 400, `expected 400 for runs=${JSON.stringify(runs)}`);
       }
       assert.equal(db.queries.length, 0);
     });
 
-    it("computes reconciliation and records health report under bearer auth", async () => {
-      const db = createFakeDb({
-        handler: (sql) => {
-          if (sql.includes("FROM usage_records")) {
-            return {
-              results: [
-                { run_id: 1001, source_table: "usage_records" },
-                { run_id: 1002, source_table: "usage_records" },
-                { run_id: 1002, source_table: "lane_events" },
-                { run_id: 1003, source_table: "lane_events" },
-              ],
-            };
-          }
-          return { results: [] };
-        },
+    it("ignores a sender-supplied missing_runs and computes counts from D1", async () => {
+      const db = healthDb({
+        accounted: [
+          { run_id: 1001, source_table: "usage_records" },
+          { run_id: 1002, source_table: "lane_events" },
+          { run_id: 1003, source_table: "usage_records" },
+        ],
       });
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
       const req = makeRequest("/ingest/health", {
         headers: { authorization: `Bearer ${VALID_TOKEN}` },
-        body: sampleHealthPayload({ workflow_run_ids: [1001, 1002, 1003, 1004, 1005] }),
+        // A sender-supplied missing_runs of 0 must be ignored; D1 says 1004 and 1005
+        // are unaccounted regardless of what the sender claims (#176).
+        body: sampleHealthPayload({ missing_runs: 0 }),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.runs_seen, 5);
+      assert.equal(data.runs_accounted, 3);
+      assert.deepEqual(
+        data.unaccounted_runs.map((r) => r.id).sort(),
+        [1004, 1005]
+      );
+
+      const insertQuery = db.queries.find((q) => q.sql.includes("INSERT INTO health_reports"));
+      assert.ok(insertQuery, "expected an INSERT INTO health_reports");
+      assert.equal(insertQuery.args[4], 5); // runs_seen
+      assert.equal(insertQuery.args[5], 3); // runs_accounted
+      assert.equal(JSON.parse(insertQuery.args[6]).map((r) => r.id).sort().join(","), "1004,1005");
+    });
+
+    it("counts startup_failures from the submitted runs", async () => {
+      const db = healthDb({
+        accounted: [
+          { run_id: 1001, source_table: "usage_records" },
+          { run_id: 1002, source_table: "usage_records" },
+          { run_id: 1003, source_table: "usage_records" },
+          { run_id: 1004, source_table: "usage_records" },
+          { run_id: 1005, source_table: "usage_records" },
+        ],
+      });
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.startup_failures, 1); // run 1004 in the sample payload
+
+      const insertQuery = db.queries.find((q) => q.sql.includes("INSERT INTO health_reports"));
+      assert.equal(insertQuery.args[7], 1); // startup_failures
+    });
+
+    it("computes lane_events_by_reason and findings_swept from D1", async () => {
+      const db = healthDb({
+        laneEvents: [
+          { reason: "skip-trivial", count: 3 },
+          { reason: "api-error", count: 1 },
+        ],
+        findingsSwept: 7,
+      });
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.deepEqual(data.lane_events_by_reason, { "skip-trivial": 3, "api-error": 1 });
+      assert.equal(data.findings_swept, 7);
+
+      const insertQuery = db.queries.find((q) => q.sql.includes("INSERT INTO health_reports"));
+      assert.deepEqual(JSON.parse(insertQuery.args[8]), { "skip-trivial": 3, "api-error": 1 });
+      assert.equal(insertQuery.args[9], 7); // findings_swept
+    });
+
+    it("records health report under bearer auth with null repository_id", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: sampleHealthPayload(),
       });
       const res = await worker.fetch(req, env);
       assert.equal(res.status, 200);
       const data = await res.json();
       assert.equal(data.status, "ok");
-      assert.ok(typeof data.id === "string" && data.id.length > 0);
 
-      assert.equal(db.queries.length, 2);
-      const insertQuery = db.queries[1];
+      const insertQuery = db.queries.find((q) => q.sql.includes("INSERT INTO health_reports"));
       assert.match(insertQuery.sql, /INSERT INTO health_reports/);
-      assert.equal(insertQuery.args[0], data.id);
-      assert.equal(insertQuery.args[1], "prismalens/gh-workflows");
-      assert.equal(insertQuery.args[2], null); // repository_id is null for bearer
-      assert.equal(insertQuery.args[3], "2026-09-14T10:00:00.000Z");
-      assert.equal(insertQuery.args[4], "2026-09-07T00:00:00.000Z");
-      assert.equal(insertQuery.args[5], "2026-09-14T00:00:00.000Z");
-      assert.equal(insertQuery.args[6], 5); // workflow_runs
-      assert.equal(insertQuery.args[7], 2); // telemetry_records (1001, 1002)
-      assert.equal(insertQuery.args[8], 2); // lane_events (1002, 1003)
-      assert.equal(insertQuery.args[9], 2); // missing_runs (1004, 1005)
-      assert.equal(insertQuery.args[10], JSON.stringify([1004, 1005]));
-      assert.equal(insertQuery.args[11], 12); // sweep_findings
-      assert.equal(insertQuery.args[12], 8); // pr_state_count
-      assert.equal(insertQuery.args[13], "bearer"); // ingest_auth
-      assert.equal(insertQuery.args[14], "1"); // report_version
+      assert.equal(insertQuery.args[0], "prismalens/gh-workflows");
+      assert.equal(insertQuery.args[1], null); // repository_id is null for bearer
+      assert.equal(insertQuery.args[2], "2026-09-07T00:00:00.000Z");
+      assert.equal(insertQuery.args[3], "2026-09-14T00:00:00.000Z");
+      assert.equal(insertQuery.args[10], "full"); // share
+      assert.equal(insertQuery.args[11], "bearer"); // ingest_auth
     });
 
     it("records health report with repository_id and oidc ingest_auth under OIDC", async () => {
-      const db = createFakeDb({
-        handler: (sql) => {
-          if (sql.includes("FROM usage_records")) {
-            return {
-              results: [
-                { run_id: 2001, source_table: "usage_records" },
-              ],
-            };
-          }
-          return { results: [] };
-        },
-      });
+      const db = healthDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
       const token = await mintOidcToken({
         repository: "prismalens/gh-workflows",
@@ -4840,21 +4924,16 @@ describe("Worker telemetry read API", () => {
       });
       const req = makeRequest("/ingest/health", {
         headers: { authorization: `Bearer ${token}` },
-        body: sampleHealthPayload({ workflow_runs: 1, workflow_run_ids: [2001] }),
+        body: sampleHealthPayload(),
       });
       const res = await worker.fetch(req, env, { getKey: getLocalKey });
       assert.equal(res.status, 200);
       const data = await res.json();
       assert.equal(data.status, "ok");
 
-      assert.equal(db.queries.length, 2);
-      const insertQuery = db.queries[1];
-      assert.equal(insertQuery.args[2], 998877); // repository_id
-      assert.equal(insertQuery.args[7], 1); // telemetry_records
-      assert.equal(insertQuery.args[8], 0); // lane_events
-      assert.equal(insertQuery.args[9], 0); // missing_runs
-      assert.equal(insertQuery.args[10], "[]");
-      assert.equal(insertQuery.args[13], "oidc"); // ingest_auth
+      const insertQuery = db.queries.find((q) => q.sql.includes("INSERT INTO health_reports"));
+      assert.equal(insertQuery.args[1], 998877); // repository_id
+      assert.equal(insertQuery.args[11], "oidc"); // ingest_auth
     });
 
     it("returns 500 when database throws an error", async () => {

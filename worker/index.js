@@ -1117,18 +1117,14 @@ async function handlePrs(url, env) {
 }
 
 // Programmatic read route for the telemetry reconciler (#87).
-// Authenticates with OIDC or REVIEW_TELEMETRY_TOKEN and returns distinct run_ids across
-// both usage_records and lane_events in the requested window (capped at 30 days). (#87, #176)
-async function handleAccountedRuns(request, url, env, authOptions = {}) {
-  const auth = await authenticateIngest(request, env, authOptions);
-  if (auth instanceof Response) {
-    return new Response(JSON.stringify({ error: "unauthorized" }), {
-      status: 401,
-      headers: READ_HEADERS,
-    });
-  }
-
-  if (auth.method === "bearer" && !env?.REVIEW_TELEMETRY_TOKEN) {
+// Sits behind Cloudflare Access, so it stays on the bearer check alone: slice 9 (#176)
+// shares queryAccountedRuns with the OIDC-capable ingest routes, not this route's auth (F7).
+// Authenticates with REVIEW_TELEMETRY_TOKEN and returns distinct run_ids across
+// both usage_records and lane_events in the requested window (capped at 30 days).
+async function handleAccountedRuns(request, url, env) {
+  const token = env?.REVIEW_TELEMETRY_TOKEN;
+  const authHeader = request.headers.get("authorization");
+  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
       headers: READ_HEADERS,
@@ -1139,16 +1135,6 @@ async function handleAccountedRuns(request, url, env, authOptions = {}) {
   if (repository === null || repository === "") {
     return new Response(JSON.stringify({ error: "missing repository" }), {
       status: 400,
-      headers: READ_HEADERS,
-    });
-  }
-
-  if (
-    auth.method === "oidc" &&
-    repository.toLowerCase() !== auth.repository.toLowerCase()
-  ) {
-    return new Response(JSON.stringify({ error: "repository mismatch" }), {
-      status: 403,
       headers: READ_HEADERS,
     });
   }
@@ -1244,6 +1230,34 @@ ORDER BY run_id ASC`;
   return res?.results ?? [];
 }
 
+// Counts lane_events for a repository in a window, grouped by reason (#176).
+async function queryLaneEventsByReason(db, repository, sinceIso, untilIso) {
+  const res = await db
+    .prepare(
+      `SELECT reason, COUNT(*) AS count FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? GROUP BY reason`
+    )
+    .bind(repository, sinceIso, untilIso)
+    .all();
+  const byReason = {};
+  for (const row of res?.results ?? []) {
+    if (typeof row.reason === "string" && row.reason) {
+      byReason[row.reason] = Number(row.count) || 0;
+    }
+  }
+  return byReason;
+}
+
+// Counts review_findings swept for a repository in a window (#176).
+async function queryFindingsSwept(db, repository, sinceIso, untilIso) {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count FROM review_findings WHERE repository = ? AND last_swept_at >= ? AND last_swept_at <= ?`
+    )
+    .bind(repository, sinceIso, untilIso)
+    .first();
+  return Number(row?.count) || 0;
+}
+
 async function handleHealth(request, env, { getKey } = {}) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
@@ -1299,25 +1313,14 @@ async function handleHealth(request, env, { getKey } = {}) {
     });
   }
 
-  if (payload.report_version !== "1") {
-    return new Response(JSON.stringify({ error: "missing or invalid report_version" }), {
+  if (payload.schema_version !== 1) {
+    return new Response(JSON.stringify({ error: "missing or invalid schema_version" }), {
       status: 400,
       headers: { "content-type": "application/json" },
     });
   }
 
   const isoUtcPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]00(?::?00)?)$/;
-
-  if (
-    typeof payload.generated_at !== "string" ||
-    !isoUtcPattern.test(payload.generated_at) ||
-    Number.isNaN(new Date(payload.generated_at).getTime())
-  ) {
-    return new Response(JSON.stringify({ error: "invalid generated_at" }), {
-      status: 400,
-      headers: { "content-type": "application/json" },
-    });
-  }
 
   if (
     typeof payload.window_start !== "string" ||
@@ -1350,56 +1353,50 @@ async function handleHealth(request, env, { getKey } = {}) {
     });
   }
 
-  if (
-    typeof payload.workflow_runs !== "number" ||
-    !Number.isInteger(payload.workflow_runs) ||
-    payload.workflow_runs < 0
-  ) {
-    return new Response(JSON.stringify({ error: "missing or invalid workflow_runs" }), {
+  if (payload.share !== "full" && payload.share !== "off") {
+    return new Response(JSON.stringify({ error: "missing or invalid share" }), {
       status: 400,
       headers: { "content-type": "application/json" },
     });
   }
 
-  if (
-    !Array.isArray(payload.workflow_run_ids) ||
-    payload.workflow_run_ids.length > 1000 ||
-    !payload.workflow_run_ids.every((id) => typeof id === "number" && Number.isInteger(id))
-  ) {
-    return new Response(JSON.stringify({ error: "missing or invalid workflow_run_ids" }), {
+  if (!Array.isArray(payload.runs) || payload.runs.length > 1000) {
+    return new Response(JSON.stringify({ error: "missing or invalid runs" }), {
       status: 400,
       headers: { "content-type": "application/json" },
     });
   }
 
-  if (
-    typeof payload.sweep_findings !== "number" ||
-    !Number.isInteger(payload.sweep_findings) ||
-    payload.sweep_findings < 0
-  ) {
-    return new Response(JSON.stringify({ error: "missing or invalid sweep_findings" }), {
-      status: 400,
-      headers: { "content-type": "application/json" },
-    });
-  }
-
-  if (
-    typeof payload.pr_state_count !== "number" ||
-    !Number.isInteger(payload.pr_state_count) ||
-    payload.pr_state_count < 0
-  ) {
-    return new Response(JSON.stringify({ error: "missing or invalid pr_state_count" }), {
-      status: 400,
-      headers: { "content-type": "application/json" },
-    });
+  // Every run is validated up front; a sender cannot report its own missing_runs or
+  // any other derived count, the Worker computes all of them from D1 below (#176).
+  for (const run of payload.runs) {
+    if (
+      !run ||
+      typeof run !== "object" ||
+      !Number.isInteger(run.id) ||
+      typeof run.conclusion !== "string" ||
+      typeof run.created_at !== "string" ||
+      !isoUtcPattern.test(run.created_at) ||
+      Number.isNaN(new Date(run.created_at).getTime()) ||
+      typeof run.event !== "string"
+    ) {
+      return new Response(JSON.stringify({ error: "invalid run entry" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
   }
 
   const sinceIso = startDate.toISOString();
   const untilIso = endDate.toISOString();
 
-  let results;
+  let accountedResults;
+  let laneEventsByReason;
+  let findingsSwept;
   try {
-    results = await queryAccountedRuns(env.DB, payload.repository, sinceIso, untilIso);
+    accountedResults = await queryAccountedRuns(env.DB, payload.repository, sinceIso, untilIso);
+    laneEventsByReason = await queryLaneEventsByReason(env.DB, payload.repository, sinceIso, untilIso);
+    findingsSwept = await queryFindingsSwept(env.DB, payload.repository, sinceIso, untilIso);
   } catch {
     return new Response(JSON.stringify({ error: "database error" }), {
       status: 500,
@@ -1407,75 +1404,58 @@ async function handleHealth(request, env, { getKey } = {}) {
     });
   }
 
-  const usageRunIds = new Set();
-  const laneRunIds = new Set();
   const accountedRunIds = new Set();
-
-  for (const r of results) {
-    const id = Number(r.run_id);
-    if (!Number.isInteger(id)) continue;
-    accountedRunIds.add(id);
-    if (r.source_table === "usage_records") {
-      usageRunIds.add(id);
-    } else if (r.source_table === "lane_events") {
-      laneRunIds.add(id);
-    } else {
-      usageRunIds.add(id);
-      laneRunIds.add(id);
-    }
+  for (const r of accountedResults) {
+    const rid = Number(r.run_id);
+    if (Number.isInteger(rid)) accountedRunIds.add(rid);
   }
 
-  const distinctPayloadRunIds = Array.from(new Set(payload.workflow_run_ids));
-  const telemetryRecords = payload.telemetry_records !== undefined && Number.isInteger(payload.telemetry_records)
-    ? payload.telemetry_records
-    : distinctPayloadRunIds.filter((id) => usageRunIds.has(id)).length;
-  const laneEvents = payload.lane_events !== undefined && Number.isInteger(payload.lane_events)
-    ? payload.lane_events
-    : distinctPayloadRunIds.filter((id) => laneRunIds.has(id)).length;
-  const missingRunIds = distinctPayloadRunIds.filter((id) => !accountedRunIds.has(id));
-  const missingRuns = payload.missing_runs !== undefined && Number.isInteger(payload.missing_runs)
-    ? payload.missing_runs
-    : missingRunIds.length;
+  const unaccountedRuns = [];
+  let startupFailures = 0;
+  for (const run of payload.runs) {
+    if (run.conclusion === "startup_failure") {
+      startupFailures += 1;
+    }
+    if (!accountedRunIds.has(run.id)) {
+      unaccountedRuns.push({ id: run.id, conclusion: run.conclusion, created_at: run.created_at });
+    }
+  }
+  const runsAccounted = payload.runs.length - unaccountedRuns.length;
 
-  const id = crypto.randomUUID();
   const repositoryId = auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null;
-  const missingRunIdsJson = JSON.stringify(missingRunIds);
+  const unaccountedRunsJson = JSON.stringify(unaccountedRuns);
+  const laneEventsByReasonJson = JSON.stringify(laneEventsByReason);
 
+  let insertResult;
   try {
-    await env.DB.prepare(
+    insertResult = await env.DB.prepare(
       `INSERT INTO health_reports (
-        id,
         repository,
         repository_id,
-        generated_at,
         window_start,
         window_end,
-        workflow_runs,
-        telemetry_records,
-        lane_events,
-        missing_runs,
-        missing_run_ids,
-        sweep_findings,
-        pr_state_count,
-        ingest_auth,
-        report_version
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`
+        runs_seen,
+        runs_accounted,
+        unaccounted_runs,
+        startup_failures,
+        lane_events_by_reason,
+        findings_swept,
+        share,
+        ingest_auth
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
     ).bind(
-      id,
       truncateString(payload.repository, 512),
       repositoryId,
-      truncateString(payload.generated_at, 128),
       truncateString(payload.window_start, 128),
       truncateString(payload.window_end, 128),
-      payload.workflow_runs,
-      telemetryRecords,
-      laneEvents,
-      missingRuns,
-      missingRunIdsJson,
-      payload.sweep_findings,
-      payload.pr_state_count,
-      auth.method,
-      String(payload.report_version)
+      payload.runs.length,
+      runsAccounted,
+      unaccountedRunsJson,
+      startupFailures,
+      laneEventsByReasonJson,
+      findingsSwept,
+      payload.share,
+      auth.method
     ).run();
   } catch {
     return new Response(JSON.stringify({ error: "database error" }), {
@@ -1487,14 +1467,17 @@ async function handleHealth(request, env, { getKey } = {}) {
   return new Response(
     JSON.stringify({
       status: "ok",
-      id,
-      workflow_runs: payload.workflow_runs,
-      telemetry_records: telemetryRecords,
-      lane_events: laneEvents,
-      missing_runs: missingRuns,
-      missing_run_ids: missingRunIds,
-      sweep_findings: payload.sweep_findings,
-      pr_state_count: payload.pr_state_count,
+      id: insertResult?.meta?.last_row_id ?? null,
+      repository: payload.repository,
+      window_start: payload.window_start,
+      window_end: payload.window_end,
+      share: payload.share,
+      runs_seen: payload.runs.length,
+      runs_accounted: runsAccounted,
+      unaccounted_runs: unaccountedRuns,
+      startup_failures: startupFailures,
+      lane_events_by_reason: laneEventsByReason,
+      findings_swept: findingsSwept,
     }),
     {
       status: 200,
@@ -2318,23 +2301,27 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
     });
   }
 
-  for (const finding of payload.findings) {
-    const error = validateFinding(finding);
-    if (error) {
-      return new Response(JSON.stringify({ error }), {
-        status: 400,
+  if (auth.method === "oidc") {
+    // Every row's repository must be a string equal to the claim's (F5, #176), checked
+    // before validateFinding so a mismatched or non-string repository under OIDC is a
+    // 403, not a 400 that leans on validateFinding's own typing to hold the invariant.
+    const mismatch = payload.findings.some((f) => {
+      const repo = f && typeof f === "object" && !Array.isArray(f) ? f.repository : undefined;
+      return typeof repo !== "string" || repo.toLowerCase() !== auth.repository.toLowerCase();
+    });
+    if (mismatch) {
+      return new Response(JSON.stringify({ error: "repository mismatch" }), {
+        status: 403,
         headers: { "content-type": "application/json" },
       });
     }
   }
 
-  if (auth.method === "oidc") {
-    const mismatch = payload.findings.some(
-      (f) => typeof f.repository === "string" && f.repository.toLowerCase() !== auth.repository.toLowerCase()
-    );
-    if (mismatch) {
-      return new Response(JSON.stringify({ error: "repository mismatch" }), {
-        status: 403,
+  for (const finding of payload.findings) {
+    const error = validateFinding(finding);
+    if (error) {
+      return new Response(JSON.stringify({ error }), {
+        status: 400,
         headers: { "content-type": "application/json" },
       });
     }
@@ -2811,7 +2798,7 @@ export default {
         pathname === "/ingest/accounted-runs" ||
         pathname === "/ingest/accounted-runs/")
     ) {
-      return handleAccountedRuns(request, url, env, authOptions);
+      return handleAccountedRuns(request, url, env);
     }
 
     if (
