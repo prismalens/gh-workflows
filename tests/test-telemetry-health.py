@@ -107,7 +107,15 @@ if [ "$is_post" -eq 1 ]; then
   if [ -n "$capture_post" ]; then
     printf '%s\n' "$payload" >> "$capture_post"
   fi
+  call_num=1
+  if [ -n "${CALL_COUNT_FILE:-}" ]; then
+    call_num=$(( $(cat "$CALL_COUNT_FILE" 2>/dev/null || echo 0) + 1 ))
+    echo "$call_num" > "$CALL_COUNT_FILE"
+  fi
   code="${FAKE_POST_CODE:-200}"
+  if [ -n "${FAKE_POST_FAIL_ON_CALL:-}" ] && [ "$call_num" = "${FAKE_POST_FAIL_ON_CALL}" ]; then
+    code="${FAKE_POST_FAIL_CODE:-500}"
+  fi
   if [ -n "$headers_file" ]; then
     printf 'HTTP/2 %s\r\ncontent-type: application/json\r\n\r\n' "$code" > "$headers_file"
   fi
@@ -154,7 +162,11 @@ if [ "$1" = "api" ]; then
     exit 1
   fi
   if [[ "$joined" == *"actions/workflows/"* ]]; then
-    printf '%s' "${FAKE_WORKFLOW_RUNS:-[]}"
+    if [ -n "${FAKE_WORKFLOW_RUNS_FILE:-}" ] && [ -f "$FAKE_WORKFLOW_RUNS_FILE" ]; then
+      cat "$FAKE_WORKFLOW_RUNS_FILE"
+    else
+      printf '%s' "${FAKE_WORKFLOW_RUNS:-[]}"
+    fi
     exit 0
   fi
 fi
@@ -180,6 +192,7 @@ def run_test_script(td, script, env_overrides=None):
     capture_post = td / "captured_posts.jsonl"
     capture_hdr = td / "captured_headers.txt"
     capture_get = td / "captured_gets.txt"
+    call_count_file = td / "post_call_count.txt"
 
     env = dict(os.environ)
     env.update(
@@ -189,6 +202,7 @@ def run_test_script(td, script, env_overrides=None):
             "CAPTURE_POST_FILE": str(capture_post),
             "CAPTURE_HDR_FILE": str(capture_hdr),
             "CAPTURE_GET_FILE": str(capture_get),
+            "CALL_COUNT_FILE": str(call_count_file),
             "REPOSITORY": "prismalens/prismalens",
             "WINDOW_DAYS": "7",
             "TEST_WINDOW_START": "2026-09-07T00:00:00Z",
@@ -379,6 +393,40 @@ def test_suite():
         assert "Health report not sent: jobs lookup failed for run 2002" in summary, summary
         print("  ok    an incomplete jobs lookup for a cancelled run withholds the whole report")
 
+    # 5c. A skipped run (every job skipped) is dropped before the report is built, the
+    # same as a cancelled run with zero jobs (#177, thread 4006669665).
+    workflow_runs_with_skipped = json.dumps(
+        [
+            {
+                "workflow_runs": [
+                    {
+                        "id": 2101,
+                        "created_at": "2026-09-08T12:00:00Z",
+                        "conclusion": "success",
+                        "event": "pull_request",
+                    },
+                    {
+                        "id": 2102,
+                        "created_at": "2026-09-09T12:00:00Z",
+                        "conclusion": "skipped",
+                        "event": "pull_request",
+                    },
+                ]
+            }
+        ]
+    )
+    with tempfile.TemporaryDirectory() as td:
+        proc, summary, posts, _, _ = run_test_script(
+            pathlib.Path(td), script, {"FAKE_WORKFLOW_RUNS": workflow_runs_with_skipped}
+        )
+        assert proc.returncode == 0, f"Expected 0, got {proc.returncode}: {proc.stderr}\n{proc.stdout}"
+        assert len(posts) == 1
+        payload = json.loads(posts[0])
+        run_ids = sorted(r["id"] for r in payload["runs"])
+        assert run_ids == [2101], f"Expected 2102 dropped (skipped), got {run_ids}"
+        assert "Filtered run 2102" in proc.stdout and "skipped" in proc.stdout
+        print("  ok    a skipped run is dropped before the report is built")
+
     # 6. Error handling: telemetry must never fail the job
     with tempfile.TemporaryDirectory() as td:
         proc, summary, posts, _, _ = run_test_script(
@@ -433,6 +481,70 @@ def test_suite():
         assert "::warning::telemetry-health: run 3002" in proc.stdout
         assert "https://github.com/prismalens/prismalens/actions/runs/3002" in proc.stdout
         print("  ok    one ::warning:: per unaccounted run, naming its URL")
+
+    # 9. Partitioning: 2300 runs produce 3 POSTs whose windows are contiguous and do
+    # not overlap (#177, thread 4006669665). One page is enough for the stub, which
+    # does not model real pagination.
+    from datetime import datetime, timedelta, timezone
+
+    base = datetime(2026, 9, 8, 0, 0, 0, tzinfo=timezone.utc)
+    many_runs = [
+        {
+            "id": 4000 + i,
+            "created_at": (base + timedelta(seconds=i * 200)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "conclusion": "success",
+            "event": "pull_request",
+        }
+        for i in range(2300)
+    ]
+    # Written to a file, not an env var: a single environment string is capped well
+    # under the size 2300 runs need (Linux MAX_ARG_STRLEN).
+    workflow_runs_many = json.dumps([{"workflow_runs": many_runs}], separators=(",", ":"))
+
+    with tempfile.TemporaryDirectory() as td:
+        fixture_path = pathlib.Path(td) / "workflow_runs.json"
+        fixture_path.write_text(workflow_runs_many)
+        proc, summary, posts, _, _ = run_test_script(
+            pathlib.Path(td), script, {"FAKE_WORKFLOW_RUNS_FILE": str(fixture_path)}
+        )
+        assert proc.returncode == 0, f"Expected 0, got {proc.returncode}: {proc.stderr}\n{proc.stdout}"
+        assert len(posts) == 3, f"Expected 3 sub-window POSTs for 2300 runs, got {len(posts)}"
+        payloads = [json.loads(p) for p in posts]
+        sizes = [len(p["runs"]) for p in payloads]
+        assert sizes == [1000, 1000, 300], f"Expected chunk sizes [1000, 1000, 300], got {sizes}"
+        # Contiguous, non-overlapping: chunk N's window_end never exceeds chunk N+1's
+        # window_start, and every run id appears in exactly one chunk.
+        for a, b in zip(payloads, payloads[1:]):
+            assert a["window_end"] <= b["window_start"], (
+                f"Sub-windows overlap: {a['window_end']!r} > {b['window_start']!r}"
+            )
+        all_ids = [r["id"] for p in payloads for r in p["runs"]]
+        assert sorted(all_ids) == sorted(r["id"] for r in many_runs), "Every run must appear in exactly one sub-window"
+        assert len(all_ids) == len(set(all_ids)), "No run may appear in more than one sub-window"
+        assert "Sub-windows:** 3" in summary
+        print("  ok    2300 runs produce 3 POSTs whose windows are contiguous and do not overlap")
+
+    # 10. A failed middle POST still sends the third sub-window (#177, thread 4006669665).
+    with tempfile.TemporaryDirectory() as td:
+        fixture_path = pathlib.Path(td) / "workflow_runs.json"
+        fixture_path.write_text(workflow_runs_many)
+        proc, summary, posts, _, _ = run_test_script(
+            pathlib.Path(td),
+            script,
+            {
+                "FAKE_WORKFLOW_RUNS_FILE": str(fixture_path),
+                "FAKE_POST_FAIL_ON_CALL": "2",
+                "FAKE_POST_FAIL_CODE": "500",
+            },
+        )
+        assert proc.returncode == 0, f"Expected 0 even with a failed sub-window, got {proc.returncode}"
+        assert len(posts) == 3, f"Expected all 3 sub-windows attempted, got {len(posts)}"
+        ok_sizes = [len(json.loads(p)["runs"]) for i, p in enumerate(posts) if i != 1]
+        assert ok_sizes == [1000, 300], f"Expected the 1st and 3rd sub-windows to still be built, got {ok_sizes}"
+        assert "::warning::Failed to submit health report sub-window 2/3" in proc.stdout
+        assert "Telemetry health report sub-window 1/3 submitted successfully" in proc.stdout
+        assert "Telemetry health report sub-window 3/3 submitted successfully" in proc.stdout
+        print("  ok    a failed middle POST still sends the third sub-window")
 
     print("\nAll telemetry health tests passed successfully.")
 

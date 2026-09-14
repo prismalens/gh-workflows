@@ -139,6 +139,8 @@ jobs:
           # 2. Port the reconciler's cancelled-with-zero-jobs filter: a cancelled run
           # that never started a job legitimately produces no telemetry row, so it never
           # belongs in the runs the health route judges (telemetry-reconcile.yml, #87).
+          # A skipped run (every job skipped) is dropped the same way: no telemetry row
+          # is expected from it either (#177, thread 4006669665).
           declare -a RUN_ENTRIES=()
           while IFS= read -r run_str; do
             [ -z "$run_str" ] && continue
@@ -146,6 +148,11 @@ jobs:
             run_conclusion=$(echo "$run_str" | jq -r '.conclusion // "in_progress"')
             run_created_at=$(echo "$run_str" | jq -r '.created_at')
             run_event=$(echo "$run_str" | jq -r '.event // ""')
+
+            if [ "$run_conclusion" = "skipped" ]; then
+              echo "Filtered run ${run_id} on ${REPO}: conclusion is skipped (#177)"
+              continue
+            fi
 
             if [ "$run_conclusion" = "cancelled" ]; then
               jobs_file="$(mktemp)"
@@ -176,29 +183,25 @@ jobs:
           if [ "${#RUN_ENTRIES[@]}" -eq 0 ]; then
             runs_json="[]"
           else
-            runs_json=$(printf '%s\n' "${RUN_ENTRIES[@]}" | jq -sc '.')
+            # Sorted ascending so a >1000-run window partitions into contiguous,
+            # non-overlapping sub-windows below (#177, thread 4006669665).
+            runs_json=$(printf '%s\n' "${RUN_ENTRIES[@]}" | jq -sc 'sort_by(.created_at)')
           fi
           total_runs=$(echo "$runs_json" | jq 'length')
 
-          # 3. Build the exact spec body: the Worker rejects anything else, including a
-          # sender-supplied count (#176).
-          payload=$(jq -nc \
-            --argjson schema_version 1 \
-            --arg repo "$REPO" \
-            --arg win_start "$WINDOW_START" \
-            --arg win_end "$WINDOW_END" \
-            --arg share "${TELEMETRY_SHARE:-full}" \
-            --argjson runs "$runs_json" \
-            '{
-              schema_version: $schema_version,
-              repository: $repo,
-              window_start: $win_start,
-              window_end: $win_end,
-              share: $share,
-              runs: $runs
-            }')
+          # 3. Partition into sub-windows of at most MAX_RUNS_PER_REPORT runs each — the
+          # Worker's own ingest contract. At or under the limit, this is the one report
+          # it always was, over the caller's own WINDOW_START/WINDOW_END. Over the limit,
+          # runs are already sorted by created_at, so slicing them into fixed-size chunks
+          # keeps each chunk contiguous and none overlap; each chunk's own first and last
+          # created_at becomes its window (#177, thread 4006669665).
+          MAX_RUNS_PER_REPORT=1000
+          if [ "$total_runs" -le "$MAX_RUNS_PER_REPORT" ]; then
+            chunk_count=1
+          else
+            chunk_count=$(( (total_runs + MAX_RUNS_PER_REPORT - 1) / MAX_RUNS_PER_REPORT ))
+          fi
 
-          # 4. Write the exact payload to the Step Summary before sending (#176)
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
             {
               echo "## Telemetry Health Report"
@@ -206,53 +209,118 @@ jobs:
               echo "- **Repository:** \`${REPO}\`"
               echo "- **Window:** \`${WINDOW_START}\` to \`${WINDOW_END}\` (${WINDOW_DAYS} days)"
               echo "- **Workflow runs seen:** ${total_runs}"
-              echo ""
-              echo "### Payload"
-              echo '```json'
-              echo "$payload"
-              echo '```'
+              if [ "$chunk_count" -gt 1 ]; then
+                echo "- **Sub-windows:** ${chunk_count} (over the ${MAX_RUNS_PER_REPORT}-run Worker ingest limit)"
+              fi
               echo ""
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          # 5. POST health report to Worker. Telemetry must never fail this job: any
-          # failure is a warning and a Step Summary line, then exit 0 (#176).
           post_headers="$(mktemp)"; TMPFILES+=("$post_headers")
           post_body="$(mktemp)"; TMPFILES+=("$post_body")
 
-          if ! code=$(printf '%s' "$payload" | curl -sS -m 15 -D "$post_headers" -o "$post_body" -w '%{http_code}' \
-            --proto '=https' \
-            -X POST "$HEALTH_URL" \
-            -H "@$hdr" \
-            --data-binary @-); then
-            code=000
-          fi
-
-          if [ "$code" != "200" ]; then
-            echo "::warning::Failed to submit health report to Worker (HTTP $code, expected 200)."
-            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-              echo "Failed to submit health report to Worker (HTTP ${code}, expected 200)." >> "$GITHUB_STEP_SUMMARY"
+          i=0
+          while [ "$i" -lt "$chunk_count" ]; do
+            if [ "$chunk_count" -eq 1 ]; then
+              chunk_runs="$runs_json"
+              chunk_win_start="$WINDOW_START"
+              chunk_win_end="$WINDOW_END"
+            else
+              start=$(( i * MAX_RUNS_PER_REPORT ))
+              chunk_runs=$(echo "$runs_json" | jq -c --argjson start "$start" --argjson len "$MAX_RUNS_PER_REPORT" '.[$start:($start+$len)]')
+              chunk_win_start=$(echo "$chunk_runs" | jq -r '.[0].created_at')
+              chunk_win_end=$(echo "$chunk_runs" | jq -r '.[-1].created_at')
             fi
-            exit 0
-          fi
+            chunk_len=$(echo "$chunk_runs" | jq 'length')
 
-          echo "Telemetry health report submitted successfully (HTTP 200)."
+            # 4. Build the exact spec body: the Worker rejects anything else, including a
+            # sender-supplied count (#176).
+            payload=$(jq -nc \
+              --argjson schema_version 1 \
+              --arg repo "$REPO" \
+              --arg win_start "$chunk_win_start" \
+              --arg win_end "$chunk_win_end" \
+              --arg share "${TELEMETRY_SHARE:-full}" \
+              --argjson runs "$chunk_runs" \
+              '{
+                schema_version: $schema_version,
+                repository: $repo,
+                window_start: $win_start,
+                window_end: $win_end,
+                share: $share,
+                runs: $runs
+              }')
 
-          # 6. Write the Worker's response after the payload (#176), and warn once per
-          # unaccounted run, naming its URL.
-          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-            {
-              echo "### Worker Response"
-              echo ""
-              echo '```json'
-              cat "$post_body"
-              echo '```'
-              echo ""
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+            # 5. Write this sub-window's exact payload to the Step Summary before
+            # sending it (#176).
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              {
+                if [ "$chunk_count" -gt 1 ]; then
+                  echo "### Sub-window $((i + 1))/${chunk_count}: \`${chunk_win_start}\` to \`${chunk_win_end}\` (${chunk_len} runs)"
+                else
+                  echo "### Payload"
+                fi
+                echo ""
+                echo '```json'
+                echo "$payload"
+                echo '```'
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
 
-          unaccounted_ids=$(jq -c '[.unaccounted_runs[]?.id]' "$post_body" 2>/dev/null || echo "[]")
-          while IFS= read -r rid; do
-            [ -z "$rid" ] && continue
-            echo "::warning::telemetry-health: run ${rid} on ${REPO} is unaccounted for: https://github.com/${REPO}/actions/runs/${rid}"
-          done < <(echo "$unaccounted_ids" | jq -r '.[]')
+            # 6. POST this sub-window's health report to the Worker. Telemetry must never
+            # fail this job: a failed sub-window is a warning and a Step Summary line, and
+            # the remaining sub-windows still send (#177, thread 4006669665).
+            if ! code=$(printf '%s' "$payload" | curl -sS -m 15 -D "$post_headers" -o "$post_body" -w '%{http_code}' \
+              --proto '=https' \
+              -X POST "$HEALTH_URL" \
+              -H "@$hdr" \
+              --data-binary @-); then
+              code=000
+            fi
+
+            if [ "$code" != "200" ]; then
+              if [ "$chunk_count" -gt 1 ]; then
+                echo "::warning::Failed to submit health report sub-window $((i + 1))/${chunk_count} to Worker (HTTP $code, expected 200)."
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  echo "Failed to submit health report sub-window $((i + 1))/${chunk_count} to Worker (HTTP ${code}, expected 200)." >> "$GITHUB_STEP_SUMMARY"
+                fi
+              else
+                echo "::warning::Failed to submit health report to Worker (HTTP $code, expected 200)."
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  echo "Failed to submit health report to Worker (HTTP ${code}, expected 200)." >> "$GITHUB_STEP_SUMMARY"
+                fi
+              fi
+              i=$((i + 1))
+              continue
+            fi
+
+            if [ "$chunk_count" -gt 1 ]; then
+              echo "Telemetry health report sub-window $((i + 1))/${chunk_count} submitted successfully (HTTP 200)."
+            else
+              echo "Telemetry health report submitted successfully (HTTP 200)."
+            fi
+
+            # 7. Write the Worker's response for this sub-window after its payload
+            # (#176), and warn once per unaccounted run, naming its URL.
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              {
+                echo "### Worker Response"
+                echo ""
+                echo '```json'
+                cat "$post_body"
+                echo '```'
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+
+            unaccounted_ids=$(jq -c '[.unaccounted_runs[]?.id]' "$post_body" 2>/dev/null || echo "[]")
+            while IFS= read -r rid; do
+              [ -z "$rid" ] && continue
+              echo "::warning::telemetry-health: run ${rid} on ${REPO} is unaccounted for: https://github.com/${REPO}/actions/runs/${rid}"
+            done < <(echo "$unaccounted_ids" | jq -r '.[]')
+
+            i=$((i + 1))
+          done
+
+          exit 0
