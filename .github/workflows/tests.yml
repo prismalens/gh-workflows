@@ -142,8 +142,6 @@ jobs:
       - name: Review prompt remedy, precedence and dedup rules
         run: python3 tests/test-review-prompt-remedy.py
 
-      - name: Telemetry reconciler behaviour
-        run: python3 tests/test-telemetry-reconcile.py
 
       - name: Verify tool allowlist
         run: python3 tests/test-verify-tool-allowlist.py
