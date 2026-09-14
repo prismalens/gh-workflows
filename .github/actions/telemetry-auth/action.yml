@@ -1,0 +1,192 @@
+name: Telemetry Auth
+description: >-
+  Mints a GitHub Actions OIDC token for review telemetry ingest with fallback to
+  bearer token, and resolves the repository's telemetry.share setting. (#176)
+
+inputs:
+  url:
+    description: Target telemetry Worker URL
+    required: true
+  bearer:
+    description: Optional fallback bearer token
+    required: false
+    default: ''
+  share:
+    description: Optional telemetry.share override ('full' | 'off')
+    required: false
+    default: ''
+  token:
+    description: GitHub token for API queries (defaults to github.token)
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  authorization:
+    description: 'Authorization header value (Bearer <token> or empty)'
+    value: ${{ steps.auth.outputs.authorization }}
+  method:
+    description: "Authentication method used: 'oidc', 'bearer', or 'none'"
+    value: ${{ steps.auth.outputs.method }}
+  share:
+    description: "Telemetry share consent: 'full' or 'off'"
+    value: ${{ steps.auth.outputs.share }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve telemetry auth and share
+      id: auth
+      shell: bash
+      env:
+        TARGET_URL: ${{ inputs.url }}
+        BEARER_TOKEN: ${{ inputs.bearer }}
+        SHARE_OVERRIDE: ${{ inputs.share }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+
+        RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"
+        AUTH_HEADER=""
+        METHOD="none"
+
+        # ── 1. Authenticate via GitHub Actions OIDC or Fallback to Bearer ─────────
+        # An empty url mints nothing: no target to mint an audience for or POST to (#176).
+        if [ -n "${TARGET_URL:-}" ]; then
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            AUDIENCE="$(python3 -c "import sys; from urllib.parse import urlparse; u = urlparse(sys.argv[1]); print(f'{u.scheme}://{u.netloc}')" "$TARGET_URL" 2>/dev/null || echo "$TARGET_URL")"
+
+            OIDC_TOKEN=""
+            err_file="$RUNNER_TEMP/oidc_mint_err.$$"
+            if RESP="$(curl -sS -m 10 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" 2>"$err_file")"; then
+              OIDC_TOKEN="$(echo "$RESP" | jq -r '.value // empty' 2>/dev/null || true)"
+            fi
+            rm -f "$err_file"
+
+            if [ -n "$OIDC_TOKEN" ]; then
+              echo "::add-mask::${OIDC_TOKEN}"
+              AUTH_HEADER="Bearer ${OIDC_TOKEN}"
+              METHOD="oidc"
+            else
+              echo "::warning::Could not mint GitHub Actions OIDC token; falling back to bearer (#176)"
+            fi
+          fi
+
+          if [ "$METHOD" = "none" ]; then
+            if [ -n "${BEARER_TOKEN:-}" ]; then
+              echo "::add-mask::${BEARER_TOKEN}"
+              AUTH_HEADER="Bearer ${BEARER_TOKEN}"
+              METHOD="bearer"
+            else
+              AUTH_HEADER=""
+              METHOD="none"
+            fi
+          fi
+        fi
+
+        # ── 2. Resolve telemetry.share ───────────────────────────────────────────
+        # Config is read from refs only, never a local working tree, because a
+        # working tree can be a PR head and config is never read from a head (#33).
+        # Consent fails closed on errors; only absence falls through to the next
+        # layer or to the default (#177, thread 4006669598).
+        RESOLVED_SHARE="${SHARE_OVERRIDE:-}"
+        if [ -n "$RESOLVED_SHARE" ]; then
+          case "$RESOLVED_SHARE" in
+            full|true)
+              RESOLVED_SHARE="full"
+              ;;
+            off|false)
+              RESOLVED_SHARE="off"
+              ;;
+            *)
+              echo "::warning::telemetry.share override '${RESOLVED_SHARE}' is invalid; resolving off (#177)"
+              RESOLVED_SHARE="off"
+              ;;
+          esac
+        else
+          RESOLVED_SHARE="$(python3 -c "import textwrap; exec(textwrap.dedent(r'''
+          import base64, os, subprocess, sys
+
+          try:
+              import yaml
+          except ImportError as e:
+              print(f'::warning::PyYAML unavailable ({e}); resolving telemetry.share as off (#177)', file=sys.stderr)
+              print('off')
+              sys.exit(0)
+
+          def resolve_layer(text):
+              # Returns (share, warn): share is None when the key is unset
+              # (caller falls through to the next layer or the default).
+              # warn holds the reason whenever share is forced to off by
+              # anything other than an explicit off value (#177, thread 4006669598).
+              try:
+                  data = yaml.safe_load(text)
+              except Exception as exc:
+                  return 'off', f'malformed YAML ({exc}); resolving telemetry.share as off'
+              if not isinstance(data, dict):
+                  return None, None
+              tel = data.get('telemetry')
+              if tel is None:
+                  return None, None
+              if not isinstance(tel, dict):
+                  return 'off', f'telemetry is not a mapping ({tel!r}); resolving telemetry.share as off'
+              if 'share' not in tel:
+                  return None, None
+              s = tel.get('share')
+              if s == 'full' or s is True:
+                  return 'full', None
+              if s == 'off' or s is False:
+                  return 'off', None
+              return 'off', f'telemetry.share has invalid value {s!r}; resolving telemetry.share as off'
+
+          def fetch_layer(repo, ref, path):
+              # Same (share, warn) shape as resolve_layer. A 404 falls
+              # through (file absent); any other fetch failure, empty or
+              # undecodable content fails closed to off.
+              url = f'repos/{repo}/contents/{path}'
+              if ref:
+                  url += f'?ref={ref}'
+              p = subprocess.run(['gh', 'api', url, '--jq', '.content'], capture_output=True, text=True)
+              if p.returncode != 0:
+                  stderr = p.stderr or ''
+                  if '404' in stderr:
+                      return None, None
+                  return 'off', f'failed to fetch {path}: {stderr.strip() or p.returncode}; resolving telemetry.share as off'
+              raw = p.stdout.strip()
+              if not raw:
+                  return 'off', f'{path} returned empty content; resolving telemetry.share as off'
+              try:
+                  text = base64.b64decode(raw).decode('utf-8', errors='strict')
+              except UnicodeDecodeError:
+                  return 'off', 'config content is not valid UTF-8; resolving telemetry.share as off'
+              except Exception as exc:
+                  return 'off', f'failed to decode {path}: {exc}; resolving telemetry.share as off'
+              return resolve_layer(text)
+
+          repo_name = os.environ.get('GITHUB_REPOSITORY') or ''
+          repo_share, repo_warn = (None, None)
+          if repo_name:
+              repo_share, repo_warn = fetch_layer(repo_name, None, '.github/claude-review.yml')
+
+          org_share, org_warn = (None, None)
+          if repo_share is None:
+              org_share, org_warn = fetch_layer('prismalens/gh-workflows', 'main', '.github/claude-review-defaults.yml')
+
+          result = repo_share if repo_share is not None else org_share
+          warn = repo_warn if repo_share is not None else org_warn
+
+          if warn:
+              print(f'::warning::{warn} (#177)', file=sys.stderr)
+
+          print(result if result in ('full', 'off') else 'full')
+          '''))")"
+        fi
+
+        if [ "$RESOLVED_SHARE" != "off" ] && [ "$RESOLVED_SHARE" != "full" ]; then
+          echo "::warning::telemetry.share resolver returned an unexpected value; resolving off (#177)"
+          RESOLVED_SHARE="off"
+        fi
+
+        # ── 3. Write outputs ─────────────────────────────────────────────────────
+        echo "authorization=${AUTH_HEADER}" >> "$GITHUB_OUTPUT"
+        echo "method=${METHOD}" >> "$GITHUB_OUTPUT"
+        echo "share=${RESOLVED_SHARE}" >> "$GITHUB_OUTPUT"

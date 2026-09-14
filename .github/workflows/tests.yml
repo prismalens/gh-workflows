@@ -142,11 +142,12 @@ jobs:
       - name: Review prompt remedy, precedence and dedup rules
         run: python3 tests/test-review-prompt-remedy.py
 
-      - name: Telemetry reconciler behaviour
-        run: python3 tests/test-telemetry-reconcile.py
 
       - name: Verify tool allowlist
         run: python3 tests/test-verify-tool-allowlist.py
+
+      - name: Verify round telemetry
+        run: python3 tests/test-verify-round-telemetry.py
 
       # Runs the real setup-repo.sh issue-template sync section against a stub gh (#67).
       - name: setup-repo.sh issue-template sync behaviour
@@ -155,6 +156,18 @@ jobs:
       # Runs the real rotate-telemetry-token.sh against stub gh, openssl and npx (#156).
       - name: rotate-telemetry-token.sh behaviour
         run: python3 tests/test-rotate-telemetry-token.py
+
+      # Verifies wrangler.toml run_worker_first covers all POST routes (#176).
+      - name: Worker route coverage in wrangler.toml
+        run: python3 tests/test-worker-routes-reach-worker.py
+
+      # Verifies telemetry-auth composite action behaviour (#176).
+      - name: Telemetry auth action behaviour
+        run: python3 tests/test-telemetry-auth-action.py
+
+      # Verifies telemetry-health workflow behaviour (#176).
+      - name: Telemetry health behaviour
+        run: python3 tests/test-telemetry-health.py
 
       # A test file this job does not name is a test that never runs (#130).
       - name: Every test file is wired into this job

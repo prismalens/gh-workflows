@@ -472,7 +472,7 @@ Writing a change row via `curl` requires a Cloudflare Access **Service Token** c
 
 ```bash
 # Writing a change requires an Access Service Token configured on the application first.
-curl -X POST https://review-telemetry.sfun.cloud/api/changes \
+curl -X POST https://assayer.sfun.cloud/api/changes \
   -H "Content-Type: application/json" \
   -H "CF-Access-Client-Id: <SERVICE_TOKEN_CLIENT_ID>" \
   -H "CF-Access-Client-Secret: <SERVICE_TOKEN_CLIENT_SECRET>" \

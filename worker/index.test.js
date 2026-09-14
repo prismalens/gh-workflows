@@ -1,9 +1,40 @@
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from "jose";
 import worker, { computeVariantKey } from "./index.js";
+
+const { publicKey, privateKey } = await generateKeyPair("RS256");
+const jwk = await exportJWK(publicKey);
+const getLocalKey = createLocalJWKSet({ keys: [jwk] });
+
+async function mintOidcToken({
+  issuer = "https://token.actions.githubusercontent.com",
+  audience = "https://telemetry.example.test",
+  repository = "prismalens/gh-workflows",
+  repository_id = 12345,
+  repository_owner_id = 6789,
+  job_workflow_ref = "prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main",
+  run_id = 9999,
+  expiresIn = "1h",
+} = {}) {
+  const jwt = new SignJWT({
+    repository,
+    repository_id,
+    repository_owner_id,
+    job_workflow_ref,
+    run_id,
+  }).setProtectedHeader({ alg: "RS256" });
+
+  if (issuer) jwt.setIssuer(issuer);
+  if (audience) jwt.setAudience(audience);
+  if (expiresIn) jwt.setExpirationTime(expiresIn);
+
+  return jwt.sign(privateKey);
+}
 
 function createFakeDb(options = {}) {
   const queries = [];
+  let nextRowId = options.firstRowId ?? 1;
   const handleQuery = (sql, args) => {
     queries.push({ sql, args });
     if (options.shouldThrow) {
@@ -35,7 +66,7 @@ function createFakeDb(options = {}) {
                 throw new Error("D1 run error");
               }
               queries.push({ sql, args });
-              return { success: true };
+              return { success: true, meta: { last_row_id: nextRowId++ } };
             },
             async first() {
               const res = handleQuery(sql, args);
@@ -72,7 +103,7 @@ function makeRequest(path, { method = "POST", headers = {}, body } = {}) {
   if (body !== undefined) {
     init.body = typeof body === "string" ? body : JSON.stringify(body);
   }
-  return new Request(`https://review-telemetry.sfun.cloud${path}`, init);
+  return new Request(`https://telemetry.example.test${path}`, init);
 }
 
 const VALID_TOKEN = "secret-token-123";
@@ -152,6 +183,182 @@ describe("Worker telemetry ingest", () => {
         body: { session_id: "s-1", repository: "prismalens/gh-workflows" },
       });
       const res = await worker.fetch(req, env);
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+  });
+
+  describe("GitHub Actions OIDC Authentication (#176)", () => {
+    it("accepts a valid OIDC token and records ingest_auth and repository_id", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken();
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-1", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 2], "oidc");
+      assert.equal(query.args[query.args.length - 1], 12345);
+    });
+
+    it("rejects an OIDC token with wrong audience (401)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ audience: "https://wrong-audience.com" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-2", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("rejects an OIDC token with wrong issuer (401)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ issuer: "https://evil-issuer.com" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-3", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("rejects an expired OIDC token (401)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ expiresIn: "-10s" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-4", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("rejects a repository mismatch under OIDC (403, writes nothing)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ repository: "other-org/other-repo" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-5", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 403);
+      assert.deepEqual(await res.json(), { error: "repository mismatch" });
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("allows case-insensitive repository match under OIDC", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ repository: "PrismaLens/GH-Workflows" });
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${token}` },
+        body: { session_id: "s-oidc-6", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+    });
+
+    function sampleFinding(overrides = {}) {
+      return {
+        thread_node_id: "PRRT_1",
+        repository: "prismalens/gh-workflows",
+        pr_number: 42,
+        path: "worker/index.js",
+        original_line: 100,
+        line: 100,
+        is_resolved: 0,
+        is_outdated: 0,
+        resolved_by_login: null,
+        thread_created_at: "2026-09-01T00:00:00Z",
+        header_raw: "Bug",
+        body_excerpt: "This looks off.",
+        diff_hunk: "@@ -1,3 +1,3 @@",
+        human_reply_count: 0,
+        human_reply_sha: null,
+        fix_sha: null,
+        fix_sha_source: null,
+        verify_verdict: null,
+        head_sha_reviewed: "abc1234",
+        last_swept_at: "2026-09-01T01:00:00Z",
+        row_set_incomplete: 0,
+        ...overrides,
+      };
+    }
+
+    it("rejects repository mismatch on findings under OIDC (403, writes nothing)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ repository: "prismalens/gh-workflows" });
+      const req = makeRequest("/ingest/findings", {
+        headers: { authorization: `Bearer ${token}` },
+        body: {
+          findings: [
+            sampleFinding({ repository: "other-org/other-repo" }),
+          ],
+        },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 403);
+      assert.deepEqual(await res.json(), { error: "repository mismatch" });
+      assert.equal(db.queries.length, 0);
+    });
+
+    // F5 (#176): a non-string repository is a mismatch too, checked before
+    // validateFinding, so this is a 403 naming the mismatch, not a generic 400.
+    it("rejects a finding with a non-string repository under OIDC (403, writes nothing)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ repository: "prismalens/gh-workflows" });
+      const req = makeRequest("/ingest/findings", {
+        headers: { authorization: `Bearer ${token}` },
+        body: {
+          findings: [
+            sampleFinding({ repository: 12345 }),
+          ],
+        },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 403);
+      assert.deepEqual(await res.json(), { error: "repository mismatch" });
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("accepts valid bearer token alongside OIDC and records ingest_auth as bearer", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: { session_id: "s-bearer-1", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 204);
+      assert.equal(db.queries.length, 1);
+      const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 2], "bearer");
+      assert.equal(query.args[query.args.length - 1], null);
+    });
+
+    it("rejects request when neither bearer nor valid OIDC token is present (401)", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: "Bearer invalid-junk-token" },
+        body: { session_id: "s-none-1", repository: "prismalens/gh-workflows" },
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
       assert.equal(res.status, 401);
       assert.equal(db.queries.length, 0);
     });
@@ -279,7 +486,9 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 63);
+      assert.equal(query.args.length, 65);
+      assert.equal(query.args[63], "bearer");
+      assert.equal(query.args[64], null);
 
       // Verify v1 fields
       assert.equal(query.args[0], "session-v1-001");
@@ -725,7 +934,7 @@ describe("Worker telemetry ingest", () => {
       assert.match(query.sql, /config_effective/);
       // config_effective sits 5 params before the end: level and level_source (#101),
       // context_repositories and context_lines (#90) were appended after it.
-      assert.equal(query.args[query.args.length - 12], JSON.stringify(configEffective));
+      assert.equal(query.args[query.args.length - 14], JSON.stringify(configEffective));
     });
 
     it("stores null for config_effective when the payload omits it (#75)", async () => {
@@ -742,7 +951,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 12], null);
+      assert.equal(query.args[query.args.length - 14], null);
     });
 
     it("stores level and level_source for a v2 payload that sets them (#101)", async () => {
@@ -761,8 +970,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 11], "high");
-      assert.equal(query.args[query.args.length - 10], "repo");
+      assert.equal(query.args[query.args.length - 13], "high");
+      assert.equal(query.args[query.args.length - 12], "repo");
     });
 
     it("stores null for level and level_source when the payload omits them (#101)", async () => {
@@ -779,8 +988,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 11], null);
-      assert.equal(query.args[query.args.length - 10], null);
+      assert.equal(query.args[query.args.length - 13], null);
+      assert.equal(query.args[query.args.length - 12], null);
     });
 
     it("stores context_repositories and context_lines for a v2 payload that sets them (#90)", async () => {
@@ -799,8 +1008,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 9], 2);
-      assert.equal(query.args[query.args.length - 8], 450);
+      assert.equal(query.args[query.args.length - 11], 2);
+      assert.equal(query.args[query.args.length - 10], 450);
     });
 
     it("stores null for context_repositories and context_lines when the payload omits them (#90)", async () => {
@@ -817,8 +1026,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 9], null);
-      assert.equal(query.args[query.args.length - 8], null);
+      assert.equal(query.args[query.args.length - 11], null);
+      assert.equal(query.args[query.args.length - 10], null);
     });
 
     it("returns 400 when context_repositories or context_lines is not a number (#90)", async () => {
@@ -855,10 +1064,10 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 7], "account-limit");
-      assert.equal(query.args[query.args.length - 6], 0);
-      assert.equal(query.args[query.args.length - 5], "2026-09-13T10:10:00Z");
-      assert.equal(query.args[query.args.length - 4], 429);
+      assert.equal(query.args[query.args.length - 9], "account-limit");
+      assert.equal(query.args[query.args.length - 8], 0);
+      assert.equal(query.args[query.args.length - 7], "2026-09-13T10:10:00Z");
+      assert.equal(query.args[query.args.length - 6], 429);
     });
 
     it("stores null for failure_class, failure_retryable, failure_reset_at and api_error_status when the payload omits them (#174)", async () => {
@@ -875,10 +1084,10 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 9], null);
+      assert.equal(query.args[query.args.length - 8], null);
       assert.equal(query.args[query.args.length - 7], null);
       assert.equal(query.args[query.args.length - 6], null);
-      assert.equal(query.args[query.args.length - 5], null);
-      assert.equal(query.args[query.args.length - 4], null);
     });
 
     it("returns 400 when failure_retryable or api_error_status is not a number (#174)", async () => {
@@ -912,7 +1121,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 3], "api_key");
+      assert.equal(query.args[query.args.length - 5], "api_key");
     });
 
     it("stores null for credential_type when the payload omits it (#174)", async () => {
@@ -929,7 +1138,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 3], null);
+      assert.equal(query.args[query.args.length - 5], null);
     });
 
     it("returns 400 when level or level_source is not a string", async () => {
@@ -964,8 +1173,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 2], 90);
-      assert.equal(query.args[query.args.length - 1], "f".repeat(64));
+      assert.equal(query.args[query.args.length - 4], 90);
+      assert.equal(query.args[query.args.length - 3], "f".repeat(64));
     });
 
     it("stores null for base_pr_number and patch_fingerprint when the payload omits them (#174)", async () => {
@@ -982,8 +1191,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 2], null);
-      assert.equal(query.args[query.args.length - 1], null);
+      assert.equal(query.args[query.args.length - 4], null);
+      assert.equal(query.args[query.args.length - 3], null);
     });
   });
 
@@ -1440,6 +1649,8 @@ describe("Worker telemetry ingest", () => {
         null,
         // actor (#124): null on a payload that carries no pause actor.
         null,
+        "bearer",
+        null,
       ]);
     });
 
@@ -1602,7 +1813,9 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 1], "octocat");
+      assert.equal(query.args[query.args.length - 3], "octocat");
+      assert.equal(query.args[query.args.length - 2], "bearer");
+      assert.equal(query.args[query.args.length - 1], null);
     });
 
     it("stores actor as null when the payload omits it (#124)", async () => {
@@ -1622,6 +1835,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 3], null);
+      assert.equal(query.args[query.args.length - 2], "bearer");
       assert.equal(query.args[query.args.length - 1], null);
     });
 
@@ -2454,6 +2669,123 @@ describe("Worker telemetry read API", () => {
       assert.equal(data.rows, 0);
       assert.equal(data.canary_last_seen_at, "2026-08-31T21:00:00.000Z");
       assert.deepEqual(data.verdict_kinds, {});
+    });
+
+    describe("Did-not-run verdicts from lane_events (#176, #177 thread 4006669679)", () => {
+      // One aggregate query now does the dedup that used to walk two unbounded
+      // result sets in JS: the stub supplies the {reason, cnt} rows that query
+      // would have returned, since the fake DB does not execute real SQL.
+      function summaryHandler({ laneCountRows = [] } = {}) {
+        return (sql) => {
+          if (sql.includes("FROM canary_pings")) return null;
+          if (sql.includes("COUNT(*) as rows")) return { rows: 10, first_recorded_at: "2026-08-01T00:00:00.000Z" };
+          if (sql.includes("DISTINCT repository")) return [{ repository: "prismalens/gh-workflows" }];
+          if (sql.includes("GROUP BY repository")) return [];
+          if (sql.includes("WHERE verdict_kind IS NOT NULL")) return [{ verdict_kind: "clean", cnt: 8 }];
+          if (sql.includes("WHERE fallback_reason IS NOT NULL")) return [];
+          if (sql.includes("WHERE model_source IS NOT NULL")) return [];
+          if (sql.includes("FROM lane_events") && sql.includes("reason IN")) return laneCountRows;
+          return null;
+        };
+      }
+
+      it("counts a skip-trivial lane event as skipped-trivial", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb({
+          handler: summaryHandler({
+            laneCountRows: [{ reason: "skip-trivial", cnt: 1 }],
+          }),
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data.verdict_kinds, { clean: 8, "skipped-trivial": 1 });
+      });
+
+      it("counts a lane event and a usage row sharing a run_id once, usage_records winning", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb({
+          handler: summaryHandler({
+            // api-error rounds write both a lane event and a usage_records row (#174);
+            // the query's NOT EXISTS clause excludes it, so the aggregate never sees it.
+            laneCountRows: [],
+          }),
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data.verdict_kinds, { clean: 8 });
+      });
+
+      it("adds nothing for fork-head, which maps to no verdict kind", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb({
+          handler: summaryHandler({
+            laneCountRows: [], // fork-head is not in LANE_REASON_TO_VERDICT_KIND, so it is
+            // never even in the reason IN (...) bind list; the stub returns nothing for it.
+          }),
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data.verdict_kinds, { clean: 8 });
+
+        const laneQuery = db.queries.find((q) => q.sql.includes("FROM lane_events") && q.sql.includes("reason IN"));
+        assert.ok(laneQuery, "expected a lane_events query");
+        assert.ok(!laneQuery.args.includes("fork-head"), "fork-head must never be bound into the reason filter");
+      });
+
+      it("scopes the lane_events query the same as the usage query: every repository, unfiltered", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb({
+          handler: summaryHandler({
+            laneCountRows: [{ reason: "draft", cnt: 2 }],
+          }),
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        // Both rows count, across whatever repositories they came from: the
+        // lane_events query carries no repository or date restriction the
+        // usage_records query above it does not also carry.
+        assert.deepEqual(data.verdict_kinds, { clean: 8, draft: 2 });
+
+        const laneQuery = db.queries.find((q) => q.sql.includes("FROM lane_events") && q.sql.includes("reason IN"));
+        assert.ok(!/repository\s*=/.test(laneQuery.sql), "lane_events query must not filter by repository");
+        assert.ok(!/recorded_at/.test(laneQuery.sql), "lane_events query must not filter by a date window");
+      });
+
+      it("is one aggregate query, not two unbounded result sets deduped in JS (#177)", async () => {
+        const helper = await getAccessHelper();
+        const db = createFakeDb({
+          handler: summaryHandler({
+            laneCountRows: [{ reason: "draft", cnt: 3 }],
+          }),
+        });
+        const env = { ...helper.env, DB: db };
+        const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+
+        const laneEventQueries = db.queries.filter((q) => q.sql.includes("FROM lane_events"));
+        assert.equal(laneEventQueries.length, 1, "expected exactly one lane_events query");
+        assert.match(laneEventQueries[0].sql, /GROUP BY\s+le\.reason/);
+        assert.match(laneEventQueries[0].sql, /NOT EXISTS/);
+        assert.match(laneEventQueries[0].sql, /FROM usage_records/);
+
+        const usageRunIdQuery = db.queries.find(
+          (q) => q.sql.includes("SELECT run_id FROM usage_records") && !q.sql.includes("NOT EXISTS")
+        );
+        assert.equal(usageRunIdQuery, undefined, "the separate unbounded usage_records run_id query must be gone");
+      });
     });
   });
 
@@ -4369,6 +4701,35 @@ describe("Worker telemetry read API", () => {
         assert.deepEqual(data.run_ids, []);
       });
 
+      it("accepts GET /ingest/accounted-runs with valid bearer token, bearer only (F7, #176)", async () => {
+        const db = createFakeDb({
+          handler: () => ({ results: [{ run_id: 1001 }] }),
+        });
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest(`/ingest/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data.run_ids, [1001]);
+      });
+
+      // This route sits behind Cloudflare Access and never accepted OIDC on main;
+      // slice 9 (#176) shared queryAccountedRuns, not this route's auth (F7).
+      it("rejects GET /ingest/accounted-runs with an OIDC token (bearer only)", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const token = await mintOidcToken({ repository: validRepo });
+        const req = makeRequest(`/ingest/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: { authorization: `Bearer ${token}` },
+        });
+        const res = await worker.fetch(req, env, { getKey: getLocalKey });
+        assert.equal(res.status, 401);
+      });
+
       it("returns 500 when database throws an error", async () => {
         const db = createFakeDb({ shouldThrow: true });
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
@@ -4381,6 +4742,327 @@ describe("Worker telemetry read API", () => {
         const data = await res.json();
         assert.equal(data.error, "database error");
       });
+    });
+  });
+
+  describe("Health report ingest (POST /ingest/health) (#176)", () => {
+    function sampleHealthPayload(overrides = {}) {
+      return {
+        schema_version: 1,
+        repository: "prismalens/gh-workflows",
+        window_start: "2026-09-07T00:00:00.000Z",
+        window_end: "2026-09-14T00:00:00.000Z",
+        share: "full",
+        runs: [
+          { id: 1001, conclusion: "success", created_at: "2026-09-08T00:00:00.000Z", event: "pull_request" },
+          { id: 1002, conclusion: "success", created_at: "2026-09-08T01:00:00.000Z", event: "pull_request" },
+          { id: 1003, conclusion: "success", created_at: "2026-09-08T02:00:00.000Z", event: "pull_request" },
+          { id: 1004, conclusion: "startup_failure", created_at: "2026-09-08T03:00:00.000Z", event: "pull_request" },
+          { id: 1005, conclusion: "cancelled", created_at: "2026-09-08T04:00:00.000Z", event: "pull_request" },
+        ],
+        ...overrides,
+      };
+    }
+
+    // Every SELECT the health route can issue, routed by SQL text so a test that
+    // only cares about one of them can leave the rest at their empty default.
+    function healthDb(overrides = {}, options = {}) {
+      return createFakeDb({
+        ...options,
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return { results: overrides.accounted ?? [] };
+          }
+          if (sql.includes("FROM lane_events")) {
+            return { results: overrides.laneEvents ?? [] };
+          }
+          if (sql.includes("FROM review_findings")) {
+            return { first: { count: overrides.findingsSwept ?? 0 } };
+          }
+          return { results: [] };
+        },
+      });
+    }
+
+    it("returns 401 when authorization header is missing", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 401 when authorization token is wrong", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: "Bearer invalid-token" },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("rejects repository mismatch under OIDC (403, writes nothing)", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({ repository: "other-org/other-repo" });
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${token}` },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 403);
+      assert.deepEqual(await res.json(), { error: "repository mismatch" });
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when repository is missing or not a string", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      for (const badRepo of [undefined, null, "", 123]) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload({ repository: badRepo }),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when schema_version is not 1", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      for (const badVersion of ["1", 2, null, undefined]) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload({ schema_version: badVersion }),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when timestamp fields are invalid", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      for (const field of ["window_start", "window_end"]) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload({ [field]: "not-a-timestamp" }),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when window_end precedes window_start", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: sampleHealthPayload({
+          window_start: "2026-09-14T00:00:00.000Z",
+          window_end: "2026-09-07T00:00:00.000Z",
+        }),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when share is not 'full' or 'off'", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      for (const badShare of ["on", "true", 1, null, undefined]) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload({ share: badShare }),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when runs is invalid or exceeds 1000 items", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const oneRun = { id: 1, conclusion: "success", created_at: "2026-09-08T00:00:00.000Z", event: "pull_request" };
+      for (const badRuns of ["not-array", Array(1001).fill(oneRun)]) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload({ runs: badRuns }),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 when a run entry is malformed", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const base = { id: 1, conclusion: "success", created_at: "2026-09-08T00:00:00.000Z", event: "pull_request" };
+      const badRuns = [
+        [{ ...base, id: "1" }],
+        [{ ...base, id: 1.5 }],
+        [{ ...base, conclusion: 5 }],
+        [{ ...base, created_at: "not-a-timestamp" }],
+        [{ ...base, event: 5 }],
+        ["not-an-object"],
+      ];
+      for (const runs of badRuns) {
+        const req = makeRequest("/ingest/health", {
+          headers: { authorization: `Bearer ${VALID_TOKEN}` },
+          body: sampleHealthPayload({ runs }),
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 400, `expected 400 for runs=${JSON.stringify(runs)}`);
+      }
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("ignores a sender-supplied missing_runs and computes counts from D1", async () => {
+      const db = healthDb({
+        accounted: [
+          { run_id: 1001, source_table: "usage_records" },
+          { run_id: 1002, source_table: "lane_events" },
+          { run_id: 1003, source_table: "usage_records" },
+        ],
+      });
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        // A sender-supplied missing_runs of 0 must be ignored; D1 says 1004 and 1005
+        // are unaccounted regardless of what the sender claims (#176).
+        body: sampleHealthPayload({ missing_runs: 0 }),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.runs_seen, 5);
+      assert.equal(data.runs_accounted, 3);
+      assert.deepEqual(
+        data.unaccounted_runs.map((r) => r.id).sort(),
+        [1004, 1005]
+      );
+
+      const insertQuery = db.queries.find((q) => q.sql.includes("INSERT INTO health_reports"));
+      assert.ok(insertQuery, "expected an INSERT INTO health_reports");
+      assert.equal(insertQuery.args[4], 5); // runs_seen
+      assert.equal(insertQuery.args[5], 3); // runs_accounted
+      assert.equal(JSON.parse(insertQuery.args[6]).map((r) => r.id).sort().join(","), "1004,1005");
+    });
+
+    it("counts startup_failures from the submitted runs", async () => {
+      const db = healthDb({
+        accounted: [
+          { run_id: 1001, source_table: "usage_records" },
+          { run_id: 1002, source_table: "usage_records" },
+          { run_id: 1003, source_table: "usage_records" },
+          { run_id: 1004, source_table: "usage_records" },
+          { run_id: 1005, source_table: "usage_records" },
+        ],
+      });
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.startup_failures, 1); // run 1004 in the sample payload
+
+      const insertQuery = db.queries.find((q) => q.sql.includes("INSERT INTO health_reports"));
+      assert.equal(insertQuery.args[7], 1); // startup_failures
+    });
+
+    it("computes lane_events_by_reason and findings_swept from D1", async () => {
+      const db = healthDb({
+        laneEvents: [
+          { reason: "skip-trivial", count: 3 },
+          { reason: "api-error", count: 1 },
+        ],
+        findingsSwept: 7,
+      });
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.deepEqual(data.lane_events_by_reason, { "skip-trivial": 3, "api-error": 1 });
+      assert.equal(data.findings_swept, 7);
+
+      const insertQuery = db.queries.find((q) => q.sql.includes("INSERT INTO health_reports"));
+      assert.deepEqual(JSON.parse(insertQuery.args[8]), { "skip-trivial": 3, "api-error": 1 });
+      assert.equal(insertQuery.args[9], 7); // findings_swept
+    });
+
+    it("records health report under bearer auth with null repository_id", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.status, "ok");
+
+      const insertQuery = db.queries.find((q) => q.sql.includes("INSERT INTO health_reports"));
+      assert.match(insertQuery.sql, /INSERT INTO health_reports/);
+      assert.equal(insertQuery.args[0], "prismalens/gh-workflows");
+      assert.equal(insertQuery.args[1], null); // repository_id is null for bearer
+      assert.equal(insertQuery.args[2], "2026-09-07T00:00:00.000Z");
+      assert.equal(insertQuery.args[3], "2026-09-14T00:00:00.000Z");
+      assert.equal(insertQuery.args[10], "full"); // share
+      assert.equal(insertQuery.args[11], "bearer"); // ingest_auth
+    });
+
+    it("records health report with repository_id and oidc ingest_auth under OIDC", async () => {
+      const db = healthDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const token = await mintOidcToken({
+        repository: "prismalens/gh-workflows",
+        repository_id: 998877,
+      });
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${token}` },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env, { getKey: getLocalKey });
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.status, "ok");
+
+      const insertQuery = db.queries.find((q) => q.sql.includes("INSERT INTO health_reports"));
+      assert.equal(insertQuery.args[1], 998877); // repository_id
+      assert.equal(insertQuery.args[11], "oidc"); // ingest_auth
+    });
+
+    it("returns 500 when database throws an error", async () => {
+      const db = createFakeDb({ shouldThrow: true });
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest/health", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: sampleHealthPayload(),
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 500);
+      assert.deepEqual(await res.json(), { error: "database error" });
     });
   });
 });

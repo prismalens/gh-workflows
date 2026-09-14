@@ -29,8 +29,11 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = ROOT / ".github/workflows/claude-code-review.yml"
+ROUND_TELEMETRY_ACTION = ROOT / ".github/actions/round-telemetry/action.yml"
 ROLLUP_STEP = "Roll up subagent transcripts"
-TELEMETRY_STEP = "Extract review round telemetry"
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _composite_action import extract_composite_step_script  # noqa: E402
 
 
 def extract_step_script(step_name: str) -> str:
@@ -164,7 +167,9 @@ def run_telemetry_step(script, *, execution_file_content, agents_json_str, env_o
 
 def main():
     script = extract_step_script(ROLLUP_STEP)
-    telemetry_script = extract_step_script(TELEMETRY_STEP)
+    # #176: telemetry extraction moved out of the inline "review" job step and
+    # into the round-telemetry composite action, shared with the verify job.
+    telemetry_script = extract_composite_step_script(ROUND_TELEMETRY_ACTION)
     fails = []
 
     print(f"=== Testing {ROLLUP_STEP} against real workflow body ===\n")

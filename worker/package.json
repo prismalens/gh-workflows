@@ -14,5 +14,8 @@
   },
   "devDependencies": {
     "wrangler": "4.127.1"
+  },
+  "dependencies": {
+    "jose": "6.2.12"
   }
 }

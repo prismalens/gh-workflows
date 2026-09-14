@@ -58,7 +58,7 @@ args="$*"
 case "$args" in
   *claude-review-liveness*) printf '%s' "$FAKE_LIVENESS" ; exit 0 ;;
   *"pulls/"*"/files"*)      printf '[]' ; exit 0 ;;
-  *graphql*)                printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ; exit 0 ;;
+  *graphql*)                printf '%s\n' "${FAKE_THREADS:-[]}" ; exit 0 ;;
   *"compare/"*)
     printf '{"status":"ahead","files":[{"filename":"src/app.ts","additions":10,"deletions":0}]}'
     exit 0 ;;
@@ -102,7 +102,7 @@ exit 0
 """
 
 
-def run_mode_step(script, *, event="pull_request", summon="none", fake_liveness="", head_sha=NEW):
+def run_mode_step(script, *, event="pull_request", summon="none", fake_liveness="", head_sha=NEW, fake_threads="[]"):
     cleanup_tmp()
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -134,6 +134,7 @@ def run_mode_step(script, *, event="pull_request", summon="none", fake_liveness=
                 HAS_OAUTH="true",
                 HAS_API_KEY="false",
                 FAKE_LIVENESS=fake_liveness,
+                FAKE_THREADS=fake_threads,
             )
 
             p = subprocess.run(["bash", "-c", script], env=env,
@@ -153,7 +154,14 @@ def run_mode_step(script, *, event="pull_request", summon="none", fake_liveness=
 
 def run_announce_step(script, *, marker_body=None, skip_reason="", event="pull_request",
                       mode="review", result="success", head_sha=NEW, actor_login="",
-                      draft="false", summon="none"):
+                      draft="false", summon=None):
+    if summon is None:
+        if event == "issue_comment":
+            summon = "incremental"
+        elif event == "pull_request_review_comment":
+            summon = "reply"
+        else:
+            summon = "none"
     cleanup_tmp()
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -298,6 +306,10 @@ def main():
         fails.append("admission: @claude pause not checked via contains() in Classify summon verb")
     if "contains(github.event.comment.body, '@claude resume')" not in summon_env:
         fails.append("admission: @claude resume not checked via contains() in Classify summon verb")
+    if "'reply'" not in summon_env:
+        fails.append("admission: 'reply' literal missing from Classify summon verb (#178)")
+    if "contains(github.event.comment.body, '@claude review') && 'incremental'" not in summon_env:
+        fails.append("admission: incremental not gated by contains(@claude review) in Classify summon verb (#178)")
     print("  ok    admission gate: non-member comment refused; comment body stays in contains()")
 
     # -------------------------------------------------------------
@@ -564,6 +576,79 @@ def main():
         fails.append(f"case 12c: want draft verdict, got {outs.get('verdict_kind')!r}")
     else:
         print("  ok    @claude review on a draft reviews nothing and keeps the pause")
+
+    # -------------------------------------------------------------
+    # 13. An in-thread reply on a paused PR (#178)
+    # -------------------------------------------------------------
+    # 13a. With no unresolved claude threads: mode skip, skip_reason=reply-no-threads,
+    # and announce leaves the marker unchanged.
+    paused_marker = f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 paused_by=alice -->"
+    rc, outs, err = run_mode_step(
+        mode_script,
+        event="pull_request_review_comment",
+        summon="reply",
+        fake_liveness=paused_marker,
+        fake_threads="[]",
+    )
+    if rc != 0:
+        fails.append(f"case 13a: mode step exited {rc}: {err}")
+    elif outs.get("mode") != "skip" or outs.get("skip_reason") != "reply-no-threads":
+        fails.append(f"case 13a: want mode=skip skip_reason=reply-no-threads, got {outs}")
+    else:
+        print("  ok    paused PR plus reply with no open claude threads emits skip reply-no-threads (#178)")
+
+    rc, body, outs, err = run_announce_step(
+        announce_script,
+        marker_body=paused_marker,
+        event="pull_request_review_comment",
+        summon="reply",
+        skip_reason="reply-no-threads",
+        head_sha=NEW,
+    )
+    if rc != 0:
+        fails.append(f"case 13a announce: exited {rc}: {err}")
+    elif body:
+        fails.append(f"case 13a announce: expected no comment upsert (leaves marker unchanged), got {body!r}")
+    else:
+        print("  ok    announce for reply-no-threads leaves marker untouched (#178)")
+
+    # 13b. With an unresolved claude thread: mode verify, and announce keeps paused=1 paused_by=alice.
+    threads_fixture = json.dumps([
+        {"thread_id": "T1", "path": "src/app.ts", "root_id": 101, "url": "u1", "body": "b1"}
+    ])
+    rc, outs, err = run_mode_step(
+        mode_script,
+        event="pull_request_review_comment",
+        summon="reply",
+        fake_liveness=paused_marker,
+        fake_threads=threads_fixture,
+    )
+    if rc != 0:
+        fails.append(f"case 13b: mode step exited {rc}: {err}")
+    elif outs.get("mode") != "verify":
+        fails.append(f"case 13b: want mode=verify, got {outs}")
+    else:
+        print("  ok    paused PR plus reply with open claude thread emits verify (#178)")
+
+    rc, body, outs, err = run_announce_step(
+        announce_script,
+        marker_body=paused_marker,
+        event="pull_request_review_comment",
+        summon="reply",
+        mode="verify",
+        result="success",
+        head_sha=NEW,
+        actor_login="bob",
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0:
+        fails.append(f"case 13b announce: exited {rc}: {err}")
+    elif "paused=1 paused_by=alice" not in marker_line:
+        fails.append(f"case 13b announce: verify round lost paused=1 paused_by=alice: {marker_line!r}")
+    elif outs.get("paused_by") != "alice":
+        fails.append(f"case 13b announce: want paused_by=alice output, got {outs.get('paused_by')!r}")
+    else:
+        print("  ok    verify round on paused PR keeps paused=1 and paused_by=alice (#178)")
 
     print()
     if fails:

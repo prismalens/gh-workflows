@@ -1,0 +1,326 @@
+name: Telemetry Health
+
+on:
+  workflow_call:
+    inputs:
+      window_days:
+        description: 'Number of days to look back for workflow runs and health reporting'
+        required: false
+        default: 7
+        type: number
+    secrets:
+      REVIEW_TELEMETRY_URL:
+        description: 'Review telemetry Worker URL'
+        required: false
+      REVIEW_TELEMETRY_TOKEN:
+        description: 'Review telemetry ingest token'
+        required: false
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: 'Number of days to look back for workflow runs and health reporting'
+        required: false
+        default: 7
+        type: number
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+jobs:
+  health:
+    name: Report telemetry health
+    if: ${{ github.repository != 'prismalens/gh-workflows' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate telemetry ingest
+        id: auth
+        uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
+        with:
+          url: ${{ secrets.REVIEW_TELEMETRY_URL }}
+          bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+
+      - name: Report telemetry health
+        id: report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          WINDOW_DAYS: ${{ inputs.window_days || 7 }}
+          INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
+          INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          AUTH_HEADER: ${{ steps.auth.outputs.authorization }}
+          TELEMETRY_SHARE: ${{ steps.auth.outputs.share }}
+        run: |
+          set -uo pipefail
+
+          # Consent check: if telemetry.share is off, skip and log to summary (#176).
+          if [ "${TELEMETRY_SHARE:-}" = "off" ]; then
+            echo "Telemetry sharing is disabled (telemetry.share: off); health report skipped."
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              echo "Telemetry sharing is turned off (telemetry.share: off). Nothing was reported." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
+          # Telemetry must never fail when unconfigured: an unconfigured consumer just skips.
+          if { [ -z "${AUTH_HEADER:-}" ] && [ -z "${INGEST_TOKEN:-}" ]; } || [ -z "${INGEST_URL:-}" ]; then
+            echo "Telemetry ingest is not configured for this repository; skipping."
+            exit 0
+          fi
+
+          REPO="${REPOSITORY:-${GITHUB_REPOSITORY:-}}"
+          if [ -z "$REPO" ]; then
+            echo "::error::Repository cannot be determined."
+            exit 1
+          fi
+
+          INGEST_URL="${INGEST_URL%/}"
+          case "$INGEST_URL" in
+            */ingest|*/ingest/) BASE_URL="${INGEST_URL%/ingest}" ;;
+            *) BASE_URL="$INGEST_URL" ;;
+          esac
+          BASE_URL="${BASE_URL%/}"
+          HEALTH_URL="${BASE_URL}/ingest/health"
+
+          declare -a TMPFILES=()
+          trap 'rm -f "${TMPFILES[@]}"' EXIT
+
+          hdr="$(mktemp)"; TMPFILES+=("$hdr")
+          umask 077
+          if [ -n "${AUTH_HEADER:-}" ]; then
+            printf 'authorization: %s\ncontent-type: application/json\n' "$AUTH_HEADER" > "$hdr"
+          else
+            printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+          fi
+
+          WINDOW_DAYS="${WINDOW_DAYS:-7}"
+
+          if [ -n "${TEST_WINDOW_START:-}" ]; then
+            WINDOW_START="$TEST_WINDOW_START"
+            WINDOW_END="${TEST_WINDOW_END:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+          else
+            read -r WINDOW_START WINDOW_END < <(python3 -c "
+          from datetime import datetime, timezone, timedelta
+          import os
+          days = int(os.environ.get('WINDOW_DAYS', '7'))
+          now = datetime.now(timezone.utc).replace(microsecond=0)
+          start = now - timedelta(days=days)
+          print(start.strftime('%Y-%m-%dT%H:%M:%SZ'), now.strftime('%Y-%m-%dT%H:%M:%SZ'))
+          ")
+          fi
+
+          # 1. Query workflow runs from GitHub Actions. The Worker computes every count
+          # (runs_accounted, startup_failures, lane_events_by_reason, findings_swept) from
+          # D1; this job never reads /api/* (it sits behind Cloudflare Access and answers
+          # 302, #170) and never lists PRs or findings itself (#176).
+          runs_file="$(mktemp)"; TMPFILES+=("$runs_file")
+          repo_err="$(mktemp)"; TMPFILES+=("$repo_err")
+
+          if ! gh api --paginate --slurp "repos/${REPO}/actions/workflows/claude-code-review.yml/runs?per_page=100" > "$runs_file" 2>"$repo_err"; then
+            err_msg="$(cat "$repo_err" 2>/dev/null || echo "API error")"
+            echo "::warning::Failed to read workflow runs for ${REPO}: ${err_msg}"
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              echo "Failed to read workflow runs for \`${REPO}\`: ${err_msg}" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
+          runs_in_window=$(jq -c --arg since "$WINDOW_START" --arg until "$WINDOW_END" '
+            if type == "array" then
+              [ .[] | .workflow_runs[]? | select(.created_at >= $since and .created_at <= $until) ]
+            elif type == "object" then
+              [ .workflow_runs[]? | select(.created_at >= $since and .created_at <= $until) ]
+            else
+              []
+            end
+          ' "$runs_file")
+
+          # 2. Port the reconciler's cancelled-with-zero-jobs filter: a cancelled run
+          # that never started a job legitimately produces no telemetry row, so it never
+          # belongs in the runs the health route judges (telemetry-reconcile.yml, #87).
+          # A skipped run (every job skipped) is dropped the same way: no telemetry row
+          # is expected from it either (#177, thread 4006669665).
+          declare -a RUN_ENTRIES=()
+          while IFS= read -r run_str; do
+            [ -z "$run_str" ] && continue
+            run_id=$(echo "$run_str" | jq -r '.id')
+            run_conclusion=$(echo "$run_str" | jq -r '.conclusion // "in_progress"')
+            run_created_at=$(echo "$run_str" | jq -r '.created_at')
+            run_event=$(echo "$run_str" | jq -r '.event // ""')
+
+            if [ "$run_conclusion" = "skipped" ]; then
+              echo "Filtered run ${run_id} on ${REPO}: conclusion is skipped (#177)"
+              continue
+            fi
+
+            if [ "$run_conclusion" = "cancelled" ]; then
+              jobs_file="$(mktemp)"
+              if gh api "repos/${REPO}/actions/runs/${run_id}/jobs" > "$jobs_file" 2>/dev/null; then
+                job_count=$(jq '.total_count // (.jobs | length)' "$jobs_file" 2>/dev/null || echo "-1")
+                rm -f "$jobs_file"
+                if [ "$job_count" -eq 0 ]; then
+                  echo "Filtered run ${run_id} on ${REPO}: conclusion is cancelled with zero jobs executed (#87)"
+                  continue
+                fi
+              else
+                # An incomplete jobs lookup means the zero-jobs filter can't be trusted
+                # for this run, so the whole report is withheld rather than publishing a
+                # count that might be wrong (#177, thread 4006669662).
+                rm -f "$jobs_file"
+                echo "::warning::telemetry-health: jobs lookup failed for run ${run_id} on ${REPO}; health report not sent."
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  echo "Health report not sent: jobs lookup failed for run ${run_id}" >> "$GITHUB_STEP_SUMMARY"
+                fi
+                exit 0
+              fi
+            fi
+
+            RUN_ENTRIES+=("$(jq -nc --argjson id "$run_id" --arg conclusion "$run_conclusion" --arg created_at "$run_created_at" --arg event "$run_event" \
+              '{id: $id, conclusion: $conclusion, created_at: $created_at, event: $event}')")
+          done < <(echo "$runs_in_window" | jq -c '.[]')
+
+          if [ "${#RUN_ENTRIES[@]}" -eq 0 ]; then
+            runs_json="[]"
+          else
+            # Sorted ascending so a >1000-run window partitions into contiguous,
+            # non-overlapping sub-windows below (#177, thread 4006669665).
+            runs_json=$(printf '%s\n' "${RUN_ENTRIES[@]}" | jq -sc 'sort_by(.created_at)')
+          fi
+          total_runs=$(echo "$runs_json" | jq 'length')
+
+          # 3. Partition into sub-windows of at most MAX_RUNS_PER_REPORT runs each — the
+          # Worker's own ingest contract. At or under the limit, this is the one report
+          # it always was, over the caller's own WINDOW_START/WINDOW_END. Over the limit,
+          # runs are already sorted by created_at, so slicing them into fixed-size chunks
+          # keeps each chunk contiguous and none overlap; each chunk's own first and last
+          # created_at becomes its window (#177, thread 4006669665).
+          MAX_RUNS_PER_REPORT=1000
+          if [ "$total_runs" -le "$MAX_RUNS_PER_REPORT" ]; then
+            chunk_count=1
+          else
+            chunk_count=$(( (total_runs + MAX_RUNS_PER_REPORT - 1) / MAX_RUNS_PER_REPORT ))
+          fi
+
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "## Telemetry Health Report"
+              echo ""
+              echo "- **Repository:** \`${REPO}\`"
+              echo "- **Window:** \`${WINDOW_START}\` to \`${WINDOW_END}\` (${WINDOW_DAYS} days)"
+              echo "- **Workflow runs seen:** ${total_runs}"
+              if [ "$chunk_count" -gt 1 ]; then
+                echo "- **Sub-windows:** ${chunk_count} (over the ${MAX_RUNS_PER_REPORT}-run Worker ingest limit)"
+              fi
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          post_headers="$(mktemp)"; TMPFILES+=("$post_headers")
+          post_body="$(mktemp)"; TMPFILES+=("$post_body")
+
+          i=0
+          while [ "$i" -lt "$chunk_count" ]; do
+            if [ "$chunk_count" -eq 1 ]; then
+              chunk_runs="$runs_json"
+              chunk_win_start="$WINDOW_START"
+              chunk_win_end="$WINDOW_END"
+            else
+              start=$(( i * MAX_RUNS_PER_REPORT ))
+              chunk_runs=$(echo "$runs_json" | jq -c --argjson start "$start" --argjson len "$MAX_RUNS_PER_REPORT" '.[$start:($start+$len)]')
+              chunk_win_start=$(echo "$chunk_runs" | jq -r '.[0].created_at')
+              chunk_win_end=$(echo "$chunk_runs" | jq -r '.[-1].created_at')
+            fi
+            chunk_len=$(echo "$chunk_runs" | jq 'length')
+
+            # 4. Build the exact spec body: the Worker rejects anything else, including a
+            # sender-supplied count (#176).
+            payload=$(jq -nc \
+              --argjson schema_version 1 \
+              --arg repo "$REPO" \
+              --arg win_start "$chunk_win_start" \
+              --arg win_end "$chunk_win_end" \
+              --arg share "${TELEMETRY_SHARE:-full}" \
+              --argjson runs "$chunk_runs" \
+              '{
+                schema_version: $schema_version,
+                repository: $repo,
+                window_start: $win_start,
+                window_end: $win_end,
+                share: $share,
+                runs: $runs
+              }')
+
+            # 5. Write this sub-window's exact payload to the Step Summary before
+            # sending it (#176).
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              {
+                if [ "$chunk_count" -gt 1 ]; then
+                  echo "### Sub-window $((i + 1))/${chunk_count}: \`${chunk_win_start}\` to \`${chunk_win_end}\` (${chunk_len} runs)"
+                else
+                  echo "### Payload"
+                fi
+                echo ""
+                echo '```json'
+                echo "$payload"
+                echo '```'
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+
+            # 6. POST this sub-window's health report to the Worker. Telemetry must never
+            # fail this job: a failed sub-window is a warning and a Step Summary line, and
+            # the remaining sub-windows still send (#177, thread 4006669665).
+            if ! code=$(printf '%s' "$payload" | curl -sS -m 15 -D "$post_headers" -o "$post_body" -w '%{http_code}' \
+              --proto '=https' \
+              -X POST "$HEALTH_URL" \
+              -H "@$hdr" \
+              --data-binary @-); then
+              code=000
+            fi
+
+            if [ "$code" != "200" ]; then
+              if [ "$chunk_count" -gt 1 ]; then
+                echo "::warning::Failed to submit health report sub-window $((i + 1))/${chunk_count} to Worker (HTTP $code, expected 200)."
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  echo "Failed to submit health report sub-window $((i + 1))/${chunk_count} to Worker (HTTP ${code}, expected 200)." >> "$GITHUB_STEP_SUMMARY"
+                fi
+              else
+                echo "::warning::Failed to submit health report to Worker (HTTP $code, expected 200)."
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  echo "Failed to submit health report to Worker (HTTP ${code}, expected 200)." >> "$GITHUB_STEP_SUMMARY"
+                fi
+              fi
+              i=$((i + 1))
+              continue
+            fi
+
+            if [ "$chunk_count" -gt 1 ]; then
+              echo "Telemetry health report sub-window $((i + 1))/${chunk_count} submitted successfully (HTTP 200)."
+            else
+              echo "Telemetry health report submitted successfully (HTTP 200)."
+            fi
+
+            # 7. Write the Worker's response for this sub-window after its payload
+            # (#176), and warn once per unaccounted run, naming its URL.
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              {
+                echo "### Worker Response"
+                echo ""
+                echo '```json'
+                cat "$post_body"
+                echo '```'
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+
+            unaccounted_ids=$(jq -c '[.unaccounted_runs[]?.id]' "$post_body" 2>/dev/null || echo "[]")
+            while IFS= read -r rid; do
+              [ -z "$rid" ] && continue
+              echo "::warning::telemetry-health: run ${rid} on ${REPO} is unaccounted for: https://github.com/${REPO}/actions/runs/${rid}"
+            done < <(echo "$unaccounted_ids" | jq -r '.[]')
+
+            i=$((i + 1))
+          done
+
+          exit 0

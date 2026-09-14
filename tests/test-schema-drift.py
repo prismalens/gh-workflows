@@ -58,12 +58,16 @@ USAGE_RECORDS_READ_ALLOWLIST = {
     "variant_key":      "Variant identity grouping key (#47); not yet surfaced in dashboard read API",
     "reviewable_lines": "Review manifest unit (#105); not yet surfaced in dashboard read API",
     "size_override":    "Whether @claude full review bypassed max_reviewable_lines (#105); not yet surfaced in dashboard read API",
+    "ingest_auth":      "Ingest authentication method ('oidc' | 'bearer') (#176); not yet surfaced in dashboard read API",
+    "repository_id":    "GitHub repository ID from OIDC claims (#176); not yet surfaced in dashboard read API",
 }
 
-# GET /api/findings (#111) selects every review_findings column, so this stays empty.
-# It exists so a later migration that adds a column and forgets the SELECT fails Check 3
-# below, the same drift #99 caught for usage_records.
-REVIEW_FINDINGS_READ_ALLOWLIST = {}
+# GET /api/findings (#111) selects every review_findings column.
+# Columns added in 0014 (#176) are not yet exposed on the read API.
+REVIEW_FINDINGS_READ_ALLOWLIST = {
+    "ingest_auth":      "Ingest authentication method ('oidc' | 'bearer') (#176); not yet surfaced in dashboard read API",
+    "repository_id":    "GitHub repository ID from OIDC claims (#176); not yet surfaced in dashboard read API",
+}
 
 
 # ── Migration parser ─────────────────────────────────────────

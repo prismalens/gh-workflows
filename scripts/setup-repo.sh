@@ -364,7 +364,7 @@ say ""
 # ------------------------------------------------- caller stubs, report only
 # Writing these means a PR against the target repo, which is that repo's business.
 say "workflow caller stubs (report only)"
-for f in claude-code-review.yml claude.yml pr-title.yml dependabot-auto-merge.yml review-findings-sweep.yml; do
+for f in claude-code-review.yml claude.yml pr-title.yml dependabot-auto-merge.yml review-findings-sweep.yml telemetry-health.yml; do
   if gh api "repos/$REPO/contents/.github/workflows/$f" --jq .name >/dev/null 2>&1; then
     say "  present  $f"
   else
