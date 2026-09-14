@@ -9,23 +9,24 @@ against stubbed curl and gh, verifying:
 2. Consent check (telemetry.share: off):
    - Skips network calls and reports skip to $GITHUB_STEP_SUMMARY, exits 0.
 3. Unconfigured skip:
-   - When no auth credentials exist, skips and exits 0.
-4. Happy path (all runs accounted):
-   - Queries GET /ingest/accounted-runs with authorization header.
+   - When no auth credentials or no URL exist, skips and exits 0.
+4. No /api/* call is ever made (#170, F4): the job never reads accounted-runs itself,
+   never lists PRs, never lists findings. The Worker computes every count.
+5. Happy path:
    - Queries GitHub Actions runs via gh api.
-   - Writes exact JSON payload to $GITHUB_STEP_SUMMARY before sending (#176).
-   - POSTs payload to POST /ingest/health.
-   - Exits 0 and records success in step summary.
-5. Unaccounted runs:
-   - Identifies runs present in GitHub Actions but absent from Worker's accounted-runs.
-   - Includes unaccounted run IDs and details in payload.
-   - Writes exact payload to $GITHUB_STEP_SUMMARY before sending.
-   - POSTs to /ingest/health and renders markdown table in step summary.
+   - Writes the exact spec body to $GITHUB_STEP_SUMMARY in a json fence before sending.
+   - POSTs the body to POST /ingest/health, writes the Worker's response after it.
    - Exits 0.
-6. Error handling:
-   - Accounted-runs endpoint failure (HTTP 401, 403, 500) fails loudly (exit 1).
-   - Health ingest endpoint failure (HTTP 400, 500) fails loudly (exit 1).
-   - Missing repository fails loudly (exit 1).
+6. Cancelled-with-zero-jobs filter (ported from telemetry-reconcile.yml, #87):
+   - A cancelled run with zero jobs executed is dropped from the submitted runs.
+   - A cancelled run with jobs executed is kept.
+7. Error handling, telemetry must never fail the job (F4):
+   - A failed runs listing warns and exits 0.
+   - A failed POST warns and exits 0.
+   - A non-200 POST answer warns and exits 0.
+   - Missing repository still fails loudly (exit 1): a real misconfiguration, not telemetry
+     being unavailable.
+8. Unaccounted runs in the Worker's response each raise one ::warning:: naming their URL.
 
 Run: python3 tests/test-telemetry-health.py
 """
@@ -52,6 +53,8 @@ def extract_step_script(job_name: str, step_name: str) -> str:
     sys.exit(f"step {step_name!r} in job {job_name!r} not found in {WF}")
 
 
+# Only ever POSTs (to /ingest/health). Any GET is recorded to CAPTURE_GET_FILE so a test
+# can assert the job never reads /api/* itself (F4): the Worker computes every count.
 CURL_STUB = r"""#!/usr/bin/env bash
 args=("$@")
 headers_file=""
@@ -60,6 +63,7 @@ is_post=0
 is_get=0
 capture_post="${CAPTURE_POST_FILE:-}"
 capture_hdr="${CAPTURE_HDR_FILE:-}"
+capture_get="${CAPTURE_GET_FILE:-}"
 
 i=0
 while [ $i -lt ${#args[@]} ]; do
@@ -94,8 +98,11 @@ while [ $i -lt ${#args[@]} ]; do
   ((i++))
 done
 
+if [ "$is_get" -eq 1 ] && [ -n "$capture_get" ]; then
+  echo "GET: ${args[*]}" >> "$capture_get"
+fi
+
 if [ "$is_post" -eq 1 ]; then
-  # Read payload from stdin
   payload=$(cat)
   if [ -n "$capture_post" ]; then
     printf '%s\n' "$payload" >> "$capture_post"
@@ -108,55 +115,46 @@ if [ "$is_post" -eq 1 ]; then
     if [ -n "${FAKE_POST_BODY:-}" ]; then
       printf '%s' "$FAKE_POST_BODY" > "$body_file"
     else
-      printf '{"status":"ok","id":"report-uuid-176"}' > "$body_file"
+      printf '{"status":"ok","id":1,"unaccounted_runs":[]}' > "$body_file"
     fi
   fi
   printf '%s' "$code"
   exit 0
 fi
 
-# Otherwise GET (accounted-runs)
-code="${FAKE_GET_CODE:-200}"
-if [ -n "$headers_file" ]; then
-  printf 'HTTP/2 %s\r\ncontent-type: application/json\r\n\r\n' "$code" > "$headers_file"
-fi
-if [ -n "$body_file" ]; then
-  if [ -n "${FAKE_GET_BODY:-}" ]; then
-    printf '%s' "$FAKE_GET_BODY" > "$body_file"
-  else
-    printf '{"repository":"prismalens/prismalens","run_ids":[1001,1002]}' > "$body_file"
-  fi
-fi
-printf '%s' "$code"
-exit 0
+echo "curl stub: unexpected non-POST call: ${args[*]}" >&2
+exit 1
 """
 
+# Answers the workflow-runs listing and the per-run jobs lookup used by the
+# cancelled-with-zero-jobs filter. FAKE_ZERO_JOB_RUN_IDS is a comma-separated list of
+# run ids whose /jobs lookup should report total_count: 0.
 GH_STUB = r"""#!/usr/bin/env bash
-args=("$*")
+joined="$*"
 
-case "$1" in
-  api)
-    for a in "$@"; do
-      if [[ "$a" == *actions/workflows/* ]] || [[ "$a" == *actions/runs* ]]; then
-        printf '%s' "${FAKE_WORKFLOW_RUNS:-[]}"
-        exit 0
-      fi
-      if [[ "$a" == *pulls/comments* ]]; then
-        printf '%s' "${FAKE_PULL_COMMENTS:-[]}"
-        exit 0
-      fi
-    done
-    ;;
-  pr)
-    if [ "$2" = "list" ]; then
-      printf '%s' "${FAKE_PR_LIST:-[]}"
-      exit 0
+if [ "$1" = "api" ]; then
+  if [[ "$joined" == *"/jobs"* ]]; then
+    rid=$(echo "$joined" | grep -oE 'runs/[0-9]+/jobs' | grep -oE '[0-9]+')
+    zero_ids=",${FAKE_ZERO_JOB_RUN_IDS:-},"
+    if [[ "$zero_ids" == *",${rid},"* ]]; then
+      printf '{"total_count": 0, "jobs": []}'
+    else
+      printf '{"total_count": 1, "jobs": [{"id": 1}]}'
     fi
-    ;;
-esac
+    exit 0
+  fi
+  if [ -n "${FAKE_WORKFLOW_RUNS_FAIL:-}" ]; then
+    echo "gh: API error fetching workflow runs" >&2
+    exit 1
+  fi
+  if [[ "$joined" == *"actions/workflows/"* ]]; then
+    printf '%s' "${FAKE_WORKFLOW_RUNS:-[]}"
+    exit 0
+  fi
+fi
 
-echo "gh stub: unhandled command $@" >&2
-exit 0
+echo "gh stub: unhandled command $*" >&2
+exit 1
 """
 
 
@@ -175,6 +173,7 @@ def run_test_script(td, script, env_overrides=None):
     summary_file = td / "step_summary.md"
     capture_post = td / "captured_posts.jsonl"
     capture_hdr = td / "captured_headers.txt"
+    capture_get = td / "captured_gets.txt"
 
     env = dict(os.environ)
     env.update(
@@ -183,13 +182,14 @@ def run_test_script(td, script, env_overrides=None):
             "GITHUB_STEP_SUMMARY": str(summary_file),
             "CAPTURE_POST_FILE": str(capture_post),
             "CAPTURE_HDR_FILE": str(capture_hdr),
+            "CAPTURE_GET_FILE": str(capture_get),
             "REPOSITORY": "prismalens/prismalens",
             "WINDOW_DAYS": "7",
             "TEST_WINDOW_START": "2026-09-07T00:00:00Z",
             "TEST_WINDOW_END": "2026-09-14T00:00:00Z",
-            "TEST_NOW_ISO": "2026-09-14T10:00:00Z",
             "AUTH_HEADER": "Bearer oidc-valid-token",
-            "INGEST_URL": "https://review-telemetry.sfun.cloud",
+            "TELEMETRY_SHARE": "full",
+            "INGEST_URL": "https://telemetry.example.test/ingest",
         }
     )
     if env_overrides:
@@ -206,8 +206,9 @@ def run_test_script(td, script, env_overrides=None):
     summary_text = summary_file.read_text() if summary_file.exists() else ""
     post_lines = capture_post.read_text().splitlines() if capture_post.exists() else []
     headers_text = capture_hdr.read_text() if capture_hdr.exists() else ""
+    get_text = capture_get.read_text() if capture_get.exists() else ""
 
-    return proc, summary_text, post_lines, headers_text
+    return proc, summary_text, post_lines, headers_text, get_text
 
 
 def test_suite():
@@ -234,24 +235,32 @@ def test_suite():
 
     # 2. Consent check (telemetry.share: off)
     with tempfile.TemporaryDirectory() as td:
-        proc, summary, posts, _ = run_test_script(pathlib.Path(td), script, {"TELEMETRY_SHARE": "off"})
+        proc, summary, posts, _, gets = run_test_script(pathlib.Path(td), script, {"TELEMETRY_SHARE": "off"})
         assert proc.returncode == 0, f"Expected 0 on share: off, got {proc.returncode}"
         assert "telemetry.share: off" in proc.stdout
         assert "telemetry.share: off" in summary
         assert len(posts) == 0, "Expected no POST calls when share: off"
+        assert gets == "", "Expected no GET calls when share: off"
         print("  ok    telemetry.share: off skips reporting, writes to summary, exits 0")
 
-    # 3. Unconfigured skip
+    # 3. Unconfigured skip: no auth, and separately no URL
     with tempfile.TemporaryDirectory() as td:
-        proc, summary, posts, _ = run_test_script(
+        proc, summary, posts, _, _ = run_test_script(
             pathlib.Path(td), script, {"AUTH_HEADER": "", "INGEST_TOKEN": ""}
         )
         assert proc.returncode == 0, f"Expected 0 on unconfigured, got {proc.returncode}"
         assert "not configured" in proc.stdout
         assert len(posts) == 0
-        print("  ok    unconfigured skips without error")
+        print("  ok    unconfigured (no auth) skips without error")
 
-    # 4. Happy path: all runs accounted
+    with tempfile.TemporaryDirectory() as td:
+        proc, summary, posts, _, _ = run_test_script(pathlib.Path(td), script, {"INGEST_URL": ""})
+        assert proc.returncode == 0, f"Expected 0 on empty url, got {proc.returncode}"
+        assert "not configured" in proc.stdout
+        assert len(posts) == 0
+        print("  ok    unconfigured (no url) skips without error")
+
+    # 4. Happy path: no /api/* call is ever made, Worker computes every count
     workflow_runs_fixture = json.dumps(
         [
             {
@@ -260,12 +269,14 @@ def test_suite():
                         "id": 1001,
                         "created_at": "2026-09-08T12:00:00Z",
                         "conclusion": "success",
+                        "event": "pull_request",
                         "html_url": "https://github.com/prismalens/prismalens/actions/runs/1001",
                     },
                     {
                         "id": 1002,
                         "created_at": "2026-09-10T12:00:00Z",
                         "conclusion": "success",
+                        "event": "pull_request",
                         "html_url": "https://github.com/prismalens/prismalens/actions/runs/1002",
                     },
                 ]
@@ -273,99 +284,132 @@ def test_suite():
         ]
     )
     with tempfile.TemporaryDirectory() as td:
-        proc, summary, posts, hdrs = run_test_script(
+        proc, summary, posts, hdrs, gets = run_test_script(
             pathlib.Path(td),
             script,
-            {
-                "FAKE_WORKFLOW_RUNS": workflow_runs_fixture,
-                "FAKE_GET_BODY": json.dumps({"run_ids": [1001, 1002]}),
-                "FAKE_PR_LIST": json.dumps([{"number": 42}, {"number": 43}]),
-            },
+            {"FAKE_WORKFLOW_RUNS": workflow_runs_fixture},
         )
         assert proc.returncode == 0, f"Expected 0 on happy path, got {proc.returncode}: {proc.stderr}\n{proc.stdout}"
+        assert gets == "", f"Expected no GET calls (no /api/* read, F4), got: {gets}"
         assert len(posts) == 1, f"Expected 1 POST call, got {len(posts)}"
         payload = json.loads(posts[0])
+        assert payload["schema_version"] == 1
         assert payload["repository"] == "prismalens/prismalens"
-        assert payload["report_version"] == "1"
-        assert payload["workflow_runs"] == 2
-        assert payload["workflow_run_ids"] == [1001, 1002]
-        assert payload["pr_state_count"] == 2
-        assert payload["unaccounted_runs"] == []
+        assert payload["window_start"] == "2026-09-07T00:00:00Z"
+        assert payload["window_end"] == "2026-09-14T00:00:00Z"
+        assert payload["share"] == "full"
+        assert [r["id"] for r in payload["runs"]] == [1001, 1002]
+        assert payload["runs"][0]["conclusion"] == "success"
+        assert payload["runs"][0]["event"] == "pull_request"
 
-        # Verified: exact payload is written to Step Summary before sending
+        # Verified: exact payload is written to Step Summary in a json fence before sending
         assert "### Payload" in summary
+        assert "```json" in summary
         assert json.dumps(payload, indent=2) in summary or posts[0] in summary
-        assert "All workflow runs in window are accounted for in telemetry." in summary
-        assert "Worker acknowledged report ID: `report-uuid-176`" in summary
+        assert "Telemetry health report submitted successfully" in proc.stdout
+        assert "### Worker Response" in summary
         assert "authorization: Bearer oidc-valid-token" in hdrs
-        print("  ok    happy path: queries accounted runs, compares, writes payload to summary, POSTs, exit 0")
+        print("  ok    happy path: no /api/* read, writes spec body to summary, POSTs, response after it, exit 0")
 
-    # 5. Unaccounted run detection
-    workflow_runs_with_unaccounted = json.dumps(
+    # 5. Cancelled-with-zero-jobs filter (ported from telemetry-reconcile.yml, #87)
+    workflow_runs_with_cancelled = json.dumps(
         [
             {
                 "workflow_runs": [
                     {
-                        "id": 1001,
+                        "id": 2001,
                         "created_at": "2026-09-08T12:00:00Z",
                         "conclusion": "success",
-                        "html_url": "https://github.com/prismalens/prismalens/actions/runs/1001",
+                        "event": "pull_request",
                     },
                     {
-                        "id": 1003,
-                        "created_at": "2026-09-11T14:00:00Z",
-                        "conclusion": "failure",
-                        "html_url": "https://github.com/prismalens/prismalens/actions/runs/1003",
+                        "id": 2002,
+                        "created_at": "2026-09-09T12:00:00Z",
+                        "conclusion": "cancelled",
+                        "event": "pull_request",
+                    },
+                    {
+                        "id": 2003,
+                        "created_at": "2026-09-10T12:00:00Z",
+                        "conclusion": "cancelled",
+                        "event": "pull_request",
                     },
                 ]
             }
         ]
     )
     with tempfile.TemporaryDirectory() as td:
-        proc, summary, posts, _ = run_test_script(
+        proc, summary, posts, _, _ = run_test_script(
             pathlib.Path(td),
             script,
             {
-                "FAKE_WORKFLOW_RUNS": workflow_runs_with_unaccounted,
-                "FAKE_GET_BODY": json.dumps({"run_ids": [1001]}),
+                "FAKE_WORKFLOW_RUNS": workflow_runs_with_cancelled,
+                # 2002 had zero jobs and is dropped; 2003 had jobs and is kept.
+                "FAKE_ZERO_JOB_RUN_IDS": "2002",
             },
         )
         assert proc.returncode == 0, f"Expected 0, got {proc.returncode}: {proc.stderr}\n{proc.stdout}"
         assert len(posts) == 1
         payload = json.loads(posts[0])
-        assert payload["workflow_runs"] == 2
-        assert payload["workflow_run_ids"] == [1001, 1003]
-        assert len(payload["unaccounted_runs"]) == 1
-        assert payload["unaccounted_runs"][0]["id"] == 1003
-        assert payload["unaccounted_runs"][0]["conclusion"] == "failure"
-        assert payload["unaccounted_runs"][0]["html_url"] == "https://github.com/prismalens/prismalens/actions/runs/1003"
+        run_ids = sorted(r["id"] for r in payload["runs"])
+        assert run_ids == [2001, 2003], f"Expected 2002 dropped (zero jobs), got {run_ids}"
+        assert "Filtered run 2002" in proc.stdout
+        print("  ok    cancelled run with zero jobs is dropped; cancelled run with jobs is kept")
 
-        assert "### Unaccounted Runs" in summary
-        assert "| 1003 | failure | 2026-09-11T14:00:00Z | [Run](https://github.com/prismalens/prismalens/actions/runs/1003) |" in summary
-        print("  ok    unaccounted runs identified with URL and conclusion, posted, table in summary")
-
-    # 6. Error handling: accounted-runs failure
+    # 6. Error handling: telemetry must never fail the job
     with tempfile.TemporaryDirectory() as td:
-        proc, _, posts, _ = run_test_script(pathlib.Path(td), script, {"FAKE_GET_CODE": "403"})
-        assert proc.returncode != 0, "Expected non-zero exit when accounted runs returns 403"
-        assert "Failed to read accounted runs from Worker" in proc.stdout or "Failed to read accounted runs" in proc.stderr
+        proc, summary, posts, _, _ = run_test_script(
+            pathlib.Path(td), script, {"FAKE_WORKFLOW_RUNS_FAIL": "1"}
+        )
+        assert proc.returncode == 0, f"Expected 0 on runs-listing failure, got {proc.returncode}"
+        assert "::warning::" in proc.stdout
+        assert "Failed to read workflow runs" in proc.stdout
         assert len(posts) == 0
-        print("  ok    accounted runs failure (HTTP 403) fails loudly")
+        print("  ok    runs-listing failure warns and exits 0")
 
-    # 7. Error handling: health post failure
     with tempfile.TemporaryDirectory() as td:
-        proc, _, posts, _ = run_test_script(pathlib.Path(td), script, {"FAKE_POST_CODE": "500"})
-        assert proc.returncode != 0, "Expected non-zero exit when health post returns 500"
-        assert "Failed to submit health report to Worker" in proc.stdout or "Failed to submit health report" in proc.stderr
+        proc, summary, posts, _, _ = run_test_script(
+            pathlib.Path(td), script, {"FAKE_WORKFLOW_RUNS": "[]", "FAKE_POST_CODE": "500"}
+        )
+        assert proc.returncode == 0, f"Expected 0 on POST failure, got {proc.returncode}"
+        assert "::warning::" in proc.stdout
+        assert "Failed to submit health report" in proc.stdout
         assert len(posts) == 1
-        print("  ok    health ingest failure (HTTP 500) fails loudly")
+        print("  ok    a non-200 POST answer warns and exits 0")
 
-    # 8. Error handling: missing repository
+    # 7. Missing repository still fails loudly: a real misconfiguration, not
+    # telemetry being unavailable.
     with tempfile.TemporaryDirectory() as td:
-        proc, _, _, _ = run_test_script(pathlib.Path(td), script, {"REPOSITORY": "", "GITHUB_REPOSITORY": ""})
+        proc, _, _, _, _ = run_test_script(pathlib.Path(td), script, {"REPOSITORY": "", "GITHUB_REPOSITORY": ""})
         assert proc.returncode != 0, "Expected non-zero exit when repository is empty"
         assert "Repository cannot be determined" in proc.stdout or "Repository cannot be determined" in proc.stderr
         print("  ok    missing repository fails loudly")
+
+    # 8. Unaccounted runs in the Worker's response each raise one ::warning:: naming their URL
+    with tempfile.TemporaryDirectory() as td:
+        proc, summary, posts, _, _ = run_test_script(
+            pathlib.Path(td),
+            script,
+            {
+                "FAKE_WORKFLOW_RUNS": "[]",
+                "FAKE_POST_BODY": json.dumps(
+                    {
+                        "status": "ok",
+                        "id": 7,
+                        "unaccounted_runs": [
+                            {"id": 3001, "conclusion": "failure", "created_at": "2026-09-09T00:00:00Z"},
+                            {"id": 3002, "conclusion": "success", "created_at": "2026-09-10T00:00:00Z"},
+                        ],
+                    }
+                ),
+            },
+        )
+        assert proc.returncode == 0
+        assert "::warning::telemetry-health: run 3001" in proc.stdout
+        assert "https://github.com/prismalens/prismalens/actions/runs/3001" in proc.stdout
+        assert "::warning::telemetry-health: run 3002" in proc.stdout
+        assert "https://github.com/prismalens/prismalens/actions/runs/3002" in proc.stdout
+        print("  ok    one ::warning:: per unaccounted run, naming its URL")
 
     print("\nAll telemetry health tests passed successfully.")
 
