@@ -67,9 +67,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     steps:
-      - name: Authenticate telemetry ingest
+      # Called only for its `share` output, never `authorization`: the canary exists to
+      # prove REVIEW_TELEMETRY_TOKEN and the Worker's own secret still agree, and an
+      # OIDC-first header would hide that drift (that is how the 2026-09-13 incident was
+      # caught). Until #176 box 3 retires the token, this job posts with the bearer only,
+      # and no longer needs id-token: write (#177, threads 4006669640, 4006669649).
+      - name: Resolve telemetry consent
         id: auth
         uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
         with:
@@ -80,15 +84,25 @@ jobs:
         env:
           INGEST_URL: ${{ vars.TELEMETRY_CANARY_URL || 'https://assayer.sfun.cloud/ingest' }}
           REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
-          AUTH_HEADER: ${{ steps.auth.outputs.authorization }}
+          TELEMETRY_SHARE: ${{ steps.auth.outputs.share }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
 
+          # Consent check: if telemetry.share is off, skip before building the payload,
+          # and log to the Step Summary (#177, thread 4006669649).
+          if [ "${TELEMETRY_SHARE:-}" = "off" ]; then
+            echo "Telemetry sharing is disabled (telemetry.share: off); canary ingest skipped."
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              echo "Telemetry sharing is turned off (telemetry.share: off). Canary ingest was not sent." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
           # REVIEW_TELEMETRY_TOKEN is required to verify the ingest path end-to-end (#87).
           # Failing loudly prevents an unverified pipeline from appearing healthy when
-          # secrets are missing or misconfigured.
-          if [ -z "${AUTH_HEADER:-}" ] && [ -z "${REVIEW_TELEMETRY_TOKEN:-}" ]; then
+          # the secret is missing or misconfigured.
+          if [ -z "${REVIEW_TELEMETRY_TOKEN:-}" ]; then
             echo "::error::REVIEW_TELEMETRY_TOKEN is not set. Until this secret is configured, nothing verifies that telemetry ingest works (#87)."
             exit 1
           fi
@@ -98,11 +112,9 @@ jobs:
           body="$(mktemp)"
           trap 'rm -f "$hdr" "$headers" "$body"' EXIT
           umask 077
-          if [ -n "${AUTH_HEADER:-}" ]; then
-            printf 'authorization: %s\ncontent-type: application/json\n' "$AUTH_HEADER" > "$hdr"
-          else
-            printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$REVIEW_TELEMETRY_TOKEN" > "$hdr"
-          fi
+          # Always the bearer, never AUTH_HEADER/OIDC: this job's only purpose is to prove
+          # the bearer still works end to end (#177, thread 4006669640).
+          printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$REVIEW_TELEMETRY_TOKEN" > "$hdr"
 
           payload=$(jq -nc \
             --arg run_url "$RUN_URL" \
