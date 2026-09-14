@@ -3,6 +3,35 @@ import assert from "node:assert/strict";
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from "jose";
 import worker, { computeVariantKey } from "./index.js";
 
+const { publicKey, privateKey } = await generateKeyPair("RS256");
+const jwk = await exportJWK(publicKey);
+const getLocalKey = createLocalJWKSet({ keys: [jwk] });
+
+async function mintOidcToken({
+  issuer = "https://token.actions.githubusercontent.com",
+  audience = "https://review-telemetry.sfun.cloud",
+  repository = "prismalens/gh-workflows",
+  repository_id = 12345,
+  repository_owner_id = 6789,
+  job_workflow_ref = "prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main",
+  run_id = 9999,
+  expiresIn = "1h",
+} = {}) {
+  const jwt = new SignJWT({
+    repository,
+    repository_id,
+    repository_owner_id,
+    job_workflow_ref,
+    run_id,
+  }).setProtectedHeader({ alg: "RS256" });
+
+  if (issuer) jwt.setIssuer(issuer);
+  if (audience) jwt.setAudience(audience);
+  if (expiresIn) jwt.setExpirationTime(expiresIn);
+
+  return jwt.sign(privateKey);
+}
+
 function createFakeDb(options = {}) {
   const queries = [];
   const handleQuery = (sql, args) => {
@@ -159,41 +188,6 @@ describe("Worker telemetry ingest", () => {
   });
 
   describe("GitHub Actions OIDC Authentication (#176)", () => {
-    let keyPair;
-    let getLocalKey;
-
-    before(async () => {
-      const { publicKey, privateKey } = await generateKeyPair("RS256");
-      keyPair = { publicKey, privateKey };
-      const jwk = await exportJWK(publicKey);
-      getLocalKey = createLocalJWKSet({ keys: [jwk] });
-    });
-
-    async function mintOidcToken({
-      issuer = "https://token.actions.githubusercontent.com",
-      audience = "https://review-telemetry.sfun.cloud",
-      repository = "prismalens/gh-workflows",
-      repository_id = 12345,
-      repository_owner_id = 6789,
-      job_workflow_ref = "prismalens/gh-workflows/.github/workflows/claude-code-review.yml@refs/heads/main",
-      run_id = 9999,
-      expiresIn = "1h",
-    } = {}) {
-      const jwt = new SignJWT({
-        repository,
-        repository_id,
-        repository_owner_id,
-        job_workflow_ref,
-        run_id,
-      }).setProtectedHeader({ alg: "RS256" });
-
-      if (issuer) jwt.setIssuer(issuer);
-      if (audience) jwt.setAudience(audience);
-      if (expiresIn) jwt.setExpirationTime(expiresIn);
-
-      return jwt.sign(keyPair.privateKey);
-    }
-
     it("accepts a valid OIDC token and records ingest_auth and repository_id", async () => {
       const db = createFakeDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
@@ -4569,6 +4563,49 @@ describe("Worker telemetry read API", () => {
         assert.deepEqual(data.run_ids, []);
       });
 
+      it("accepts GET /ingest/accounted-runs with valid bearer token (#176)", async () => {
+        const db = createFakeDb({
+          handler: () => ({ results: [{ run_id: 1001 }] }),
+        });
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const req = makeRequest(`/ingest/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: authHeader,
+        });
+        const res = await worker.fetch(req, env);
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data.run_ids, [1001]);
+      });
+
+      it("accepts GET /ingest/accounted-runs with valid OIDC token (#176)", async () => {
+        const db = createFakeDb({
+          handler: () => ({ results: [{ run_id: 1001 }] }),
+        });
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const token = await mintOidcToken({ repository: validRepo });
+        const req = makeRequest(`/ingest/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: { authorization: `Bearer ${token}` },
+        });
+        const res = await worker.fetch(req, env, { getKey: getLocalKey });
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data.run_ids, [1001]);
+      });
+
+      it("rejects GET /ingest/accounted-runs when OIDC repository does not match (403) (#176)", async () => {
+        const db = createFakeDb();
+        const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+        const token = await mintOidcToken({ repository: "other/repo" });
+        const req = makeRequest(`/ingest/accounted-runs?repository=${validRepo}&since=${validSince}&until=${validUntil}`, {
+          method: "GET",
+          headers: { authorization: `Bearer ${token}` },
+        });
+        const res = await worker.fetch(req, env, { getKey: getLocalKey });
+        assert.equal(res.status, 403);
+      });
+
       it("returns 500 when database throws an error", async () => {
         const db = createFakeDb({ shouldThrow: true });
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
@@ -4585,35 +4622,6 @@ describe("Worker telemetry read API", () => {
   });
 
   describe("Health report ingest (POST /ingest/health) (#176)", () => {
-    let keyPair;
-    let getLocalKey;
-
-    before(async () => {
-      const { publicKey, privateKey } = await generateKeyPair("RS256");
-      keyPair = { publicKey, privateKey };
-      const jwk = await exportJWK(publicKey);
-      getLocalKey = createLocalJWKSet({ keys: [jwk] });
-    });
-
-    async function mintOidcToken({
-      issuer = "https://token.actions.githubusercontent.com",
-      audience = "https://review-telemetry.sfun.cloud",
-      repository = "prismalens/gh-workflows",
-      repository_id = 12345,
-      expiresIn = "1h",
-    } = {}) {
-      const jwt = new SignJWT({
-        repository,
-        repository_id,
-      }).setProtectedHeader({ alg: "RS256" });
-
-      if (issuer) jwt.setIssuer(issuer);
-      if (audience) jwt.setAudience(audience);
-      if (expiresIn) jwt.setExpirationTime(expiresIn);
-
-      return jwt.sign(keyPair.privateKey);
-    }
-
     function sampleHealthPayload(overrides = {}) {
       return {
         repository: "prismalens/gh-workflows",

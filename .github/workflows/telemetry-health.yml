@@ -1,0 +1,283 @@
+name: Telemetry Health
+
+on:
+  workflow_call:
+    inputs:
+      window_days:
+        description: 'Number of days to look back for workflow runs and health reporting'
+        required: false
+        default: 7
+        type: number
+    secrets:
+      REVIEW_TELEMETRY_URL:
+        description: 'Review telemetry Worker URL'
+        required: false
+      REVIEW_TELEMETRY_TOKEN:
+        description: 'Review telemetry ingest token'
+        required: false
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: 'Number of days to look back for workflow runs and health reporting'
+        required: false
+        default: 7
+        type: number
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+jobs:
+  health:
+    name: Report telemetry health
+    if: ${{ github.repository != 'prismalens/gh-workflows' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate telemetry ingest
+        id: auth
+        uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
+        with:
+          url: ${{ secrets.REVIEW_TELEMETRY_URL || 'https://review-telemetry.sfun.cloud' }}
+          bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+
+      - name: Report telemetry health
+        id: report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          WINDOW_DAYS: ${{ inputs.window_days || 7 }}
+          INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
+          INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          AUTH_HEADER: ${{ steps.auth.outputs.authorization }}
+          TELEMETRY_SHARE: ${{ steps.auth.outputs.share }}
+        run: |
+          set -euo pipefail
+
+          # Consent check: if telemetry.share is off, skip and log to summary (#176).
+          if [ "${TELEMETRY_SHARE:-}" = "off" ]; then
+            echo "Telemetry sharing is disabled (telemetry.share: off); health report skipped."
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              echo "Telemetry sharing is turned off (telemetry.share: off). Nothing was reported." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
+          # Telemetry must never fail when unconfigured: an unconfigured consumer just skips.
+          if [ -z "${AUTH_HEADER:-}" ] && [ -z "${INGEST_TOKEN:-}" ]; then
+            echo "Telemetry ingest is not configured for this repository; skipping."
+            exit 0
+          fi
+
+          REPO="${REPOSITORY:-${GITHUB_REPOSITORY:-}}"
+          if [ -z "$REPO" ]; then
+            echo "::error::Repository cannot be determined."
+            exit 1
+          fi
+
+          INGEST_URL="${INGEST_URL:-https://review-telemetry.sfun.cloud}"
+          INGEST_URL="${INGEST_URL%/}"
+          case "$INGEST_URL" in
+            */ingest|*/ingest/) BASE_URL="${INGEST_URL%/ingest}" ;;
+            *) BASE_URL="$INGEST_URL" ;;
+          esac
+          BASE_URL="${BASE_URL%/}"
+          ACCOUNTED_URL="${BASE_URL}/ingest/accounted-runs"
+          HEALTH_URL="${BASE_URL}/ingest/health"
+
+          declare -a TMPFILES=()
+          trap 'rm -f "${TMPFILES[@]}"' EXIT
+
+          hdr="$(mktemp)"; TMPFILES+=("$hdr")
+          umask 077
+          if [ -n "${AUTH_HEADER:-}" ]; then
+            printf 'authorization: %s\ncontent-type: application/json\n' "$AUTH_HEADER" > "$hdr"
+          else
+            printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+          fi
+
+          WINDOW_DAYS="${WINDOW_DAYS:-7}"
+
+          if [ -n "${TEST_WINDOW_START:-}" ]; then
+            WINDOW_START="$TEST_WINDOW_START"
+            WINDOW_END="${TEST_WINDOW_END:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+            NOW_ISO="${TEST_NOW_ISO:-$WINDOW_END}"
+          else
+            read -r WINDOW_START WINDOW_END NOW_ISO < <(python3 -c "
+          from datetime import datetime, timezone, timedelta
+          import os
+          days = int(os.environ.get('WINDOW_DAYS', '7'))
+          now = datetime.now(timezone.utc).replace(microsecond=0)
+          start = now - timedelta(days=days)
+          print(start.strftime('%Y-%m-%dT%H:%M:%SZ'), now.strftime('%Y-%m-%dT%H:%M:%SZ'), now.strftime('%Y-%m-%dT%H:%M:%SZ'))
+          ")
+          fi
+
+          # 1. Query accounted runs from Worker
+          acc_headers="$(mktemp)"; TMPFILES+=("$acc_headers")
+          acc_body="$(mktemp)"; TMPFILES+=("$acc_body")
+
+          if ! code=$(curl -sS -m 15 -D "$acc_headers" -o "$acc_body" -w '%{http_code}' \
+            --proto '=https' \
+            -G "$ACCOUNTED_URL" \
+            -H "@$hdr" \
+            --data-urlencode "repository=$REPO" \
+            --data-urlencode "since=$WINDOW_START" \
+            --data-urlencode "until=$WINDOW_END"); then
+            code=000
+          fi
+
+          if [ "$code" != "200" ]; then
+            echo "::error::Failed to read accounted runs from Worker (HTTP $code, expected 200)."
+            cat "$acc_headers" 2>/dev/null || true
+            head -c 500 "$acc_body" 2>/dev/null || true
+            exit 1
+          fi
+
+          ACCOUNTED_RUN_IDS_JSON=$(jq -c '.run_ids // []' "$acc_body" 2>/dev/null || echo "[]")
+
+          # 2. Query workflow runs from GitHub Actions
+          runs_file="$(mktemp)"; TMPFILES+=("$runs_file")
+          repo_err="$(mktemp)"; TMPFILES+=("$repo_err")
+
+          if ! gh api --paginate --slurp "repos/${REPO}/actions/workflows/claude-code-review.yml/runs?per_page=100" > "$runs_file" 2>"$repo_err"; then
+            if ! gh api --paginate --slurp "repos/${REPO}/actions/runs?per_page=100" > "$runs_file" 2>"$repo_err"; then
+              err_msg="$(cat "$repo_err" 2>/dev/null || echo "API error")"
+              echo "::error::Failed to read workflow runs for ${REPO}: ${err_msg}"
+              exit 1
+            fi
+          fi
+
+          runs_in_window=$(jq -c --arg since "$WINDOW_START" --arg until "$WINDOW_END" '
+            if type == "array" then
+              [ .[] | .workflow_runs[]? | select(.created_at >= $since and .created_at <= $until) ]
+            elif type == "object" then
+              [ .workflow_runs[]? | select(.created_at >= $since and .created_at <= $until) ]
+            else
+              []
+            end
+          ' "$runs_file")
+
+          total_runs=$(echo "$runs_in_window" | jq 'length')
+          run_ids_json=$(echo "$runs_in_window" | jq -c '[.[].id | select(type == "number")]')
+
+          # 3. Compare runs against accounted runs
+          reconciled=$(python3 -c "import json, sys; runs = json.loads(sys.argv[1]) if len(sys.argv) > 1 else []; accounted_ids = set(json.loads(sys.argv[2])) if len(sys.argv) > 2 else set(); accounted = [r for r in runs if r.get('id') in accounted_ids]; unaccounted = [{'id': r.get('id'), 'conclusion': r.get('conclusion') or 'in_progress', 'created_at': r.get('created_at', ''), 'html_url': r.get('html_url', '')} for r in runs if r.get('id') not in accounted_ids]; print(json.dumps({'accounted_count': len(accounted), 'unaccounted_count': len(unaccounted), 'unaccounted_runs': unaccounted}))" "$runs_in_window" "$ACCOUNTED_RUN_IDS_JSON")
+
+          unaccounted_count=$(echo "$reconciled" | jq '.unaccounted_count')
+          unaccounted_runs_json=$(echo "$reconciled" | jq -c '.unaccounted_runs')
+          accounted_count=$(echo "$reconciled" | jq '.accounted_count')
+
+          # 4. PR states count in window
+          since_date="${WINDOW_START%%T*}"
+          pr_list_json=$(gh pr list --repo "$REPO" --state all --search "updated:>=${since_date}" --limit 1000 --json number 2>/dev/null || echo "[]")
+          pr_state_count=$(printf '%s' "$pr_list_json" | jq 'length' 2>/dev/null || echo "0")
+          if ! [[ "$pr_state_count" =~ ^[0-9]+$ ]]; then
+            pr_state_count=0
+          fi
+
+          # 5. Swept findings in window
+          findings_json=$(gh api --paginate --slurp "repos/${REPO}/pulls/comments?since=${WINDOW_START}" 2>/dev/null || echo "[]")
+          sweep_findings=$(printf '%s' "$findings_json" | jq '
+            if type == "array" then
+              [ .[] | (if type == "array" then .[] else . end) | select(.user?.login == "claude[bot]" or .user?.login == "claude") ] | length
+            else
+              0
+            end
+          ' 2>/dev/null || echo "0")
+          if ! [[ "$sweep_findings" =~ ^[0-9]+$ ]]; then
+            sweep_findings=0
+          fi
+
+          # 6. Build health payload
+          payload=$(jq -nc \
+            --arg repo "$REPO" \
+            --arg gen_at "$NOW_ISO" \
+            --arg win_start "$WINDOW_START" \
+            --arg win_end "$WINDOW_END" \
+            --argjson wf_runs "$total_runs" \
+            --argjson wf_run_ids "$run_ids_json" \
+            --argjson sw_findings "$sweep_findings" \
+            --argjson pr_count "$pr_state_count" \
+            --argjson unacc_runs "$unaccounted_runs_json" \
+            '{
+              report_version: "1",
+              repository: $repo,
+              generated_at: $gen_at,
+              window_start: $win_start,
+              window_end: $win_end,
+              workflow_runs: $wf_runs,
+              workflow_run_ids: $wf_run_ids,
+              sweep_findings: $sw_findings,
+              pr_state_count: $pr_count,
+              unaccounted_runs: $unacc_runs
+            }')
+
+          # 7. Write exact payload to Step Summary before sending (#176)
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "## Telemetry Health Report"
+              echo ""
+              echo "- **Repository:** \`${REPO}\`"
+              echo "- **Window:** \`${WINDOW_START}\` to \`${WINDOW_END}\` (${WINDOW_DAYS} days)"
+              echo "- **Workflow runs:** ${total_runs}"
+              echo "- **Accounted runs:** ${accounted_count}"
+              echo "- **Unaccounted runs:** ${unaccounted_count}"
+              echo "- **PR states updated:** ${pr_state_count}"
+              echo "- **Review comments (findings):** ${sweep_findings}"
+              echo ""
+              echo "### Payload"
+              echo '```json'
+              echo "$payload"
+              echo '```'
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # 8. POST health report to Worker
+          post_headers="$(mktemp)"; TMPFILES+=("$post_headers")
+          post_body="$(mktemp)"; TMPFILES+=("$post_body")
+
+          if ! code=$(printf '%s' "$payload" | curl -sS -m 15 -D "$post_headers" -o "$post_body" -w '%{http_code}' \
+            --proto '=https' \
+            -X POST "$HEALTH_URL" \
+            -H "@$hdr" \
+            --data-binary @-); then
+            code=000
+          fi
+
+          if [ "$code" != "200" ]; then
+            echo "::error::Failed to submit health report to Worker (HTTP $code, expected 200)."
+            cat "$post_headers" 2>/dev/null || true
+            head -c 500 "$post_body" 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Telemetry health report submitted successfully (HTTP 200)."
+
+          # 9. Append summary results
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "### Ingest Result"
+              echo ""
+              echo "Worker acknowledged report ID: \`$(jq -r .id "$post_body" 2>/dev/null || echo "ok")\`"
+              echo ""
+              if [ "$unaccounted_count" -gt 0 ]; then
+                echo "### Unaccounted Runs"
+                echo ""
+                echo "| Run ID | Conclusion | Created At | URL |"
+                echo "|---|---|---|---|"
+                while IFS= read -r item; do
+                  [ -z "$item" ] && continue
+                  rid=$(echo "$item" | jq -r .id)
+                  rconc=$(echo "$item" | jq -r .conclusion)
+                  rcreated=$(echo "$item" | jq -r .created_at)
+                  rurl=$(echo "$item" | jq -r .html_url)
+                  echo "| ${rid} | ${rconc} | ${rcreated} | [Run](${rurl}) |"
+                done < <(echo "$unaccounted_runs_json" | jq -c '.[]')
+                echo ""
+              else
+                echo "All workflow runs in window are accounted for in telemetry."
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

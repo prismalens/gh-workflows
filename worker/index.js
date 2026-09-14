@@ -1117,12 +1117,18 @@ async function handlePrs(url, env) {
 }
 
 // Programmatic read route for the telemetry reconciler (#87).
-// Authenticates with REVIEW_TELEMETRY_TOKEN and returns distinct run_ids across
-// both usage_records and lane_events in the requested window (capped at 30 days).
-async function handleAccountedRuns(request, url, env) {
-  const token = env?.REVIEW_TELEMETRY_TOKEN;
-  const authHeader = request.headers.get("authorization");
-  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
+// Authenticates with OIDC or REVIEW_TELEMETRY_TOKEN and returns distinct run_ids across
+// both usage_records and lane_events in the requested window (capped at 30 days). (#87, #176)
+async function handleAccountedRuns(request, url, env, authOptions = {}) {
+  const auth = await authenticateIngest(request, env, authOptions);
+  if (auth instanceof Response) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), {
+      status: 401,
+      headers: READ_HEADERS,
+    });
+  }
+
+  if (auth.method === "bearer" && !env?.REVIEW_TELEMETRY_TOKEN) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
       headers: READ_HEADERS,
@@ -1133,6 +1139,16 @@ async function handleAccountedRuns(request, url, env) {
   if (repository === null || repository === "") {
     return new Response(JSON.stringify({ error: "missing repository" }), {
       status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  if (
+    auth.method === "oidc" &&
+    repository.toLowerCase() !== auth.repository.toLowerCase()
+  ) {
+    return new Response(JSON.stringify({ error: "repository mismatch" }), {
+      status: 403,
       headers: READ_HEADERS,
     });
   }
@@ -1468,10 +1484,23 @@ async function handleHealth(request, env, { getKey } = {}) {
     });
   }
 
-  return new Response(JSON.stringify({ status: "ok", id }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
+  return new Response(
+    JSON.stringify({
+      status: "ok",
+      id,
+      workflow_runs: payload.workflow_runs,
+      telemetry_records: telemetryRecords,
+      lane_events: laneEvents,
+      missing_runs: missingRuns,
+      missing_run_ids: missingRunIds,
+      sweep_findings: payload.sweep_findings,
+      pr_state_count: payload.pr_state_count,
+    }),
+    {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }
+  );
 }
 
 async function handleIngest(request, env, { getKey } = {}) {
@@ -2777,9 +2806,12 @@ export default {
 
     if (
       method === "GET" &&
-      (pathname === "/api/accounted-runs" || pathname === "/api/accounted-runs/")
+      (pathname === "/api/accounted-runs" ||
+        pathname === "/api/accounted-runs/" ||
+        pathname === "/ingest/accounted-runs" ||
+        pathname === "/ingest/accounted-runs/")
     ) {
-      return handleAccountedRuns(request, url, env);
+      return handleAccountedRuns(request, url, env, authOptions);
     }
 
     if (

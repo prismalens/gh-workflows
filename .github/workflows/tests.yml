@@ -164,6 +164,10 @@ jobs:
       - name: Telemetry auth action behaviour
         run: python3 tests/test-telemetry-auth-action.py
 
+      # Verifies telemetry-health workflow behaviour (#176).
+      - name: Telemetry health behaviour
+        run: python3 tests/test-telemetry-health.py
+
       # A test file this job does not name is a test that never runs (#130).
       - name: Every test file is wired into this job
         run: |
