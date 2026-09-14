@@ -157,7 +157,15 @@ jobs:
                   continue
                 fi
               else
+                # An incomplete jobs lookup means the zero-jobs filter can't be trusted
+                # for this run, so the whole report is withheld rather than publishing a
+                # count that might be wrong (#177, thread 4006669662).
                 rm -f "$jobs_file"
+                echo "::warning::telemetry-health: jobs lookup failed for run ${run_id} on ${REPO}; health report not sent."
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  echo "Health report not sent: jobs lookup failed for run ${run_id}" >> "$GITHUB_STEP_SUMMARY"
+                fi
+                exit 0
               fi
             fi
 

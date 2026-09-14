@@ -128,13 +128,19 @@ exit 1
 
 # Answers the workflow-runs listing and the per-run jobs lookup used by the
 # cancelled-with-zero-jobs filter. FAKE_ZERO_JOB_RUN_IDS is a comma-separated list of
-# run ids whose /jobs lookup should report total_count: 0.
+# run ids whose /jobs lookup should report total_count: 0. FAKE_JOBS_LOOKUP_FAIL_RUN_IDS
+# is a comma-separated list of run ids whose /jobs lookup should fail outright (#177).
 GH_STUB = r"""#!/usr/bin/env bash
 joined="$*"
 
 if [ "$1" = "api" ]; then
   if [[ "$joined" == *"/jobs"* ]]; then
     rid=$(echo "$joined" | grep -oE 'runs/[0-9]+/jobs' | grep -oE '[0-9]+')
+    fail_ids=",${FAKE_JOBS_LOOKUP_FAIL_RUN_IDS:-},"
+    if [[ "$fail_ids" == *",${rid},"* ]]; then
+      echo "gh: API error fetching jobs for run ${rid}" >&2
+      exit 1
+    fi
     zero_ids=",${FAKE_ZERO_JOB_RUN_IDS:-},"
     if [[ "$zero_ids" == *",${rid},"* ]]; then
       printf '{"total_count": 0, "jobs": []}'
@@ -355,6 +361,23 @@ def test_suite():
         assert run_ids == [2001, 2003], f"Expected 2002 dropped (zero jobs), got {run_ids}"
         assert "Filtered run 2002" in proc.stdout
         print("  ok    cancelled run with zero jobs is dropped; cancelled run with jobs is kept")
+
+    # 5b. An incomplete jobs lookup for a cancelled run withholds the whole report,
+    # rather than publishing a count that might be wrong (#177, thread 4006669662).
+    with tempfile.TemporaryDirectory() as td:
+        proc, summary, posts, _, _ = run_test_script(
+            pathlib.Path(td),
+            script,
+            {
+                "FAKE_WORKFLOW_RUNS": workflow_runs_with_cancelled,
+                "FAKE_JOBS_LOOKUP_FAIL_RUN_IDS": "2002",
+            },
+        )
+        assert proc.returncode == 0, f"Expected 0, got {proc.returncode}: {proc.stderr}\n{proc.stdout}"
+        assert len(posts) == 0, f"Expected no POST when a jobs lookup fails, got {posts}"
+        assert "::warning::telemetry-health: jobs lookup failed for run 2002" in proc.stdout, proc.stdout
+        assert "Health report not sent: jobs lookup failed for run 2002" in summary, summary
+        print("  ok    an incomplete jobs lookup for a cancelled run withholds the whole report")
 
     # 6. Error handling: telemetry must never fail the job
     with tempfile.TemporaryDirectory() as td:
