@@ -5601,6 +5601,7 @@ jobs:
         needs.review.outputs.skip_reason == 'superseded' ||
         needs.review.outputs.skip_reason == 'unchanged-patch' ||
         needs.review.outputs.skip_reason == 'refused-size' ||
+        needs.review.outputs.failure_class != '' ||
         (
           needs.resolve.outputs.draft == 'true' &&
           needs.resolve.outputs.summon != 'none' &&
