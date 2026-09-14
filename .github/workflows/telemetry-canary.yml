@@ -73,12 +73,12 @@ jobs:
         id: auth
         uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
         with:
-          url: ${{ vars.TELEMETRY_CANARY_URL || 'https://review-telemetry.sfun.cloud/ingest' }}
+          url: ${{ vars.TELEMETRY_CANARY_URL || 'https://assayer.sfun.cloud/ingest' }}
           bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
 
       - name: Post canary telemetry record
         env:
-          INGEST_URL: ${{ vars.TELEMETRY_CANARY_URL || 'https://review-telemetry.sfun.cloud/ingest' }}
+          INGEST_URL: ${{ vars.TELEMETRY_CANARY_URL || 'https://assayer.sfun.cloud/ingest' }}
           REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
           AUTH_HEADER: ${{ steps.auth.outputs.authorization }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
