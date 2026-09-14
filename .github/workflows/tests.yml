@@ -156,6 +156,10 @@ jobs:
       - name: rotate-telemetry-token.sh behaviour
         run: python3 tests/test-rotate-telemetry-token.py
 
+      # Verifies wrangler.toml run_worker_first covers all POST routes (#176).
+      - name: Worker route coverage in wrangler.toml
+        run: python3 tests/test-worker-routes-reach-worker.py
+
       # A test file this job does not name is a test that never runs (#130).
       - name: Every test file is wired into this job
         run: |
