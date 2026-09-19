@@ -8,6 +8,8 @@ test('parseArgs validates', () => {
   assert.throws(() => parseArgs(['--cwd', '/c']), /--prompt is required/);
   assert.throws(() => parseArgs(['--cwd', '/c', '--prompt', '/p', '--out', '/o', '--engine', 'nope']), /unknown engine/);
   assert.throws(() => parseArgs(['--cwd', '/c', '--prompt', '/p', '--out', '/o', '--timeout-min', '0']), /positive/);
+  assert.throws(() => parseArgs(['--cwd', '/c', '--prompt', '/p', '--out', '/o', '--idle-min', 'x']), /idle-min/);
+  assert.equal(parseArgs(['--cwd', '/c', '--prompt', '/p', '--out', '/o', '--idle-min', '2']).idleMs, 120000);
   assert.throws(() => parseArgs(['--cwd', '/c', '--prompt', '/p', '--out', '/o', '--bogus', '1']), /unknown argument/);
   assert.throws(() => parseArgs(['--cwd']), /needs a value/);
 });

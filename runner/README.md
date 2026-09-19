@@ -23,7 +23,7 @@ node src/run.js --cwd /path/to/checkout --prompt rendered-prompt.md --out ./roun
 incremental --range-base A --range-head B] [--path-instructions]` renders it the way the
 workflow's `build-prompt` step does and prints the prompt hash on stderr; `prompt/README.md`
 has the template's provenance and re-sync rule. A file still carrying `@@TOKEN@@` is refused. `--engine` is a row in
-`src/engines.js`. `--timeout-min` (default 20) cancels the session, then kills the engine.
+`src/engines.js`. `--timeout-min` (default 20) bounds the round and `--idle-min` (default 8) cuts an engine that has sent no update for that long; either cancels the session, then kills the engine if it does not stop.
 `GH_TOKEN` in the environment is passed through to the engine for the `gh` read commands the
 prompt allows.
 

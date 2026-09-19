@@ -17,7 +17,7 @@ import { ENGINES, engineEnv } from './engines.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export function parseArgs(argv) {
-  const o = { engine: 'opencode', model: null, timeoutMs: 20 * 60 * 1000, laneVersion: null, promptHash: null };
+  const o = { engine: 'opencode', model: null, timeoutMs: 20 * 60 * 1000, idleMs: 8 * 60 * 1000, laneVersion: null, promptHash: null };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]; const v = argv[i + 1];
     const need = () => { if (v === undefined) throw new Error(`${a} needs a value`); i += 1; return v; };
@@ -27,6 +27,7 @@ export function parseArgs(argv) {
     else if (a === '--prompt') o.prompt = need();
     else if (a === '--out') o.out = need();
     else if (a === '--timeout-min') o.timeoutMs = Number(need()) * 60 * 1000;
+    else if (a === '--idle-min') o.idleMs = Number(need()) * 60 * 1000;
     else if (a === '--lane-version') o.laneVersion = need();
     else if (a === '--prompt-hash') o.promptHash = need();
     else throw new Error(`unknown argument ${a}`);
@@ -34,6 +35,7 @@ export function parseArgs(argv) {
   for (const k of ['cwd', 'prompt', 'out']) if (!o[k]) throw new Error(`--${k} is required`);
   if (!(o.engine in ENGINES)) throw new Error(`unknown engine ${o.engine}; known: ${Object.keys(ENGINES).join(', ')}`);
   if (!Number.isFinite(o.timeoutMs) || o.timeoutMs <= 0) throw new Error('--timeout-min must be a positive number');
+  if (!Number.isFinite(o.idleMs) || o.idleMs <= 0) throw new Error('--idle-min must be a positive number');
   return o;
 }
 
@@ -87,7 +89,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
   const raw = (kind, payload) => appendFileSync(rawPath, JSON.stringify({ at: new Date().toISOString(), kind, ...payload }) + '\n');
   const started = Date.now();
   let conclusion = null; let permissions = { allowed: 0, rejected: 0 };
-  let timer = null; let timedOut = false;
+  let timer = null; let idle = null; let timedOut = false;
 
   const stream = acp.ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout));
   const app = acp.client({ name: 'assayer-runner' })
@@ -103,11 +105,18 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
 
   try {
     await app.connectWith(stream, async (ctx) => {
-      timer = setTimeout(() => {
-        timedOut = true;
+      // Two clocks. The wall clock bounds the round; the idle clock cuts an engine whose
+      // subagent went quiet (a free model sat 15 minutes on one task on 2026-09-19). Either
+      // one cancels the session, then kills the engine if it does not stop on its own.
+      const cancel = (why) => {
+        if (timedOut) return;
+        timedOut = why;
+        raw('timeout', { why, sessionId: mapper.sessionId ?? null });
         try { ctx.notify?.(acp.methods.agent.session.cancel, { sessionId: mapper.sessionId }); } catch { /* fall through to kill */ }
-        setTimeout(() => child.kill('SIGKILL'), 5000);
-      }, opts.timeoutMs);
+        setTimeout(() => child.kill('SIGKILL'), 5000).unref();
+      };
+      timer = setTimeout(() => cancel('wall-clock'), opts.timeoutMs);
+      idle = setTimeout(() => cancel('idle'), opts.idleMs);
       const init = await ctx.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
       raw('initialize', { result: init });
       mapper.events[0]._meta = { agent: init.agentInfo ?? null, protocol: init.protocolVersion };
@@ -127,6 +136,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
             if (m.kind === 'stop') { raw('stop', { response: m.response }); mapper.onStop(m.response); return m.response; }
             const n = m.notification ?? m.update ?? m;
             raw('update', { notification: n });
+            clearTimeout(idle); idle = setTimeout(() => cancel('idle'), opts.idleMs);
             mapper.onUpdate(n.update ?? n);
           }
         });
@@ -135,7 +145,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
     if (timedOut) conclusion = 'timed-out';
     else mapper.onError(err, err?.stage ?? 'prompt');
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer); clearTimeout(idle);
     if (childExit === null) child.kill('SIGTERM');
   }
   if (timedOut) conclusion = 'timed-out';
@@ -153,6 +163,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
     findings: events.filter((e) => e.type === 'finding').length, summary: events.some((e) => e.type === 'summary'),
     permissions, usage: events.find((e) => e.type === 'usage') ?? null, errors: events.filter((e) => e.type === 'error'),
     tool_log_corrupt_lines: tl.corrupt, dropped: mapper.dropped, wall_clock_ms: wallClockMs, engine_exit: childExit,
+    timed_out_by: timedOut || null,
   };
   writeFileSync(path.join(out, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   log(`assayer-run: ${summary.conclusion} in ${Math.round(wallClockMs / 1000)}s, ${summary.tool_calls} tool calls, ${summary.reads} reads, ${summary.findings} findings, summary=${summary.summary}`);

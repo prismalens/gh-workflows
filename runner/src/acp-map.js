@@ -46,11 +46,15 @@ export class SessionMapper {
     return next;
   }
 
+  // Only a read or search tool reads. OpenCode reports the working directory as a location on
+  // every shell command, and the root itself is not a file the round read.
   #emitReads(tc) {
+    if (!['read', 'search'].includes(tc.kind)) return;
     for (const loc of tc.locations || []) {
       if (!loc || typeof loc.path !== 'string' || !loc.path) continue;
       const abs = path.resolve(this.cwd, loc.path);
       const rel = path.relative(this.cwd, abs);
+      if (rel === '') continue;
       const outside = rel.startsWith('..') || path.isAbsolute(rel);
       const key = outside ? abs : rel;
       if (this.readPaths.has(key)) continue; // one read event per path per round

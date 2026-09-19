@@ -16,14 +16,17 @@ test('reads: one per path, partial updates merge, outside paths flagged, bad loc
   m.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't2', kind: 'read', locations: [{ path: '/repo/src/a.js' }] }); // same file, absolute
   m.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't3', kind: 'read', locations: [{ path: '/etc/passwd' }, { path: '' }, null, { nope: 1 }] });
   m.onUpdate({ sessionUpdate: 'tool_call_update', kind: 'read', locations: [{ path: 'x' }] }); // no id: dropped
+  m.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't4', kind: 'execute', title: 'git status', locations: [{ path: '/repo' }, { path: 'src/z.js' }] }); // a command is not a read
+  m.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't5', kind: 'read', title: 'ls', locations: [{ path: '/repo' }] }); // the root itself is not a file
+  m.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't6', kind: 'search', title: 'glob', locations: [{ path: 'docs/' }] });
   m.onStop({ stopReason: 'end_turn' });
   const evs = m.finish();
   const reads = evs.filter((e) => e.type === 'read');
-  assert.deepEqual(reads.map((r) => r.path), ['src/a.js', '/etc/passwd']);
+  assert.deepEqual(reads.map((r) => r.path), ['src/a.js', '/etc/passwd', 'docs']);
   assert.equal(reads[1]._meta.outside_checkout, true);
   assert.equal(evs.at(-1).conclusion, 'completed');
   assert.equal(evs.at(-1)._meta.dropped.length, 1);
-  assert.equal(evs.at(-1)._meta.tool_calls, 3);
+  assert.equal(evs.at(-1)._meta.tool_calls, 6);
 });
 
 test('findings and summary come from the tool log only; last summary wins; bad entries dropped', () => {
