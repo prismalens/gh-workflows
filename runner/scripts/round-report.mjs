@@ -24,7 +24,8 @@ lines.push(`| | |`, `|---|---|`,
   `| reads | ${s.reads} |`,
   `| permissions | ${s.permissions.allowed} allowed, ${s.permissions.rejected} refused |`,
   `| findings | ${s.findings}; summary ${s.summary ? 'present' : 'absent'} |`,
-  `| usage | ${s.usage ? `cost ${s.usage.cost_estimate_usd ?? 'n/a'} ${s.usage._meta?.currency ?? ''}, context ${s.usage._meta?.context_used ?? '?'} of ${s.usage._meta?.context_size ?? '?'}; input/output tokens not carried by ACP` : 'no usage_update received'} |`,
+  `| usage | ${s.usage ? `cost ${s.usage.cost_estimate_usd ?? 'n/a'} ${s.usage._meta?.currency ?? ''}; ${s.usage.input != null ? `input ${s.usage.input}, output ${s.usage.output} tokens (prompt response)` : 'input/output tokens not carried by ACP'}; context ${s.usage._meta?.context_used ?? '?'} of ${s.usage._meta?.context_size ?? '?'}` : 'no usage_update received'} |`,
+  `| subagents | ${events.filter((e) => e.type === 'agent').length}${events.some((e) => e.type === 'agent') ? ': ' + events.filter((e) => e.type === 'agent').map((a) => `${a.role} (${a._meta?.status})`).join(', ') : ''} |`,
   `| prompt hash | \`${started?.prompt_hash ?? 'none'}\` at lane \`${started?.lane_version ?? '?'}\` |`,
   `| errors | ${s.errors.length ? s.errors.map((e) => `${e.failure_class}: ${e.message}`).join('; ') : 'none'} |`);
 if (perms.length) {
