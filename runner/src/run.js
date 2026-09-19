@@ -67,6 +67,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
   for (const f of [rawPath, toolLog, stderrPath]) writeFileSync(f, ''); // fresh per run, never appended across runs
 
   const row = ENGINES[opts.engine];
+  if (!opts.model && row.defaultModel) opts.model = row.defaultModel;
   const baseEnv = engineEnv(row);
   // The engine's `gh` is the shim: `pr comment` is recorded, never posted. Story: #184 day one.
   const realGh = whichGh(baseEnv.PATH ?? process.env.PATH ?? '');

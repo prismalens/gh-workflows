@@ -21,8 +21,10 @@ export const SUMMARY_TOOL = 'update_claude_comment';
 const READ_KINDS = new Set(['read', 'search', 'think']);
 
 export function commandAllowed(command) {
-  const c = String(command || '').trim();
-  // One command only: no chaining, no substitution, no redirection into files.
+  // A stderr redirect to /dev/null or to stdout changes nothing the lane cares about; strip
+  // those two forms, then refuse any other chaining, substitution or redirection. A pipe into
+  // `head` is refused as the lane's own matcher would refuse it: every part must be allowed.
+  const c = String(command || '').trim().replace(/\s+2>\s*(\/dev\/null|&1)\b/g, '').replace(/\s+/g, ' ');
   if (/[;&|`$><]/.test(c)) return false;
   return COMMAND_PREFIXES.some((p) => c === p || c.startsWith(p + ' '));
 }

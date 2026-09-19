@@ -15,6 +15,10 @@ export const ENGINES = Object.freeze({
     envAllow: [...BASE_ENV, 'GH_TOKEN', 'GITHUB_TOKEN', 'XDG_DATA_HOME', 'XDG_CACHE_HOME'],
     credentialKinds: ['api-key'],
     admitted: { version: '1.18.30', by: 'prismalens#561' },
+    // OpenCode Zen's free tier needs no key or login. Of its free, non-deprecated, tool-calling
+    // rows in the models.dev catalog on 2026-09-19, Muse Spark 1.3 (2026-09-02, 1M context) is
+    // the newest; MiMo V2.5 and Nemotron 3 Ultra stalled on the lane's subagent plan.
+    defaultModel: 'opencode/muse-spark-1.3-contributor-free',
     // The runner writes the engine's whole config per run: model, and the permission block
     // that makes OpenCode ask before an edit or a shell command so the ACP policy is the
     // answer. Without it OpenCode edits and runs without asking (verified 2026-09-19 on

@@ -28,6 +28,7 @@ export class SessionMapper {
     this.usageObservations = [];
     this.dropped = [];
     this.stopReason = null;
+    this.stopUsage = null;
     this.errored = false;
     this.toolCallCount = 0;
   }
@@ -90,6 +91,13 @@ export class SessionMapper {
 
   onStop(response) {
     this.stopReason = response?.stopReason ?? null;
+    // Not in the ACP schema: OpenCode puts token counts on the prompt response. Taken when
+    // present, so the usage event's input/output are filled where the engine says them.
+    const u = response?.usage;
+    if (u && typeof u === 'object') {
+      const n = (k) => (Number.isFinite(u[k]) ? u[k] : null);
+      this.stopUsage = { input: n('inputTokens'), output: n('outputTokens'), total: n('totalTokens') };
+    }
   }
 
   onError(err, stage = 'prompt') {
@@ -136,13 +144,16 @@ export class SessionMapper {
   finish({ toolLog = [], wallClockMs = null, conclusion = null } = {}) {
     this.#applyToolLog(toolLog);
     const last = this.usageObservations.at(-1);
-    if (last) {
-      const cost = last.cost && typeof last.cost.amount === 'number' ? last.cost.amount : null;
+    if (last || this.stopUsage) {
+      const cost = last?.cost && typeof last.cost.amount === 'number' ? last.cost.amount : null;
       this.events.push(event('usage', {
-        cost_estimate_usd: last.cost?.currency && last.cost.currency !== 'USD' ? null : cost,
+        input: this.stopUsage?.input ?? null, output: this.stopUsage?.output ?? null,
+        cost_estimate_usd: last?.cost?.currency && last.cost.currency !== 'USD' ? null : cost,
         model: this.events[0].model,
-      }, { context_used: last.used, context_size: last.size, observations: this.usageObservations.length,
-           currency: last.cost?.currency ?? null, gap: 'ACP usage_update carries context size and cost, not input/output tokens' }));
+      }, { context_used: last?.used ?? null, context_size: last?.size ?? null, observations: this.usageObservations.length,
+           currency: last?.cost?.currency ?? null,
+           source: this.stopUsage ? 'usage_update + prompt response usage' : 'usage_update',
+           gap: this.stopUsage ? 'cache_read and cache_write are not carried by ACP' : 'ACP usage_update carries context size and cost, not input/output tokens' }));
     }
     const c = conclusion
       ?? (this.errored ? 'failed' : (STOP_TO_CONCLUSION[this.stopReason] ?? (this.stopReason ? 'failed' : 'failed')));

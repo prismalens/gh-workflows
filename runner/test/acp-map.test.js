@@ -91,6 +91,11 @@ test('usage: last observation wins, non-USD cost is not reported as USD, absent 
   const n = mk(); n.onUpdate({ sessionUpdate: 'usage_update' }); n.onStop({ stopReason: 'end_turn' });
   assert.equal(n.finish().find((x) => x.type === 'usage').cost_estimate_usd, null);
   const z = mk(); z.onStop({ stopReason: 'end_turn' }); assert.ok(!z.finish().some((x) => x.type === 'usage'));
+  const s = mk(); s.onUpdate({ sessionUpdate: 'usage_update', used: 9, size: 10, cost: { amount: 0, currency: 'USD' } });
+  s.onStop({ stopReason: 'end_turn', usage: { inputTokens: 1200, outputTokens: 340, totalTokens: 1540 } });
+  const su = s.finish().find((x) => x.type === 'usage'); assert.equal(su.input, 1200); assert.equal(su.output, 340); assert.equal(su.cache_read, null);
+  const w = mk(); w.onStop({ stopReason: 'end_turn', usage: { inputTokens: 'x' } });
+  const wu = w.finish().find((x) => x.type === 'usage'); assert.equal(wu.input, null); assert.equal(wu.cost_estimate_usd, null);
 });
 
 test('garbage updates never throw', () => {
