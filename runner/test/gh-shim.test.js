@@ -24,11 +24,9 @@ test('pr comment is recorded, never forwarded; every body form works', () => {
   const { d, run, entries } = setup();
   assert.equal(run(['pr', 'comment', '183', '--body', 'hello']).status, 0);
   assert.equal(run(['pr', 'comment', '183', '--body=eq form']).status, 0);
-  const f = path.join(d, 'b.md'); writeFileSync(f, '## header\nfrom file');
-  assert.equal(run(['pr', 'comment', '183', '--body-file', f]).status, 0);
   assert.equal(run(['pr', 'comment', '183', '-F', '-'], 'from stdin').status, 0);
   const e = entries();
-  assert.deepEqual(e.map((x) => x.input.body), ['hello', 'eq form', '## header\nfrom file', 'from stdin']);
+  assert.deepEqual(e.map((x) => x.input.body), ['hello', 'eq form', 'from stdin']);
   assert.ok(e.every((x) => x.tool === 'gh_pr_comment' && x.input.args.includes('183')));
   const r = run(['pr', 'comment', '183', '--body', 'x']); assert.match(r.stdout, /issuecomment-recorded/);
   assert.ok(!r.stdout.includes('REAL:'));
@@ -38,6 +36,10 @@ test('pr comment without a body, or with an unreadable file, fails without recor
   const { run, entries } = setup();
   assert.notEqual(run(['pr', 'comment', '183']).status, 0);
   assert.notEqual(run(['pr', 'comment', '183', '--body-file', '/nonexistent']).status, 0);
+  const { d: d2 } = setup(); const f = path.join(d2, 'b.md'); writeFileSync(f, 'readable');
+  for (const a of [['--body-file', f], ['-F', f], [`--body-file=${f}`], ['--body-file', '/proc/self/environ'], ['--body-file', '~/.config/gh/hosts.yml']]) {
+    const r = run(['pr', 'comment', '183', ...a]); assert.notEqual(r.status, 0, a.join(' ')); assert.match(r.stderr, /only '-'/);
+  }
   assert.notEqual(run(['pr', 'comment', '183', '--body', '']).status, 0);
   assert.equal(entries().length, 0);
 });

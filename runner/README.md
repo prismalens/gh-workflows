@@ -29,6 +29,11 @@ tier needs no key or login). `--timeout-min` (default 20) bounds the round and `
 `GH_TOKEN` in the environment is passed through to the engine for the `gh` read commands the
 prompt allows.
 
+Staging never executes a binary the checkout brought with it: a committed `./actionlint` or
+`node_modules/.bin/*` is skipped and the skip is recorded in the manifest's tool notes, since
+this runs on the operator's machine before any sandbox. The same rule is in the workflow's
+own step.
+
 The prompt tells the engine to read `.claude-review-manifest.json` and `.claude-review.diff`
 from the checkout root. The Actions lane writes them before the review; so does the runner
 with `--stage-manifest --repo owner/name --pr N [--head-sha SHA] [--mode review]`, which
@@ -55,7 +60,8 @@ Exit code 0 is `completed`, 3 an engine error, 4 a timeout, 2 bad usage.
   failure classes, and the same text tests `classify-failure` runs in the workflow.
 - `src/policy.js`: the lane's `--allowed-tools` list as an ACP permission policy. Read, search
   and think are allowed; execute only for the listed `gh` read commands and only as a single
-  command; edit, delete, move and fetch are refused; the two comment tools are allowed.
+  command on a single line, with any control character refused outright; edit, delete, move
+  and fetch are refused; the two comment tools are allowed.
 - `src/finding-tools.js`: one MCP server per comment tool. Each call is appended to the tool
   log and answered with success. Findings and the summary are read from that log, never from
   what the engine narrated, so a call the model only described is not a finding.
@@ -63,11 +69,16 @@ Exit code 0 is `completed`, 3 an engine error, 4 a timeout, 2 bad usage.
   `gh pr comment`, which is on the allowlist, so the runner puts this shim first on PATH: `pr
   comment` is recorded to the tool log as the summary and answered as gh would, `pr review`,
   `pr merge`, `pr close`, `pr edit` and `api` are refused, everything else runs the real gh.
-  Nothing a round does reaches GitHub except reads.
+  `--body-file` takes only `-` (stdin): a path would let a steered engine record any readable
+  file, a token store or `/proc/self/environ`, as the summary the poster publishes. Nothing a
+  round does reaches GitHub except reads.
 - `src/acp-map.js`: `session/update` to events. One `read` per path per round from tool-call
   locations, flagged when outside the checkout. The last `update_claude_comment` wins, as the
-  lane's comment does. `usage_update` gives context size and cost, not input and output
-  tokens; those fields stay null and the gap is recorded in `_meta`. Stop reasons map to
+  lane's comment does. A finding or summary body that carries a credential-shaped token (a
+  GitHub, Anthropic, OpenAI, AWS or Slack token, a private key, a `TOKEN=` line) is dropped
+  and counted, never recorded, since those bodies are what the poster publishes.
+  `usage_update` gives context size and cost, not input and output tokens; those fields stay
+  null and the gap is recorded in `_meta`. Stop reasons map to
   `completed`, `truncated`, `refused`, `cancelled`; an error or an engine exit before the stop
   is `failed`; the timeout is `timed-out`.
 - `src/engines.js`: the registry. A row names the binary, its ACP arguments, the environment

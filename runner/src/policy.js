@@ -24,7 +24,11 @@ export function commandAllowed(command) {
   // A stderr redirect to /dev/null or to stdout changes nothing the lane cares about; strip
   // those two forms, then refuse any other chaining, substitution or redirection. A pipe into
   // `head` is refused as the lane's own matcher would refuse it: every part must be allowed.
-  const c = String(command || '').trim().replace(/\s+2>\s*(\/dev\/null|&1)\b/g, '').replace(/\s+/g, ' ');
+  const raw = String(command || '');
+  // A newline or carriage return is a command separator to the shell; refuse every control
+  // character before anything is normalised, so the first line can never vouch for a second.
+  if (/[\x00-\x1f\x7f]/.test(raw.replace(/[ \t]/g, ''))) return false;
+  const c = raw.trim().replace(/\s+2>\s*(\/dev\/null|&1)\b/g, '').replace(/\s+/g, ' ');
   if (/[;&|`$><]/.test(c)) return false;
   return COMMAND_PREFIXES.some((p) => c === p || c.startsWith(p + ' '));
 }

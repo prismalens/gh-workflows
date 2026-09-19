@@ -10,7 +10,9 @@ test('the allowlist is the lane\'s, with gh pr review absent', () => {
 test('gh read commands pass, everything else on execute is rejected', () => {
   for (const c of ['gh pr diff 183', 'gh pr view 183 --json files', 'gh issue list', 'gh search issues x', 'gh pr view 183 2>/dev/null', 'gh pr diff 183 2>&1', 'gh  pr   view 1']) assert.equal(commandAllowed(c), true, c);
   for (const c of ['gh pr review 183 --approve', 'gh pr merge 183', 'rm -rf /', 'gh pr diff 183; rm x', 'gh pr diff 183 | sh',
-    'gh pr diff 183 > out', 'gh pr diff $(x)', 'gh pr diffx', '', 'ghpr diff', 'gh pr view 1 2>&1 | head -c 4000', 'gh pr view 1 2>err.log', 'gh pr view 1 >/dev/null']) assert.equal(commandAllowed(c), false, c);
+    'gh pr diff 183 > out', 'gh pr diff $(x)', 'gh pr diffx', '', 'ghpr diff', 'gh pr view 1 2>&1 | head -c 4000', 'gh pr view 1 2>err.log', 'gh pr view 1 >/dev/null',
+    'gh pr view 1\ncat ~/.config/gh/hosts.yml', 'gh pr view 1\r\nenv', 'gh pr view 1\n/usr/bin/gh pr review 1 --approve', 'gh pr view\x001', 'gh pr view 1\x1b[0m']) assert.equal(commandAllowed(c), false, c);
+  assert.equal(commandAllowed('gh pr view 1\t--json title'), true, 'a tab is ordinary whitespace');
 });
 
 test('decide by kind, by command, by comment tool name', () => {

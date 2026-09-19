@@ -856,9 +856,10 @@ def build_review_context():
         if not changed_workflow_files:
             tools_skipped.append({"tool": "actionlint", "reason": "no changed workflow files"})
         else:
+            # Never execute a binary the checkout brought with it: a pull request can commit
+            # an `./actionlint` or a `node_modules/.bin/*` and this runs before any sandbox.
+            # Only PATH, or the checksummed release fetched here, is trusted.
             actionlint_bin = shutil.which("actionlint")
-            if actionlint_bin is None and pathlib.Path("./actionlint").exists():
-                actionlint_bin = "./actionlint"
             if actionlint_bin is None:
                 # The release tarball against a recorded checksum, the same version
                 # and checksum as tests.yml; tests/test-actionlint-pin-drift.py holds
@@ -875,7 +876,7 @@ def build_review_context():
                      f"tar -xzf {asset} actionlint"],
                     timeout=60,
                 )
-                if install is not None and install.returncode == 0 and pathlib.Path("./actionlint").exists():
+                if install is not None and install.returncode == 0 and pathlib.Path("./actionlint").exists() and not checkout_resident("actionlint"):
                     actionlint_bin = "./actionlint"
             if actionlint_bin is None:
                 tools_skipped.append({"tool": "actionlint", "reason": "binary unavailable and install failed"})
@@ -926,10 +927,21 @@ def build_review_context():
                         "message": f.get("message", ""),
                     })
 
+    def checkout_resident(rel):
+        # True when git tracks the path or anything under it: the pull request supplied it.
+        try:
+            r = subprocess.run(["git", "ls-files", "-z", "--", rel], capture_output=True, timeout=30)
+            return r.returncode == 0 and bool(r.stdout.strip(b"\x00"))
+        except Exception:
+            return True
+
+    node_tools_resident = checkout_resident("node_modules")
     has_typescript = languages.get("TypeScript", 0) > 0
     if "tsc" in enabled_tools:
         if not has_typescript or "tsconfig.json" not in config_files:
             tools_skipped.append({"tool": "tsc", "reason": "no changed TypeScript files or no tsconfig.json"})
+        elif node_tools_resident:
+            tools_skipped.append({"tool": "tsc", "reason": "node_modules is committed in this checkout; not executing it"})
         elif not pathlib.Path("node_modules/.bin/tsc").exists():
             tools_skipped.append({"tool": "tsc", "reason": "tsc not installed in this checkout"})
         else:
@@ -951,6 +963,9 @@ def build_review_context():
         applies = "biome.json" in config_files if tool_name == "biome" else any(c.startswith(".eslintrc") for c in config_files)
         if not applies:
             tools_skipped.append({"tool": tool_name, "reason": "no config file present"})
+            continue
+        if node_tools_resident:
+            tools_skipped.append({"tool": tool_name, "reason": "node_modules is committed in this checkout; not executing it"})
             continue
         if not pathlib.Path(bin_path).exists():
             tools_skipped.append({"tool": tool_name, "reason": f"{tool_name} not installed in this checkout"})

@@ -117,6 +117,7 @@ export class SessionMapper {
         if (typeof input.path !== 'string' || typeof input.body !== 'string' || !input.body.trim()) {
           this.dropped.push({ why: 'finding without path or body', at: e.at }); continue;
         }
+        if (looksLikeSecret(input.body)) { this.dropped.push({ why: 'finding body carries a credential-shaped token', at: e.at }); continue; }
         const line = Number.isInteger(input.line) ? input.line : (Number.isInteger(input.endLine) ? input.endLine : null);
         const start = Number.isInteger(input.startLine) ? input.startLine : null;
         const rel = path.relative(this.cwd, path.resolve(this.cwd, input.path));
@@ -127,6 +128,7 @@ export class SessionMapper {
         }, { start_line: start, ...(traversal ? { path_outside_checkout: true } : {}) }));
       } else if (e.tool === SUMMARY_TOOL || e.tool === 'gh_pr_comment') {
         summaryCount += 1;
+        if (typeof input.body === 'string' && looksLikeSecret(input.body)) { this.dropped.push({ why: 'summary body carries a credential-shaped token', at: e.at }); continue; }
         if (typeof input.body === 'string' && input.body.trim()) { summary = input.body; summarySource = e.tool; } // last write wins, as the lane's comment does
         else this.dropped.push({ why: 'summary with empty body', at: e.at });
       } else {
@@ -137,7 +139,8 @@ export class SessionMapper {
       this.events.push(event('summary', { header: headerOf(summary) ?? firstLine(summary), body: summary }, { source: summarySource, writes: summaryCount }));
     } else if (this.agentText.length) {
       const body = this.agentText.join('').trim();
-      if (body) this.events.push(event('summary', { header: null, body }, { source: 'agent_text' }));
+      if (body && looksLikeSecret(body)) this.dropped.push({ why: 'agent text carries a credential-shaped token; no summary' });
+      else if (body) this.events.push(event('summary', { header: null, body }, { source: 'agent_text' }));
     }
   }
 
@@ -190,6 +193,19 @@ export class SessionMapper {
 export function firstLine(body) {
   const l = String(body).split('\n').find((x) => x.trim());
   return l ? l.trim() : null;
+}
+
+// Registered credential shapes. A finding or summary body carrying one is dropped, never
+// recorded: the poster publishes these bodies, and a steered engine can put anything it read
+// into them. Same rule the design gives the poster (section 5).
+const SECRET_SHAPES = [
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/, /\bgithub_pat_[A-Za-z0-9_]{20,}\b/, /\bsk-ant-[A-Za-z0-9_-]{20,}\b/,
+  /\bsk-[A-Za-z0-9_-]{20,}\b/, /\bAKIA[0-9A-Z]{16}\b/, /\bxox[abposr]-[A-Za-z0-9-]{10,}\b/,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\b(?:oauth_token|GH_TOKEN|GITHUB_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY)\s*[:=]\s*\S{8,}/,
+];
+export function looksLikeSecret(text) {
+  const s = String(text || '');
+  return SECRET_SHAPES.some((re) => re.test(s));
 }
 
 export function headerOf(body) {

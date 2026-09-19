@@ -23,8 +23,10 @@ case "$sub" in
         *) args+=("$1"); shift ;;
       esac
     done
+    # A body file is read only from stdin. A path would let a steered engine record any
+    # readable file (a token store, /proc/self/environ) as the summary the poster publishes.
     if [ -n "$bodyfile" ]; then
-      if [ "$bodyfile" = "-" ]; then body="$(cat)"; elif [ -r "$bodyfile" ]; then body="$(cat "$bodyfile")"; else echo "gh shim: cannot read body file $bodyfile" >&2; exit 1; fi
+      if [ "$bodyfile" = "-" ]; then body="$(cat)"; else echo "gh shim: --body-file takes only '-' (stdin) in a review round; pass --body or pipe the text" >&2; exit 1; fi
     fi
     if [ -z "$body" ]; then echo "gh shim: pr comment needs --body or --body-file" >&2; exit 1; fi
     python3 - "$log" "$body" "${args[@]+"${args[@]}"}" <<'PY'

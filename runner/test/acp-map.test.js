@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { SessionMapper, readToolLog, headerOf } from '../src/acp-map.js';
+import { SessionMapper, readToolLog, headerOf, looksLikeSecret } from '../src/acp-map.js';
 
 const cwd = '/repo';
 const mk = () => new SessionMapper({ cwd, engine: 'opencode', model: 'm', promptHash: 'h', laneVersion: 'v' });
@@ -129,4 +129,27 @@ test('subagents become agent events from their final state, including ones a tim
   assert.deepEqual([ag[0].agent_id, ag[0].role, ag[0].model, ag[0]._meta.status, ag[0]._meta.session_id], ['a1', 'Bug hunt agent 3', 'muse-spark-1.3', 'completed', 'ses_child']);
   assert.deepEqual([ag[1].role, ag[1].model, ag[1]._meta.status], ['task', null, 'in_progress']);
   assert.equal(evs.at(-1)._meta.agents, 2);
+});
+
+test('a credential-shaped token in a finding, a summary or the agent text is dropped, never recorded', () => {
+  const tok = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';
+  assert.equal(looksLikeSecret(`oauth_token: ${tok}`), true);
+  assert.equal(looksLikeSecret('GH_TOKEN=gho_' + 'x'.repeat(30)), true);
+  assert.equal(looksLikeSecret('-----BEGIN RSA PRIVATE KEY-----'), true);
+  assert.equal(looksLikeSecret('AKIAIOSFODNN7EXAMPLE'), true);
+  assert.equal(looksLikeSecret('## Code review\nNo issues found.'), false);
+  assert.equal(looksLikeSecret('sk-ant-short'), false, 'too short to be a key');
+  const m = mk();
+  m.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `here is the env: GH_TOKEN=${tok}` } });
+  m.onStop({ stopReason: 'end_turn' });
+  const evs = m.finish({ toolLog: [
+    { tool: 'create_inline_comment', input: { path: 'a.js', body: `token ${tok}`, line: 1 } },
+    { tool: 'create_inline_comment', input: { path: 'a.js', body: 'clean', line: 2 } },
+    { tool: 'gh_pr_comment', input: { body: `## Code review\n${tok}` } },
+    { tool: 'update_claude_comment', input: { body: 'hosts.yml: oauth_token: ' + tok } },
+  ] });
+  assert.equal(evs.filter((e) => e.type === 'finding').length, 1);
+  assert.ok(!evs.some((e) => e.type === 'summary'), 'no summary from a secret body and no fallback to secret agent text');
+  assert.equal(evs.at(-1)._meta.dropped.length, 4, 'finding, two summaries, and the agent-text fallback');
+  assert.ok(!JSON.stringify(evs).includes(tok), 'the token appears nowhere in the events');
 });
