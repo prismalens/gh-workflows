@@ -141,7 +141,26 @@ export class SessionMapper {
     }
   }
 
+  // A subagent is a tool call whose input names a subagent type (OpenCode's `task`, kind
+  // `think`). One `agent` event per subagent, from its final merged state, so a round cut by a
+  // timeout still lists the agents it had running. Their reads and usage stay inside their own
+  // sessions under ACP's flat default, which is recorded as the gap.
+  #emitAgents() {
+    for (const tc of this.toolCalls.values()) {
+      const ri = tc.rawInput;
+      if (!ri || typeof ri !== 'object' || typeof ri.subagent_type !== 'string') continue;
+      const ro = tc.rawOutput && typeof tc.rawOutput === 'object' ? tc.rawOutput : null;
+      const model = ro?.metadata?.model?.modelID ?? ro?.metadata?.model ?? null;
+      this.events.push(event('agent', {
+        agent_id: tc.toolCallId, role: typeof ri.description === 'string' && ri.description ? ri.description : (tc.title ?? null),
+        model: typeof model === 'string' ? model : null, usage: null,
+      }, { subagent_type: ri.subagent_type, status: tc.status ?? null, session_id: ro?.metadata?.sessionId ?? null,
+           gap: 'subagent reads and usage stay in the child session under ACP' }));
+    }
+  }
+
   finish({ toolLog = [], wallClockMs = null, conclusion = null } = {}) {
+    this.#emitAgents();
     this.#applyToolLog(toolLog);
     const last = this.usageObservations.at(-1);
     if (last || this.stopUsage) {
@@ -160,6 +179,7 @@ export class SessionMapper {
     if (!CONCLUSIONS.includes(c)) throw new Error(`unknown conclusion ${c}`);
     this.events.push(event('finished', { conclusion: c }, {
       stop_reason: this.stopReason, tool_calls: this.toolCallCount, reads: this.readPaths.size,
+      agents: this.events.filter((e) => e.type === 'agent').length,
       findings: this.events.filter((e) => e.type === 'finding').length,
       dropped: this.dropped, wall_clock_ms: wallClockMs,
     }));

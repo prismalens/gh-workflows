@@ -113,3 +113,20 @@ test('readToolLog tolerates a missing file and corrupt lines', () => {
   const r = readToolLog(f); assert.equal(r.entries.length, 2); assert.equal(r.corrupt, 2);
   assert.equal(headerOf('x\n### Title here \nbody'), 'Title here'); assert.equal(headerOf('no header'), null);
 });
+
+test('subagents become agent events from their final state, including ones a timeout left running', () => {
+  const m = mk();
+  m.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 'a1', kind: 'think', title: 'task', status: 'pending' });
+  m.onUpdate({ sessionUpdate: 'tool_call_update', toolCallId: 'a1', title: 'Bug hunt agent 3', status: 'in_progress', rawInput: { description: 'Bug hunt agent 3', prompt: 'x', subagent_type: 'general' } });
+  m.onUpdate({ sessionUpdate: 'tool_call_update', toolCallId: 'a1', status: 'completed', rawOutput: { output: 'done', metadata: { sessionId: 'ses_child', model: { modelID: 'muse-spark-1.3', providerID: 'opencode' } } } });
+  m.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 'a2', kind: 'think', title: 'task', status: 'pending' });
+  m.onUpdate({ sessionUpdate: 'tool_call_update', toolCallId: 'a2', status: 'in_progress', rawInput: { subagent_type: 'explore' } }); // no description: title stands in
+  m.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 'n1', kind: 'think', title: 'not an agent', rawInput: { thought: 'hmm' } });
+  m.onStop({ stopReason: 'cancelled' });
+  const evs = m.finish({ conclusion: 'timed-out' });
+  const ag = evs.filter((e) => e.type === 'agent');
+  assert.equal(ag.length, 2);
+  assert.deepEqual([ag[0].agent_id, ag[0].role, ag[0].model, ag[0]._meta.status, ag[0]._meta.session_id], ['a1', 'Bug hunt agent 3', 'muse-spark-1.3', 'completed', 'ses_child']);
+  assert.deepEqual([ag[1].role, ag[1].model, ag[1]._meta.status], ['task', null, 'in_progress']);
+  assert.equal(evs.at(-1)._meta.agents, 2);
+});
