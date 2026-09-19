@@ -13,11 +13,12 @@ import * as acp from '@agentclientprotocol/sdk';
 import { SessionMapper, readToolLog } from './acp-map.js';
 import { decide, chooseOption } from './policy.js';
 import { ENGINES, engineEnv } from './engines.js';
+import { buildManifest } from './manifest.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export function parseArgs(argv) {
-  const o = { engine: 'opencode', model: null, timeoutMs: 20 * 60 * 1000, idleMs: 8 * 60 * 1000, laneVersion: null, promptHash: null };
+  const o = { engine: 'opencode', model: null, timeoutMs: 20 * 60 * 1000, idleMs: 8 * 60 * 1000, laneVersion: null, promptHash: null, stage: false, repo: null, pr: null, headSha: null, mode: 'review' };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]; const v = argv[i + 1];
     const need = () => { if (v === undefined) throw new Error(`${a} needs a value`); i += 1; return v; };
@@ -30,12 +31,22 @@ export function parseArgs(argv) {
     else if (a === '--idle-min') o.idleMs = Number(need()) * 60 * 1000;
     else if (a === '--lane-version') o.laneVersion = need();
     else if (a === '--prompt-hash') o.promptHash = need();
+    else if (a === '--stage-manifest') o.stage = true;
+    else if (a === '--repo') o.repo = need();
+    else if (a === '--pr') o.pr = need();
+    else if (a === '--head-sha') o.headSha = need();
+    else if (a === '--mode') o.mode = need();
     else throw new Error(`unknown argument ${a}`);
   }
   for (const k of ['cwd', 'prompt', 'out']) if (!o[k]) throw new Error(`--${k} is required`);
   if (!(o.engine in ENGINES)) throw new Error(`unknown engine ${o.engine}; known: ${Object.keys(ENGINES).join(', ')}`);
   if (!Number.isFinite(o.timeoutMs) || o.timeoutMs <= 0) throw new Error('--timeout-min must be a positive number');
   if (!Number.isFinite(o.idleMs) || o.idleMs <= 0) throw new Error('--idle-min must be a positive number');
+  if (o.stage) {
+    if (!o.repo || !/^[\w.-]+\/[\w.-]+$/.test(o.repo)) throw new Error('--stage-manifest needs --repo owner/name');
+    if (!o.pr || !/^\d+$/.test(o.pr)) throw new Error('--stage-manifest needs --pr N');
+    if (o.headSha && !/^[0-9a-f]{7,40}$/.test(o.headSha)) throw new Error('--head-sha must be a hex sha');
+  }
   return o;
 }
 
@@ -68,6 +79,28 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
 
   const row = ENGINES[opts.engine];
   if (!opts.model && row.defaultModel) opts.model = row.defaultModel;
+
+  // The caller decides what is reviewable, never the agent (#105): the manifest and the diff
+  // are written into the checkout before the engine starts, as the Actions lane does. A
+  // failure here is a round that never ran, not an engine error, and no engine is spawned.
+  let staged = null;
+  if (opts.stage) {
+    const t0 = Date.now();
+    try {
+      const m = await buildManifest({ cwd, repo: opts.repo, pr: opts.pr, mode: opts.mode, headSha: opts.headSha, ghToken: process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN });
+      staged = { files: m.manifest?.files?.length ?? null, reviewable: (m.manifest?.files ?? []).filter((f) => !f.filtered_by).length, diff_bytes: m.diffBytes, ms: Date.now() - t0 };
+      writeFileSync(path.join(out, 'manifest-stderr.log'), m.stderr ?? '');
+    } catch (e) {
+      const mapper = new SessionMapper({ cwd, engine: opts.engine, model: opts.model, promptHash: opts.promptHash, laneVersion: opts.laneVersion });
+      mapper.onError(Object.assign(new Error(`manifest staging failed: ${e.message}`), { stage: 'manifest' }), 'manifest');
+      const events = mapper.finish({ conclusion: 'failed', wallClockMs: Date.now() - t0 });
+      writeFileSync(path.join(out, 'events.jsonl'), events.map((x) => JSON.stringify(x)).join('\n') + '\n');
+      const summary = { engine: opts.engine, model: opts.model, cwd, conclusion: 'failed', stage: 'manifest', errors: events.filter((x) => x.type === 'error'), wall_clock_ms: Date.now() - t0 };
+      writeFileSync(path.join(out, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
+      log(`assayer-run: failed before the engine started: ${e.message.split('\n')[0]}`);
+      return summary;
+    }
+  }
   const baseEnv = engineEnv(row);
   // The engine's `gh` is the shim: `pr comment` is recorded, never posted. Story: #184 day one.
   const realGh = whichGh(baseEnv.PATH ?? process.env.PATH ?? '');
@@ -120,7 +153,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
       idle = setTimeout(() => cancel('idle'), opts.idleMs);
       const init = await ctx.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
       raw('initialize', { result: init });
-      mapper.events[0]._meta = { agent: init.agentInfo ?? null, protocol: init.protocolVersion };
+      mapper.events[0]._meta = { agent: init.agentInfo ?? null, protocol: init.protocolVersion, staged };
       if (Array.isArray(init.authMethods) && init.authMethods.length && init._meta?.authenticated === false) {
         throw Object.assign(new Error('agent requires authentication: ' + init.authMethods.map((m) => m.id).join(', ')), { stage: 'initialize' });
       }
@@ -164,7 +197,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
     findings: events.filter((e) => e.type === 'finding').length, summary: events.some((e) => e.type === 'summary'),
     permissions, usage: events.find((e) => e.type === 'usage') ?? null, errors: events.filter((e) => e.type === 'error'),
     tool_log_corrupt_lines: tl.corrupt, dropped: mapper.dropped, wall_clock_ms: wallClockMs, engine_exit: childExit,
-    timed_out_by: timedOut || null,
+    timed_out_by: timedOut || null, staged,
   };
   writeFileSync(path.join(out, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   log(`assayer-run: ${summary.conclusion} in ${Math.round(wallClockMs / 1000)}s, ${summary.tool_calls} tool calls, ${summary.reads} reads, ${summary.findings} findings, summary=${summary.summary}`);

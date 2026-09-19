@@ -13,3 +13,15 @@ test('parseArgs validates', () => {
   assert.throws(() => parseArgs(['--cwd', '/c', '--prompt', '/p', '--out', '/o', '--bogus', '1']), /unknown argument/);
   assert.throws(() => parseArgs(['--cwd']), /needs a value/);
 });
+
+test('--stage-manifest needs a repo and a PR number, and a sane sha', () => {
+  const base = ['--cwd', '/c', '--prompt', '/p', '--out', '/o', '--stage-manifest'];
+  assert.throws(() => parseArgs(base), /--repo/);
+  assert.throws(() => parseArgs([...base, '--repo', 'bad', '--pr', '1']), /--repo/);
+  assert.throws(() => parseArgs([...base, '--repo', 'o/r']), /--pr/);
+  assert.throws(() => parseArgs([...base, '--repo', 'o/r', '--pr', 'x']), /--pr/);
+  assert.throws(() => parseArgs([...base, '--repo', 'o/r', '--pr', '1', '--head-sha', 'zz']), /hex/);
+  const o = parseArgs([...base, '--repo', 'o/r', '--pr', '1', '--head-sha', 'abc1234']);
+  assert.equal(o.stage, true); assert.equal(o.mode, 'review');
+  assert.equal(parseArgs(['--cwd', '/c', '--prompt', '/p', '--out', '/o']).stage, false, 'staging is opt-in');
+});

@@ -29,6 +29,14 @@ tier needs no key or login). `--timeout-min` (default 20) bounds the round and `
 `GH_TOKEN` in the environment is passed through to the engine for the `gh` read commands the
 prompt allows.
 
+The prompt tells the engine to read `.claude-review-manifest.json` and `.claude-review.diff`
+from the checkout root. The Actions lane writes them before the review; so does the runner
+with `--stage-manifest --repo owner/name --pr N [--head-sha SHA] [--mode review]`, which
+runs `src/manifest.py`, the workflow's own manifest and context builders copied verbatim
+(`src/manifest.js` wraps them with the workflow's defaults). Without it the engine has no
+diff to review and says so in its summary. A staging failure is a round that never ran: the
+engine is not spawned, and `events.jsonl` carries one `error` and a `failed` finish.
+
 The output directory holds:
 
 | File | What |
