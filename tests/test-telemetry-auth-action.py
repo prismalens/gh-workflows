@@ -376,8 +376,14 @@ def main():
     else:
         print("  ok    Case 17: a 500 on the repository fetch resolves off with a warning")
 
-    # Case 18: bad base64 in the repository file resolves off (#177, thread 4006669598)
-    proc, outputs = run_action_step(script, repo_bad_base64="abc")
+    # Case 18: bad base64 in the repository file resolves off (#177, thread 4006669598).
+    # `!!!!` not `abc`: `abc` is refused on PADDING, which permissive and validating
+    # b64decode both reject, so it never exercised the alphabet. `!!!!` is correctly
+    # padded and entirely outside the alphabet, so a permissive decode DISCARDS it and
+    # returns b'' — which reads as an empty config, then as an unset key, and falls
+    # through every layer to the `full` default. A corrupt config would have silently
+    # resolved to maximum sharing, with no warning. Requires validate=True.
+    proc, outputs = run_action_step(script, repo_bad_base64="!!!!")
     if outputs.get("share") != "off":
         fails.append(f"Case 18 expected share=off, got {outputs.get('share')}")
         print("  FAIL  Case 18: bad base64 resolves off")

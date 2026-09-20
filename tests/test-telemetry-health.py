@@ -512,11 +512,14 @@ def test_suite():
         payloads = [json.loads(p) for p in posts]
         sizes = [len(p["runs"]) for p in payloads]
         assert sizes == [1000, 1000, 300], f"Expected chunk sizes [1000, 1000, 300], got {sizes}"
-        # Contiguous, non-overlapping: chunk N's window_end never exceeds chunk N+1's
-        # window_start, and every run id appears in exactly one chunk.
+        # Contiguous, non-overlapping: chunk N's window_end EQUALS chunk N+1's
+        # window_start, and every run id appears in exactly one chunk. `<=` was too weak
+        # to assert the stated invariant — it admits a gap between adjacent sub-windows,
+        # and a gap is what lets the Worker miss rows whose timestamps fall in it
+        # (#177, thread 4006669598 neighbour).
         for a, b in zip(payloads, payloads[1:]):
-            assert a["window_end"] <= b["window_start"], (
-                f"Sub-windows overlap: {a['window_end']!r} > {b['window_start']!r}"
+            assert a["window_end"] == b["window_start"], (
+                f"Sub-windows are not contiguous: {a['window_end']!r} != {b['window_start']!r}"
             )
         all_ids = [r["id"] for p in payloads for r in p["runs"]]
         assert sorted(all_ids) == sorted(r["id"] for r in many_runs), "Every run must appear in exactly one sub-window"

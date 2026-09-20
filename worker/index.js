@@ -1278,10 +1278,16 @@ async function handleAccountedRuns(request, url, env) {
 }
 
 // Queries runs across usage_records and lane_events for reconciliation (#176).
+// Health windows are HALF-OPEN, [since, until). The health caller splits an oversize
+// run list into sub-windows that tile the caller's window, so an inclusive upper bound
+// would count a row sitting exactly on a shared boundary in both neighbours. Half-open
+// also makes consecutive health reports tile rather than overlap at their join.
+// The timestamp format admits fractional seconds, so stepping a boundary back by an
+// epsilon is not a safe alternative. Story: #177, thread 4006669665.
 async function queryAccountedRuns(db, repository, sinceIso, untilIso) {
-  const query = `SELECT run_id, 'usage_records' AS source_table FROM usage_records WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
+  const query = `SELECT run_id, 'usage_records' AS source_table FROM usage_records WHERE repository = ? AND recorded_at >= ? AND recorded_at < ? AND run_id IS NOT NULL
 UNION ALL
-SELECT run_id, 'lane_events' AS source_table FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
+SELECT run_id, 'lane_events' AS source_table FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at < ? AND run_id IS NOT NULL
 ORDER BY run_id ASC`;
   const res = await db.prepare(query).bind(repository, sinceIso, untilIso, repository, sinceIso, untilIso).all();
   return res?.results ?? [];
@@ -1291,7 +1297,7 @@ ORDER BY run_id ASC`;
 async function queryLaneEventsByReason(db, repository, sinceIso, untilIso) {
   const res = await db
     .prepare(
-      `SELECT reason, COUNT(*) AS count FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? GROUP BY reason`
+      `SELECT reason, COUNT(*) AS count FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at < ? GROUP BY reason`
     )
     .bind(repository, sinceIso, untilIso)
     .all();
@@ -1308,7 +1314,7 @@ async function queryLaneEventsByReason(db, repository, sinceIso, untilIso) {
 async function queryFindingsSwept(db, repository, sinceIso, untilIso) {
   const row = await db
     .prepare(
-      `SELECT COUNT(*) AS count FROM review_findings WHERE repository = ? AND last_swept_at >= ? AND last_swept_at <= ?`
+      `SELECT COUNT(*) AS count FROM review_findings WHERE repository = ? AND last_swept_at >= ? AND last_swept_at < ?`
     )
     .bind(repository, sinceIso, untilIso)
     .first();

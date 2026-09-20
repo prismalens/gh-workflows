@@ -155,7 +155,12 @@ runs:
               if not raw:
                   return 'off', f'{path} returned empty content; resolving telemetry.share as off'
               try:
-                  text = base64.b64decode(raw).decode('utf-8', errors='strict')
+                  # validate=True, never the permissive default: a correctly padded string
+                  # made entirely of non-alphabet characters decodes to b'' rather than
+                  # raising, and b'' reads as an empty config, then as an unset key, and
+                  # falls through every layer to the `full` default. A corrupt config must
+                  # fail closed, not resolve to maximum sharing (#177, thread 4006669598).
+                  text = base64.b64decode(raw, validate=True).decode('utf-8', errors='strict')
               except UnicodeDecodeError:
                   return 'off', 'config content is not valid UTF-8; resolving telemetry.share as off'
               except Exception as exc:

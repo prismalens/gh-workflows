@@ -193,8 +193,17 @@ jobs:
           # Worker's own ingest contract. At or under the limit, this is the one report
           # it always was, over the caller's own WINDOW_START/WINDOW_END. Over the limit,
           # runs are already sorted by created_at, so slicing them into fixed-size chunks
-          # keeps each chunk contiguous and none overlap; each chunk's own first and last
-          # created_at becomes its window (#177, thread 4006669665).
+          # keeps each chunk's RUNS contiguous. Their WINDOWS are a separate matter: taking
+          # each chunk's own first and last created_at left the span between one chunk's
+          # last run and the next chunk's first run covered by no window at all, and the
+          # Worker scopes its lane-event, findings and accounted-run queries by exactly
+          # these bounds — so rows in that span were invisible. The sub-windows now tile the
+          # caller's window as half-open [start, end) ranges: chunk 0 starts at WINDOW_START,
+          # each later chunk starts where the previous one ended, and the last ends at
+          # WINDOW_END. Half-open, not inclusive, because a shared boundary counted by both
+          # neighbours would merely swap the gap for a double count, and the timestamp format
+          # admits fractional seconds so no epsilon step-back is safe. Consecutive health
+          # reports tile the same way. Story: #177, thread 4006669665.
           MAX_RUNS_PER_REPORT=1000
           if [ "$total_runs" -le "$MAX_RUNS_PER_REPORT" ]; then
             chunk_count=1
@@ -228,8 +237,19 @@ jobs:
             else
               start=$(( i * MAX_RUNS_PER_REPORT ))
               chunk_runs=$(echo "$runs_json" | jq -c --argjson start "$start" --argjson len "$MAX_RUNS_PER_REPORT" '.[$start:($start+$len)]')
-              chunk_win_start=$(echo "$chunk_runs" | jq -r '.[0].created_at')
-              chunk_win_end=$(echo "$chunk_runs" | jq -r '.[-1].created_at')
+              # Boundaries come from the CALLER's window and the next chunk's first run,
+              # never from this chunk's own last run, which is what left the gap.
+              if [ "$i" -eq 0 ]; then
+                chunk_win_start="$WINDOW_START"
+              else
+                chunk_win_start=$(echo "$chunk_runs" | jq -r '.[0].created_at')
+              fi
+              if [ "$i" -eq $(( chunk_count - 1 )) ]; then
+                chunk_win_end="$WINDOW_END"
+              else
+                next_start=$(( (i + 1) * MAX_RUNS_PER_REPORT ))
+                chunk_win_end=$(echo "$runs_json" | jq -r --argjson n "$next_start" '.[$n].created_at')
+              fi
             fi
             chunk_len=$(echo "$chunk_runs" | jq 'length')
 

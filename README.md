@@ -201,6 +201,17 @@ on:
         default: 7
         type: number
 
+# The schedule and a hand-run dispatch can otherwise overlap, and each run POSTs its own
+# report for the same recent window. The Worker inserts every report into `health_reports`
+# without deduplication, so two overlapping runs mean two rows describing one window and a
+# reader cannot tell them from two genuine reports. Serialised here rather than deduped
+# there, because the caller is the only place that knows a run is a repeat of one already
+# in flight. `cancel-in-progress: false` on purpose: the run already talking to the Worker
+# finishes, and the newer one waits rather than replacing it. Story: #177.
+concurrency:
+  group: telemetry-health-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   health:
     uses: prismalens/gh-workflows/.github/workflows/telemetry-health.yml@main
