@@ -113,6 +113,8 @@ export class SessionMapper {
     let summary = null; let summaryCount = 0; let summarySource = null;
     for (const e of entries) {
       const input = e.input && typeof e.input === 'object' ? e.input : {};
+      // The recorder already refused this body; say so rather than blaming a missing field.
+      if (e.redacted) { this.dropped.push({ why: `recorder redacted a ${e.redacted}`, at: e.at }); continue; }
       if (e.tool === FINDING_TOOL) {
         if (typeof input.path !== 'string' || typeof input.body !== 'string' || !input.body.trim()) {
           this.dropped.push({ why: 'finding without path or body', at: e.at }); continue;
@@ -201,7 +203,7 @@ export function firstLine(body) {
 const SECRET_SHAPES = [
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/, /\bgithub_pat_[A-Za-z0-9_]{20,}\b/, /\bsk-ant-[A-Za-z0-9_-]{20,}\b/,
   /\bsk-[A-Za-z0-9_-]{20,}\b/, /\bAKIA[0-9A-Z]{16}\b/, /\bxox[abposr]-[A-Za-z0-9-]{10,}\b/,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\b(?:oauth_token|GH_TOKEN|GITHUB_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY)\s*[:=]\s*\S{8,}/,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\b(?:oauth_token|GH_TOKEN|GITHUB_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|OPENAI_API_KEY)\s*[:=]\s*\S{8,}/,
 ];
 export function looksLikeSecret(text) {
   const s = String(text || '');

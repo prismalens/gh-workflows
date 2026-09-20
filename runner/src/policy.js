@@ -17,6 +17,16 @@ const COMMAND_PREFIXES = LANE_ALLOWED_TOOLS
 export const FINDING_TOOL = 'create_inline_comment';
 export const SUMMARY_TOOL = 'update_claude_comment';
 
+// The comment tools by their whole identity. An ACP permission request carries a
+// human-readable title, not an authenticated MCP registration, so a suffix match would let
+// any tool with a crafted name (mcp__evil__create_inline_comment) take the grant. The bare
+// names stay because every call in the recorded round arrives as a title, with no name field.
+const COMMENT_TOOL_IDS = Object.freeze(new Set([
+  'mcp__github_inline_comment__create_inline_comment',
+  'mcp__github_comment__update_claude_comment',
+  FINDING_TOOL, SUMMARY_TOOL,
+]));
+
 // ACP tool kinds the lane's read-only tools map onto.
 const READ_KINDS = new Set(['read', 'search', 'think']);
 
@@ -45,7 +55,7 @@ function commandOf(toolCall) {
 export function decide(toolCall) {
   const kind = toolCall.kind || 'other';
   const name = String(toolCall.name || toolCall.title || '');
-  if (name.endsWith(FINDING_TOOL) || name.endsWith(SUMMARY_TOOL)) return { allow: true, reason: 'comment tool' };
+  if (COMMENT_TOOL_IDS.has(name)) return { allow: true, reason: 'comment tool' };
   if (READ_KINDS.has(kind)) return { allow: true, reason: `kind ${kind}` };
   if (kind === 'execute') {
     const cmd = commandOf(toolCall);

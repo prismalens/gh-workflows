@@ -60,3 +60,16 @@ test('whichGh finds an executable named gh on PATH and skips directories', () =>
   const g = path.join(d, 'gh'); writeFileSync(g, '#!/bin/sh\n'); chmodSync(g, 0o755);
   assert.equal(whichGh(`/nonexistent:${d}`), g);
 });
+
+test('a credential-shaped body is redacted before it ever reaches the log', () => {
+  const { run, entries } = setup();
+  const tok = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';
+  assert.equal(run(['pr', 'comment', '183', '--body', `hosts.yml says oauth_token: ${tok}`]).status, 0);
+  assert.equal(run(['pr', 'comment', '183', '--body', 'an ordinary summary']).status, 0);
+  const e = entries();
+  assert.equal(e[0].input.body, null, 'the secret body never lands on disk');
+  assert.equal(e[0].redacted, 'credential-shaped body');
+  assert.equal(e[1].input.body, 'an ordinary summary', 'a clean body is untouched');
+  assert.equal(e[1].redacted, undefined);
+  assert.ok(!JSON.stringify(e).includes(tok), 'the token appears nowhere in the log');
+});

@@ -11,7 +11,9 @@ export const FAILURE_CLASSES = Object.freeze([
   'model-unavailable', 'rate-limited', 'request-too-large',
 ]);
 
-export const RETRYABLE = Object.freeze(new Set(['rate-limited', 'api-unavailable', 'account-limit']));
+// account-limit is not retryable on its own, as classify-failure records it; the design still
+// requeues it when reset_at says when.
+export const RETRYABLE = Object.freeze(new Set(['rate-limited', 'api-unavailable']));
 
 const FIELDS = Object.freeze({
   started: ['engine', 'model', 'credential_fingerprint', 'prompt_hash', 'lane_version'],
@@ -44,8 +46,10 @@ export function fieldsOf(type) { return FIELDS[type]; }
 export function classifyFailure(text) {
   const s = String(text || '').toLowerCase();
   if (!s) return null;
-  if (/rate.?limit|429|too many requests/.test(s)) return 'rate-limited';
+  // Account-limit text beats a bare 429, the order classify-failure uses: a `429 weekly limit`
+  // is account-limit, not a rate limit.
   if (/usage limit|quota|five.hour|weekly limit|limit reached/.test(s)) return 'account-limit';
+  if (/rate.?limit|429|too many requests/.test(s)) return 'rate-limited';
   if (/401|403|unauthori[sz]ed|invalid.*(api key|token)|authentication/.test(s)) return 'auth-failed';
   if (/billing|payment|insufficient (credit|fund)|credit balance/.test(s)) return 'billing';
   if (/model.*(not found|unavailable|does not exist)|unknown model|404.*model/.test(s)) return 'model-unavailable';

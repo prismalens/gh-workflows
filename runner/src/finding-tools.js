@@ -9,6 +9,7 @@ import { appendFileSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { looksLikeSecret } from './acp-map.js';
 
 const which = process.argv[2];
 const log = process.env.ASSAYER_TOOL_LOG;
@@ -18,7 +19,14 @@ if (!which || !log) {
 }
 
 function record(tool, input) {
-  appendFileSync(log, JSON.stringify({ at: new Date().toISOString(), server: which, tool, input }) + '\n');
+  // Redact before the write, not after: SessionMapper filters when it reads this log back, by
+  // which time an unredacted body is already on disk for anyone who collects it (CWE-532).
+  const secret = typeof input?.body === 'string' && looksLikeSecret(input.body);
+  const entry = secret ? { ...input, body: null } : input;
+  appendFileSync(log, JSON.stringify({
+    at: new Date().toISOString(), server: which, tool, input: entry,
+    ...(secret ? { redacted: 'credential-shaped body' } : {}),
+  }) + '\n');
 }
 
 const server = new McpServer({ name: which, version: '0.0.0' });

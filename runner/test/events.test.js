@@ -22,6 +22,7 @@ test('error retryable defaults from the class and can be overridden', () => {
 test('classifyFailure covers the lane vocabulary and falls back to api-error', () => {
   const cases = {
     'HTTP 429 Too Many Requests': 'rate-limited',
+    '429 weekly limit reached for opus': 'account-limit',   // account text beats the bare 429
     'You have reached your usage limit. Resets in 2h': 'account-limit',
     '401 Unauthorized: invalid api key': 'auth-failed',
     'insufficient credit balance': 'billing',
@@ -35,4 +36,7 @@ test('classifyFailure covers the lane vocabulary and falls back to api-error', (
   assert.equal(classifyFailure(''), null); assert.equal(classifyFailure(null), null);
   assert.equal(resetAtFrom('limit reached. Resets in 1h35m27s.'), '1h35m27s');
   assert.equal(resetAtFrom('no hint'), null);
+  // classify-failure records account-limit with retryable 0; the requeue rides on reset_at.
+  assert.equal(event('error', { failure_class: 'account-limit', message: 'x' }).retryable, false);
+  assert.equal(event('error', { failure_class: 'rate-limited', message: 'x' }).retryable, true);
 });

@@ -255,7 +255,7 @@ names, and the product's docs lead with the key and the free local model.
 | Runner down or laptop asleep | Control plane, `runner_timeout` | `no-runner` verdict; job stays queued |
 | Sub window exhausted | `classify-failure` on the runner | `credential-cooldown` with `reset_at`; requeue |
 | Credential rejected | Same | `api-error` with the existing "replace the credential" text |
-| Control plane down | GitHub webhook redelivery (up to a week of deliveries retained) | Nothing until it returns; reconcile on boot by listing open PRs, which `pr-state.yml` already does |
+| Control plane down | Nobody, automatically: GitHub never redelivers a failed delivery, and manual redelivery reaches only the past 3 days | Nothing until it returns. Boot-time reconciliation is the recovery path for any outage past that window: list open PRs, which `pr-state.yml` already does |
 | Engine crashes mid-round | Missing `finished` before heartbeat timeout | `api-error`, job retried once on another slot |
 | Two runners, same credential | Registration refuses a duplicate fingerprint with `concurrency: 1` | Startup error |
 | D1 write limits (100k rows/day free) | Weekly health report (#176) | Well above current volume of about 250 rounds a month |

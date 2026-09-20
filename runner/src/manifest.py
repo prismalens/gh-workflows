@@ -852,6 +852,33 @@ def build_review_context():
             return None
 
 
+    def checkout_resident(rel):
+        # True when git tracks the path or anything under it: the pull request supplied it.
+        # Fail closed: an inspection that cannot answer counts as checkout-supplied.
+        try:
+            r = subprocess.run(["git", "ls-files", "-z", "--", rel], capture_output=True, timeout=30)
+            if r.returncode != 0:
+                return True
+            return bool(r.stdout.strip(b"\x00"))
+        except Exception:
+            return True
+
+
+    def path_binary_trusted(binary):
+        # A PATH hit is trusted only when it resolves outside the checkout. Inside it the
+        # pull request may have committed the binary, so the tracking gate decides.
+        try:
+            resolved = pathlib.Path(binary).resolve()
+            root = workspace.resolve()
+        except Exception:
+            return False
+        try:
+            rel = resolved.relative_to(root)
+        except ValueError:
+            return True
+        return not checkout_resident(str(rel))
+
+
     if "actionlint" in enabled_tools:
         if not changed_workflow_files:
             tools_skipped.append({"tool": "actionlint", "reason": "no changed workflow files"})
@@ -860,6 +887,8 @@ def build_review_context():
             # an `./actionlint` or a `node_modules/.bin/*` and this runs before any sandbox.
             # Only PATH, or the checksummed release fetched here, is trusted.
             actionlint_bin = shutil.which("actionlint")
+            if actionlint_bin is not None and not path_binary_trusted(actionlint_bin):
+                actionlint_bin = None
             if actionlint_bin is None:
                 # The release tarball against a recorded checksum, the same version
                 # and checksum as tests.yml; tests/test-actionlint-pin-drift.py holds
@@ -926,14 +955,6 @@ def build_review_context():
                         "line": f.get("line", 0),
                         "message": f.get("message", ""),
                     })
-
-    def checkout_resident(rel):
-        # True when git tracks the path or anything under it: the pull request supplied it.
-        try:
-            r = subprocess.run(["git", "ls-files", "-z", "--", rel], capture_output=True, timeout=30)
-            return r.returncode == 0 and bool(r.stdout.strip(b"\x00"))
-        except Exception:
-            return True
 
     node_tools_resident = checkout_resident("node_modules")
     has_typescript = languages.get("TypeScript", 0) > 0

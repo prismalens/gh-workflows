@@ -135,6 +135,7 @@ test('a credential-shaped token in a finding, a summary or the agent text is dro
   const tok = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';
   assert.equal(looksLikeSecret(`oauth_token: ${tok}`), true);
   assert.equal(looksLikeSecret('GH_TOKEN=gho_' + 'x'.repeat(30)), true);
+  assert.equal(looksLikeSecret('ANTHROPIC_AUTH_TOKEN=' + 'x'.repeat(20)), true, 'the claude row forwards this one');
   assert.equal(looksLikeSecret('-----BEGIN RSA PRIVATE KEY-----'), true);
   assert.equal(looksLikeSecret('AKIAIOSFODNN7EXAMPLE'), true);
   assert.equal(looksLikeSecret('## Code review\nNo issues found.'), false);
@@ -152,4 +153,17 @@ test('a credential-shaped token in a finding, a summary or the agent text is dro
   assert.ok(!evs.some((e) => e.type === 'summary'), 'no summary from a secret body and no fallback to secret agent text');
   assert.equal(evs.at(-1)._meta.dropped.length, 4, 'finding, two summaries, and the agent-text fallback');
   assert.ok(!JSON.stringify(evs).includes(tok), 'the token appears nowhere in the events');
+});
+
+test('an entry the recorder already redacted is dropped with its own reason', () => {
+  const m = mk();
+  m.onStop({ stopReason: 'end_turn' });
+  const evs = m.finish({ toolLog: [
+    { tool: 'create_inline_comment', at: 't0', redacted: 'credential-shaped body', input: { path: 'a.js', body: null, line: 1 } },
+    { tool: 'gh_pr_comment', at: 't1', redacted: 'credential-shaped body', input: { body: null, args: [] } },
+  ] });
+  assert.ok(!evs.some((e) => e.type === 'finding'), 'no finding from a redacted record');
+  assert.ok(!evs.some((e) => e.type === 'summary'), 'no summary from a redacted record');
+  const why = evs.at(-1)._meta.dropped.map((d) => d.why);
+  assert.equal(why.filter((w) => /recorder redacted a credential-shaped body/.test(w)).length, 2, why.join(' | '));
 });

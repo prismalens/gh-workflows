@@ -29,11 +29,28 @@ case "$sub" in
       if [ "$bodyfile" = "-" ]; then body="$(cat)"; else echo "gh shim: --body-file takes only '-' (stdin) in a review round; pass --body or pipe the text" >&2; exit 1; fi
     fi
     if [ -z "$body" ]; then echo "gh shim: pr comment needs --body or --body-file" >&2; exit 1; fi
-    python3 - "$log" "$body" "${args[@]+"${args[@]}"}" <<'PY'
-import json, sys, datetime
+    # Redact before the record, not after: the mapper filters when it reads this log back, by
+    # which time the body is already on disk. The shapes come from secret-check.js so this
+    # shell path and acp-map.js can never drift. Anything but a clean pass redacts.
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    red=""
+    if printf '%s' "$body" | "${ASSAYER_NODE:-node}" "$here/secret-check.js"; then
+      :
+    else
+      rc=$?
+      [ "$rc" -eq 1 ] || echo "gh shim: secret-check exited $rc; recording the body as redacted" >&2
+      red="credential-shaped body"; body=""
+    fi
+    ASSAYER_REDACTED="$red" python3 - "$log" "$body" "${args[@]+"${args[@]}"}" <<'PY'
+import json, os, sys, datetime
 log, body, *args = sys.argv[1:]
+red = os.environ.get('ASSAYER_REDACTED') or None
+entry = {'at': datetime.datetime.utcnow().isoformat() + 'Z', 'server': 'gh-shim', 'tool': 'gh_pr_comment',
+         'input': {'body': None if red else body, 'args': args}}
+if red:
+    entry['redacted'] = red
 with open(log, 'a') as f:
-    f.write(json.dumps({'at': datetime.datetime.utcnow().isoformat() + 'Z', 'server': 'gh-shim', 'tool': 'gh_pr_comment', 'input': {'body': body, 'args': args}}) + '\n')
+    f.write(json.dumps(entry) + '\n')
 PY
     echo "https://github.com/recorded/by/assayer-runner/pull/0#issuecomment-recorded"; exit 0 ;;
 esac

@@ -27,6 +27,12 @@ test('decide by kind, by command, by comment tool name', () => {
   assert.equal(decide({ kind: 'execute', rawInput: 'gh pr diff 1' }).allow, false, 'rawInput not an object');
   assert.equal(decide({ kind: 'other', name: 'mcp__github_inline_comment__create_inline_comment' }).allow, true);
   assert.equal(decide({ kind: 'other', name: 'mcp__github__merge_pull_request' }).allow, false);
+  // A title is not an authenticated identity: a crafted prefix with the same suffix is refused,
+  // while the bare titles the recorded round actually sends still pass.
+  assert.equal(decide({ kind: 'other', name: 'mcp__evil__create_inline_comment' }).allow, false, 'crafted prefix');
+  assert.equal(decide({ kind: 'other', title: 'mcp__attacker__update_claude_comment' }).allow, false, 'crafted prefix by title');
+  assert.equal(decide({ kind: 'other', title: 'create_inline_comment' }).allow, true, 'the bare title form');
+  assert.equal(decide({ kind: 'other', title: 'update_claude_comment' }).allow, true, 'the bare title form');
   assert.equal(decide({}).allow, false, 'no kind at all');
 });
 
