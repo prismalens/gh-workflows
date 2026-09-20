@@ -116,7 +116,7 @@ env:
   # The claude-code-action pin, duplicated at the two `uses:` lines below because `uses:`
   # cannot take a `${{ }}` expression. tests/test-action-version-drift.py fails the build
   # if this value and either `uses:` pin ever disagree. Story: #47 amendment.
-  ACTION_VERSION: '0a8d3c9443bbff909ab973b6a17a340b913f229f'
+  ACTION_VERSION: '2261fcfc88e7de1b55f179edd588805e12de71f2'
 
 jobs:
   # ONE set of PR facts for automatic rounds, summons, and in-thread replies alike,
