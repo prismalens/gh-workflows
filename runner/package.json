@@ -1,0 +1,18 @@
+{
+  "name": "@prismalens/review-runner",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Leases review jobs, runs an engine over the Agent Client Protocol, and emits assayer/v1 events.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "bin": {
+    "assayer-run": "src/run.js"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  }
+}

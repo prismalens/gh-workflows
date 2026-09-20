@@ -1468,16 +1468,27 @@ jobs:
             fi
           fi
 
+          # `// empty`, never `// ""`: --paginate runs the filter per page, and a blank
+          # line from a non-matching page is what `head -1` would otherwise read as N.
+          liveness_comment=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            "[.[] | select(.user.login==\"github-actions[bot]\")
+                  | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty" \
+            | head -1 || true)
+
           # Auto-pause reads the round counter off our own liveness comment. Summons are
           # the resume, so they neither read nor trip it. Story: prismalens/prismalens#403.
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            # `// empty`, never `// ""`: --paginate runs the filter per page, and a blank
-            # line from a non-matching page is what `head -1` would otherwise read as N.
-            liveness_comment=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
-              "[.[] | select(.user.login==\"github-actions[bot]\")
-                    | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty" \
-              | head -1 || true)
-            # Requested pause marker (#124): manual pause stops automatic rounds until resumed.
+            # Requested pause marker (#124): an explicit pause stops AUTOMATIC rounds, and it
+            # sits inside this branch on purpose, so `SUMMON` is always `none` here and needs
+            # no test. `@claude pause` is the COMMENT layer, ephemeral by construction, which
+            # makes it a pause and not a stop: a summon lifts it and a verb-less reply still
+            # gets its verify round. The operator's stop is `admission: off` or the skip
+            # label, neither of which is a comment. Story: #189, ruling recorded there.
+            # #191 hoisted this out to refuse every non-`resume` summon, which put stop
+            # semantics at the comment layer and pre-empted #189, so it is put back. What
+            # #191 was really fixing is the pause being ERASED by a reply, and that is fixed
+            # on the WRITE side instead: `is_paused` defaults to `$prev_paused` in `announce`,
+            # so a reply carries the pause forward rather than dropping it (#178).
             if echo "$liveness_comment" | grep -qE 'paused=1'; then
               echo "skipping review: pull request is paused by manual request (@claude pause)"
               emit skip paused-by-request
@@ -2657,13 +2668,43 @@ jobs:
                   return None
           
           
+          def checkout_resident(rel):
+              # True when git tracks the path or anything under it: the pull request supplied it.
+              # Fail closed: an inspection that cannot answer counts as checkout-supplied.
+              try:
+                  r = subprocess.run(["git", "ls-files", "-z", "--", rel], capture_output=True, timeout=30)
+                  if r.returncode != 0:
+                      return True
+                  return bool(r.stdout.strip(b"\x00"))
+              except Exception:
+                  return True
+
+
+          def path_binary_trusted(binary):
+              # A PATH hit is trusted only when it resolves outside the checkout. Inside it the
+              # pull request may have committed the binary, so the tracking gate decides.
+              try:
+                  resolved = pathlib.Path(binary).resolve()
+                  root = workspace.resolve()
+              except Exception:
+                  return False
+              try:
+                  rel = resolved.relative_to(root)
+              except ValueError:
+                  return True
+              return not checkout_resident(str(rel))
+
+
           if "actionlint" in enabled_tools:
               if not changed_workflow_files:
                   tools_skipped.append({"tool": "actionlint", "reason": "no changed workflow files"})
               else:
+                  # Never execute a binary the checkout brought with it: a pull request can commit
+                  # an `./actionlint` or a `node_modules/.bin/*` and this runs before any sandbox.
+                  # Only PATH, or the checksummed release fetched here, is trusted.
                   actionlint_bin = shutil.which("actionlint")
-                  if actionlint_bin is None and pathlib.Path("./actionlint").exists():
-                      actionlint_bin = "./actionlint"
+                  if actionlint_bin is not None and not path_binary_trusted(actionlint_bin):
+                      actionlint_bin = None
                   if actionlint_bin is None:
                       # The release tarball against a recorded checksum, the same version
                       # and checksum as tests.yml; tests/test-actionlint-pin-drift.py holds
@@ -2680,7 +2721,7 @@ jobs:
                            f"tar -xzf {asset} actionlint"],
                           timeout=60,
                       )
-                      if install is not None and install.returncode == 0 and pathlib.Path("./actionlint").exists():
+                      if install is not None and install.returncode == 0 and pathlib.Path("./actionlint").exists() and not checkout_resident("actionlint"):
                           actionlint_bin = "./actionlint"
                   if actionlint_bin is None:
                       tools_skipped.append({"tool": "actionlint", "reason": "binary unavailable and install failed"})
@@ -2731,10 +2772,13 @@ jobs:
                               "message": f.get("message", ""),
                           })
           
+          node_tools_resident = checkout_resident("node_modules")
           has_typescript = languages.get("TypeScript", 0) > 0
           if "tsc" in enabled_tools:
               if not has_typescript or "tsconfig.json" not in config_files:
                   tools_skipped.append({"tool": "tsc", "reason": "no changed TypeScript files or no tsconfig.json"})
+              elif node_tools_resident:
+                  tools_skipped.append({"tool": "tsc", "reason": "node_modules is committed in this checkout; not executing it"})
               elif not pathlib.Path("node_modules/.bin/tsc").exists():
                   tools_skipped.append({"tool": "tsc", "reason": "tsc not installed in this checkout"})
               else:
@@ -2756,6 +2800,9 @@ jobs:
               applies = "biome.json" in config_files if tool_name == "biome" else any(c.startswith(".eslintrc") for c in config_files)
               if not applies:
                   tools_skipped.append({"tool": tool_name, "reason": "no config file present"})
+                  continue
+              if node_tools_resident:
+                  tools_skipped.append({"tool": tool_name, "reason": "node_modules is committed in this checkout; not executing it"})
                   continue
               if not pathlib.Path(bin_path).exists():
                   tools_skipped.append({"tool": tool_name, "reason": f"{tool_name} not installed in this checkout"})
@@ -5169,6 +5216,17 @@ jobs:
           elif [ "$SKIP_REASON" = "paused-by-request" ]; then
             is_paused=1
           elif [ "${SUMMON:-}" = "incremental" ] || [ "${SUMMON:-}" = "full" ] || [ "${SUMMON:-}" = "resume" ]; then
+            # A summon lifts the pause, and that is deliberate: `@claude pause` is the
+            # COMMENT layer, which is per-round and ephemeral by construction, so a stop
+            # cannot live here — the next comment would lift it and a stop that any comment
+            # lifts is a pause. The operator's stop is `admission: off` (reversed by a commit
+            # to the base branch) or the skip label (reversed by removing it), both deliberate
+            # acts that are not comments. Story: #189, ruling recorded there.
+            # #191 briefly made this refuse every non-`resume` summon. That put stop semantics
+            # at the comment layer and pre-empted #189; it is reverted here. What #191 fixed
+            # and this keeps is the ERASURE: `is_paused` defaults to `$prev_paused` above, so
+            # a push or a verb-less reply carries the pause forward instead of dropping it,
+            # which is the #178 report. The marker-persistence half of #191 is untouched.
             is_paused=0
           fi
 
@@ -5478,6 +5536,23 @@ jobs:
               ;;
           esac
 
+          # The guard above protects the VERDICT. The marker beside it is not a verdict, it is
+          # the only place the pause state lives, and withholding the write there does not
+          # preserve information — it drops the operator's instruction. On a head a review had
+          # already reported on, `sha=` equals this head, so `@claude pause` was withheld and
+          # `paused=1` was never written: every later event ran normally. `@claude resume` on
+          # that same head was withheld too (it posts nothing, so its kind is `silent`), so the
+          # pause could not be lifted either. Both are #191 one layer down, and neither is the
+          # loss #149 exists to stop: a state transition adds a fact rather than replacing one.
+          # So the write goes ahead and the standing verdict is carried over verbatim below —
+          # nothing is lost in either direction. Only a TRANSITION qualifies: a push while
+          # paused changes nothing the marker does not already say, and stays withheld.
+          keep_verdict=0
+          if [ "$withhold" = "1" ] && [ "$is_paused" != "$prev_paused" ]; then
+            withhold=0
+            keep_verdict=1
+          fi
+
           if [ -n "${GITHUB_OUTPUT:-}" ]; then
             delim="$(openssl rand -hex 16 2>/dev/null || echo "VERDICT_DELIM_${RANDOM}_$$")"
             {
@@ -5525,8 +5600,33 @@ jobs:
           # `sha=` is omitted entirely when there is no baseline, so markers on never-reviewed
           # PRs stay clean and the field's absence is unambiguous.
           marker="<!-- claude-review-liveness rounds=${rounds}${reviewed_sha:+ sha=${reviewed_sha}}${patch_flag}${paused_flag} -->"
-          body="$marker
+          if [ "$keep_verdict" = "1" ]; then
+            # The state changed; the verdict did not. The round that posted review output on
+            # this head still owns that text, so it is carried under the new marker rather
+            # than replaced by this round's — which reports no review on a head that has one,
+            # and on a resume would assert "no machine review on record" outright, flatly
+            # contradicting the `sha=` in the very marker it is writing.
+            # The state line is rebuilt from `is_paused` and never appended to: the strip
+            # below drops the one this lane wrote last time, so pause / resume / pause leaves
+            # one line, not three. A reader gets the acknowledgement the withheld write
+            # swallowed; a silent pause is indistinguishable from the bug it just fixed.
+            standing=$(jq -r '.body // ""' <<< "${found:-null}" | tail -n +2 | grep -v '^_Lane state:' || true)
+            if [ "$is_paused" = "1" ]; then
+              state_line="_Lane state: paused by @${paused_by:-an operator} at \`$short\` — resume with \`@claude resume\`. The review verdict above stands._"
+            else
+              state_line="_Lane state: resumed by @${ACTOR_LOGIN:-an operator} at \`$short\` — automatic rounds run again. The review verdict above stands._"
+            fi
+            body="$marker"
+            if [ -n "$standing" ]; then
+              body="$body
+          $standing"
+            fi
+            body="$body
+          $state_line"
+          else
+            body="$marker
           **Claude review lane** — [run]($RUN_URL): $verdict"
+          fi
 
           if [ "$withhold" = "1" ]; then
             echo "::notice::liveness: not replacing the verdict on $short. A round that posted review" \

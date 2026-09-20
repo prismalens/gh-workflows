@@ -23,6 +23,8 @@ not as current designs:
 
 ## Research
 
+- `self-hosted-review.md` — the review lane as a service: control plane on the Worker, a runner that pulls, engines behind one ACP client, assayer/v1 events, placements and credentials (#184).
+- `review-engine-credentials.md` — the 2026-09-19 vendor-terms and competitor research behind the credential and seam decisions.
 - `research/review-dashboard-prior-art.md` — six AI review products and four LLM observability tools, what each shows and what to copy or reject.
 - `research/review-dashboard-options.md` — storage and hosting comparison.
 - `research/review-lane-cost-baseline.md` — the measured baseline.

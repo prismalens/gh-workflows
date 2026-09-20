@@ -13,6 +13,8 @@ Extracts REAL shell bodies out of claude-code-review.yml and runs them against f
    and lands in the marker and the lane event's actor field.
 9. A second @claude pause on an already-paused PR does not overwrite the recorded actor.
 10. @claude resume clears both paused=1 and paused_by from the marker.
+11. The #149 withhold guard never swallows a pause or resume state transition: on a head a
+    review already reported on, the marker is still written and the standing verdict carried.
 
 Run: python3 tests/test-pause-resume.py
 """
@@ -30,6 +32,8 @@ WF = ROOT / ".github/workflows/claude-code-review.yml"
 
 OLD = "a" * 40
 NEW = "b" * 40
+# A head past the one the marker records, so the reader is deciding about new commits.
+MOVED_HEAD = "c" * 40
 
 
 def cleanup_tmp():
@@ -338,14 +342,26 @@ def main():
     # -------------------------------------------------------------
     # 4. @claude review and @claude resume still run while paused
     # -------------------------------------------------------------
-    # Explicit summon bypasses pause and proceeds to review
+    # An explicit pause is lifted by `@claude resume` alone: `@claude review` is refused,
+    # so a summon by someone who does not know the pull request is paused costs one comment
+    # and no model round.
     rc, outs, err = run_mode_step(mode_script, event="issue_comment", summon="incremental", fake_liveness=paused_marker)
     if rc != 0:
         fails.append(f"case 4a: @claude review exited {rc}: {err}")
-    elif outs.get("skip_reason") == "paused-by-request":
-        fails.append(f"case 4a: @claude review was blocked by pause: {outs}")
+    elif outs.get("skip_reason") != "paused-by-request":
+        fails.append(f"case 4a: @claude review was not refused by the pause: {outs}")
     else:
-        print("  ok    @claude review runs while paused (bypasses pause check)")
+        print("  ok    @claude review is refused while explicitly paused")
+
+    # The reported bug: an in-thread reply reached the verify path without ever reading the
+    # marker, so it ran a round on a pull request the operator had paused.
+    rc, outs, err = run_mode_step(mode_script, event="pull_request_review_comment", summon="incremental", fake_liveness=paused_marker)
+    if rc != 0:
+        fails.append(f"case 4c: reply exited {rc}: {err}")
+    elif outs.get("skip_reason") != "paused-by-request":
+        fails.append(f"case 4c: an in-thread reply ran on a paused pull request: {outs}")
+    else:
+        print("  ok    an in-thread reply is refused while explicitly paused")
 
     rc, outs, err = run_mode_step(mode_script, event="issue_comment", summon="resume", fake_liveness=paused_marker)
     if rc != 0:
@@ -395,11 +411,12 @@ def main():
     else:
         print("  ok    paused state survives push (marker keeps paused=1)")
 
-    # Explicit summon review clears paused=1
+    # Only `@claude resume` clears the marker. Every other summon carries the pause
+    # forward, whatever the event and whatever exit path the round took.
     rc, body, outs, err = run_announce_step(
         announce_script,
         marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 -->",
-        skip_reason="",  # Review ran successfully
+        skip_reason="",  # as if the round had run to completion
         event="issue_comment",
         mode="review",
         result="success",
@@ -407,10 +424,34 @@ def main():
     )
     if rc != 0:
         fails.append(f"case 6b: announce summon exited {rc}: {err}")
-    elif "paused=1" in body.splitlines()[0]:
-        fails.append(f"case 6b: explicit summon did not clear paused=1: {body.splitlines()[0]}")
+    elif "paused=1" not in body.splitlines()[0]:
+        fails.append(f"case 6b: a non-resume summon erased paused=1: {body.splitlines()[0]}")
     else:
-        print("  ok    explicit summon clears paused=1 on liveness marker")
+        print("  ok    a non-resume summon carries paused=1 forward")
+
+    # The second half of the reported bug: the carry-forward branch was gated on
+    # `EVENT_NAME = pull_request`, so a reply reached none of the branches, `is_paused`
+    # stayed 0 and the marker was rewritten WITHOUT paused=1 -- the pause was erased, not
+    # merely bypassed, and every later push ran normally. `skip_reason` is empty here on
+    # purpose: the carry-forward must hold on its own, not as a side effect of exiting
+    # through `paused-by-request`.
+    rc, body, outs, err = run_announce_step(
+        announce_script,
+        marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 paused_by=alice -->",
+        skip_reason="",
+        event="pull_request_review_comment",
+        mode="verify",
+        result="success",
+        head_sha=NEW,
+    )
+    if rc != 0:
+        fails.append(f"case 6c: announce reply exited {rc}: {err}")
+    elif "paused=1" not in body.splitlines()[0]:
+        fails.append(f"case 6c: an in-thread reply erased the pause: {body.splitlines()[0]}")
+    elif "paused_by=alice" not in body.splitlines()[0]:
+        fails.append(f"case 6c: an in-thread reply lost paused_by: {body.splitlines()[0]}")
+    else:
+        print("  ok    an in-thread reply carries paused=1 and paused_by forward")
 
     # -------------------------------------------------------------
     # 7. Lane Event emission: records paused-by-request
@@ -494,6 +535,10 @@ def main():
         marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 paused_by=alice -->",
         skip_reason="",  # review ran successfully
         event="issue_comment",
+        # The resume verb is what lifts the pause, and the announce step reads it from
+        # `summon`, never from the comment body (#124). Without it this case would be an
+        # ordinary summon, which now carries the pause forward.
+        summon="resume",
         mode="review",
         result="success",
         head_sha=NEW,
@@ -649,6 +694,94 @@ def main():
         fails.append(f"case 13b announce: want paused_by=alice output, got {outs.get('paused_by')!r}")
     else:
         print("  ok    verify round on paused PR keeps paused=1 and paused_by=alice (#178)")
+
+    # 14. The #149 withhold guard must not swallow a pause state transition
+    # -------------------------------------------------------------
+    # `sha=` equal to this head means a real review already reported here, and the guard
+    # withholds the write so a later no-output round cannot replace that verdict with the
+    # absence of one. The marker rides in the same comment, and withholding it dropped the
+    # operator's instruction outright: `@claude pause` never wrote paused=1 (every later
+    # event ran normally) and `@claude resume` never cleared it (kind `silent`: a resume
+    # that finds nothing to review posts nothing). Both directions are asserted here, and
+    # the standing verdict must survive both.
+    reviewed_here = (
+        f"<!-- claude-review-liveness rounds=2 sha={NEW} -->\n"
+        "**Claude review lane** — [run](https://x/1): reviewed `bbbbbbbb` and posted 3 inline / 1 summary comment(s)."
+    )
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=reviewed_here, skip_reason="paused-by-request",
+        event="issue_comment", summon="pause", head_sha=NEW, actor_login="alice",
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0:
+        fails.append(f"case 14a: announce exited {rc}: {err}")
+    elif not body:
+        fails.append("case 14a: pause on an already-reviewed head was withheld, so paused=1 was never written")
+    elif "paused=1 paused_by=alice" not in marker_line:
+        fails.append(f"case 14a: pause on an already-reviewed head lost the state: {marker_line!r}")
+    elif "posted 3 inline / 1 summary" not in body:
+        fails.append(f"case 14a: the standing review verdict was replaced, not carried: {body!r}")
+    elif "_Lane state: paused by @alice" not in body:
+        fails.append(f"case 14a: the pause was recorded but never acknowledged to a reader: {body!r}")
+    else:
+        # The reported symptom was rounds running on a paused PR, so the written comment is
+        # fed back to the reader that decides. `head -1` there sees the marker only, which is
+        # also why the carried verdict and the state line cannot confuse it.
+        # The written marker is fed back to the reader that decides, `head -1` there seeing
+        # the marker line only. A pause is the COMMENT layer and therefore soft (#189): the
+        # AUTOMATIC round is refused, and a summon lifts it. #191 briefly refused summons
+        # too, which made the comment layer a stop; these assertions pin the revert.
+        wrong = []
+        _, auto, _ = run_mode_step(mode_script, event="pull_request", summon="none",
+                                   fake_liveness=body, head_sha=MOVED_HEAD)
+        if auto.get("skip_reason") != "paused-by-request":
+            wrong.append(f"automatic round ran on a paused PR: {auto.get('skip_reason', '')!r}")
+        for verb in ("review", "full", "resume"):
+            _, mouts, _ = run_mode_step(mode_script, event="issue_comment",
+                                        summon="incremental" if verb == "review" else verb,
+                                        fake_liveness=body, head_sha=MOVED_HEAD)
+            if mouts.get("skip_reason") == "paused-by-request":
+                wrong.append(f"@claude {verb} was refused by a pause, which is a stop not a pause")
+        if wrong:
+            fails.append("case 14a: " + "; ".join(wrong))
+        else:
+            print("  ok    a pause on an already-reviewed head is written, and keeps the standing verdict")
+            print("  ok    that pause stops the automatic round and every summon still lifts it (#189)")
+
+    paused_here = body
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=paused_here, skip_reason="",
+        event="issue_comment", summon="resume", mode="review", result="success",
+        head_sha=NEW, actor_login="bob",
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0:
+        fails.append(f"case 14b: announce exited {rc}: {err}")
+    elif not body:
+        fails.append("case 14b: resume on an already-reviewed head was withheld, so the pause could never be lifted")
+    elif "paused=" in marker_line:
+        fails.append(f"case 14b: resume did not clear the pause: {marker_line!r}")
+    elif "posted 3 inline / 1 summary" not in body:
+        fails.append(f"case 14b: resume replaced the standing verdict: {body!r}")
+    elif "no machine review on record" in body:
+        fails.append(f"case 14b: resume asserted no review on a head whose sha= says otherwise: {body!r}")
+    elif body.count("_Lane state:") != 1:
+        fails.append(f"case 14b: state lines stacked instead of being rebuilt: {body!r}")
+    else:
+        print("  ok    a resume on an already-reviewed head is written, and stacks no state line")
+
+    # A push while already paused changes nothing the marker does not already say, so the
+    # guard still holds: this is the #149 case, and the pause is not at risk.
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=paused_here, skip_reason="trivial",
+        event="pull_request", head_sha=NEW,
+    )
+    if rc != 0:
+        fails.append(f"case 14c: announce exited {rc}: {err}")
+    elif body:
+        fails.append(f"case 14c: a no-transition skip on an already-reviewed head overwrote the verdict: {body!r}")
+    else:
+        print("  ok    a skip that changes no pause state is still withheld (#149 holds)")
 
     print()
     if fails:
