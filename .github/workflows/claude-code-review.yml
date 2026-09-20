@@ -1355,22 +1355,27 @@ jobs:
             fi
           fi
 
+          # `// empty`, never `// ""`: --paginate runs the filter per page, and a blank
+          # line from a non-matching page is what `head -1` would otherwise read as N.
+          liveness_comment=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            "[.[] | select(.user.login==\"github-actions[bot]\")
+                  | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty" \
+            | head -1 || true)
+
+          # Requested pause marker (#124): an explicit pause stops EVERY round on this pull
+          # request, whatever woke the lane, and only `@claude resume` lifts it. Reading it
+          # inside the pull_request branch below meant an in-thread reply never saw it: the
+          # reply ran a round on a paused pull request, and the liveness step then rewrote
+          # the marker without `paused=1`, erasing the pause so later pushes ran too.
+          if [ "$SUMMON" != "resume" ] && echo "$liveness_comment" | grep -qE 'paused=1'; then
+            echo "skipping review: pull request is paused by manual request (@claude pause)"
+            emit skip paused-by-request
+            exit 0
+          fi
+
           # Auto-pause reads the round counter off our own liveness comment. Summons are
           # the resume, so they neither read nor trip it. Story: prismalens/prismalens#403.
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            # `// empty`, never `// ""`: --paginate runs the filter per page, and a blank
-            # line from a non-matching page is what `head -1` would otherwise read as N.
-            liveness_comment=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
-              "[.[] | select(.user.login==\"github-actions[bot]\")
-                    | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty" \
-              | head -1 || true)
-            # Requested pause marker (#124): manual pause stops automatic rounds until resumed.
-            if echo "$liveness_comment" | grep -qE 'paused=1'; then
-              echo "skipping review: pull request is paused by manual request (@claude pause)"
-              emit skip paused-by-request
-              exit 0
-            fi
-
             rounds=$(echo "$liveness_comment" | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
             rounds=${rounds:-0}
             # The round budget and `@claude pause` are both per pull request, stacks
@@ -5186,7 +5191,13 @@ jobs:
             esac
           elif [ "$SKIP_REASON" = "paused-by-request" ]; then
             is_paused=1
-          elif [ "$EVENT_NAME" = "pull_request" ] && [ "$prev_paused" = "1" ]; then
+          elif [ "${SUMMON:-}" != "resume" ] && [ "$prev_paused" = "1" ]; then
+            # Carries on EVERY event, not just pull_request: a reply reached none of these
+            # branches, so `is_paused` stayed 0 and the marker was rewritten without
+            # `paused=1`. The pause was not merely bypassed for that round, it was erased.
+            # `@claude resume` is the only lift, and it is the reason this cannot simply be
+            # `[ "$prev_paused" = "1" ]`: on a non-draft pull request `draft_summon` is
+            # empty, so a resume would otherwise fall through to here and re-pause itself.
             is_paused=1
           fi
 
@@ -5496,6 +5507,23 @@ jobs:
               ;;
           esac
 
+          # The guard above protects the VERDICT. The marker beside it is not a verdict, it is
+          # the only place the pause state lives, and withholding the write there does not
+          # preserve information — it drops the operator's instruction. On a head a review had
+          # already reported on, `sha=` equals this head, so `@claude pause` was withheld and
+          # `paused=1` was never written: every later event ran normally. `@claude resume` on
+          # that same head was withheld too (it posts nothing, so its kind is `silent`), so the
+          # pause could not be lifted either. Both are #191 one layer down, and neither is the
+          # loss #149 exists to stop: a state transition adds a fact rather than replacing one.
+          # So the write goes ahead and the standing verdict is carried over verbatim below —
+          # nothing is lost in either direction. Only a TRANSITION qualifies: a push while
+          # paused changes nothing the marker does not already say, and stays withheld.
+          keep_verdict=0
+          if [ "$withhold" = "1" ] && [ "$is_paused" != "$prev_paused" ]; then
+            withhold=0
+            keep_verdict=1
+          fi
+
           if [ -n "${GITHUB_OUTPUT:-}" ]; then
             delim="$(openssl rand -hex 16 2>/dev/null || echo "VERDICT_DELIM_${RANDOM}_$$")"
             {
@@ -5543,8 +5571,33 @@ jobs:
           # `sha=` is omitted entirely when there is no baseline, so markers on never-reviewed
           # PRs stay clean and the field's absence is unambiguous.
           marker="<!-- claude-review-liveness rounds=${rounds}${reviewed_sha:+ sha=${reviewed_sha}}${patch_flag}${paused_flag} -->"
-          body="$marker
+          if [ "$keep_verdict" = "1" ]; then
+            # The state changed; the verdict did not. The round that posted review output on
+            # this head still owns that text, so it is carried under the new marker rather
+            # than replaced by this round's — which reports no review on a head that has one,
+            # and on a resume would assert "no machine review on record" outright, flatly
+            # contradicting the `sha=` in the very marker it is writing.
+            # The state line is rebuilt from `is_paused` and never appended to: the strip
+            # below drops the one this lane wrote last time, so pause / resume / pause leaves
+            # one line, not three. A reader gets the acknowledgement the withheld write
+            # swallowed; a silent pause is indistinguishable from the bug it just fixed.
+            standing=$(jq -r '.body // ""' <<< "${found:-null}" | tail -n +2 | grep -v '^_Lane state:' || true)
+            if [ "$is_paused" = "1" ]; then
+              state_line="_Lane state: paused by @${paused_by:-an operator} at \`$short\` — resume with \`@claude resume\`. The review verdict above stands._"
+            else
+              state_line="_Lane state: resumed by @${ACTOR_LOGIN:-an operator} at \`$short\` — automatic rounds run again. The review verdict above stands._"
+            fi
+            body="$marker"
+            if [ -n "$standing" ]; then
+              body="$body
+          $standing"
+            fi
+            body="$body
+          $state_line"
+          else
+            body="$marker
           **Claude review lane** — [run]($RUN_URL): $verdict"
+          fi
 
           if [ "$withhold" = "1" ]; then
             echo "::notice::liveness: not replacing the verdict on $short. A round that posted review" \
