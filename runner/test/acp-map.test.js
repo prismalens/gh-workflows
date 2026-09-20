@@ -165,5 +165,5 @@ test('an entry the recorder already redacted is dropped with its own reason', ()
   assert.ok(!evs.some((e) => e.type === 'finding'), 'no finding from a redacted record');
   assert.ok(!evs.some((e) => e.type === 'summary'), 'no summary from a redacted record');
   const why = evs.at(-1)._meta.dropped.map((d) => d.why);
-  assert.equal(why.filter((w) => /recorder redacted a credential-shaped body/.test(w)).length, 2, why.join(' | '));
+  assert.equal(why.filter((w) => /recorder redacted this record: credential-shaped body/.test(w)).length, 2, why.join(' | '));
 });

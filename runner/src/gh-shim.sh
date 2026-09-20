@@ -32,15 +32,20 @@ case "$sub" in
     # Redact before the record, not after: the mapper filters when it reads this log back, by
     # which time the body is already on disk. The shapes come from secret-check.js so this
     # shell path and acp-map.js can never drift. Anything but a clean pass redacts.
+    # The runner copies this shim to <out>/bin/gh, so its own directory holds no module.
+    # ASSAYER_SECRET_CHECK carries the real path; the sibling is the fallback for a shim run
+    # in place. A checker that cannot run is an environment fault, not a credential: it still
+    # redacts, but it says so, and it never claims the body looked like a secret.
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    checker="${ASSAYER_SECRET_CHECK:-$here/secret-check.js}"
     red=""
-    if printf '%s' "$body" | "${ASSAYER_NODE:-node}" "$here/secret-check.js"; then
-      :
-    else
-      rc=$?
-      [ "$rc" -eq 1 ] || echo "gh shim: secret-check exited $rc; recording the body as redacted" >&2
-      red="credential-shaped body"; body=""
-    fi
+    printf '%s' "$body" | "${ASSAYER_NODE:-node}" "$checker"; rc=$?
+    case "$rc" in
+      0) ;;
+      10) red="credential-shaped body"; body="" ;;
+      *) echo "gh shim: secret-check could not run (exit $rc, $checker); recording the body as redacted" >&2
+         red="secret-check unavailable"; body="" ;;
+    esac
     ASSAYER_REDACTED="$red" python3 - "$log" "$body" "${args[@]+"${args[@]}"}" <<'PY'
 import json, os, sys, datetime
 log, body, *args = sys.argv[1:]

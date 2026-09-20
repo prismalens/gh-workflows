@@ -112,16 +112,22 @@ export async function buildManifest({
   // instead make it write into a file this wrapper never reads, silently.
   delete env.GITHUB_OUTPUT;
 
-  const { code, stderr, signal } = await new Promise((resolve, reject) => {
+  const { code, stderr, stdout, signal } = await new Promise((resolve, reject) => {
     const child = spawn('python3', [MANIFEST_PY], { cwd, env });
     let stderrBuf = '';
+    let stdoutBuf = '';
     child.stderr.on('data', (d) => { stderrBuf += d; });
-    child.stdout.resume(); // manifest.py's own progress prints; not parsed here
+    // manifest.py's own progress prints, and its `::error::` lines, which it writes to stdout.
+    // Discarding this stream left a staging failure with no stated reason at all.
+    child.stdout.on('data', (d) => { stdoutBuf += d; });
     child.on('error', (e) => reject(new Error(`buildManifest: failed to spawn python3: ${e.message}`)));
-    child.on('exit', (code, signal) => resolve({ code, stderr: stderrBuf, signal }));
+    child.on('exit', (code, signal) => resolve({ code, stderr: stderrBuf, stdout: stdoutBuf, signal }));
   });
   if (code !== 0) {
-    throw new Error(`buildManifest: manifest.py exited ${code}${signal ? ` (signal ${signal})` : ''}\n${stderr}`);
+    // The reason is whatever it annotated, wherever it wrote it.
+    const annotated = `${stdout}\n${stderr}`.split('\n').filter((l) => l.startsWith('::error::')).join('\n');
+    const detail = annotated || stderr || stdout.split('\n').slice(-5).join('\n');
+    throw new Error(`buildManifest: manifest.py exited ${code}${signal ? ` (signal ${signal})` : ''}\n${detail}`);
   }
 
   const manifestPath = path.join(cwd, '.claude-review-manifest.json');

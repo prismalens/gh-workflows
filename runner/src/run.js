@@ -18,7 +18,7 @@ import { buildManifest } from './manifest.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export function parseArgs(argv) {
-  const o = { engine: 'opencode', model: null, timeoutMs: 20 * 60 * 1000, idleMs: 8 * 60 * 1000, laneVersion: null, promptHash: null, stage: false, repo: null, pr: null, headSha: null, mode: 'review' };
+  const o = { engine: 'opencode', model: null, timeoutMs: 20 * 60 * 1000, idleMs: 8 * 60 * 1000, laneVersion: null, promptHash: null, stage: false, repo: null, pr: null, headSha: '', mode: 'review' };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]; const v = argv[i + 1];
     const need = () => { if (v === undefined) throw new Error(`${a} needs a value`); i += 1; return v; };
@@ -112,6 +112,8 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
   const env = row.prepare({ model: opts.model, outDir: out, env: {
     ...baseEnv, PATH: `${binDir}${path.delimiter}${baseEnv.PATH ?? process.env.PATH ?? ''}`,
     ASSAYER_TOOL_LOG: toolLog, ASSAYER_REAL_GH: realGh,
+    // The shim is a copy in <out>/bin; secret-check.js stays here beside its imports.
+    ASSAYER_SECRET_CHECK: path.join(HERE, 'secret-check.js'),
   } });
   const child = spawn(row.command, row.args({ cwd }), { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stderr.on('data', (d) => appendFileSync(stderrPath, d));
