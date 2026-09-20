@@ -326,14 +326,26 @@ def main():
     # -------------------------------------------------------------
     # 4. @claude review and @claude resume still run while paused
     # -------------------------------------------------------------
-    # Explicit summon bypasses pause and proceeds to review
+    # An explicit pause is lifted by `@claude resume` alone: `@claude review` is refused,
+    # so a summon by someone who does not know the pull request is paused costs one comment
+    # and no model round.
     rc, outs, err = run_mode_step(mode_script, event="issue_comment", summon="incremental", fake_liveness=paused_marker)
     if rc != 0:
         fails.append(f"case 4a: @claude review exited {rc}: {err}")
-    elif outs.get("skip_reason") == "paused-by-request":
-        fails.append(f"case 4a: @claude review was blocked by pause: {outs}")
+    elif outs.get("skip_reason") != "paused-by-request":
+        fails.append(f"case 4a: @claude review was not refused by the pause: {outs}")
     else:
-        print("  ok    @claude review runs while paused (bypasses pause check)")
+        print("  ok    @claude review is refused while explicitly paused")
+
+    # The reported bug: an in-thread reply reached the verify path without ever reading the
+    # marker, so it ran a round on a pull request the operator had paused.
+    rc, outs, err = run_mode_step(mode_script, event="pull_request_review_comment", summon="incremental", fake_liveness=paused_marker)
+    if rc != 0:
+        fails.append(f"case 4c: reply exited {rc}: {err}")
+    elif outs.get("skip_reason") != "paused-by-request":
+        fails.append(f"case 4c: an in-thread reply ran on a paused pull request: {outs}")
+    else:
+        print("  ok    an in-thread reply is refused while explicitly paused")
 
     rc, outs, err = run_mode_step(mode_script, event="issue_comment", summon="resume", fake_liveness=paused_marker)
     if rc != 0:
@@ -383,11 +395,12 @@ def main():
     else:
         print("  ok    paused state survives push (marker keeps paused=1)")
 
-    # Explicit summon review clears paused=1
+    # Only `@claude resume` clears the marker. Every other summon carries the pause
+    # forward, whatever the event and whatever exit path the round took.
     rc, body, outs, err = run_announce_step(
         announce_script,
         marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 -->",
-        skip_reason="",  # Review ran successfully
+        skip_reason="",  # as if the round had run to completion
         event="issue_comment",
         mode="review",
         result="success",
@@ -395,10 +408,34 @@ def main():
     )
     if rc != 0:
         fails.append(f"case 6b: announce summon exited {rc}: {err}")
-    elif "paused=1" in body.splitlines()[0]:
-        fails.append(f"case 6b: explicit summon did not clear paused=1: {body.splitlines()[0]}")
+    elif "paused=1" not in body.splitlines()[0]:
+        fails.append(f"case 6b: a non-resume summon erased paused=1: {body.splitlines()[0]}")
     else:
-        print("  ok    explicit summon clears paused=1 on liveness marker")
+        print("  ok    a non-resume summon carries paused=1 forward")
+
+    # The second half of the reported bug: the carry-forward branch was gated on
+    # `EVENT_NAME = pull_request`, so a reply reached none of the branches, `is_paused`
+    # stayed 0 and the marker was rewritten WITHOUT paused=1 -- the pause was erased, not
+    # merely bypassed, and every later push ran normally. `skip_reason` is empty here on
+    # purpose: the carry-forward must hold on its own, not as a side effect of exiting
+    # through `paused-by-request`.
+    rc, body, outs, err = run_announce_step(
+        announce_script,
+        marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 paused_by=alice -->",
+        skip_reason="",
+        event="pull_request_review_comment",
+        mode="verify",
+        result="success",
+        head_sha=NEW,
+    )
+    if rc != 0:
+        fails.append(f"case 6c: announce reply exited {rc}: {err}")
+    elif "paused=1" not in body.splitlines()[0]:
+        fails.append(f"case 6c: an in-thread reply erased the pause: {body.splitlines()[0]}")
+    elif "paused_by=alice" not in body.splitlines()[0]:
+        fails.append(f"case 6c: an in-thread reply lost paused_by: {body.splitlines()[0]}")
+    else:
+        print("  ok    an in-thread reply carries paused=1 and paused_by forward")
 
     # -------------------------------------------------------------
     # 7. Lane Event emission: records paused-by-request
@@ -482,6 +519,10 @@ def main():
         marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 paused_by=alice -->",
         skip_reason="",  # review ran successfully
         event="issue_comment",
+        # The resume verb is what lifts the pause, and the announce step reads it from
+        # `summon`, never from the comment body (#124). Without it this case would be an
+        # ordinary summon, which now carries the pause forward.
+        summon="resume",
         mode="review",
         result="success",
         head_sha=NEW,

@@ -1355,22 +1355,27 @@ jobs:
             fi
           fi
 
+          # `// empty`, never `// ""`: --paginate runs the filter per page, and a blank
+          # line from a non-matching page is what `head -1` would otherwise read as N.
+          liveness_comment=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
+            "[.[] | select(.user.login==\"github-actions[bot]\")
+                  | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty" \
+            | head -1 || true)
+
+          # Requested pause marker (#124): an explicit pause stops EVERY round on this pull
+          # request, whatever woke the lane, and only `@claude resume` lifts it. Reading it
+          # inside the pull_request branch below meant an in-thread reply never saw it: the
+          # reply ran a round on a paused pull request, and the liveness step then rewrote
+          # the marker without `paused=1`, erasing the pause so later pushes ran too.
+          if [ "$SUMMON" != "resume" ] && echo "$liveness_comment" | grep -qE 'paused=1'; then
+            echo "skipping review: pull request is paused by manual request (@claude pause)"
+            emit skip paused-by-request
+            exit 0
+          fi
+
           # Auto-pause reads the round counter off our own liveness comment. Summons are
           # the resume, so they neither read nor trip it. Story: prismalens/prismalens#403.
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            # `// empty`, never `// ""`: --paginate runs the filter per page, and a blank
-            # line from a non-matching page is what `head -1` would otherwise read as N.
-            liveness_comment=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq \
-              "[.[] | select(.user.login==\"github-actions[bot]\")
-                    | select(.body | startswith(\"<!-- claude-review-liveness\"))][0].body // empty" \
-              | head -1 || true)
-            # Requested pause marker (#124): manual pause stops automatic rounds until resumed.
-            if echo "$liveness_comment" | grep -qE 'paused=1'; then
-              echo "skipping review: pull request is paused by manual request (@claude pause)"
-              emit skip paused-by-request
-              exit 0
-            fi
-
             rounds=$(echo "$liveness_comment" | grep -oE 'rounds=[0-9]+' | head -1 | cut -d= -f2 || true)
             rounds=${rounds:-0}
             # The round budget and `@claude pause` are both per pull request, stacks
@@ -5186,7 +5191,13 @@ jobs:
             esac
           elif [ "$SKIP_REASON" = "paused-by-request" ]; then
             is_paused=1
-          elif [ "$EVENT_NAME" = "pull_request" ] && [ "$prev_paused" = "1" ]; then
+          elif [ "${SUMMON:-}" != "resume" ] && [ "$prev_paused" = "1" ]; then
+            # Carries on EVERY event, not just pull_request: a reply reached none of these
+            # branches, so `is_paused` stayed 0 and the marker was rewritten without
+            # `paused=1`. The pause was not merely bypassed for that round, it was erased.
+            # `@claude resume` is the only lift, and it is the reason this cannot simply be
+            # `[ "$prev_paused" = "1" ]`: on a non-draft pull request `draft_summon` is
+            # empty, so a resume would otherwise fall through to here and re-pause itself.
             is_paused=1
           fi
 
