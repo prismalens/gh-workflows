@@ -183,7 +183,7 @@ def run_reachability_step(script, *, event_name="schedule", curl_code="401",
 def run_ingest_step(script, *, token="test-secret-token-xyz-12345",
                     curl_code="204", custom_headers=None, custom_body=None,
                     curl_fail=False, run_url="https://github.com/prismalens/gh-workflows/actions/runs/987654",
-                    env_overrides=None):
+                    telemetry_share=None, env_overrides=None):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
@@ -193,6 +193,8 @@ def run_ingest_step(script, *, token="test-secret-token-xyz-12345",
 
         capture_body = tdp / "captured_body.txt"
         capture_auth = tdp / "captured_auth.txt"
+        summary_file = tdp / "summary.md"
+        summary_file.write_text("")
 
         env = dict(os.environ)
         env.update(
@@ -204,6 +206,8 @@ def run_ingest_step(script, *, token="test-secret-token-xyz-12345",
             REVIEW_TELEMETRY_TOKEN=token,
             RUN_URL=run_url,
             INGEST_URL="https://assayer.sfun.cloud/ingest",
+            GITHUB_STEP_SUMMARY=str(summary_file),
+            TELEMETRY_SHARE=str(telemetry_share) if telemetry_share is not None else "full",
         )
         if custom_headers is not None:
             env["CUSTOM_HEADERS"] = custom_headers
@@ -217,7 +221,8 @@ def run_ingest_step(script, *, token="test-secret-token-xyz-12345",
 
         captured_body_content = capture_body.read_text() if capture_body.exists() else ""
         captured_auth_content = capture_auth.read_text() if capture_auth.exists() else ""
-        return p.returncode, p.stdout, p.stderr, captured_body_content, captured_auth_content
+        summary_content = summary_file.read_text() if summary_file.exists() else ""
+        return p.returncode, p.stdout, p.stderr, captured_body_content, captured_auth_content, summary_content
 
 
 def main():
@@ -276,6 +281,15 @@ def main():
     if "needs" in reachability_job:
         fails.append(f"reachability job must be independent, found needs: {reachability_job['needs']}")
     print("  ok    workflow jobs are independent (no mutual needs dependency)")
+
+    # The ingest job no longer mints OIDC: it posts with the bearer only, so it does not
+    # need id-token: write (#177, threads 4006669640, 4006669649).
+    ingest_perms = ingest_job.get("permissions", {})
+    if "id-token" in ingest_perms:
+        fails.append(f"ingest job must not request id-token, got permissions: {ingest_perms!r}")
+        print(f"  FAIL  ingest job permissions still request id-token: {ingest_perms!r}")
+    else:
+        print("  ok    ingest job permissions drop id-token: write (#177)")
 
     reachability_script = extract_step_script("reachability", "Verify edge reachability and worker routing")
     ingest_script = extract_step_script("ingest", "Post canary telemetry record")
@@ -373,7 +387,7 @@ def main():
     # -------------------------------------------------------------
     secret_token = "SECRET_TELEMETRY_BEARER_TOKEN_ABC123"
     test_run_url = "https://github.com/prismalens/gh-workflows/actions/runs/12345678"
-    code, stdout, stderr, raw_payload, auth_captured = run_ingest_step(
+    code, stdout, stderr, raw_payload, auth_captured, summary = run_ingest_step(
         ingest_script,
         token=secret_token,
         curl_code="204",
@@ -406,7 +420,7 @@ def main():
     # -------------------------------------------------------------
     custom_hdr_500 = "HTTP/2 500\nserver: cloudflare\ncf-ray: 500-ray-xyz\ncontent-type: text/plain"
     custom_body_500 = "Internal Server Error from Worker D1 execution"
-    code, stdout, stderr, raw_payload, auth = run_ingest_step(
+    code, stdout, stderr, raw_payload, auth, summary = run_ingest_step(
         ingest_script,
         token=secret_token,
         curl_code="500",
@@ -432,7 +446,7 @@ def main():
     # -------------------------------------------------------------
     # 9. Ingest: 403 response exits non-zero
     # -------------------------------------------------------------
-    code, stdout, stderr, raw_payload, auth = run_ingest_step(ingest_script, token=secret_token, curl_code="403")
+    code, stdout, stderr, raw_payload, auth, summary = run_ingest_step(ingest_script, token=secret_token, curl_code="403")
     if code == 0:
         fails.append("ingest 403: expected non-zero exit, got 0")
         print("  FAIL  ingest 403: exit 0")
@@ -446,7 +460,7 @@ def main():
     # -------------------------------------------------------------
     distinct = {}
     for status, must_contain in (("400", "behind main"), ("401", "token"), ("403", "Cloudflare")):
-        _, stdout, stderr, _, _ = run_ingest_step(ingest_script, token=secret_token, curl_code=status)
+        _, stdout, stderr, _, _, _ = run_ingest_step(ingest_script, token=secret_token, curl_code=status)
         combined = stdout + "\n" + stderr
         error_line = next((line for line in combined.splitlines() if "::error::" in line), "")
         distinct[status] = error_line
@@ -464,7 +478,7 @@ def main():
     # -------------------------------------------------------------
     # 10. Ingest: empty REVIEW_TELEMETRY_TOKEN fails loudly and names secret
     # -------------------------------------------------------------
-    code, stdout, stderr, raw_payload, auth = run_ingest_step(ingest_script, token="")
+    code, stdout, stderr, raw_payload, auth, summary = run_ingest_step(ingest_script, token="")
     combined = stdout + "\n" + stderr
     if code == 0:
         fails.append("ingest empty token: expected non-zero exit, got 0")
@@ -482,15 +496,59 @@ def main():
         print("  ok    ingest: empty REVIEW_TELEMETRY_TOKEN exits non-zero and names secret in error")
 
     # -------------------------------------------------------------
+    # 10b. Ingest: the canary sends the bearer even when an OIDC request env is
+    # present (#177, thread 4006669640). The step no longer reads these at all,
+    # so their presence must not change what gets sent.
+    # -------------------------------------------------------------
+    code, stdout, stderr, raw_payload, auth_captured, summary = run_ingest_step(
+        ingest_script,
+        token=secret_token,
+        curl_code="204",
+        env_overrides={
+            "ACTIONS_ID_TOKEN_REQUEST_URL": "https://actions.github.com/token?foo=bar",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "mock-runner-token",
+        },
+    )
+    if code != 0:
+        fails.append(f"ingest with OIDC env present: expected exit 0, got {code}: {stderr}")
+        print(f"  FAIL  ingest with OIDC env present: exited {code}")
+    elif f"Bearer {secret_token}" not in auth_captured:
+        fails.append(f"ingest with OIDC env present: bearer was not sent, got auth={auth_captured!r}")
+        print("  FAIL  ingest with OIDC env present: bearer not sent")
+    else:
+        print("  ok    ingest: sends the bearer even when an OIDC request env is present (#177)")
+
+    # -------------------------------------------------------------
+    # 10c. Ingest: telemetry.share off exits 0 before building the payload, sends
+    # nothing, and logs the Step Summary line (#177, thread 4006669649).
+    # -------------------------------------------------------------
+    code, stdout, stderr, raw_payload, auth_captured, summary = run_ingest_step(
+        ingest_script,
+        token=secret_token,
+        telemetry_share="off",
+    )
+    if code != 0:
+        fails.append(f"ingest telemetry.share off: expected exit 0, got {code}: {stderr}")
+        print(f"  FAIL  ingest telemetry.share off: exited {code}")
+    elif raw_payload or auth_captured:
+        fails.append(f"ingest telemetry.share off: unexpectedly sent something (payload={raw_payload!r}, auth={auth_captured!r})")
+        print("  FAIL  ingest telemetry.share off: sent something")
+    elif "Telemetry sharing is turned off" not in summary:
+        fails.append(f"ingest telemetry.share off: Step Summary not updated, got {summary!r}")
+        print("  FAIL  ingest telemetry.share off: Step Summary missing")
+    else:
+        print("  ok    ingest: telemetry.share off sends nothing and logs the Step Summary (#177)")
+
+    # -------------------------------------------------------------
     # 11. Security: no secret token value is ever echoed by either script
     # -------------------------------------------------------------
     canary_secret = "TOP_SECRET_CANARY_VALUE_NEVER_ECHO"
     # Reachability run
     _, r_out, r_err, _, _ = run_reachability_step(reachability_script, curl_code="401")
     # Ingest success run
-    _, i_out_204, i_err_204, _, _ = run_ingest_step(ingest_script, token=canary_secret, curl_code="204")
+    _, i_out_204, i_err_204, _, _, _ = run_ingest_step(ingest_script, token=canary_secret, curl_code="204")
     # Ingest error run
-    _, i_out_500, i_err_500, _, _ = run_ingest_step(ingest_script, token=canary_secret, curl_code="500")
+    _, i_out_500, i_err_500, _, _, _ = run_ingest_step(ingest_script, token=canary_secret, curl_code="500")
 
     all_outputs = [r_out, r_err, i_out_204, i_err_204, i_out_500, i_err_500]
     leaked = any(canary_secret in out for out in all_outputs)

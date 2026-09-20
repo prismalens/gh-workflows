@@ -125,7 +125,7 @@ jobs:
    lane then takes the whole diff in one round. Story: `prismalens/gh-workflows#153`.
 9. **Admission is effective repository permission, not `author_association`**: Comment events in both lanes are admitted only when the acting account holds `admin` or `write` on the repository, checked live in the `admit` composite action. `author_association` is banned from admission: it is repo-scoped and payload-dependent, and it reported `CONTRIBUTOR` in the webhook for a maintainer whose REST record said `MEMBER`, so replies on `prismalens/prismalens` were never admitted. A failed check is red, never silently open and never silently closed. Story: `prismalens/gh-workflows#20`.
 10. **Oversize Rounds Refuse, Never Trim**: A round whose reviewable lines (additions plus modified hunk lines, after path and file-size filtering) exceed the caller's `max_reviewable_lines` cap posts nothing inline. The liveness comment and the telemetry record both carry `refused-size` — with the reviewable-line count and the cap — in place of a review, and `@claude full review` overrides the cap for that one round. `max_file_lines` is the companion per-file cap: a single file above it is marked `oversized` in `.claude-review-manifest.json` and excluded from the diff and the line count, exactly like a path-filtered file. Both are `workflow_call` inputs with workflow defaults, overridable per repo in `.claude-review.yml`; 0 disables either cap. Story: #105.
-11. **Liveness Marker Records Who Paused**: An explicit `@claude pause` sets `paused=1` in the marker and now also `paused_by=<login>` beside it — the account that sent it. Recorded once, at the moment the pause takes effect, and carried forward unchanged by a later push or a repeated `@claude pause` while already paused. The automatic pause once `auto_pause_rounds` is reached (verdict `auto-paused`) is a different state and never sets `paused_by`; nobody requested it. Story: #124.
+11. **Liveness Marker Records Who Paused**: An explicit `@claude pause` sets `paused=1` in the marker and now also `paused_by=<login>` beside it — the account that sent it. Recorded once, at the moment the pause takes effect, and carried forward unchanged by a later push or a repeated `@claude pause` while already paused. The automatic pause once `auto_pause_rounds` is reached (verdict `auto-paused`) is a different state and never sets `paused_by`; nobody requested it. A pause is soft, and deliberately so: it stops the automatic round, and `@claude review`, `@claude full review` and `@claude resume` all lift it. It lives at the comment layer, which is per-round and ephemeral, so a comment-driven stop would be liftable by the next comment — which is a pause, not a stop. The stop is `admission: off` in repo config or a per-pull-request skip label, each reversed by a deliberate act that is not a comment. What a pause must never do is vanish: a push or a verb-less in-thread reply carries `paused=1` forward rather than clearing it, which is the #178 report. Stories: #124, #178, ruling in #189.
 12. **Review Context Reads Linked Issues and Failing CI Logs, All Untrusted**: Beyond the diff, a round resolves `Closes #N` / `Fixes #N` / `Refs #N` / bare `#N` in the PR body's first paragraph and reads each issue's title, body, labels and newest ruling-shaped comment; it also reads the tail of the log for any GitHub Actions check already failing on this head (a third-party check contributes only its name and conclusion, never output). Both are read into the prompt as UNTRUSTED EVIDENCE about the code, the same rule already applied to the PR body itself, never as instructions to the model. Stories: #143, #145.
 13. **`review.level` Sets Effort Per Round, Never Which Code Is Read**: A per-repo `.claude-review.yml` key, resolved through the same precedence as every other config value. Workflow default is `medium`, which is byte-identical to the review lane's behaviour before this key existed. `high` runs six review agents instead of four (two extra Opus agents: cross-boundary interaction with unchanged code, and contracts/schemas). `medium` and `high` are the only accepted values this release; `low` is schema-rejected on purpose, so a knob that could lower review depth is not reachable yet. A changed file matching `escalation_paths` floors the round at `medium` — never a ceiling — recorded as `level_source: escalation` (`config` otherwise) alongside `level` in the telemetry record. Level is orthogonal to model: a `--model` summon never changes it, and there is no summon-side override. It has no effect on `max_reviewable_lines` or `refused-size`, and it does not run on a verify round. Story: #101.
 14. **A Skip Never Overwrites a Real Verdict on the Same Head**: The liveness comment is upserted, so on its own an auto-paused or otherwise-skipped round finishing after a real review would replace it with the absence of one — the last writer wins on comment ordering, not on which run actually knows more. The marker's `sha=` is the test: it only ever advances on posted review output, so `sha=` equal to the round's own head means a real verdict already stands there, and the write is withheld. This does not order two rounds in general; it stops the one case where replacing the comment is strictly a loss. `round_ordinal` and any lane event still fire on a withheld round — a withheld comment is not a skipped round. The guard protects the verdict, never the marker beside it: an explicit `@claude pause` or `@claude resume` is a state transition, and the marker is the only place that state lives, so withholding it dropped the instruction rather than preserving anything — a pause on an already-reviewed head never wrote `paused=1`, and a resume there never cleared it. A transition therefore always writes, carrying the standing verdict text under the new marker and rebuilding a single `_Lane state:` line beneath it. A round that changes no pause state is still withheld. Stories: #149, #191.
@@ -165,9 +165,74 @@ jobs:
     secrets:
       REVIEW_TELEMETRY_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
       REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+    # The callee's own job permissions, granted here because a `workflow_call` callee can only
+    # downgrade what its caller passes (AGENTS.md, "A callee permission is a caller change").
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
 ```
 
 Both secrets are `required: false` on the callee: a consumer that has not opted into review-findings ingest still runs the workflow, and the sweep step skips itself with a plain notice rather than failing the run, the same contract `claude-code-review.yml`'s own telemetry job already uses for `REVIEW_TELEMETRY_URL` / `REVIEW_TELEMETRY_TOKEN`. A normal (non-`full_history`) run only looks back `window_days` (default 3), wider than the daily cadence on purpose so a delayed or missed run cannot drop a day.
+
+### Worked-Example Consumer Stub (Telemetry Health)
+
+[`.github/workflows/telemetry-health.yml`](.github/workflows/telemetry-health.yml) reports how many
+of a repository's recent workflow runs never produced a telemetry row, so a gap in the pipeline
+shows up as a Worker-side report rather than silence. It skips itself entirely on
+`prismalens/gh-workflows`, the repository that hosts it.
+
+```yaml
+# This is a managed caller stub.
+# Logic lives in prismalens/gh-workflows/.github/workflows/telemetry-health.yml.
+# Do not add logic here.
+
+name: Telemetry Health
+
+on:
+  schedule:
+    # Daily, off the hour on purpose: GitHub delays cron at peak hours (#44).
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: 'Number of days to look back for workflow runs and health reporting'
+        required: false
+        default: 7
+        type: number
+
+# The schedule and a hand-run dispatch can otherwise overlap, and each run POSTs its own
+# report for the same recent window. The Worker inserts every report into `health_reports`
+# without deduplication, so two overlapping runs mean two rows describing one window and a
+# reader cannot tell them from two genuine reports. Serialised here rather than deduped
+# there, because the caller is the only place that knows a run is a repeat of one already
+# in flight. `cancel-in-progress: false` on purpose: the run already talking to the Worker
+# finishes, and the newer one waits rather than replacing it. Story: #177.
+concurrency:
+  group: telemetry-health-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  health:
+    uses: prismalens/gh-workflows/.github/workflows/telemetry-health.yml@main
+    with:
+      window_days: ${{ inputs.window_days || 7 }}
+    # explicit mapping, not `secrets: inherit` — Sumit1993/mage-memory sits outside the
+    # prismalens org, and inherit does not cross that boundary (Stub Rule 3, above).
+    secrets:
+      REVIEW_TELEMETRY_URL: ${{ secrets.REVIEW_TELEMETRY_URL }}
+      REVIEW_TELEMETRY_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+    # The callee's own job permissions, granted here because a `workflow_call` callee can only
+    # downgrade what its caller passes (AGENTS.md, "A callee permission is a caller change").
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+```
+
+Both secrets are `required: false` on the callee, the same consent-first contract as the sweep and
+the review lane's own telemetry job: a consumer that has not opted in still runs, and the report
+step skips itself with a Step Summary line rather than failing the run.
 
 ---
 

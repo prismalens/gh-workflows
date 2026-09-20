@@ -18,16 +18,30 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  id-token: write
 
 jobs:
   pr-state:
     name: Record PR state
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
     steps:
+      - name: Authenticate telemetry ingest
+        id: auth
+        uses: prismalens/gh-workflows/.github/actions/telemetry-auth@main
+        with:
+          url: ${{ secrets.REVIEW_TELEMETRY_URL || vars.PR_STATE_URL || 'https://assayer.sfun.cloud/pr-state' }}
+          bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+
       - name: Post PR state
         env:
           INGEST_URL: ${{ secrets.REVIEW_TELEMETRY_URL || vars.PR_STATE_URL || 'https://assayer.sfun.cloud/pr-state' }}
           INGEST_TOKEN: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          AUTH_HEADER: ${{ steps.auth.outputs.authorization }}
+          TELEMETRY_SHARE: ${{ steps.auth.outputs.share }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -43,12 +57,27 @@ jobs:
         run: |
           set -uo pipefail
 
-          if [ -z "${INGEST_TOKEN:-}" ]; then
+          # Consent check: if telemetry.share is off, skip and log to summary (#176).
+          if [ "${TELEMETRY_SHARE:-}" = "off" ]; then
+            echo "Telemetry sharing is disabled (telemetry.share: off); PR state not recorded."
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              echo "Telemetry sharing is turned off (telemetry.share: off). PR state was not recorded." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
+          if [ -z "${AUTH_HEADER:-}" ] && [ -z "${INGEST_TOKEN:-}" ]; then
             echo "::warning::pr-state: REVIEW_TELEMETRY_TOKEN is not set; skipping PR state reporting."
             exit 0
           fi
 
-          case "$INGEST_URL" in
+          TARGET_URL="${INGEST_URL%/}"
+          case "$TARGET_URL" in
+            */pr-state) ;;
+            *) TARGET_URL="${TARGET_URL}/pr-state" ;;
+          esac
+
+          case "$TARGET_URL" in
             https://*) ;;
             *)
               echo "::warning::pr-state: INGEST_URL is not https, so the token was not sent and PR state was not recorded."
@@ -94,12 +123,16 @@ jobs:
           hdr="$(mktemp)"
           trap 'rm -f "$hdr"' EXIT
           umask 077
-          printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+          if [ -n "${AUTH_HEADER:-}" ]; then
+            printf 'authorization: %s\ncontent-type: application/json\n' "$AUTH_HEADER" > "$hdr"
+          else
+            printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$INGEST_TOKEN" > "$hdr"
+          fi
 
           code=$(printf '%s' "$payload" | curl -sS -m 10 \
             --proto '=https' \
             -o /dev/null -w '%{http_code}' \
-            -X POST "$INGEST_URL" \
+            -X POST "$TARGET_URL" \
             -H "@$hdr" \
             --data-binary @-) || {
               echo "::warning::pr-state: the POST did not complete; delivery of PR state is unconfirmed."

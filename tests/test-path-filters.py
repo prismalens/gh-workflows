@@ -23,8 +23,11 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = ROOT / ".github/workflows/claude-code-review.yml"
+ROUND_TELEMETRY_ACTION = ROOT / ".github/actions/round-telemetry/action.yml"
 FILTER_STEP = "Filter review paths"
-TELEMETRY_STEP = "Extract review round telemetry"
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _composite_action import extract_composite_step_script  # noqa: E402
 
 
 def cleanup_tmp():
@@ -218,10 +221,12 @@ def run_telemetry_step(script, *,
 
 def main():
     filter_script = extract_step_script(FILTER_STEP)
-    telemetry_script = extract_step_script(TELEMETRY_STEP)
+    # #176: telemetry extraction moved out of the inline "review" job step and
+    # into the round-telemetry composite action, shared with the verify job.
+    telemetry_script = extract_composite_step_script(ROUND_TELEMETRY_ACTION)
     fails = []
 
-    print(f"=== Testing {FILTER_STEP} & {TELEMETRY_STEP} ===\n")
+    print(f"=== Testing {FILTER_STEP} & round-telemetry extraction ===\n")
 
     # -------------------------------------------------------------
     # 1. Default filters exclude lockfiles and leave source alone

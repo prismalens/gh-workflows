@@ -219,17 +219,26 @@ def run_case(script_path, extra_args, cfg_overrides=None, wrangler_present=True)
         for p in logs.values():
             p.write_text("", encoding="utf-8")
 
-        env = dict(os.environ)
-        env.update(
-            PATH=f"{binp}:{env['PATH']}",
-            MOCK_CONFIG_FILE=str(cfg_file),
-            GH_ARGV_LOG=str(logs["gh_argv"]),
-            GH_STDIN_LOG=str(logs["gh_stdin"]),
-            OPENSSL_ARGV_LOG=str(logs["openssl_argv"]),
-            WRANGLER_ARGV_LOG=str(logs["wrangler_argv"]),
-            WRANGLER_STDIN_LOG=str(logs["wrangler_stdin"]),
-            SEQ_LOG=str(logs["seq"]),
-        )
+        # Built from scratch, never `dict(os.environ)`: the 2026-09-13 incident ran
+        # under the operator's real wrangler login because the test environment
+        # was not sealed off from it. HOME/XDG_CONFIG_HOME point into the case's
+        # own temp dir so no real OAuth or gh config is reachable, the token env
+        # vars are poisoned, and PATH holds only the stub dir plus the system
+        # dirs the stub scripts' shebangs need (#176).
+        env = {
+            "HOME": str(tdp),
+            "XDG_CONFIG_HOME": str(tdp),
+            "CLOUDFLARE_API_TOKEN": "invalid-test-token",
+            "GH_TOKEN": "invalid-test-token",
+            "PATH": f"{binp}:/usr/bin:/bin",
+            "MOCK_CONFIG_FILE": str(cfg_file),
+            "GH_ARGV_LOG": str(logs["gh_argv"]),
+            "GH_STDIN_LOG": str(logs["gh_stdin"]),
+            "OPENSSL_ARGV_LOG": str(logs["openssl_argv"]),
+            "WRANGLER_ARGV_LOG": str(logs["wrangler_argv"]),
+            "WRANGLER_STDIN_LOG": str(logs["wrangler_stdin"]),
+            "SEQ_LOG": str(logs["seq"]),
+        }
 
         proc = subprocess.run(
             ["bash", str(sandboxed_script), *extra_args],
@@ -257,6 +266,13 @@ def test_suite():
     assert FAKE_TOKEN not in proc.stdout, "token leaked into stdout"
     assert FAKE_TOKEN not in proc.stderr, "token leaked into stderr"
     print("  ok    token travels only on stdin, never in an argv, stdout or stderr")
+
+    # This case reaches the Worker step. A blank wrangler_argv log here would mean
+    # something other than the stub ran -- exactly the 2026-09-13 incident (#176).
+    assert '["secret", "put", "REVIEW_TELEMETRY_TOKEN"]' in r["wrangler_argv"], (
+        f"case reached the Worker step but the wrangler stub logged no secret-put call: {r['wrangler_argv']!r}"
+    )
+    print("  ok    a case that reaches the Worker step leaves a wrangler-stub log entry")
 
     # Case 2: order is every repo, then the Worker.
     seq = [line for line in r["seq"].splitlines() if line]
@@ -329,7 +345,21 @@ def test_suite():
     assert r["wrangler_argv"] == "", "wrangler must never be invoked when it is absent"
     print("  ok    preflight fails naming 'npm ci in worker/' when wrangler is absent")
 
-    print("\nAll 8 test cases passed successfully.")
+    # Case 8 (guard): no wrangler stub anywhere reachable. Preflight refuses before
+    # the Worker step, so even under a broken sandbox the wrangler success string
+    # never prints and no wrangler call is logged. The scrubbed env (case-local
+    # HOME/XDG_CONFIG_HOME, poisoned CLOUDFLARE_API_TOKEN/GH_TOKEN) means that even
+    # if a real wrangler were reachable on PATH, it could not authenticate (#176).
+    r = run_case(SCRIPT, [], wrangler_present=False)
+    proc = r["proc"]
+    assert proc.returncode != 0, "guard case expected non-zero exit with no wrangler stub"
+    assert "Success! Uploaded secret" not in proc.stdout, proc.stdout
+    assert "Success! Uploaded secret" not in proc.stderr, proc.stderr
+    assert r["wrangler_argv"] == "", "wrangler must never be invoked when its stub is absent"
+    assert r["wrangler_stdin"] == "", "no token may reach a wrangler process that never ran"
+    print("  ok    guard: no wrangler stub reachable -> non-zero exit, no upload, no invocation")
+
+    print("\nAll 9 test cases passed successfully.")
 
 
 if __name__ == "__main__":

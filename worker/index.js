@@ -1,6 +1,13 @@
+import { jwtVerify, createRemoteJWKSet } from "jose";
+
 let cachedCerts = null;
 let certsExpiry = 0;
 let lastRefetchTime = 0;
+
+const GITHUB_ACTIONS_JWKS = createRemoteJWKSet(
+  new URL("https://token.actions.githubusercontent.com/.well-known/jwks")
+);
+const GITHUB_ACTIONS_ISSUER = "https://token.actions.githubusercontent.com";
 
 // D1 refuses a row over 2,000,000 bytes. Every stored column is re-serialised
 // from this body and re-serialising never grows it, so half the row limit keeps
@@ -117,6 +124,21 @@ const VALID_LANE_EVENT_REASONS = new Set([
   "unchanged-patch", // #162: restack with unchanged patch
   "api-error", // #174: account, auth or quota failure; the class is on usage_records.failure_class
 ]);
+
+// A round that did not run writes no usage_records row, so its verdict never
+// reached verdict_kinds until now. fork-head and skip-author map to nothing:
+// no liveness verdict is posted for either (#176).
+const LANE_REASON_TO_VERDICT_KIND = {
+  "auto-paused": "auto-paused",
+  "paused-by-request": "paused-by-request",
+  "skip-trivial": "skipped-trivial",
+  superseded: "superseded",
+  "unchanged-patch": "unchanged-patch",
+  draft: "draft",
+  "refused-size": "refused-size",
+  "no-token": "no-token",
+  "api-error": "api-error",
+};
 
 const LANE_EVENT_NUMERIC_FIELDS = [
   "pr_number",
@@ -293,9 +315,63 @@ async function computeVariantKey(promptHash, model, actionVersion, configHash, r
   return sha256Hex(JSON.stringify(components));
 }
 
-// Exported for direct unit testing (worker/index.test.js); the Workers runtime only ever
-// uses the default export below.
-export { computeVariantKey };
+// Accepts either shared secret bearer or GitHub Actions OIDC JWT (#176).
+async function authenticateIngest(request, env, { getKey } = {}) {
+  const authHeader = request.headers.get("authorization");
+  const token = env?.REVIEW_TELEMETRY_TOKEN;
+
+  if (token && authHeader && timingSafeEqual(authHeader, `Bearer ${token}`)) {
+    return { method: "bearer" };
+  }
+
+  if (authHeader && /^Bearer\s+/i.test(authHeader)) {
+    const tokenStr = authHeader.replace(/^Bearer\s+/i, "").trim();
+    try {
+      const keySource = getKey || GITHUB_ACTIONS_JWKS;
+      const { payload } = await jwtVerify(tokenStr, keySource, {
+        issuer: GITHUB_ACTIONS_ISSUER,
+        audience: new URL(request.url).origin,
+        algorithms: ["RS256"],
+      });
+
+      if (!payload.repository || typeof payload.repository !== "string") {
+        return new Response(null, { status: 401 });
+      }
+
+      // OIDC allowlist: only approved repository IDs may write telemetry (#177).
+      // Unset or empty var rejects all OIDC tokens fail-closed (#177).
+      const allowedIds = (env?.OIDC_ALLOWED_REPOSITORY_IDS || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const repoIdStr =
+        payload.repository_id !== undefined && payload.repository_id !== null
+          ? String(payload.repository_id)
+          : "";
+      if (!repoIdStr || !allowedIds.includes(repoIdStr)) {
+        return new Response(JSON.stringify({ error: "repository not allowed" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      return {
+        method: "oidc",
+        repository: payload.repository,
+        repository_id: payload.repository_id ?? null,
+        repository_owner_id: payload.repository_owner_id ?? null,
+        job_workflow_ref: payload.job_workflow_ref ?? null,
+        run_id: payload.run_id ?? null,
+      };
+    } catch {
+      return new Response(null, { status: 401 });
+    }
+  }
+
+  return new Response(null, { status: 401 });
+}
+
+export { computeVariantKey, authenticateIngest, LANE_REASON_TO_VERDICT_KIND };
 
 /**
  * Reads the body, stopping at `max` bytes. Returns null once the stream goes
@@ -568,6 +644,31 @@ async function handleSummary(env) {
   const verdict_kinds = {};
   for (const r of verdictRows.results ?? []) {
     verdict_kinds[r.verdict_kind] = r.cnt;
+  }
+
+  // Did-not-run verdicts: a round with a mapped lane_events reason but no
+  // usage_records row (the telemetry job never ran) has no verdict_kind of its
+  // own until this query supplies one, in the same unwindowed scope as the
+  // usage query above. The dedup that used to walk two unbounded result sets
+  // in JS is now one aggregate query: a lane event whose run_id already has a
+  // usage_records row is excluded by NOT EXISTS, usage_records still wins, and
+  // a null run_id still counts (NOT EXISTS is true when the correlated
+  // equality can never match) (#177, thread 4006669679).
+  const mappedReasons = Object.keys(LANE_REASON_TO_VERDICT_KIND);
+  if (mappedReasons.length > 0) {
+    const placeholders = mappedReasons.map(() => "?").join(", ");
+    const laneCountRows = await env.DB.prepare(
+      `SELECT le.reason, COUNT(*) as cnt
+       FROM lane_events le
+       WHERE le.reason IN (${placeholders})
+         AND NOT EXISTS (SELECT 1 FROM usage_records ur WHERE ur.run_id = le.run_id)
+       GROUP BY le.reason`
+    ).bind(...mappedReasons).all();
+    for (const r of laneCountRows.results ?? []) {
+      const mapped = LANE_REASON_TO_VERDICT_KIND[r.reason];
+      if (!mapped) continue;
+      verdict_kinds[mapped] = (verdict_kinds[mapped] ?? 0) + r.cnt;
+    }
   }
 
   const fallbackRows = await env.DB.prepare(
@@ -1073,6 +1174,8 @@ async function handlePrs(url, env) {
 }
 
 // Programmatic read route for the telemetry reconciler (#87).
+// Sits behind Cloudflare Access, so it stays on the bearer check alone: slice 9 (#176)
+// shares queryAccountedRuns with the OIDC-capable ingest routes, not this route's auth (F7).
 // Authenticates with REVIEW_TELEMETRY_TOKEN and returns distinct run_ids across
 // both usage_records and lane_events in the requested window (capped at 30 days).
 async function handleAccountedRuns(request, url, env) {
@@ -1145,15 +1248,9 @@ async function handleAccountedRuns(request, url, env) {
   const sinceIso = sinceDate.toISOString();
   const untilIso = untilDate.toISOString();
 
-  const query = `SELECT run_id FROM usage_records WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
-UNION
-SELECT run_id FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at <= ? AND run_id IS NOT NULL
-ORDER BY run_id ASC`;
-
   let results;
   try {
-    const res = await env.DB.prepare(query).bind(repository, sinceIso, untilIso, repository, sinceIso, untilIso).all();
-    results = res?.results ?? [];
+    results = await queryAccountedRuns(env.DB, repository, sinceIso, untilIso);
   } catch {
     return new Response(JSON.stringify({ error: "database error" }), {
       status: 500,
@@ -1180,16 +1277,286 @@ ORDER BY run_id ASC`;
   );
 }
 
-async function handleIngest(request, env) {
+// Queries runs across usage_records and lane_events for reconciliation (#176).
+// Health windows are HALF-OPEN, [since, until). The health caller splits an oversize
+// run list into sub-windows that tile the caller's window, so an inclusive upper bound
+// would count a row sitting exactly on a shared boundary in both neighbours. Half-open
+// also makes consecutive health reports tile rather than overlap at their join.
+// The timestamp format admits fractional seconds, so stepping a boundary back by an
+// epsilon is not a safe alternative. Story: #177, thread 4006669665.
+async function queryAccountedRuns(db, repository, sinceIso, untilIso) {
+  const query = `SELECT run_id, 'usage_records' AS source_table FROM usage_records WHERE repository = ? AND recorded_at >= ? AND recorded_at < ? AND run_id IS NOT NULL
+UNION ALL
+SELECT run_id, 'lane_events' AS source_table FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at < ? AND run_id IS NOT NULL
+ORDER BY run_id ASC`;
+  const res = await db.prepare(query).bind(repository, sinceIso, untilIso, repository, sinceIso, untilIso).all();
+  return res?.results ?? [];
+}
+
+// Counts lane_events for a repository in a window, grouped by reason (#176).
+async function queryLaneEventsByReason(db, repository, sinceIso, untilIso) {
+  const res = await db
+    .prepare(
+      `SELECT reason, COUNT(*) AS count FROM lane_events WHERE repository = ? AND recorded_at >= ? AND recorded_at < ? GROUP BY reason`
+    )
+    .bind(repository, sinceIso, untilIso)
+    .all();
+  const byReason = {};
+  for (const row of res?.results ?? []) {
+    if (typeof row.reason === "string" && row.reason) {
+      byReason[row.reason] = Number(row.count) || 0;
+    }
+  }
+  return byReason;
+}
+
+// Counts review_findings swept for a repository in a window (#176).
+async function queryFindingsSwept(db, repository, sinceIso, untilIso) {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count FROM review_findings WHERE repository = ? AND last_swept_at >= ? AND last_swept_at < ?`
+    )
+    .bind(repository, sinceIso, untilIso)
+    .first();
+  return Number(row?.count) || 0;
+}
+
+async function handleHealth(request, env, { getKey } = {}) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
   }
 
-  // Reject missing or empty secret to prevent open access (#41).
-  const token = env?.REVIEW_TELEMETRY_TOKEN;
-  const authHeader = request.headers.get("authorization");
-  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
-    return new Response(null, { status: 401 });
+  const auth = await authenticateIngest(request, env, { getKey });
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const contentLength = request.headers.get("content-length");
+  if (contentLength && parseInt(contentLength, 10) > MAX_INGEST_BYTES) {
+    return new Response(null, { status: 413 });
+  }
+
+  const rawText = await readBoundedText(request, MAX_INGEST_BYTES);
+  if (rawText === null) {
+    return new Response(null, { status: 413 });
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(rawText);
+  } catch {
+    return new Response(JSON.stringify({ error: "invalid JSON" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return new Response(JSON.stringify({ error: "invalid payload" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (
+    auth.method === "oidc" &&
+    (typeof payload.repository !== "string" ||
+      payload.repository.toLowerCase() !== auth.repository.toLowerCase())
+  ) {
+    return new Response(JSON.stringify({ error: "repository mismatch" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (typeof payload.repository !== "string" || !payload.repository.trim()) {
+    return new Response(JSON.stringify({ error: "missing or invalid repository" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (payload.schema_version !== 1) {
+    return new Response(JSON.stringify({ error: "missing or invalid schema_version" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const isoUtcPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]00(?::?00)?)$/;
+
+  if (
+    typeof payload.window_start !== "string" ||
+    !isoUtcPattern.test(payload.window_start) ||
+    Number.isNaN(new Date(payload.window_start).getTime())
+  ) {
+    return new Response(JSON.stringify({ error: "invalid window_start" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (
+    typeof payload.window_end !== "string" ||
+    !isoUtcPattern.test(payload.window_end) ||
+    Number.isNaN(new Date(payload.window_end).getTime())
+  ) {
+    return new Response(JSON.stringify({ error: "invalid window_end" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const startDate = new Date(payload.window_start);
+  const endDate = new Date(payload.window_end);
+  if (endDate.getTime() < startDate.getTime()) {
+    return new Response(JSON.stringify({ error: "invalid window: window_end precedes window_start" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (payload.share !== "full" && payload.share !== "off") {
+    return new Response(JSON.stringify({ error: "missing or invalid share" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (!Array.isArray(payload.runs) || payload.runs.length > 1000) {
+    return new Response(JSON.stringify({ error: "missing or invalid runs" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  // Every run is validated up front; a sender cannot report its own missing_runs or
+  // any other derived count, the Worker computes all of them from D1 below (#176).
+  for (const run of payload.runs) {
+    if (
+      !run ||
+      typeof run !== "object" ||
+      !Number.isInteger(run.id) ||
+      typeof run.conclusion !== "string" ||
+      typeof run.created_at !== "string" ||
+      !isoUtcPattern.test(run.created_at) ||
+      Number.isNaN(new Date(run.created_at).getTime()) ||
+      typeof run.event !== "string"
+    ) {
+      return new Response(JSON.stringify({ error: "invalid run entry" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
+  const sinceIso = startDate.toISOString();
+  const untilIso = endDate.toISOString();
+
+  let accountedResults;
+  let laneEventsByReason;
+  let findingsSwept;
+  try {
+    accountedResults = await queryAccountedRuns(env.DB, payload.repository, sinceIso, untilIso);
+    laneEventsByReason = await queryLaneEventsByReason(env.DB, payload.repository, sinceIso, untilIso);
+    findingsSwept = await queryFindingsSwept(env.DB, payload.repository, sinceIso, untilIso);
+  } catch {
+    return new Response(JSON.stringify({ error: "database error" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const accountedRunIds = new Set();
+  for (const r of accountedResults) {
+    const rid = Number(r.run_id);
+    if (Number.isInteger(rid)) accountedRunIds.add(rid);
+  }
+
+  const unaccountedRuns = [];
+  let startupFailures = 0;
+  for (const run of payload.runs) {
+    if (run.conclusion === "startup_failure") {
+      startupFailures += 1;
+    }
+    if (!accountedRunIds.has(run.id)) {
+      unaccountedRuns.push({ id: run.id, conclusion: run.conclusion, created_at: run.created_at });
+    }
+  }
+  const runsAccounted = payload.runs.length - unaccountedRuns.length;
+
+  const repositoryId = auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null;
+  const unaccountedRunsJson = JSON.stringify(unaccountedRuns);
+  const laneEventsByReasonJson = JSON.stringify(laneEventsByReason);
+
+  let insertResult;
+  try {
+    insertResult = await env.DB.prepare(
+      `INSERT INTO health_reports (
+        repository,
+        repository_id,
+        window_start,
+        window_end,
+        runs_seen,
+        runs_accounted,
+        unaccounted_runs,
+        startup_failures,
+        lane_events_by_reason,
+        findings_swept,
+        share,
+        ingest_auth
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
+    ).bind(
+      truncateString(payload.repository, 512),
+      repositoryId,
+      truncateString(payload.window_start, 128),
+      truncateString(payload.window_end, 128),
+      payload.runs.length,
+      runsAccounted,
+      unaccountedRunsJson,
+      startupFailures,
+      laneEventsByReasonJson,
+      findingsSwept,
+      payload.share,
+      auth.method
+    ).run();
+  } catch {
+    return new Response(JSON.stringify({ error: "database error" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  return new Response(
+    JSON.stringify({
+      status: "ok",
+      id: insertResult?.meta?.last_row_id ?? null,
+      repository: payload.repository,
+      window_start: payload.window_start,
+      window_end: payload.window_end,
+      share: payload.share,
+      runs_seen: payload.runs.length,
+      runs_accounted: runsAccounted,
+      unaccounted_runs: unaccountedRuns,
+      startup_failures: startupFailures,
+      lane_events_by_reason: laneEventsByReason,
+      findings_swept: findingsSwept,
+    }),
+    {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }
+  );
+}
+
+async function handleIngest(request, env, { getKey } = {}) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+
+  const auth = await authenticateIngest(request, env, { getKey });
+  if (auth instanceof Response) {
+    return auth;
   }
 
   const contentLength = request.headers.get("content-length");
@@ -1232,6 +1599,16 @@ async function handleIngest(request, env) {
       typeof payload.repository !== "string"
     ) {
       return new Response(null, { status: 400 });
+    }
+
+    if (
+      auth.method === "oidc" &&
+      payload.repository.toLowerCase() !== auth.repository.toLowerCase()
+    ) {
+      return new Response(JSON.stringify({ error: "repository mismatch" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
     }
 
     for (const field of NUMERIC_FIELDS) {
@@ -1426,14 +1803,17 @@ async function handleIngest(request, env) {
           api_error_status,
           credential_type,
           base_pr_number,
-          patch_fingerprint
+          patch_fingerprint,
+          ingest_auth,
+          repository_id
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
           ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
           ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
           ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
-          ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61, ?62, ?63
+          ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61, ?62, ?63,
+          ?64, ?65
         )
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
@@ -1499,7 +1879,9 @@ async function handleIngest(request, env) {
         payload.api_error_status ?? null,
         payload.credential_type ?? null,
         payload.base_pr_number ?? null,
-        payload.patch_fingerprint ?? null
+        payload.patch_fingerprint ?? null,
+        auth.method,
+        auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
       );
 
       const agentStmts = [];
@@ -1592,6 +1974,16 @@ async function handleIngest(request, env) {
       });
     }
 
+    if (
+      auth.method === "oidc" &&
+      payload.repository.toLowerCase() !== auth.repository.toLowerCase()
+    ) {
+      return new Response(JSON.stringify({ error: "repository mismatch" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     if (!VALID_LANE_EVENT_REASONS.has(payload.reason)) {
       return new Response(JSON.stringify({ error: "invalid reason" }), {
         status: 400,
@@ -1634,8 +2026,10 @@ async function handleIngest(request, env) {
           lane_version,
           reviewable_lines,
           max_reviewable_lines,
-          actor
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+          actor,
+          ingest_auth,
+          repository_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
         ON CONFLICT(run_id, run_attempt) DO NOTHING`
       ).bind(
         payload.run_id,
@@ -1650,7 +2044,9 @@ async function handleIngest(request, env) {
         payload.lane_version ?? null,
         payload.reviewable_lines ?? null,
         payload.max_reviewable_lines ?? null,
-        payload.actor ?? null
+        payload.actor ?? null,
+        auth.method,
+        auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
       ).run();
     } catch {
       return new Response(null, { status: 500 });
@@ -1660,6 +2056,14 @@ async function handleIngest(request, env) {
   }
 
   if (eventKind === "canary") {
+    // Canary pings accept bearer auth only; OIDC gets 403 and writes nothing (#177).
+    if (auth.method !== "bearer") {
+      return new Response(JSON.stringify({ error: "bearer auth required" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     for (const field of CANARY_STRING_FIELDS) {
       const val = payload[field];
       if (val !== undefined && val !== null && typeof val !== "string") {
@@ -1703,15 +2107,14 @@ async function handleIngest(request, env) {
   });
 }
 
-async function handlePrState(request, env) {
+async function handlePrState(request, env, { getKey } = {}) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
   }
 
-  const token = env?.REVIEW_TELEMETRY_TOKEN;
-  const authHeader = request.headers.get("authorization");
-  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
-    return new Response(null, { status: 401 });
+  const auth = await authenticateIngest(request, env, { getKey });
+  if (auth instanceof Response) {
+    return auth;
   }
 
   const contentLength = request.headers.get("content-length");
@@ -1747,6 +2150,16 @@ async function handlePrState(request, env) {
   if (typeof payload.repository !== "string" || payload.repository.trim().length === 0) {
     return new Response(JSON.stringify({ error: "missing or invalid repository" }), {
       status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  if (
+    auth.method === "oidc" &&
+    payload.repository.toLowerCase() !== auth.repository.toLowerCase()
+  ) {
+    return new Response(JSON.stringify({ error: "repository mismatch" }), {
+      status: 403,
       headers: { "content-type": "application/json" },
     });
   }
@@ -1820,8 +2233,10 @@ async function handlePrState(request, env) {
         merged_at,
         closed_at,
         updated_at,
-        source
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        source,
+        ingest_auth,
+        repository_id
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
       ON CONFLICT(repository, pr_number) DO UPDATE SET
         state = COALESCE(excluded.state, prs.state),
         title = COALESCE(excluded.title, prs.title),
@@ -1832,7 +2247,9 @@ async function handlePrState(request, env) {
         merged_at = COALESCE(excluded.merged_at, prs.merged_at),
         closed_at = COALESCE(excluded.closed_at, prs.closed_at),
         updated_at = excluded.updated_at,
-        source = excluded.source
+        source = excluded.source,
+        ingest_auth = excluded.ingest_auth,
+        repository_id = COALESCE(excluded.repository_id, prs.repository_id)
       WHERE excluded.updated_at >= prs.updated_at`
     ).bind(
       truncateString(payload.repository, 512),
@@ -1846,7 +2263,9 @@ async function handlePrState(request, env) {
       truncateString(payload.merged_at, 512),
       truncateString(payload.closed_at, 512),
       updatedAt,
-      payload.source
+      payload.source,
+      auth.method,
+      auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
     ).run();
   } catch {
     return new Response(null, { status: 500 });
@@ -1906,15 +2325,14 @@ function validateFinding(finding) {
   return null;
 }
 
-async function handleIngestFindings(request, env) {
+async function handleIngestFindings(request, env, { getKey } = {}) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
   }
 
-  const token = env?.REVIEW_TELEMETRY_TOKEN;
-  const authHeader = request.headers.get("authorization");
-  if (!token || !authHeader || !timingSafeEqual(authHeader, `Bearer ${token}`)) {
-    return new Response(null, { status: 401 });
+  const auth = await authenticateIngest(request, env, { getKey });
+  if (auth instanceof Response) {
+    return auth;
   }
 
   const contentLength = request.headers.get("content-length");
@@ -1954,6 +2372,22 @@ async function handleIngestFindings(request, env) {
     });
   }
 
+  if (auth.method === "oidc") {
+    // Every row's repository must be a string equal to the claim's (F5, #176), checked
+    // before validateFinding so a mismatched or non-string repository under OIDC is a
+    // 403, not a 400 that leans on validateFinding's own typing to hold the invariant.
+    const mismatch = payload.findings.some((f) => {
+      const repo = f && typeof f === "object" && !Array.isArray(f) ? f.repository : undefined;
+      return typeof repo !== "string" || repo.toLowerCase() !== auth.repository.toLowerCase();
+    });
+    if (mismatch) {
+      return new Response(JSON.stringify({ error: "repository mismatch" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
+
   for (const finding of payload.findings) {
     const error = validateFinding(finding);
     if (error) {
@@ -1990,8 +2424,10 @@ async function handleIngestFindings(request, env) {
       verify_verdict,
       head_sha_reviewed,
       last_swept_at,
-      row_set_incomplete
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+      row_set_incomplete,
+      ingest_auth,
+      repository_id
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
     -- A thread is mutable state, not an immutable event (#47): every column is overwritten
     -- from the latest sweep pass rather than only filled in when currently null, so a newly
     -- resolved thread or an edited comment settles here on the very next sweep.
@@ -2015,7 +2451,9 @@ async function handleIngestFindings(request, env) {
       verify_verdict = excluded.verify_verdict,
       head_sha_reviewed = excluded.head_sha_reviewed,
       last_swept_at = excluded.last_swept_at,
-      row_set_incomplete = excluded.row_set_incomplete`
+      row_set_incomplete = excluded.row_set_incomplete,
+      ingest_auth = excluded.ingest_auth,
+      repository_id = COALESCE(excluded.repository_id, review_findings.repository_id)`
   );
 
   const stmts = payload.findings.map((finding) =>
@@ -2040,7 +2478,9 @@ async function handleIngestFindings(request, env) {
       finding.verify_verdict ?? null,
       truncateString(finding.head_sha_reviewed, 128),
       truncateString(finding.last_swept_at, 512),
-      finding.row_set_incomplete
+      finding.row_set_incomplete,
+      auth.method,
+      auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
     )
   );
 
@@ -2397,26 +2837,37 @@ async function handleDeleteChange(id, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx, options = {}) {
+    const opts = (ctx && typeof ctx === "object" && typeof ctx.getKey === "function") ? ctx : (options || {});
+    const getKey = opts.getKey || env?.getKey;
+    const authOptions = getKey ? { getKey } : {};
+
     const url = new URL(request.url);
     const { pathname } = url;
     const { method } = request;
 
     if (method === "POST" && (pathname === "/ingest" || pathname === "/")) {
-      return handleIngest(request, env);
+      return handleIngest(request, env, authOptions);
+    }
+
+    if (method === "POST" && pathname === "/ingest/health") {
+      return handleHealth(request, env, authOptions);
     }
 
     if (method === "POST" && pathname === "/pr-state") {
-      return handlePrState(request, env);
+      return handlePrState(request, env, authOptions);
     }
 
     if (method === "POST" && pathname === "/ingest/findings") {
-      return handleIngestFindings(request, env);
+      return handleIngestFindings(request, env, authOptions);
     }
 
     if (
       method === "GET" &&
-      (pathname === "/api/accounted-runs" || pathname === "/api/accounted-runs/")
+      (pathname === "/api/accounted-runs" ||
+        pathname === "/api/accounted-runs/" ||
+        pathname === "/ingest/accounted-runs" ||
+        pathname === "/ingest/accounted-runs/")
     ) {
       return handleAccountedRuns(request, url, env);
     }
