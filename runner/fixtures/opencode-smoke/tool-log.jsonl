@@ -1,0 +1,2 @@
+{"at":"2026-09-19T08:49:52.883Z","server":"github_inline_comment","tool":"create_inline_comment","input":{"path":"tools/transcript/README.md","body":"smoke test finding","line":1,"side":"RIGHT"}}
+{"at":"2026-09-19T08:49:53.808Z","server":"github_comment","tool":"update_claude_comment","input":{"body":"## Code review\nSmoke test summary."}}
