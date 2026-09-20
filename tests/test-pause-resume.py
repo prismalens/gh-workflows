@@ -13,6 +13,8 @@ Extracts REAL shell bodies out of claude-code-review.yml and runs them against f
    and lands in the marker and the lane event's actor field.
 9. A second @claude pause on an already-paused PR does not overwrite the recorded actor.
 10. @claude resume clears both paused=1 and paused_by from the marker.
+11. The #149 withhold guard never swallows a pause or resume state transition: on a head a
+    review already reported on, the marker is still written and the standing verdict carried.
 
 Run: python3 tests/test-pause-resume.py
 """
@@ -30,6 +32,8 @@ WF = ROOT / ".github/workflows/claude-code-review.yml"
 
 OLD = "a" * 40
 NEW = "b" * 40
+# A head past the one the marker records, so the reader is deciding about new commits.
+MOVED_HEAD = "c" * 40
 
 
 def cleanup_tmp():
@@ -605,6 +609,90 @@ def main():
         fails.append(f"case 12c: want draft verdict, got {outs.get('verdict_kind')!r}")
     else:
         print("  ok    @claude review on a draft reviews nothing and keeps the pause")
+
+    # -------------------------------------------------------------
+    # 13. The #149 withhold guard must not swallow a pause state transition
+    # -------------------------------------------------------------
+    # `sha=` equal to this head means a real review already reported here, and the guard
+    # withholds the write so a later no-output round cannot replace that verdict with the
+    # absence of one. The marker rides in the same comment, and withholding it dropped the
+    # operator's instruction outright: `@claude pause` never wrote paused=1 (every later
+    # event ran normally) and `@claude resume` never cleared it (kind `silent`: a resume
+    # that finds nothing to review posts nothing). Both directions are asserted here, and
+    # the standing verdict must survive both.
+    reviewed_here = (
+        f"<!-- claude-review-liveness rounds=2 sha={NEW} -->\n"
+        "**Claude review lane** — [run](https://x/1): reviewed `bbbbbbbb` and posted 3 inline / 1 summary comment(s)."
+    )
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=reviewed_here, skip_reason="paused-by-request",
+        event="issue_comment", summon="pause", head_sha=NEW, actor_login="alice",
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0:
+        fails.append(f"case 13a: announce exited {rc}: {err}")
+    elif not body:
+        fails.append("case 13a: pause on an already-reviewed head was withheld, so paused=1 was never written")
+    elif "paused=1 paused_by=alice" not in marker_line:
+        fails.append(f"case 13a: pause on an already-reviewed head lost the state: {marker_line!r}")
+    elif "posted 3 inline / 1 summary" not in body:
+        fails.append(f"case 13a: the standing review verdict was replaced, not carried: {body!r}")
+    elif "_Lane state: paused by @alice" not in body:
+        fails.append(f"case 13a: the pause was recorded but never acknowledged to a reader: {body!r}")
+    else:
+        # The reported symptom was rounds running on a paused PR, so the written comment is
+        # fed back to the reader that decides. `head -1` there sees the marker only, which is
+        # also why the carried verdict and the state line cannot confuse it.
+        ran = []
+        for ev, verb in (("pull_request", "none"), ("pull_request_review_comment", "none"),
+                         ("issue_comment", "review")):
+            _, mouts, _ = run_mode_step(mode_script, event=ev, summon=verb,
+                                        fake_liveness=body, head_sha=MOVED_HEAD)
+            if mouts.get("skip_reason") != "paused-by-request":
+                ran.append(f"{ev}/{verb}={mouts.get('skip_reason', '')!r}")
+        _, mouts, _ = run_mode_step(mode_script, event="issue_comment", summon="resume",
+                                    fake_liveness=body, head_sha=MOVED_HEAD)
+        if ran:
+            fails.append(f"case 13a: later events still ran on the paused PR: {', '.join(ran)}")
+        elif mouts.get("skip_reason") == "paused-by-request":
+            fails.append("case 13a: @claude resume could not lift the pause it wrote")
+        else:
+            print("  ok    a pause on an already-reviewed head is written, and keeps the standing verdict")
+
+    paused_here = body
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=paused_here, skip_reason="",
+        event="issue_comment", summon="resume", mode="review", result="success",
+        head_sha=NEW, actor_login="bob",
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0:
+        fails.append(f"case 13b: announce exited {rc}: {err}")
+    elif not body:
+        fails.append("case 13b: resume on an already-reviewed head was withheld, so the pause could never be lifted")
+    elif "paused=" in marker_line:
+        fails.append(f"case 13b: resume did not clear the pause: {marker_line!r}")
+    elif "posted 3 inline / 1 summary" not in body:
+        fails.append(f"case 13b: resume replaced the standing verdict: {body!r}")
+    elif "no machine review on record" in body:
+        fails.append(f"case 13b: resume asserted no review on a head whose sha= says otherwise: {body!r}")
+    elif body.count("_Lane state:") != 1:
+        fails.append(f"case 13b: state lines stacked instead of being rebuilt: {body!r}")
+    else:
+        print("  ok    a resume on an already-reviewed head is written, and stacks no state line")
+
+    # A push while already paused changes nothing the marker does not already say, so the
+    # guard still holds: this is the #149 case, and the pause is not at risk.
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=paused_here, skip_reason="trivial",
+        event="pull_request", head_sha=NEW,
+    )
+    if rc != 0:
+        fails.append(f"case 13c: announce exited {rc}: {err}")
+    elif body:
+        fails.append(f"case 13c: a no-transition skip on an already-reviewed head overwrote the verdict: {body!r}")
+    else:
+        print("  ok    a skip that changes no pause state is still withheld (#149 holds)")
 
     print()
     if fails:
