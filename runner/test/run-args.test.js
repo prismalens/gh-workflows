@@ -25,3 +25,12 @@ test('--stage-manifest needs a repo and a PR number, and a sane sha', () => {
   assert.equal(o.stage, true); assert.equal(o.mode, 'review');
   assert.equal(parseArgs(['--cwd', '/c', '--prompt', '/p', '--out', '/o']).stage, false, 'staging is opt-in');
 });
+
+test('--head-sha defaults to empty, never null: a null reaches manifest.py as the string "null"', () => {
+  // `headSha = ''` in buildManifest is a JS default, which fires only for undefined, so a null
+  // was passed straight through and spawn stringified it. Staging then refused every round with
+  // "head moved from null to <sha>" unless --head-sha was given by hand.
+  const o = parseArgs(['--stage-manifest', '--repo', 'owner/name', '--pr', '7', '--cwd', '.', '--prompt', 'p.md', '--out', 'o']);
+  assert.equal(o.headSha, '');
+  assert.notEqual(o.headSha, null);
+});

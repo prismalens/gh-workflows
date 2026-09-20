@@ -61,6 +61,23 @@ test('whichGh finds an executable named gh on PATH and skips directories', () =>
   assert.equal(whichGh(`/nonexistent:${d}`), g);
 });
 
+test('a checker that cannot run redacts, says so, and never claims the body was a secret', () => {
+  const { d, run, entries } = setup();
+  // What actually happened in the first live round: the shim is copied to <out>/bin/gh, so a
+  // sibling lookup found no module, node exited 1, and exit 1 had meant "this is a secret".
+  const r = spawnSync('bash', [shim, 'pr', 'comment', '183', '--body', 'an ordinary summary'], {
+    env: { ...process.env, ASSAYER_TOOL_LOG: path.join(d, 'tool-log.jsonl'),
+           ASSAYER_REAL_GH: path.join(d, 'fake-gh'),
+           ASSAYER_SECRET_CHECK: path.join(d, 'no-such-secret-check.js') },
+    encoding: 'utf8',
+  });
+  assert.equal(r.status, 0, 'the round still records something');
+  assert.match(r.stderr, /secret-check could not run/, 'the fault is stated, not swallowed');
+  const e = entries();
+  assert.equal(e.at(-1).redacted, 'secret-check unavailable');
+  assert.notEqual(e.at(-1).redacted, 'credential-shaped body', 'never mislabelled as a credential');
+});
+
 test('a credential-shaped body is redacted before it ever reaches the log', () => {
   const { run, entries } = setup();
   const tok = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';

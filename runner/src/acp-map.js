@@ -114,7 +114,7 @@ export class SessionMapper {
     for (const e of entries) {
       const input = e.input && typeof e.input === 'object' ? e.input : {};
       // The recorder already refused this body; say so rather than blaming a missing field.
-      if (e.redacted) { this.dropped.push({ why: `recorder redacted a ${e.redacted}`, at: e.at }); continue; }
+      if (e.redacted) { this.dropped.push({ why: `recorder redacted this record: ${e.redacted}`, at: e.at }); continue; }
       if (e.tool === FINDING_TOOL) {
         if (typeof input.path !== 'string' || typeof input.body !== 'string' || !input.body.trim()) {
           this.dropped.push({ why: 'finding without path or body', at: e.at }); continue;
