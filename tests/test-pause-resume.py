@@ -15,6 +15,18 @@ Extracts REAL shell bodies out of claude-code-review.yml and runs them against f
 10. @claude resume clears both paused=1 and paused_by from the marker.
 11. The #149 withhold guard never swallows a pause or resume state transition: on a head a
     review already reported on, the marker is still written and the standing verdict carried.
+12. A verb-less in-thread reply (summon=reply, #178) emits verify when claude[bot] threads
+    are open and skips as reply-no-threads when none are, leaving the marker untouched, and
+    a reply-triggered verify round carries paused=1 and paused_by forward rather than
+    clearing them.
+
+A pause is the COMMENT layer and is therefore soft: it stops the automatic round, and
+`incremental`, `full` and `resume` all lift it. A stop is `admission: off` or the skip
+label, never a comment, because the comment layer is per-round and ephemeral, so a
+comment-driven stop is liftable by the next comment. #191 briefly made pause refuse every
+non-`resume` summon; that is reverted, and cases 4a, 4c, 6b and 14a pin the revert. The
+half of #191 that stands is the marker persistence in case 14 and the carry-forward in
+6a/6c: a pause must never be ERASED by a push or a reply. Ruling: #189.
 
 Run: python3 tests/test-pause-resume.py
 """
@@ -342,26 +354,28 @@ def main():
     # -------------------------------------------------------------
     # 4. @claude review and @claude resume still run while paused
     # -------------------------------------------------------------
-    # An explicit pause is lifted by `@claude resume` alone: `@claude review` is refused,
-    # so a summon by someone who does not know the pull request is paused costs one comment
-    # and no model round.
+    # A pause is the COMMENT layer and therefore soft (#189): it stops the AUTOMATIC round
+    # (case 3 above) and any summon lifts it. #191 briefly refused summons here, which made
+    # the comment layer a stop; a stop is `admission: off` or the skip label, never a
+    # comment. These two cases pin the revert from the read side.
     rc, outs, err = run_mode_step(mode_script, event="issue_comment", summon="incremental", fake_liveness=paused_marker)
     if rc != 0:
         fails.append(f"case 4a: @claude review exited {rc}: {err}")
-    elif outs.get("skip_reason") != "paused-by-request":
-        fails.append(f"case 4a: @claude review was not refused by the pause: {outs}")
+    elif outs.get("skip_reason") == "paused-by-request":
+        fails.append(f"case 4a: @claude review was refused by a pause, which is a stop not a pause: {outs}")
     else:
-        print("  ok    @claude review is refused while explicitly paused")
+        print("  ok    @claude review runs while paused, and lifts it (#189)")
 
-    # The reported bug: an in-thread reply reached the verify path without ever reading the
-    # marker, so it ran a round on a pull request the operator had paused.
-    rc, outs, err = run_mode_step(mode_script, event="pull_request_review_comment", summon="incremental", fake_liveness=paused_marker)
+    # A verb-less reply carries summon=reply (#178) and is not refused by the pause either.
+    # It does not CLEAR the pause: the marker carry-forward is the write side, asserted in
+    # case 6c, and the full reply semantics (verify vs reply-no-threads) in case 13.
+    rc, outs, err = run_mode_step(mode_script, event="pull_request_review_comment", summon="reply", fake_liveness=paused_marker, fake_threads='[{"id":"T_1"}]')
     if rc != 0:
         fails.append(f"case 4c: reply exited {rc}: {err}")
-    elif outs.get("skip_reason") != "paused-by-request":
-        fails.append(f"case 4c: an in-thread reply ran on a paused pull request: {outs}")
+    elif outs.get("skip_reason") == "paused-by-request":
+        fails.append(f"case 4c: a reply was refused by a pause: {outs}")
     else:
-        print("  ok    an in-thread reply is refused while explicitly paused")
+        print("  ok    an in-thread reply is not refused by a pause (#178)")
 
     rc, outs, err = run_mode_step(mode_script, event="issue_comment", summon="resume", fake_liveness=paused_marker)
     if rc != 0:
@@ -411,8 +425,9 @@ def main():
     else:
         print("  ok    paused state survives push (marker keeps paused=1)")
 
-    # Only `@claude resume` clears the marker. Every other summon carries the pause
-    # forward, whatever the event and whatever exit path the round took.
+    # Every summon clears the marker, not `@claude resume` alone: `incremental`, `full` and
+    # `resume` all lift a pause, because a pause is the comment layer (#189). A PUSH and a
+    # verb-less reply carry it forward instead — cases 6a and 6c.
     rc, body, outs, err = run_announce_step(
         announce_script,
         marker_body=f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 -->",
@@ -424,10 +439,10 @@ def main():
     )
     if rc != 0:
         fails.append(f"case 6b: announce summon exited {rc}: {err}")
-    elif "paused=1" not in body.splitlines()[0]:
-        fails.append(f"case 6b: a non-resume summon erased paused=1: {body.splitlines()[0]}")
+    elif "paused=1" in body.splitlines()[0]:
+        fails.append(f"case 6b: a summon did not lift the pause, so the pause is acting as a stop: {body.splitlines()[0]}")
     else:
-        print("  ok    a non-resume summon carries paused=1 forward")
+        print("  ok    a summon lifts the pause (#189)")
 
     # The second half of the reported bug: the carry-forward branch was gated on
     # `EVENT_NAME = pull_request`, so a reply reached none of the branches, `is_paused`
