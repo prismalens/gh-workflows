@@ -404,6 +404,23 @@ def main():
     else:
         print("  ok    Case 19: malformed YAML resolves off with a warning")
 
+    # Case 19b: a PRESENT config whose root is not a mapping resolves off (#177,
+    # thread 4006669598 follow-up). Three root shapes, all of which parse cleanly and
+    # none of which is a mapping, so none can carry a consent key. Falling through sent
+    # each of them to the `full` default — a broken consent file resolving to maximum
+    # sharing, the same failure as the permissive base64 decode. An ABSENT file is a
+    # different case and still falls through; fetch_layer answers a 404 that way.
+    for label, root in (("null root", "null\n"), ("scalar root", "just-a-string\n"), ("list root", "- a\n- b\n")):
+        proc, outputs = run_action_step(script, repo_config=root)
+        if outputs.get("share") != "off":
+            fails.append(f"Case 19b ({label}) expected share=off, got {outputs.get('share')}")
+            print(f"  FAIL  Case 19b: {label} did not resolve off")
+        elif "::warning::config root is" not in proc.stdout and "::warning::config root is" not in proc.stderr:
+            fails.append(f"Case 19b ({label}): expected a non-mapping-root warning, stderr={proc.stderr!r}")
+            print(f"  FAIL  Case 19b: {label} missing warning")
+        else:
+            print(f"  ok    Case 19b: {label} resolves off with a warning")
+
     # Case 20: telemetry present but not a mapping resolves off (#177, thread 4006669598)
     proc, outputs = run_action_step(script, repo_config='telemetry: "off"\n')
     if outputs.get("share") != "off":

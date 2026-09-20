@@ -565,7 +565,11 @@ jobs:
           # but malformed override (#177, thread 4006669598).
           def resolve_telemetry_share(data):
               if not isinstance(data, dict):
-                  return None, False
+                  # Present but not a mapping (null, scalar, list) is malformed, not absent,
+                  # and must fail closed rather than fall through to the `full` default.
+                  # Both call sites are guarded by the file existing, so an absent config
+                  # never arrives here (#177, thread 4006669598).
+                  return "off", True
               telemetry = data.get("telemetry")
               if telemetry is None:
                   return None, False

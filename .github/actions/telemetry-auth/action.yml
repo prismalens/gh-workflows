@@ -123,7 +123,13 @@ runs:
               except Exception as exc:
                   return 'off', f'malformed YAML ({exc}); resolving telemetry.share as off'
               if not isinstance(data, dict):
-                  return None, None
+                  # A PRESENT config whose root is null, a scalar or a list is malformed,
+                  # not absent. Falling through here sent it to the next layer and then to
+                  # the `full` default — the same shape as the permissive-base64 hole: a
+                  # broken consent file resolving to maximum sharing. An absent file never
+                  # reaches this function; `fetch_layer` answers a 404 with fall-through,
+                  # and empty content with off (#177, thread 4006669598).
+                  return 'off', f'config root is {type(data).__name__}, not a mapping; resolving telemetry.share as off'
               tel = data.get('telemetry')
               if tel is None:
                   return None, None

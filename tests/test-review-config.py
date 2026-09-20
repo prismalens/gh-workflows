@@ -521,6 +521,12 @@ telemetry:
   share: maybe
 """
 
+CONFIG_ROOT_NULL = "null\n"
+
+CONFIG_ROOT_SCALAR = "just-a-string\n"
+
+CONFIG_ROOT_LIST = "- a\n- b\n"
+
 MALFORMED_TELEMETRY_NOT_MAPPING = """
 version: 1
 
@@ -833,6 +839,17 @@ def main():
     check("telemetry not mapping: exits 0", rc == 0, f"rc={rc}")
     check("telemetry not mapping: resolves off (#177)", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
     check("telemetry not mapping: emits warning", "::warning::" in stdout and "expected mapping" in stdout, f"stdout: {stdout}")
+
+    # A PRESENT config whose ROOT is not a mapping also fails closed (#177, thread
+    # 4006669598 follow-up). These parse cleanly and cannot carry a consent key, so
+    # `resolve_telemetry_share` used to return "key unset" and fall through to the
+    # `full` default — a broken consent file resolving to maximum sharing. An ABSENT
+    # config is a different case: it still falls through, covered by the 404 case.
+    for label, cfg in (("null", CONFIG_ROOT_NULL), ("scalar", CONFIG_ROOT_SCALAR), ("list", CONFIG_ROOT_LIST)):
+        rc, out, stdout, stderr = run_config_case(config_script, config_yaml=cfg)
+        check(f"config root {label}: exits 0", rc == 0, f"rc={rc}")
+        check(f"config root {label}: resolves off (#177)", out.get("telemetry_share") == "off",
+              f"got {out.get('telemetry_share')}")
 
     # Malformed telemetry in org config: also fails closed to off (#176)
     rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=MALFORMED_TELEMETRY_INVALID_SHARE, is_404=True)
