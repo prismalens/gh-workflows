@@ -116,7 +116,7 @@ env:
   # The claude-code-action pin, duplicated at the two `uses:` lines below because `uses:`
   # cannot take a `${{ }}` expression. tests/test-action-version-drift.py fails the build
   # if this value and either `uses:` pin ever disagree. Story: #47 amendment.
-  ACTION_VERSION: '0a8d3c9443bbff909ab973b6a17a340b913f229f'
+  ACTION_VERSION: '2261fcfc88e7de1b55f179edd588805e12de71f2'
 
 jobs:
   # ONE set of PR facts for automatic rounds, summons, and in-thread replies alike,
@@ -3501,7 +3501,7 @@ jobs:
         if: >-
           (steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental') &&
           steps.manifest.outputs.refused != 'true'
-        uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f  # v1.0.221
+        uses: anthropics/claude-code-action@2261fcfc88e7de1b55f179edd588805e12de71f2  # v1.0.228
         # Synchronous subagents required in print mode or the reviewer exits before its
         # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
         env:
@@ -4573,7 +4573,7 @@ jobs:
 
       - name: Run Claude Code Verification Round
         id: claude-verify
-        uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f  # v1.0.221
+        uses: anthropics/claude-code-action@2261fcfc88e7de1b55f179edd588805e12de71f2  # v1.0.228
         env:
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
         with:
