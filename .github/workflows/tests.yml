@@ -57,10 +57,6 @@ jobs:
       - name: Telemetry wave 2 record and lane event behaviour
         run: python3 tests/test-telemetry-record.py
 
-      # Extracts and runs the real script out of telemetry-canary.yml. Story: #87.
-      - name: Telemetry canary behaviour
-        run: python3 tests/test-telemetry-canary.py
-
       # Compares migration-defined schema against INSERT/SELECT in worker/index.js. Story: #99.
       - name: Schema-to-code drift check
         run: python3 tests/test-schema-drift.py

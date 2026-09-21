@@ -157,13 +157,6 @@ const LANE_EVENT_STRING_FIELDS = [
   "actor",
 ];
 
-const CANARY_STRING_FIELDS = [
-  "last_seen_at",
-  "recorded_at",
-  "run_url",
-  "lane_version",
-];
-
 const VALID_PR_STATES = new Set(["open", "closed", "merged"]);
 const VALID_PR_SOURCES = new Set(["round", "hook", "reconciler"]);
 
@@ -541,11 +534,6 @@ async function verifyAccess(request, env) {
 }
 
 async function handleSummary(env) {
-  const canaryRow = await env.DB.prepare(
-    "SELECT last_seen_at FROM canary_pings WHERE id = 'canary' LIMIT 1"
-  ).first();
-  const canary_last_seen_at = canaryRow ? canaryRow.last_seen_at : null;
-
   const stats = await env.DB.prepare(
     `SELECT
       COUNT(*) as rows,
@@ -576,7 +564,6 @@ async function handleSummary(env) {
         verdict_kinds: {},
         fallback_reasons: {},
         model_sources: {},
-        canary_last_seen_at,
       }),
       { headers: READ_HEADERS }
     );
@@ -705,7 +692,6 @@ async function handleSummary(env) {
       verdict_kinds,
       fallback_reasons,
       model_sources,
-      canary_last_seen_at,
     }),
     { headers: READ_HEADERS }
   );
@@ -2047,52 +2033,6 @@ async function handleIngest(request, env, { getKey } = {}) {
         payload.actor ?? null,
         auth.method,
         auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
-      ).run();
-    } catch {
-      return new Response(null, { status: 500 });
-    }
-
-    return new Response(null, { status: 204 });
-  }
-
-  if (eventKind === "canary") {
-    // Canary pings accept bearer auth only; OIDC gets 403 and writes nothing (#177).
-    if (auth.method !== "bearer") {
-      return new Response(JSON.stringify({ error: "bearer auth required" }), {
-        status: 403,
-        headers: { "content-type": "application/json" },
-      });
-    }
-
-    for (const field of CANARY_STRING_FIELDS) {
-      const val = payload[field];
-      if (val !== undefined && val !== null && typeof val !== "string") {
-        return new Response(JSON.stringify({ error: "invalid field types" }), {
-          status: 400,
-          headers: { "content-type": "application/json" },
-        });
-      }
-    }
-
-    const lastSeenAt = payload.last_seen_at ?? payload.recorded_at ?? new Date().toISOString();
-
-    try {
-      await env.DB.prepare(
-        `INSERT INTO canary_pings (
-          id,
-          last_seen_at,
-          run_url,
-          lane_version
-        ) VALUES (?1, ?2, ?3, ?4)
-        ON CONFLICT(id) DO UPDATE SET
-          last_seen_at = excluded.last_seen_at,
-          run_url = excluded.run_url,
-          lane_version = excluded.lane_version`
-      ).bind(
-        "canary",
-        lastSeenAt,
-        payload.run_url ?? null,
-        payload.lane_version ?? null
       ).run();
     } catch {
       return new Response(null, { status: 500 });

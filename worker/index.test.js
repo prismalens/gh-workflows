@@ -151,15 +151,27 @@ describe("Worker telemetry ingest", () => {
       assert.equal(db.queries.length, 0);
     });
 
-    it("returns 401 when token is wrong for canary", async () => {
+    it("returns 401 when token is wrong for an unrecognised event_kind", async () => {
       const db = createFakeDb();
       const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
       const req = makeRequest("/ingest", {
         headers: { authorization: "Bearer wrong-token" },
-        body: { event_kind: "canary" },
+        body: { event_kind: "made-up" },
       });
       const res = await worker.fetch(req, env);
       assert.equal(res.status, 401);
+      assert.equal(db.queries.length, 0);
+    });
+
+    it("returns 400 for event_kind 'canary' with a valid bearer", async () => {
+      const db = createFakeDb();
+      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
+      const req = makeRequest("/ingest", {
+        headers: { authorization: `Bearer ${VALID_TOKEN}` },
+        body: { event_kind: "canary" },
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 400);
       assert.equal(db.queries.length, 0);
     });
 
@@ -1860,51 +1872,6 @@ describe("Worker telemetry ingest", () => {
     });
   });
 
-  describe("Canary pings ingest (event_kind: 'canary')", () => {
-    it("performs a real D1 write and returns 204", async () => {
-      const db = createFakeDb();
-      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-      const req = makeRequest("/ingest", {
-        headers: { authorization: `Bearer ${VALID_TOKEN}` },
-        body: {
-          event_kind: "canary",
-          run_url: "https://github.com/prismalens/gh-workflows/actions/runs/canary-1",
-          lane_version: "v2.0.0",
-          last_seen_at: "2026-08-31T18:00:00.000Z",
-        },
-      });
-      const res = await worker.fetch(req, env);
-      assert.equal(res.status, 204);
-      assert.equal(db.queries.length, 1);
-
-      const query = db.queries[0];
-      assert.match(query.sql, /INSERT INTO canary_pings/);
-      assert.match(query.sql, /ON CONFLICT\(id\) DO UPDATE SET/);
-      assert.equal(query.args[0], "canary");
-      assert.equal(query.args[1], "2026-08-31T18:00:00.000Z");
-      assert.equal(query.args[2], "https://github.com/prismalens/gh-workflows/actions/runs/canary-1");
-      assert.equal(query.args[3], "v2.0.0");
-    });
-
-    it("upserts with default timestamp when last_seen_at / recorded_at is omitted", async () => {
-      const db = createFakeDb();
-      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };
-      const req = makeRequest("/ingest", {
-        headers: { authorization: `Bearer ${VALID_TOKEN}` },
-        body: { event_kind: "canary" },
-      });
-      const res = await worker.fetch(req, env);
-      assert.equal(res.status, 204);
-      assert.equal(db.queries.length, 1);
-
-      const query = db.queries[0];
-      assert.equal(query.args[0], "canary");
-      assert.ok(typeof query.args[1] === "string");
-      assert.equal(query.args[2], null);
-      assert.equal(query.args[3], null);
-    });
-  });
-
   describe("Discriminator & general error handling", () => {
     it("returns 400 for unknown event_kind", async () => {
       const db = createFakeDb();
@@ -2521,14 +2488,11 @@ describe("Worker telemetry read API", () => {
     });
   });
 
-  describe("GET /api/summary (Aggregates & Canary Freshness)", () => {
-    it("returns count breakdowns and canary_last_seen_at using aggregate SQL", async () => {
+  describe("GET /api/summary (Aggregates)", () => {
+    it("returns count breakdowns using aggregate SQL", async () => {
       const helper = await getAccessHelper();
       const db = createFakeDb({
         handler: (sql) => {
-          if (sql.includes("FROM canary_pings")) {
-            return { last_seen_at: "2026-08-31T20:00:00.000Z" };
-          }
           if (sql.includes("COUNT(*) as rows")) {
             return {
               rows: 10,
@@ -2567,7 +2531,6 @@ describe("Worker telemetry read API", () => {
 
       const data = await res.json();
       assert.equal(data.rows, 10);
-      assert.equal(data.canary_last_seen_at, "2026-08-31T20:00:00.000Z");
       assert.deepEqual(data.verdict_kinds, { clean: 8, findings: 2 });
       assert.deepEqual(data.fallback_reasons, { none: 10 });
       assert.deepEqual(data.model_sources, { "workflow-default": 10 });
@@ -2583,9 +2546,6 @@ describe("Worker telemetry read API", () => {
       const helper = await getAccessHelper();
       const db = createFakeDb({
         handler: (sql) => {
-          if (sql.includes("FROM canary_pings")) {
-            return { last_seen_at: "2026-08-31T20:00:00.000Z" };
-          }
           if (sql.includes("COUNT(*) as rows")) {
             return { rows: 10, first_recorded_at: "2026-08-01T00:00:00.000Z" };
           }
@@ -2619,13 +2579,10 @@ describe("Worker telemetry read API", () => {
       assert.ok(sqlQueries.some((s) => s.includes("GROUP BY repository")));
     });
 
-    it("returns canary_last_seen_at as null, not 0 and not absent, when canary_pings is empty", async () => {
+    it("returns zeroed breakdowns, not absent fields, when usage_records is empty", async () => {
       const helper = await getAccessHelper();
       const db = createFakeDb({
         handler: (sql) => {
-          if (sql.includes("FROM canary_pings")) {
-            return null;
-          }
           if (sql.includes("COUNT(*) as rows")) {
             return { rows: 0 };
           }
@@ -2639,36 +2596,9 @@ describe("Worker telemetry read API", () => {
 
       const data = await res.json();
       assert.equal(data.rows, 0);
-      assert.ok("canary_last_seen_at" in data);
-      assert.equal(data.canary_last_seen_at, null);
-      assert.notEqual(data.canary_last_seen_at, 0);
       assert.deepEqual(data.verdict_kinds, {});
       assert.deepEqual(data.fallback_reasons, {});
       assert.deepEqual(data.model_sources, {});
-    });
-
-    it("returns canary_last_seen_at even when usage_records is empty", async () => {
-      const helper = await getAccessHelper();
-      const db = createFakeDb({
-        handler: (sql) => {
-          if (sql.includes("FROM canary_pings")) {
-            return { last_seen_at: "2026-08-31T21:00:00.000Z" };
-          }
-          if (sql.includes("COUNT(*) as rows")) {
-            return { rows: 0 };
-          }
-          return null;
-        },
-      });
-      const env = { ...helper.env, DB: db };
-      const req = makeAuthenticatedRequest("/api/summary", helper.jwt);
-      const res = await worker.fetch(req, env);
-      assert.equal(res.status, 200);
-
-      const data = await res.json();
-      assert.equal(data.rows, 0);
-      assert.equal(data.canary_last_seen_at, "2026-08-31T21:00:00.000Z");
-      assert.deepEqual(data.verdict_kinds, {});
     });
 
     describe("Did-not-run verdicts from lane_events (#176, #177 thread 4006669679)", () => {
@@ -2677,7 +2607,6 @@ describe("Worker telemetry read API", () => {
       // would have returned, since the fake DB does not execute real SQL.
       function summaryHandler({ laneCountRows = [] } = {}) {
         return (sql) => {
-          if (sql.includes("FROM canary_pings")) return null;
           if (sql.includes("COUNT(*) as rows")) return { rows: 10, first_recorded_at: "2026-08-01T00:00:00.000Z" };
           if (sql.includes("DISTINCT repository")) return [{ repository: "prismalens/gh-workflows" }];
           if (sql.includes("GROUP BY repository")) return [];
@@ -5066,7 +4995,7 @@ describe("Worker telemetry read API", () => {
     });
   });
 
-  describe("OIDC repository allowlist and canary auth restriction (#177, outside-diff)", () => {
+  describe("OIDC repository allowlist (#177, outside-diff)", () => {
     const ALLOWED_IDS = "1124040129,1191857183,1331752084,1256451611";
 
     it("an allowed repository_id passes", async () => {
@@ -5110,30 +5039,5 @@ describe("Worker telemetry read API", () => {
       assert.equal(db.queries.length, 0);
     });
 
-    it("a canary under OIDC gets 403", async () => {
-      const db = createFakeDb();
-      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: ALLOWED_IDS };
-      const token = await mintOidcToken({ repository_id: "1331752084", repository: "prismalens/gh-workflows" });
-      const req = makeRequest("/ingest", {
-        headers: { authorization: `Bearer ${token}` },
-        body: { event_kind: "canary", run_url: "https://example.com/run/1" },
-      });
-      const res = await worker.fetch(req, env, { getKey: getLocalKey });
-      assert.equal(res.status, 403);
-      assert.equal(db.queries.length, 0);
-    });
-
-    it("a canary under bearer still gets 204", async () => {
-      const db = createFakeDb();
-      const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db, OIDC_ALLOWED_REPOSITORY_IDS: ALLOWED_IDS };
-      const req = makeRequest("/ingest", {
-        headers: { authorization: `Bearer ${VALID_TOKEN}` },
-        body: { event_kind: "canary", run_url: "https://example.com/run/1" },
-      });
-      const res = await worker.fetch(req, env, { getKey: getLocalKey });
-      assert.equal(res.status, 204);
-      assert.equal(db.queries.length, 1);
-      assert.match(db.queries[0].sql, /INSERT INTO canary_pings/);
-    });
   });
 });

@@ -52,11 +52,10 @@ Telemetry payloads are ingested via `POST /ingest` (or `POST /`) authenticated w
 
 ### Discriminator (`event_kind`)
 
-The payload discriminator routes to one of three ingest targets:
+The payload discriminator routes to one of two ingest targets:
 1. `event_kind` absent or `"usage_record"` (#70, #72, #87): Records a completed review round into `usage_records`.
 2. `event_kind: "lane_event"` (#71): Records a round that was skipped or not executed into `lane_events`.
-3. `event_kind: "canary"` (#87): Upserts a single heartbeat row in `canary_pings` (`id = 'canary'`) to verify end-to-end write availability. Returns 204.
-4. Any other `event_kind` value is rejected with 400.
+3. Any other `event_kind` value is rejected with 400.
 
 ### Compatibility Invariant
 
@@ -117,12 +116,6 @@ Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_
   - `reviewable_lines` (INTEGER): Reviewable-line count on a `refused-size` event (#105).
   - `max_reviewable_lines` (INTEGER): The cap that count was checked against (#105).
   - `actor` (TEXT): The login that issued `@claude pause`, read from the event payload, never from comment text. Null on every reason but `paused-by-request` (#124).
-
-#### `canary`
-- **Optional**:
-  - `last_seen_at` / `recorded_at` (TEXT, ISO string, defaults to current time)
-  - `run_url` (TEXT)
-  - `lane_version` (TEXT)
 
 ---
 
@@ -185,7 +178,7 @@ Read endpoints are served under `/api/*` and gated behind Cloudflare Access JWT 
 
 ### `GET /api/summary`
 
-Returns aggregate metrics and telemetry status over all stored usage records and canary health.
+Returns aggregate metrics and telemetry status over all stored usage records.
 
 #### Response Shape
 
@@ -212,13 +205,11 @@ Returns aggregate metrics and telemetry status over all stored usage records and
   },
   "model_sources": {
     "workflow-default": 42
-  },
-  "canary_last_seen_at": "2026-08-31T22:30:00.000Z"
+  }
 }
 ```
 
 - **Aggregated breakdowns** (`verdict_kinds`, `fallback_reasons`, `model_sources`): Computed using aggregate SQL `GROUP BY` counts. Empty object `{}` when no records match.
-- **`canary_last_seen_at`**: Read directly from the singleton `canary_pings` row (`id = 'canary'`). Returns `null` when `canary_pings` is empty (never `0` and never a fabricated timestamp). Returns the last canary timestamp even if `usage_records` is empty.
 
 ---
 

@@ -269,7 +269,7 @@ describe("a 200 of the wrong shape is malformed, not a TypeError", () => {
     await expect(httpApi.fetchSummary()).rejects.toMatchObject({ kind: "malformed" });
   });
 
-  it("rejects a summary payload missing wave 2 breakdown fields or canary_last_seen_at", async () => {
+  it("rejects a summary payload missing wave 2 breakdown fields", async () => {
     jsonBody({
       rows: 0,
       repositories: [],
@@ -280,7 +280,7 @@ describe("a 200 of the wrong shape is malformed, not a TypeError", () => {
       total_cost_usd: null,
       first_recorded_at: null,
       last_recorded_at: null,
-      // Missing verdict_kinds, fallback_reasons, model_sources, canary_last_seen_at
+      // Missing verdict_kinds, fallback_reasons, model_sources
     });
     await expect(httpApi.fetchSummary()).rejects.toMatchObject({ kind: "malformed" });
   });
@@ -343,9 +343,8 @@ describe("a 200 of the wrong shape is malformed, not a TypeError", () => {
       verdict_kinds: {},
       fallback_reasons: {},
       model_sources: {},
-      canary_last_seen_at: null,
     });
-    await expect(httpApi.fetchSummary()).resolves.toMatchObject({ rows: 0, canary_last_seen_at: null });
+    await expect(httpApi.fetchSummary()).resolves.toMatchObject({ rows: 0 });
     jsonBody({ rows: [], next_cursor: null });
     await expect(httpApi.fetchLaneEvents()).resolves.toMatchObject({ rows: [] });
     jsonBody({ rows: [], next_cursor: null });
@@ -481,7 +480,6 @@ describe("an error names the failure it actually was", () => {
         verdict_kinds: {},
         fallback_reasons: {},
         model_sources: {},
-        canary_last_seen_at: null,
       }),
       headers: { "content-type": "application/json" },
     });
