@@ -489,6 +489,57 @@ A mis-entered change is deleted and re-added.
 
 ---
 
+### `GET /api/fleet/repos`
+
+Serves the dashboard's `/repos` page from aggregates alone (#185). A fleet route carries counts and
+identifiers, never a name, a title or a body: its SQL never names `pr_title`, `pr_author`,
+`verdict_text`, `header_raw`, `body_excerpt`, `raw_result` or `diff_hunk`, which
+`tests/test-fleet-wall.py` and the Worker tests pin.
+
+#### Query Parameters
+
+- `range` (required): one of `rolling`, `30d`, `90d`, `all`. Anything else is **400** (`{"error": "invalid range"}`).
+
+#### Window
+
+The Worker computes the window, so the label always agrees with the rows counted:
+
+- `30d` / `90d`: `recorded_at >= now - N days`, labelled `the last N days`.
+- `all`: no predicate, labelled `all recorded rounds`.
+- `rolling`: the last 50 rounds or the last 7 days, whichever holds more. When at least 50 rounds
+  fall in the last 7 days, or fewer than 50 rounds exist at all, the window is 7 days
+  (`the last 7 days`); otherwise it starts at the 50th most recent round (`the last 50 rounds`).
+
+#### Response Shape
+
+```json
+{
+  "window": { "range": "rolling", "since": "2026-09-14T00:00:00.000Z", "label": "the last 7 days" },
+  "rounds": 12,
+  "repositories": [
+    {
+      "repository": "prismalens/gh-workflows",
+      "rounds": 3,
+      "denials": 1,
+      "last_round": { "session_id": "s-1", "recorded_at": "2026-09-20T00:00:00.000Z", "round_type": "full", "verdict_kind": "reviewed" },
+      "last_recorded_at": "2026-09-20T00:00:00.000Z"
+    }
+  ],
+  "malformed_configs": [{ "repository": "prismalens/gh-workflows", "layer": "repo_config" }]
+}
+```
+
+- `repositories` lists every repository that has ever posted, sorted. One quiet in the window has
+  `rounds: 0`, `denials: 0` and `last_round: null`; `last_recorded_at` is its all-time latest round.
+- `rounds` is the sum across `repositories`. `window.since` is `null` for `all`.
+- `malformed_configs` names each repository and layer where the newest round in the window carrying
+  that layer recorded it as `unparseable` or `schema-rejected`, decided in SQL over
+  `config_resolution`, sorted by repository and then layer order `repo_config`, `org_defaults`,
+  `workflow_inputs`.
+- A D1 error is **500** (`{"error": "query failed"}`).
+
+---
+
 ## Local Development & Deployment
 
 ```bash

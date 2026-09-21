@@ -5043,4 +5043,192 @@ describe("Worker telemetry read API", () => {
     });
 
   });
+
+  describe("GET /api/fleet/repos (#185)", () => {
+    const TEXT_COLUMNS = /pr_title|pr_author|verdict_text|header_raw|body_excerpt|raw_result|diff_hunk/;
+
+    function fleetDb({ sevenDayCount = 0, fiftiethAt = null, lastRecorded = [], windowed = [], lastRounds = [], malformed = {} } = {}) {
+      return createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("OFFSET 49")) {
+            return fiftiethAt ? { recorded_at: fiftiethAt } : null;
+          }
+          if (sql.includes("COUNT(*) AS cnt")) {
+            return { cnt: sevenDayCount };
+          }
+          if (sql.includes("MAX(recorded_at) AS last_recorded_at")) {
+            return lastRecorded;
+          }
+          if (sql.includes("COUNT(*) AS rounds")) {
+            return windowed;
+          }
+          if (sql.includes("json_extract(config_resolution")) {
+            const layer = /\$\.layers\.(\w+)\.outcome/.exec(sql)[1];
+            return malformed[layer] ?? [];
+          }
+          if (sql.includes("ROW_NUMBER()")) {
+            return lastRounds;
+          }
+          return null;
+        },
+      });
+    }
+
+    async function getFleet(path, db) {
+      const helper = await getAccessHelper();
+      const env = { ...helper.env, DB: db };
+      return worker.fetch(makeAuthenticatedRequest(path, helper.jwt), env);
+    }
+
+    function assertWall(db) {
+      assert.ok(db.queries.length > 0);
+      for (const query of db.queries) {
+        assert.doesNotMatch(query.sql, TEXT_COLUMNS);
+      }
+    }
+
+    it("rejects a missing or unknown range with 400", async () => {
+      for (const path of ["/api/fleet/repos", "/api/fleet/repos?range=weekly"]) {
+        const db = fleetDb();
+        const res = await getFleet(path, db);
+        assert.equal(res.status, 400);
+        assert.deepEqual(await res.json(), { error: "invalid range" });
+        assert.equal(db.queries.length, 0);
+      }
+    });
+
+    it("binds a since 30 days back for range=30d and says so", async () => {
+      const db = fleetDb();
+      const before = Date.now();
+      const res = await getFleet("/api/fleet/repos?range=30d", db);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.window.range, "30d");
+      assert.equal(data.window.label, "the last 30 days");
+      const expected = before - 30 * 24 * 60 * 60 * 1000;
+      assert.ok(Math.abs(Date.parse(data.window.since) - expected) <= 5000);
+      const windowedQuery = db.queries.find((q) => q.sql.includes("COUNT(*) AS rounds"));
+      assert.match(windowedQuery.sql, /recorded_at >= \?/);
+      assert.equal(windowedQuery.args.length, 1);
+      assert.ok(Math.abs(Date.parse(windowedQuery.args[0]) - expected) <= 5000);
+      assertWall(db);
+    });
+
+    it("binds nothing for range=all and labels it all recorded rounds", async () => {
+      const db = fleetDb();
+      const res = await getFleet("/api/fleet/repos?range=all", db);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.deepEqual(data.window, { range: "all", since: null, label: "all recorded rounds" });
+      for (const query of db.queries) {
+        assert.equal(query.args.length, 0);
+        assert.doesNotMatch(query.sql, /recorded_at >= \?/);
+      }
+      assertWall(db);
+    });
+
+    it("resolves the rolling window to 7 days or 50 rounds, whichever holds more", async () => {
+      const byDays = fleetDb({ sevenDayCount: 60, fiftiethAt: "2026-09-01T00:00:00.000Z" });
+      const daysRes = await getFleet("/api/fleet/repos?range=rolling", byDays);
+      const daysData = await daysRes.json();
+      assert.equal(daysData.window.label, "the last 7 days");
+      assert.ok(Math.abs(Date.parse(daysData.window.since) - (Date.now() - 7 * 24 * 60 * 60 * 1000)) <= 5000);
+      assertWall(byDays);
+
+      const byCount = fleetDb({ sevenDayCount: 10, fiftiethAt: "2026-09-01T00:00:00.000Z" });
+      const countRes = await getFleet("/api/fleet/repos?range=rolling", byCount);
+      const countData = await countRes.json();
+      assert.deepEqual(countData.window, {
+        range: "rolling",
+        since: "2026-09-01T00:00:00.000Z",
+        label: "the last 50 rounds",
+      });
+      const windowedQuery = byCount.queries.find((q) => q.sql.includes("COUNT(*) AS rounds"));
+      assert.deepEqual(windowedQuery.args, ["2026-09-01T00:00:00.000Z"]);
+      assertWall(byCount);
+    });
+
+    it("keeps a repository quiet in the window, with zero rounds and its all-time last round", async () => {
+      const db = fleetDb({
+        lastRecorded: [
+          { repository: "o/busy", last_recorded_at: "2026-09-20T00:00:00.000Z" },
+          { repository: "o/quiet", last_recorded_at: "2026-06-01T00:00:00.000Z" },
+        ],
+        windowed: [{ repository: "o/busy", rounds: 3, denials: 1 }],
+        lastRounds: [
+          { repository: "o/busy", session_id: "s-9", recorded_at: "2026-09-20T00:00:00.000Z", round_type: "full", verdict_kind: "reviewed" },
+        ],
+      });
+      const res = await getFleet("/api/fleet/repos?range=30d", db);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.rounds, 3);
+      assert.deepEqual(data.repositories, [
+        {
+          repository: "o/busy",
+          rounds: 3,
+          denials: 1,
+          last_round: { session_id: "s-9", recorded_at: "2026-09-20T00:00:00.000Z", round_type: "full", verdict_kind: "reviewed" },
+          last_recorded_at: "2026-09-20T00:00:00.000Z",
+        },
+        {
+          repository: "o/quiet",
+          rounds: 0,
+          denials: 0,
+          last_round: null,
+          last_recorded_at: "2026-06-01T00:00:00.000Z",
+        },
+      ]);
+      assertWall(db);
+    });
+
+    it("maps malformed config layers in layer order, decided in SQL", async () => {
+      const db = fleetDb({
+        malformed: {
+          workflow_inputs: [{ repository: "o/a", outcome: "schema-rejected" }],
+          repo_config: [
+            { repository: "o/b", outcome: "unparseable" },
+            { repository: "o/a", outcome: "unparseable" },
+          ],
+        },
+      });
+      const res = await getFleet("/api/fleet/repos?range=all", db);
+      const data = await res.json();
+      assert.deepEqual(data.malformed_configs, [
+        { repository: "o/a", layer: "repo_config" },
+        { repository: "o/a", layer: "workflow_inputs" },
+        { repository: "o/b", layer: "repo_config" },
+      ]);
+      const layerQueries = db.queries.filter((q) => q.sql.includes("json_extract(config_resolution"));
+      assert.equal(layerQueries.length, 3);
+      for (const query of layerQueries) {
+        assert.match(query.sql, /outcome IN \('unparseable', 'schema-rejected'\)/);
+      }
+      assertWall(db);
+    });
+
+    it("never names a text column in any query it runs", async () => {
+      for (const range of ["rolling", "30d", "90d", "all"]) {
+        const db = fleetDb({ sevenDayCount: 10, fiftiethAt: "2026-09-01T00:00:00.000Z" });
+        const res = await getFleet(`/api/fleet/repos?range=${range}`, db);
+        assert.equal(res.status, 200);
+        assertWall(db);
+      }
+    });
+
+    it("answers a D1 failure with 500 query failed", async () => {
+      const db = createFakeDb({ shouldThrow: true });
+      const res = await getFleet("/api/fleet/repos?range=all", db);
+      assert.equal(res.status, 500);
+      assert.deepEqual(await res.json(), { error: "query failed" });
+    });
+
+    it("is closed without an Access header", async () => {
+      const helper = await getAccessHelper();
+      const db = fleetDb();
+      const res = await worker.fetch(makeRequest("/api/fleet/repos?range=all", { method: "GET" }), { ...helper.env, DB: db });
+      assert.equal(res.status, 403);
+      assert.equal(db.queries.length, 0);
+    });
+  });
 });

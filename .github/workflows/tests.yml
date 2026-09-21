@@ -165,6 +165,10 @@ jobs:
       - name: Telemetry health behaviour
         run: python3 tests/test-telemetry-health.py
 
+      # A fleet handler's SQL never names a text column (#185).
+      - name: Fleet routes never select text (#185)
+        run: python3 tests/test-fleet-wall.py
+
       # A test file this job does not name is a test that never runs (#130).
       - name: Every test file is wired into this job
         run: |
