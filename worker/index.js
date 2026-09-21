@@ -1,4 +1,5 @@
 import { jwtVerify, createRemoteJWKSet } from "jose";
+import { createInstallationTokenMinter, MintError } from "./github-app.js";
 
 let cachedCerts = null;
 let certsExpiry = 0;
@@ -3229,9 +3230,272 @@ async function handleRunnerRegister(request, env) {
   });
 }
 
+function validateJob(payload) {
+  if (typeof payload.repository !== "string" || !REPOSITORY_PATTERN.test(payload.repository)) {
+    return "invalid-repository";
+  }
+  if (!Number.isInteger(payload.pr_number) || payload.pr_number < 1) {
+    return "invalid-pr-number";
+  }
+  if (typeof payload.base_sha !== "string" || !SHA_PATTERN.test(payload.base_sha)) {
+    return "invalid-base-sha";
+  }
+  if (typeof payload.head_sha !== "string" || !SHA_PATTERN.test(payload.head_sha)) {
+    return "invalid-head-sha";
+  }
+  if (!JOB_MODES.has(payload.mode)) {
+    return "invalid-mode";
+  }
+  if (!ENGINES.has(payload.engine)) {
+    return "invalid-engine";
+  }
+  if (!CREDENTIAL_KINDS.has(payload.credential_kind)) {
+    return "invalid-credential-kind";
+  }
+  if (payload.level !== undefined && !JOB_LEVELS.has(payload.level)) {
+    return "invalid-level";
+  }
+  if (
+    payload.model !== undefined &&
+    payload.model !== null &&
+    (typeof payload.model !== "string" || payload.model.length > 128)
+  ) {
+    return "invalid-model";
+  }
+  const config = payload.config_effective;
+  if (config !== undefined && config !== null && (typeof config !== "object" || Array.isArray(config))) {
+    return "invalid-config-effective";
+  }
+  return null;
+}
+
+// One active job per pull request (design §5, the lane's concurrency group). The same head is
+// idempotent; a new head supersedes what is still queued and leaves a leased or running job to
+// finish. Bullet 4's webhook enqueues through this same function.
+async function enqueueJob(env, job) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, state, head_sha FROM jobs WHERE repository = ? AND pr_number = ?
+      AND state IN ('queued', 'leased', 'running') ORDER BY created_at DESC`
+  )
+    .bind(job.repository, job.pr_number)
+    .all();
+  const same = (results ?? []).find((r) => r.head_sha === job.head_sha);
+  if (same) {
+    return { job_id: same.id, state: same.state, duplicate: true };
+  }
+  const id = crypto.randomUUID();
+  const nowIso = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE jobs SET state='superseded', finished_at=? WHERE repository=? AND pr_number=? AND state='queued'"
+    ).bind(nowIso, job.repository, job.pr_number),
+    env.DB.prepare(
+      `INSERT INTO jobs (
+        id,
+        repository,
+        pr_number,
+        base_sha,
+        head_sha,
+        mode,
+        level,
+        model,
+        engine,
+        credential_kind,
+        config_effective,
+        state,
+        attempts,
+        created_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`
+    ).bind(
+      id,
+      job.repository,
+      job.pr_number,
+      job.base_sha,
+      job.head_sha,
+      job.mode,
+      job.level ?? "medium",
+      job.model ?? null,
+      job.engine,
+      job.credential_kind,
+      serializeJson(job.config_effective, null),
+      "queued",
+      0,
+      nowIso
+    ),
+  ]);
+  return { job_id: id, state: "queued", duplicate: false };
+}
+
+async function handlePostJobs(request, env) {
+  const { payload, response } = await readControlBody(request);
+  if (response) {
+    return response;
+  }
+  const invalid = validateJob(payload);
+  if (invalid) {
+    return controlError(invalid, 400);
+  }
+  let result;
+  try {
+    result = await enqueueJob(env, payload);
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  if (result.duplicate) {
+    return controlJson({ job_id: result.job_id, state: result.state, duplicate: true });
+  }
+  return controlJson({ job_id: result.job_id }, 201);
+}
+
+function leasePollMs(env) {
+  const parsed = Number(env?.LEASE_POLL_MS);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 2000;
+}
+
+function parseJsonObjectOrNull(text) {
+  if (typeof text !== "string") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// The installation token is minted here and returned, never written to D1: the runner revokes
+// it before it reports finished, and a lease that dies with its runner lets it lapse at
+// GitHub's one-hour expiry.
+async function handleRunnerLease(request, url, env, mint) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+  const auth = await authenticateRunner(request, env);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const engine = url.searchParams.get("engine");
+  const kind = url.searchParams.get("kind");
+  if (!ENGINES.has(engine)) {
+    return controlError("invalid-engine", 400);
+  }
+  if (!CREDENTIAL_KINDS.has(kind)) {
+    return controlError("invalid-kind", 400);
+  }
+  const waitParam = url.searchParams.get("wait");
+  if (waitParam !== null && !/^\d+$/.test(waitParam)) {
+    return controlError("invalid-wait", 400);
+  }
+  const wait = waitParam === null ? LEASE_WAIT_MAX_S : Number(waitParam);
+  if (wait > LEASE_WAIT_MAX_S) {
+    return controlError("invalid-wait", 400);
+  }
+
+  let credential;
+  try {
+    const nowMs = Date.now();
+    await env.DB.prepare("UPDATE runners SET last_seen_at = ?1 WHERE id = ?2")
+      .bind(new Date(nowMs).toISOString(), auth.runner_id)
+      .run();
+    await sweepExpiredLeases(env, nowMs);
+    credential = await env.DB.prepare(
+      "SELECT fingerprint FROM runner_credentials WHERE runner_id = ? AND engine = ? AND credential_kind = ?"
+    )
+      .bind(auth.runner_id, engine, kind)
+      .first();
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  if (!credential) {
+    return controlError("unregistered-credential", 409);
+  }
+
+  const pollMs = leasePollMs(env);
+  const deadline = Date.now() + wait * 1000;
+  let job = null;
+  try {
+    for (;;) {
+      job = await env.DB.prepare(
+        `UPDATE jobs SET state='leased', runner_id=?1, credential_fingerprint=?2, leased_at=?3, heartbeat_at=?3, attempts=attempts+1
+WHERE id = (SELECT id FROM jobs WHERE state='queued' AND engine=?4 AND credential_kind=?5 ORDER BY created_at ASC LIMIT 1)
+  AND state='queued'
+RETURNING id, repository, pr_number, base_sha, head_sha, mode, level, model, engine, credential_kind, config_effective, attempts`
+      )
+        .bind(auth.runner_id, credential.fingerprint, new Date().toISOString(), engine, kind)
+        .first();
+      if (job || Date.now() + pollMs > deadline) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  if (!job) {
+    return new Response(null, { status: 204 });
+  }
+
+  const [owner, repo] = job.repository.split("/");
+  let minted;
+  try {
+    minted = await mint({ owner, repo });
+  } catch (err) {
+    const code = err instanceof MintError ? err.code : null;
+    try {
+      if (code === "not-installed") {
+        await env.DB.prepare(
+          "UPDATE jobs SET state='failed', conclusion='app-not-installed', finished_at=? WHERE id=?"
+        )
+          .bind(new Date().toISOString(), job.id)
+          .run();
+        return new Response(null, { status: 204 });
+      }
+      await env.DB.prepare(
+        "UPDATE jobs SET state='queued', runner_id=NULL, credential_fingerprint=NULL, leased_at=NULL, heartbeat_at=NULL, attempts=attempts-1 WHERE id=?"
+      )
+        .bind(job.id)
+        .run();
+    } catch {
+      return new Response(null, { status: 500 });
+    }
+    return code === "app-unconfigured"
+      ? controlError("app-unconfigured", 503)
+      : controlError("token-mint-failed", 502);
+  }
+
+  try {
+    await env.DB.prepare("UPDATE jobs SET installation_id=? WHERE id=?")
+      .bind(minted.installation_id, job.id)
+      .run();
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+
+  return controlJson({
+    job: {
+      id: job.id,
+      repository: job.repository,
+      pr_number: job.pr_number,
+      base_sha: job.base_sha,
+      head_sha: job.head_sha,
+      mode: job.mode,
+      level: job.level,
+      model: job.model,
+      engine: job.engine,
+      credential_kind: job.credential_kind,
+      config_effective: parseJsonObjectOrNull(job.config_effective),
+      attempt: job.attempts,
+    },
+    installation_token: minted.token,
+    installation_token_expires_at: minted.expires_at,
+    heartbeat_timeout_s: heartbeatTimeoutS(env),
+  });
+}
+
 export default {
   async fetch(request, env, ctx, options = {}) {
-    const opts = (ctx && typeof ctx === "object" && typeof ctx.getKey === "function") ? ctx : (options || {});
+    const opts = (ctx && typeof ctx === "object" && (typeof ctx.getKey === "function" || typeof ctx.mintInstallationToken === "function")) ? ctx : (options || {});
     const getKey = opts.getKey || env?.getKey;
     const authOptions = getKey ? { getKey } : {};
 
@@ -3257,6 +3521,11 @@ export default {
 
     if (method === "POST" && pathname === "/runner/register") {
       return handleRunnerRegister(request, env);
+    }
+
+    if (method === "GET" && pathname === "/runner/lease") {
+      const mint = opts.mintInstallationToken || createInstallationTokenMinter(env).mint;
+      return handleRunnerLease(request, url, env, mint);
     }
 
     if (
@@ -3351,6 +3620,17 @@ export default {
           return controlError("invalid-id", 400);
         }
         return handleDeleteRunner(id, env);
+      }
+      return new Response(null, { status: 404 });
+    }
+
+    if (pathname === "/api/jobs") {
+      const authError = await verifyAccess(request, env);
+      if (authError) {
+        return authError;
+      }
+      if (method === "POST" && pathname === "/api/jobs") {
+        return handlePostJobs(request, env);
       }
       return new Response(null, { status: 404 });
     }

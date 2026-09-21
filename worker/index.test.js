@@ -5563,3 +5563,267 @@ describe("Runner registry (#184)", () => {
     assert.equal(res.status, 200);
   });
 });
+
+import { MintError } from "./github-app.js";
+
+const CP_JOB_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const CP_BASE = "a".repeat(40);
+const CP_HEAD = "b".repeat(40);
+
+function cpStubMinter({ fail } = {}) {
+  const calls = [];
+  const mint = async ({ owner, repo }) => {
+    calls.push({ owner, repo });
+    if (fail) throw new MintError(fail, fail === "github-error" ? 500 : undefined);
+    return { token: `ghs_stub_${calls.length}`, expires_at: "2026-09-21T13:00:00Z", installation_id: 42 };
+  };
+  return { calls, mint };
+}
+
+function cpClaimedRow(overrides = {}) {
+  return {
+    id: CP_JOB_ID, repository: "prismalens/sreforge", pr_number: 183, base_sha: CP_BASE, head_sha: CP_HEAD,
+    mode: "review", level: "medium", model: null, engine: "opencode", credential_kind: "api-key",
+    config_effective: '{"max_reviewable_lines":6000}', attempts: 1, ...overrides,
+  };
+}
+
+// A lease DB: the runner holds `registered` pairs; `queue` holds queued rows the claim may take.
+function cpLeaseDb({ registered = [["opencode", "api-key"]], queue = [] } = {}) {
+  const claims = [];
+  const db = cpRunnerDb((sql, args) => {
+    if (/FROM runner_credentials WHERE runner_id = \?/.test(sql)) {
+      return registered.some(([e, k]) => e === args[1] && k === args[2]) ? { fingerprint: "0123456789ab" } : null;
+    }
+    if (/SET state='leased'/.test(sql)) {
+      claims.push(args);
+      const i = queue.findIndex((j) => j.engine === args[3] && j.credential_kind === args[4]);
+      return i === -1 ? null : queue.splice(i, 1)[0];
+    }
+    return null;
+  });
+  return { db, claims };
+}
+
+const cpLease = (qs, db, mintStub, env = {}) =>
+  worker.fetch(cpRunnerRequest(`/runner/lease?${qs}`, { method: "GET" }), { DB: db, ...env }, { mintInstallationToken: mintStub.mint });
+
+describe("Jobs and lease (#184)", () => {
+  const access = useControlPlaneAccess();
+  const postJob = (body, db) =>
+    worker.fetch(
+      makeRequest("/api/jobs", { body, headers: { "Cf-Access-Jwt-Assertion": access.jwt } }),
+      { ...access.env, DB: db }
+    );
+  const validJob = (o = {}) => ({
+    repository: "prismalens/sreforge", pr_number: 183, base_sha: CP_BASE, head_sha: CP_HEAD,
+    mode: "review", engine: "opencode", credential_kind: "api-key", ...o,
+  });
+
+  it("POST /api/jobs sits behind Access", async () => {
+    const db = createFakeDb();
+    const res = await worker.fetch(makeRequest("/api/jobs", { body: validJob() }), { ...access.env, DB: db });
+    assert.equal(res.status, 403);
+    assert.equal(db.queries.length, 0);
+  });
+
+  it("POST /api/jobs refuses a malformed job with a 400", async () => {
+    const bad = {
+      repository: validJob({ repository: "no-slash" }),
+      pr_number: validJob({ pr_number: 0 }),
+      base_sha: validJob({ base_sha: "abc" }),
+      head_sha: validJob({ head_sha: "B".repeat(40) }),
+      mode: validJob({ mode: "summon" }),
+      engine: validJob({ engine: "gpt" }),
+      credential_kind: validJob({ credential_kind: "oauth" }),
+      level: validJob({ level: "max" }),
+      model: validJob({ model: "m".repeat(129) }),
+      config_effective: validJob({ config_effective: [1] }),
+    };
+    for (const [label, body] of Object.entries(bad)) {
+      const db = createFakeDb();
+      const res = await postJob(body, db);
+      assert.equal(res.status, 400, label);
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0, label);
+    }
+  });
+
+  it("the same head on an active job is idempotent: 200 duplicate and nothing written", async () => {
+    const db = createFakeDb({
+      handler: (sql) => (/FROM jobs WHERE repository = \?/.test(sql) ? [{ id: CP_JOB_ID, state: "leased", head_sha: CP_HEAD }] : null),
+    });
+    const res = await postJob(validJob(), db);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { job_id: CP_JOB_ID, state: "leased", duplicate: true });
+    const read = db.queries.find((q) => /FROM jobs WHERE repository = \?/.test(q.sql));
+    assert.match(read.sql, /state IN \('queued', 'leased', 'running'\)/);
+    assert.deepEqual(read.args, ["prismalens/sreforge", 183]);
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+  });
+
+  it("a new head supersedes the queued job and enqueues, leaving a leased one alone", async () => {
+    const db = createFakeDb({
+      handler: (sql) => (/FROM jobs WHERE repository = \?/.test(sql) ? [{ id: CP_JOB_ID, state: "queued", head_sha: "c".repeat(40) }] : null),
+    });
+    const res = await postJob(validJob({ level: "high", model: "opencode/x", config_effective: { a: 1 } }), db);
+    assert.equal(res.status, 201);
+    const { job_id } = await res.json();
+    assert.match(job_id, /^[0-9a-f-]{36}$/);
+    assert.notEqual(job_id, CP_JOB_ID);
+    const writes = db.queries.filter((q) => CP_WRITE.test(q.sql));
+    assert.equal(writes.length, 2);
+    assert.match(writes[0].sql, /UPDATE jobs SET state='superseded', finished_at=\? WHERE repository=\? AND pr_number=\? AND state='queued'/);
+    assert.deepEqual(writes[0].args.slice(1), ["prismalens/sreforge", 183]);
+    assert.match(writes[1].sql, /INSERT INTO jobs/);
+    assert.deepEqual(writes[1].args.slice(0, 12), [
+      job_id, "prismalens/sreforge", 183, CP_BASE, CP_HEAD, "review", "high", "opencode/x", "opencode", "api-key", '{"a":1}', "queued",
+    ]);
+  });
+
+  it("a lease with wait=0 and nothing queued is one claim, a 204, and no mint", async () => {
+    const { db, claims } = cpLeaseDb();
+    const stub = cpStubMinter();
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, stub);
+    assert.equal(res.status, 204);
+    assert.equal(claims.length, 1);
+    assert.equal(stub.calls.length, 0);
+    assert.ok(db.queries.some((q) => /UPDATE runners SET last_seen_at = \?/.test(q.sql)), "last_seen_at on every lease call");
+  });
+
+  it("a lease keeps polling for up to wait seconds", async () => {
+    const { db, claims } = cpLeaseDb();
+    const started = Date.now();
+    const res = await cpLease("engine=opencode&kind=api-key&wait=1", db, cpStubMinter(), { LEASE_POLL_MS: "200" });
+    assert.equal(res.status, 204);
+    assert.ok(claims.length >= 3 && claims.length <= 6, `claims ${claims.length}`);
+    assert.ok(Date.now() - started >= 800);
+  });
+
+  it("a lease returns the job and a read token minted for its repository, and stores neither the token nor logs it", async () => {
+    const { db, claims } = cpLeaseDb({ queue: [cpClaimedRow()] });
+    const stub = cpStubMinter();
+    const { result: res, lines } = await cpCaptureConsole(() => cpLease("engine=opencode&kind=api-key&wait=0", db, stub));
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.deepEqual(stub.calls, [{ owner: "prismalens", repo: "sreforge" }]);
+    assert.deepEqual(body, {
+      job: {
+        id: CP_JOB_ID, repository: "prismalens/sreforge", pr_number: 183, base_sha: CP_BASE, head_sha: CP_HEAD,
+        mode: "review", level: "medium", model: null, engine: "opencode", credential_kind: "api-key",
+        config_effective: { max_reviewable_lines: 6000 }, attempt: 1,
+      },
+      installation_token: "ghs_stub_1",
+      installation_token_expires_at: "2026-09-21T13:00:00Z",
+      heartbeat_timeout_s: 300,
+    });
+    assert.equal(claims[0][0], CP_RUNNER_ID);
+    assert.equal(claims[0][1], "0123456789ab");
+    const stamp = db.queries.find((q) => /UPDATE jobs SET installation_id=\? WHERE id=\?/.test(q.sql));
+    assert.deepEqual(stamp.args, [42, CP_JOB_ID]);
+    assert.ok(!JSON.stringify(db.queries).includes("ghs_stub_1"), "installation token never reaches D1");
+    assert.ok(!lines.join("\n").includes("ghs_stub_1"), "installation token never reaches console output");
+  });
+
+  it("the claim binds the requested engine and kind, so a claude-code job never goes to an opencode lease", async () => {
+    const { db, claims } = cpLeaseDb({
+      registered: [["opencode", "api-key"], ["claude-code", "api-key"]],
+      queue: [cpClaimedRow({ engine: "claude-code" })],
+    });
+    const stub = cpStubMinter();
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, stub);
+    assert.equal(res.status, 204);
+    assert.deepEqual([claims[0][3], claims[0][4]], ["opencode", "api-key"]);
+    const claim = db.queries.find((q) => /SET state='leased'/.test(q.sql));
+    assert.match(claim.sql, /WHERE state='queued' AND engine=\?4 AND credential_kind=\?5 ORDER BY created_at ASC LIMIT 1\)\s+AND state='queued'/);
+    assert.match(claim.sql, /RETURNING id, repository, pr_number/);
+    assert.equal(stub.calls.length, 0);
+  });
+
+  it("a lease for a pair the runner did not register is a 409 and claims nothing", async () => {
+    const { db, claims } = cpLeaseDb({ registered: [["opencode", "api-key"]], queue: [cpClaimedRow({ engine: "claude-code" })] });
+    const res = await cpLease("engine=claude-code&kind=api-key&wait=0", db, cpStubMinter());
+    assert.equal(res.status, 409);
+    assert.deepEqual(await res.json(), { error: "unregistered-credential" });
+    assert.equal(claims.length, 0);
+  });
+
+  it("refuses bad lease parameters with a 400", async () => {
+    for (const qs of ["kind=api-key", "engine=opencode", "engine=gpt&kind=api-key", "engine=opencode&kind=oauth", "engine=opencode&kind=api-key&wait=21", "engine=opencode&kind=api-key&wait=-1", "engine=opencode&kind=api-key&wait=1.5", "engine=opencode&kind=api-key&wait=x"]) {
+      const { db, claims } = cpLeaseDb();
+      const res = await cpLease(qs, db, cpStubMinter());
+      assert.equal(res.status, 400, qs);
+      assert.equal(claims.length, 0, qs);
+    }
+  });
+
+  it("a lease without a runner token is a 401, and is rate limited first", async () => {
+    const { db } = cpLeaseDb();
+    const res = await worker.fetch(cpRunnerRequest("/runner/lease?engine=opencode&kind=api-key&wait=0", { method: "GET", token: null }), { DB: db });
+    assert.equal(res.status, 401);
+    const limited = cpLeaseDb();
+    const res2 = await cpLease("engine=opencode&kind=api-key&wait=0", limited.db, cpStubMinter(), { INGEST_RATE_LIMITER: { limit: async () => ({ success: false }) } });
+    assert.equal(res2.status, 429);
+    assert.equal(limited.db.queries.length, 0);
+  });
+
+  it("an App not installed on the repository fails the job with app-not-installed and answers 204", async () => {
+    const { db } = cpLeaseDb({ queue: [cpClaimedRow()] });
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, cpStubMinter({ fail: "not-installed" }));
+    assert.equal(res.status, 204);
+    const fail = db.queries.find((q) => /conclusion='app-not-installed'/.test(q.sql));
+    assert.match(fail.sql, /state='failed'/);
+    assert.equal(fail.args.at(-1), CP_JOB_ID);
+  });
+
+  it("an unconfigured App puts the job back and answers 503", async () => {
+    const { db } = cpLeaseDb({ queue: [cpClaimedRow()] });
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, cpStubMinter({ fail: "app-unconfigured" }));
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), { error: "app-unconfigured" });
+    const back = db.queries.find((q) => /attempts=attempts-1/.test(q.sql));
+    assert.match(back.sql, /state='queued', runner_id=NULL, credential_fingerprint=NULL, leased_at=NULL, heartbeat_at=NULL/);
+    assert.deepEqual(back.args, [CP_JOB_ID]);
+  });
+
+  it("any other mint failure puts the job back and answers 502", async () => {
+    const { db } = cpLeaseDb({ queue: [cpClaimedRow()] });
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, cpStubMinter({ fail: "github-error" }));
+    assert.equal(res.status, 502);
+    assert.deepEqual(await res.json(), { error: "token-mint-failed" });
+    assert.ok(db.queries.some((q) => /attempts=attempts-1/.test(q.sql)));
+  });
+
+  it("the heartbeat sweep requeues a first expiry and fails a second with heartbeat-timeout", async () => {
+    const { db } = cpLeaseDb();
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, cpStubMinter(), { RUNNER_HEARTBEAT_TIMEOUT_S: "120" });
+    assert.equal(res.status, 204);
+    const sweepIdx = db.queries.findIndex((q) => /UPDATE jobs SET\s+state = CASE/.test(q.sql));
+    const claimIdx = db.queries.findIndex((q) => /SET state='leased'/.test(q.sql));
+    assert.ok(sweepIdx !== -1 && sweepIdx < claimIdx, "the sweep runs before the claim");
+    const sweep = db.queries[sweepIdx];
+    assert.match(sweep.sql, /WHERE state IN \('leased', 'running'\) AND heartbeat_at < \?1/);
+    // attempts=1 goes back to queued with its lease cleared; attempts=2 fails.
+    assert.match(sweep.sql, /state = CASE WHEN attempts >= 2 THEN 'failed' ELSE 'queued' END/);
+    assert.match(sweep.sql, /conclusion = CASE WHEN attempts >= 2 THEN 'heartbeat-timeout' ELSE conclusion END/);
+    assert.match(sweep.sql, /runner_id = CASE WHEN attempts >= 2 THEN runner_id ELSE NULL END/);
+    const [cutoff, now] = sweep.args;
+    assert.equal(Date.parse(now) - Date.parse(cutoff), 120_000);
+  });
+
+  it("RUNNER_HEARTBEAT_TIMEOUT_S unset is 300 in the lease response and the sweep cutoff", async () => {
+    const { db } = cpLeaseDb({ queue: [cpClaimedRow()] });
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, cpStubMinter());
+    assert.equal((await res.json()).heartbeat_timeout_s, 300);
+    const [cutoff, now] = db.queries.find((q) => /state = CASE/.test(q.sql)).args;
+    assert.equal(Date.parse(now) - Date.parse(cutoff), 300_000);
+  });
+
+  it("a GET under /runner/ that matches no route is a 404, not the SPA", async () => {
+    const assets = { fetch: async () => new Response("<html>", { status: 200 }) };
+    for (const path of ["/runner/nope", "/webhook/github"]) {
+      const res = await worker.fetch(makeRequest(path, { method: "GET" }), { ASSETS: assets, DB: createFakeDb() });
+      assert.equal(res.status, 404, path);
+    }
+  });
+});
