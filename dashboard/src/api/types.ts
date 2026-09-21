@@ -249,3 +249,30 @@ export interface FindingsResponse {
   rows: FindingRow[];
   next_cursor: string | null;
 }
+
+/** The identifiers of a repository's last round in the window; never its text (#185). */
+export interface FleetLastRound {
+  session_id: string;
+  recorded_at: string;
+  round_type: string | null;
+  verdict_kind: string | null;
+}
+
+export interface FleetRepoRow {
+  repository: string;
+  /** Rounds inside the window. */
+  rounds: number;
+  denials: number;
+  /** Null when the repository posted nothing inside the window. */
+  last_round: FleetLastRound | null;
+  /** All-time, not windowed. */
+  last_recorded_at: string | null;
+}
+
+/** GET /api/fleet/repos: aggregates only, windowed on the Worker (#185). */
+export interface FleetReposResponse {
+  window: { range: string; since: string | null; label: string };
+  rounds: number;
+  repositories: FleetRepoRow[];
+  malformed_configs: { repository: string; layer: string }[];
+}

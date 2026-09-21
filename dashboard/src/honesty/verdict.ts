@@ -172,7 +172,7 @@ export const VERDICT_KIND_DEFINITIONS: Record<
   },
 };
 
-export function decodeVerdict(row: RoundRow): VerdictState {
+export function decodeVerdict(row: Pick<RoundRow, "verdict_kind" | "round_type">): VerdictState {
   if (row.verdict_kind && row.verdict_kind in VERDICT_KIND_MAP) {
     return VERDICT_KIND_MAP[row.verdict_kind];
   }

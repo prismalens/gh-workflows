@@ -1,6 +1,7 @@
 import type {
   ChangesQuery,
   FindingsQuery,
+  FleetReposQuery,
   LaneEventsQuery,
   PrsQuery,
   RunsQuery,
@@ -12,6 +13,8 @@ import type {
   ChangesResponse,
   FindingRow,
   FindingsResponse,
+  FleetRepoRow,
+  FleetReposResponse,
   LaneEventRow,
   LaneEventsResponse,
   PrRow,
@@ -22,6 +25,8 @@ import type {
   RunsResponse,
   SummaryResponse,
 } from "@/api/types";
+import { summariseConfigs } from "@/features/failures/failures";
+import { applyRange } from "@/honesty/range";
 import { FIXTURE_PRS } from "./prs";
 import { FIXTURE_ROUNDS } from "./rounds";
 
@@ -298,6 +303,73 @@ export function makeFixtureApi(
           page.length === limit && last
             ? `${last.thread_created_at ?? ""}|${last.thread_node_id}`
             : null,
+      };
+    },
+
+    // The window goes through applyRange itself, so the fixture and the Worker's
+    // mirror of that rule are one rule, not two that can drift (#185).
+    async fetchFleetRepos({ range }: FleetReposQuery): Promise<FleetReposResponse> {
+      const now = new Date();
+      const windowed = applyRange(sorted, range, now);
+
+      const lastRecorded = new Map<string, string>();
+      for (const r of sorted) {
+        if (!lastRecorded.has(r.repository)) lastRecorded.set(r.repository, r.recorded_at);
+      }
+
+      const inWindow = new Map<string, FleetRepoRow>();
+      for (const r of windowed.rows) {
+        const entry = inWindow.get(r.repository);
+        if (entry) {
+          entry.rounds += 1;
+          entry.denials += r.permission_denials ?? 0;
+          continue;
+        }
+        inWindow.set(r.repository, {
+          repository: r.repository,
+          rounds: 1,
+          denials: r.permission_denials ?? 0,
+          last_round: {
+            session_id: r.session_id,
+            recorded_at: r.recorded_at,
+            round_type: r.round_type,
+            verdict_kind: r.verdict_kind,
+          },
+          last_recorded_at: null,
+        });
+      }
+
+      const names = [...new Set([...lastRecorded.keys(), ...inWindow.keys()])].sort();
+      const repositories = names.map((repository) => ({
+        ...(inWindow.get(repository) ?? {
+          repository,
+          rounds: 0,
+          denials: 0,
+          last_round: null,
+        }),
+        last_recorded_at: lastRecorded.get(repository) ?? null,
+      }));
+
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      const oldest = windowed.rows[windowed.rows.length - 1];
+      const since =
+        range === "all"
+          ? null
+          : range === "rolling" && windowed.label === "the last 50 rounds"
+            ? (oldest?.recorded_at ?? null)
+            : new Date(
+                now.getTime() - (range === "90d" ? 90 : range === "30d" ? 30 : 7) * DAY_MS,
+              ).toISOString();
+
+      return {
+        window: { range, since, label: windowed.label },
+        rounds: windowed.rows.length,
+        repositories,
+        malformed_configs: summariseConfigs(windowed.rows)
+          .items.filter(
+            (item) => item.outcome === "unparseable" || item.outcome === "schema-rejected",
+          )
+          .map((item) => ({ repository: item.repository, layer: item.layer })),
       };
     },
   };

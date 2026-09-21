@@ -3,6 +3,7 @@ import type {
   ChangesResponse,
   FindingRow,
   FindingsResponse,
+  FleetReposResponse,
   LaneEventRow,
   LaneEventsResponse,
   PrRow,
@@ -13,6 +14,7 @@ import type {
   RunsResponse,
   SummaryResponse,
 } from "./types";
+import type { StandardRangeKey } from "@/honesty/range";
 
 /**
  * Access sends an HTML login redirect rather than a 401 when the session is gone,
@@ -541,6 +543,7 @@ export interface TelemetryApi {
   fetchRoundAgents(sessionId: string): Promise<RoundAgentsResponse>;
   fetchPRs(query?: PrsQuery): Promise<PrsResponse>;
   fetchFindings(query?: FindingsQuery): Promise<FindingsResponse>;
+  fetchFleetRepos(query: FleetReposQuery): Promise<FleetReposResponse>;
   /** Set only by the fixture table, so the UI can say the rounds are invented. */
   readonly fixtures?: boolean;
 }
@@ -554,6 +557,7 @@ export const httpApi: TelemetryApi = {
     getJson(roundAgentsUrl(sessionId), isRoundAgentsResponse),
   fetchPRs: (query = {}) => getJson(prsUrl(query), isPrsResponse),
   fetchFindings: (query = {}) => getJson(findingsUrl(query), isFindingsResponse),
+  fetchFleetRepos: (query) => getJson(fleetReposUrl(query), isFleetReposResponse),
 };
 
 /**
@@ -604,4 +608,63 @@ export async function lookupRound(
     cursor = response.next_cursor;
   }
   return { found: false, reason: "not-in-scan-window", scanned };
+}
+
+export interface FleetReposQuery {
+  range: StandardRangeKey;
+}
+
+/** The Worker computes the window from `range`, so no `since` is ever sent (#185). */
+export function fleetReposUrl(query: FleetReposQuery): string {
+  return `/api/fleet/repos?${new URLSearchParams({ range: query.range }).toString()}`;
+}
+
+function isNullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+
+function isFleetRepoRow(row: unknown): boolean {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  if (
+    typeof r.repository !== "string" ||
+    typeof r.rounds !== "number" ||
+    typeof r.denials !== "number" ||
+    !isNullableString(r.last_recorded_at)
+  ) {
+    return false;
+  }
+  if (r.last_round === null) return true;
+  if (!r.last_round || typeof r.last_round !== "object") return false;
+  const last = r.last_round as Record<string, unknown>;
+  return (
+    typeof last.session_id === "string" &&
+    typeof last.recorded_at === "string" &&
+    isNullableString(last.round_type) &&
+    isNullableString(last.verdict_kind)
+  );
+}
+
+function isMalformedConfig(item: unknown): boolean {
+  if (!item || typeof item !== "object") return false;
+  const r = item as Record<string, unknown>;
+  return typeof r.repository === "string" && typeof r.layer === "string";
+}
+
+export function isFleetReposResponse(value: unknown): value is FleetReposResponse {
+  if (!value || typeof value !== "object") return false;
+  const val = value as Record<string, unknown>;
+  const win = val.window as Record<string, unknown> | null | undefined;
+  return (
+    !!win &&
+    typeof win === "object" &&
+    typeof win.range === "string" &&
+    isNullableString(win.since) &&
+    typeof win.label === "string" &&
+    typeof val.rounds === "number" &&
+    Array.isArray(val.repositories) &&
+    val.repositories.every(isFleetRepoRow) &&
+    Array.isArray(val.malformed_configs) &&
+    val.malformed_configs.every(isMalformedConfig)
+  );
 }

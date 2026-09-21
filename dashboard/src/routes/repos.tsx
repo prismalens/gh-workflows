@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { createRoute, Link } from "@tanstack/react-router";
 import { z } from "zod";
 
-import { useAttentionQuery, useRoundsQuery, useSummaryQuery } from "@/api/queries";
+import { useFleetReposQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +19,7 @@ import { malformedConfigs, quietRepos, summariseRepos } from "@/features/repos/r
 import { WatchOut } from "@/features/repos/WatchOut";
 import { Degraded } from "@/honesty/Degraded";
 import { RangeControl } from "@/honesty/RangeControl";
-import { applyRange, standardRangeSchema } from "@/honesty/range";
+import { linkableRange, standardRangeSchema } from "@/honesty/range";
 import { CountTile } from "@/honesty/Tile";
 import { VERDICT_COPY } from "@/honesty/verdict";
 import { formatCount, orDash } from "@/lib/format";
@@ -37,48 +37,28 @@ export const reposRoute = createRoute({
 });
 
 const EMPTY_ROWS = Object.freeze([]) as never[];
-const EMPTY_PER_REPOSITORY = Object.freeze([]) as never[];
 
 function ReposPage() {
   const search = reposRoute.useSearch();
   const navigate = reposRoute.useNavigate();
-  const now = useMemo(() => new Date(), []);
 
-  const summary = useSummaryQuery();
-  const rounds = useRoundsQuery({ range: search.range }, now);
-  // The malformed-config row reads the same blob-carrying query the failures
-  // page uses; the quiet row's last-round timestamp comes from the summary's
-  // per_repository array, not an unwindowed page of every round (#142 finding
-  // 3944697641).
-  const attention = useAttentionQuery({ range: search.range }, now);
+  // One request, and a Fleet one (#185): the window, the all-time denominator,
+  // each repository's last round and the malformed-config verdicts all arrive
+  // as aggregates, so no row route is read here.
+  const fleet = useFleetReposQuery(linkableRange(search.range));
 
-  const fetched = rounds.data?.rows ?? EMPTY_ROWS;
-  const truncated = rounds.data?.next_cursor != null;
-  const windowed = useMemo(
-    () => applyRange(fetched, search.range, now, truncated),
-    [fetched, search.range, now, truncated],
-  );
-
-  // The all-time repository list is this page's denominator, not a decoration.
-  // Falling back to [] while it loads would drop every repository that posted
-  // outside the window, which is the exact confusion the page exists to prevent:
-  // a quiet repository would vanish and the count would silently under-report.
-  // So the render waits for it below rather than defaulting it.
-  const everPosted = summary.data?.repositories;
-  const repos = useMemo(
-    () => summariseRepos(windowed.rows, everPosted ?? []),
-    [windowed.rows, everPosted],
-  );
+  const rows = fleet.data?.repositories ?? EMPTY_ROWS;
+  const repos = useMemo(() => summariseRepos(rows), [rows]);
   const active = repos.filter((repo) => repo.rounds > 0).length;
   const denials = repos.reduce((sum, repo) => sum + repo.denials, 0);
+  const windowLabel = fleet.data?.window.label ?? "";
 
-  const blobRows = attention.data?.rows ?? EMPTY_ROWS;
-  const perRepository = summary.data?.per_repository ?? EMPTY_PER_REPOSITORY;
-  const malformed = useMemo(() => malformedConfigs(blobRows), [blobRows]);
-  const quiet = useMemo(() => quietRepos(repos, perRepository), [repos, perRepository]);
+  const malformedItems = fleet.data?.malformed_configs ?? EMPTY_ROWS;
+  const malformed = useMemo(() => malformedConfigs(malformedItems), [malformedItems]);
+  const quiet = useMemo(() => quietRepos(rows), [rows]);
   const lastRecordedByRepo = useMemo(
-    () => new Map(perRepository.map((r) => [r.repository, r.last_recorded_at])),
-    [perRepository],
+    () => new Map(rows.map((r) => [r.repository, r.last_recorded_at])),
+    [rows],
   );
 
   return (
@@ -91,26 +71,23 @@ function ReposPage() {
         />
       </div>
 
-      {rounds.isPending || summary.isPending || attention.isPending ? (
+      {fleet.isPending ? (
         <LoadingRows label="Loading repositories" />
-      ) : rounds.isError || summary.isError || attention.isError ? (
-        <QueryError
-          error={rounds.error ?? summary.error ?? attention.error}
-          title="Could not load repositories"
-        />
+      ) : fleet.isError ? (
+        <QueryError error={fleet.error} title="Could not load repositories" />
       ) : (
         <>
           <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <CountTile
               label="Repositories posting"
               count={repos.length}
-              detail={`${active} posted over ${windowed.label}`}
+              detail={`${active} posted over ${windowLabel}`}
               support="repositories that have ever posted a round, which is not the same as repositories configured"
             />
             <CountTile
               label="Rounds"
-              count={windowed.rows.length}
-              detail={`over ${windowed.label}`}
+              count={fleet.data.rounds}
+              detail={`over ${windowLabel}`}
             />
             <CountTile
               label="Permission denials"
@@ -123,7 +100,7 @@ function ReposPage() {
             malformed={malformed}
             quiet={quiet}
             range={search.range}
-            windowLabel={windowed.label}
+            windowLabel={windowLabel}
           />
 
           <Card>
@@ -163,8 +140,8 @@ function ReposPage() {
                             <Timestamp iso={repo.lastRound.recorded_at} compact />
                           </Link>
                         ) : lastRecordedByRepo.get(repo.repository) ? (
-                          // Quiet in this window: the summary's per_repository array still
-                          // knows when it last posted (#142 finding 3944697641).
+                          // Quiet in this window: last_recorded_at is all-time, so the
+                          // row still knows when it last posted (#142 finding 3944697641).
                           <Timestamp
                             iso={lastRecordedByRepo.get(repo.repository) ?? null}
                             compact

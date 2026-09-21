@@ -7,6 +7,7 @@ import { parsePerModelUsage, parseRawResult, parseSubagentStats } from "./blobs"
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
 import type { LaneEventRow, RoundAgentRow } from "./types";
+import { fleetReposUrl, isFleetReposResponse } from "./client";
 
 const rows = makeRounds({ count: 64 });
 const api = makeFixtureApi(rows);
@@ -672,5 +673,61 @@ describe("round agents API (#131, #89)", () => {
 
     // next_cursor: number is invalid
     expect(isRoundAgentsResponse({ rows: [validRow], next_cursor: 123 })).toBe(false);
+  });
+});
+
+describe("GET /api/fleet/repos (#185)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const fleetBody = {
+    window: { range: "rolling", since: "2026-09-14T00:00:00.000Z", label: "the last 7 days" },
+    rounds: 3,
+    repositories: [
+      {
+        repository: "o/busy",
+        rounds: 3,
+        denials: 1,
+        last_round: {
+          session_id: "s-9",
+          recorded_at: "2026-09-20T00:00:00.000Z",
+          round_type: "full",
+          verdict_kind: null,
+        },
+        last_recorded_at: "2026-09-20T00:00:00.000Z",
+      },
+      { repository: "o/quiet", rounds: 0, denials: 0, last_round: null, last_recorded_at: null },
+    ],
+    malformed_configs: [{ repository: "o/busy", layer: "repo_config" }],
+  };
+
+  const stubFetch = (body: unknown) => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  };
+
+  it("sends only the range, never a since", () => {
+    expect(fleetReposUrl({ range: "30d" })).toBe("/api/fleet/repos?range=30d");
+  });
+
+  it("accepts the documented shape", async () => {
+    const fetchMock = stubFetch(fleetBody);
+    await expect(httpApi.fetchFleetRepos({ range: "rolling" })).resolves.toEqual(fleetBody);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/fleet/repos?range=rolling");
+    expect(isFleetReposResponse(fleetBody)).toBe(true);
+  });
+
+  it("rejects a payload whose repositories is not an array as malformed", async () => {
+    stubFetch({ ...fleetBody, repositories: {} });
+    await expect(httpApi.fetchFleetRepos({ range: "all" })).rejects.toMatchObject({
+      kind: "malformed",
+    });
   });
 });

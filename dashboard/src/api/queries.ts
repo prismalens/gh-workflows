@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { rangeSince, type RangeKey } from "@/honesty/range";
+import { rangeSince, type RangeKey, type StandardRangeKey } from "@/honesty/range";
 import {
   lookupRound,
   MAX_LIMIT,
@@ -239,3 +239,13 @@ export function usePRDetailQuery(repository: string, prNumber: number | null) {
   });
 }
 
+
+/** The repositories page's one request: aggregates windowed on the Worker (#185). */
+export function useFleetReposQuery(range: StandardRangeKey) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["fleet-repos", range],
+    queryFn: () => api.fetchFleetRepos({ range }),
+    staleTime: 30_000,
+  });
+}
