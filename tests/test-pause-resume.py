@@ -957,6 +957,24 @@ def main():
         print("  ok    awaiting-label verdict names claude_review and admission: label (#189)")
     lane_event_records("17", "awaiting-label")
 
+    # 18c. A refused summon changes no state (#189 ruling): under skip-label or
+    # awaiting-label, review, full review and resume must not lift a standing pause,
+    # and a pause still records. admission-off never reaches the marker at all (case 15).
+    wrong = []
+    for reason in ("skip-label", "awaiting-label"):
+        for verb in ("incremental", "full", "resume", "pause"):
+            rc, body, outs, err = run_announce_step(
+                announce_script, marker_body=paused_old, skip_reason=reason,
+                event="issue_comment", summon=verb, mode="skip", head_sha=NEW, actor_login="bob",
+            )
+            marker_line = body.splitlines()[0] if body else ""
+            if rc != 0 or "paused=1 paused_by=alice" not in marker_line:
+                wrong.append(f"{reason}/{verb}: rc={rc} marker={marker_line!r}")
+    if wrong:
+        fails.append("case 18c: a refused summon changed the pause state: " + "; ".join(wrong))
+    else:
+        print("  ok    a summon refused by a label skip leaves paused=1 paused_by=alice standing (#189)")
+
     # 18a. resolve turns labels into booleans, and nothing else.
     pr_script = extract_step_script("resolve", "Fetch PR metadata and validate origin")
     base_pr = {"head": {"sha": NEW, "repo": {"full_name": "prismalens/test-repo"}},

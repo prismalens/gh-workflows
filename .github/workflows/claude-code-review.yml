@@ -5293,6 +5293,9 @@ jobs:
             esac
           elif [ "$SKIP_REASON" = "paused-by-request" ]; then
             is_paused=1
+          # A summon refused by a label skip changes no state, so it lifts no pause (#189).
+          elif [ "$SKIP_REASON" = "skip-label" ] || [ "$SKIP_REASON" = "awaiting-label" ]; then
+            is_paused=$prev_paused
           elif [ "${SUMMON:-}" = "incremental" ] || [ "${SUMMON:-}" = "full" ] || [ "${SUMMON:-}" = "resume" ]; then
             # A summon lifts the pause, and that is deliberate: `@claude pause` is the
             # COMMENT layer, which is per-round and ephemeral by construction, so a stop
