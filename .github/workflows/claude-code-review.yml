@@ -486,6 +486,9 @@ jobs:
           # code is read. No workflow input either — org/repo config only, default medium.
           # 'low' is schema-rejected this release (see ALLOWED_LEVELS below).
           level = "medium"
+          # review.admission (#189): no workflow input backs it, org/repo config only. A
+          # narrower layer (label, comment) can never override `off`.
+          admission = "auto"
           # Without PyYAML neither config layer can be read, so consent can't be
           # verified either; that fails closed to off, not the workflow default (#177,
           # thread 4006669598).
@@ -508,6 +511,7 @@ jobs:
               "issue_context_total_byte_budget": "workflow default",
               "variant": "control",
               "level": "workflow default",
+              "admission": "workflow default",
               "context": "workflow default",
               "telemetry_share": "workflow default",
           }
@@ -534,6 +538,7 @@ jobs:
               "variant",
               "level",
               "context",
+              "admission",
           }
           # Story: #47 amendment. An optional operator label for A/B comparison; empty is control.
           MAX_VARIANT_LENGTH = 64
@@ -551,6 +556,7 @@ jobs:
           # #101 ruling: 'low' is schema-rejected for this release. It ships once the
           # findings sweep (#47) has a 'medium' baseline to compare it against.
           ALLOWED_LEVELS = {"medium", "high"}
+          ALLOWED_ADMISSION = {"auto", "label", "off"}
           # #146's catalog. Adding a genuinely new tool still needs a workflow change (the
           # command that runs it); this key only lets a repo narrow which of the catalog run.
           ALLOWED_TOOL_NAMES = {"actionlint", "shellcheck", "tsc", "eslint", "biome"}
@@ -628,6 +634,17 @@ jobs:
                               errors.append(
                                   f"Invalid value for 'review.level' in {filename}: {lvl!r}. "
                                   f"Allowed values: {sorted(ALLOWED_LEVELS)}"
+                              )
+
+                      if "admission" in review:
+                          adm = review["admission"]
+                          # PyYAML reads an unquoted `off` as False; that spelling is accepted (#176 precedent).
+                          if adm is False:
+                              adm = "off"
+                          if not isinstance(adm, str) or adm not in ALLOWED_ADMISSION:
+                              errors.append(
+                                  f"Invalid value for 'review.admission' in {filename}: {review['admission']!r}. "
+                                  f"Allowed values: {sorted(ALLOWED_ADMISSION)}"
                               )
 
                       if "auto_pause_rounds" in review:
@@ -952,6 +969,10 @@ jobs:
                                   level = review["level"]
                                   sources["level"] = "org defaults"
                                   org_consumed.append(f"review.level={level}")
+                              if "admission" in review:
+                                  admission = "off" if review["admission"] is False else review["admission"]
+                                  sources["admission"] = "org defaults"
+                                  org_consumed.append(f"review.admission={admission}")
                               if "auto_pause_rounds" in review:
                                   auto_pause_rounds = review["auto_pause_rounds"]
                                   sources["auto_pause_rounds"] = "org defaults"
@@ -1107,6 +1128,10 @@ jobs:
                                   level = review["level"]
                                   sources["level"] = "repo config"
                                   consumed.append(f"review.level={level}")
+                              if "admission" in review:
+                                  admission = "off" if review["admission"] is False else review["admission"]
+                                  sources["admission"] = "repo config"
+                                  consumed.append(f"review.admission={admission}")
                               if "auto_pause_rounds" in review:
                                   auto_pause_rounds = review["auto_pause_rounds"]
                                   sources["auto_pause_rounds"] = "repo config"
@@ -1212,6 +1237,7 @@ jobs:
               "issue_context_byte_budget": issue_context_byte_budget,
               "issue_context_total_byte_budget": issue_context_total_byte_budget,
               "level": level,
+              "admission": admission,
               "context": context_config,
           }
           config_hash = hashlib.sha256(
@@ -1247,6 +1273,7 @@ jobs:
           print(f"  review.issue_context_total_byte_budget: {issue_context_total_byte_budget} (source: {sources['issue_context_total_byte_budget']})")
           print(f"  review.variant: {variant or '(control)'} (source: {sources['variant']})")
           print(f"  review.level: {level} (source: {sources['level']})")
+          print(f"  review.admission: {admission} (source: {sources['admission']})")
           print(f"  telemetry.share: {telemetry_share} (source: {sources['telemetry_share']})")
           print(f"  config_hash: {config_hash}")
 
@@ -1270,6 +1297,7 @@ jobs:
                   f.write(f"config_effective={config_effective_json}\n")
                   f.write(f"variant={variant}\n")
                   f.write(f"level={level}\n")
+                  f.write(f"admission={admission}\n")
                   f.write(f"context={json.dumps(context_config, separators=(',', ':'))}\n")
                   f.write(f"telemetry_share={telemetry_share}\n")
           PY
