@@ -1,0 +1,10 @@
+{
+  "name": "assayer-review",
+  "url": "https://github.com/prismalens/gh-workflows",
+  "description": "Reviews pull requests through a runner you host. One App per install; no shared tenancy.",
+  "public": false,
+  "hook_attributes": { "url": "https://CONTROL_PLANE_HOST/webhook/github", "active": true },
+  "redirect_url": "https://github.com/prismalens/gh-workflows",
+  "default_permissions": { "contents": "read", "metadata": "read", "pull_requests": "write", "issues": "write" },
+  "default_events": ["pull_request"]
+}

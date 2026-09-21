@@ -542,6 +542,113 @@ The Worker computes the window, so the label always agrees with the rows counted
 
 ---
 
+## Control plane (#184)
+
+The runner pulls review jobs from these routes. A runner authenticates with its own runner token
+(`Authorization: Bearer asr_…`); the admin routes sit behind Cloudflare Access, the same check
+and the same service-token dependency as `POST /api/changes`. Every `/runner/*` route is rate
+limited before the token is looked up, and every error body is `{"error": "<code>"}`.
+
+| Route | Auth | Body or query | Responses |
+|---|---|---|---|
+| `POST /api/runners` | Access | `{name}`, 1 to 100 chars | 201 `{id, name, token}`; 400 |
+| `GET /api/runners` | Access | none | 200 `{rows: [{id, name, created_at, revoked_at, last_seen_at, placement, credentials: [...]}]}` |
+| `DELETE /api/runners/:id` | Access | none | 204, idempotent; 400 `invalid-id` |
+| `POST /api/jobs` | Access | `{repository, pr_number, base_sha, head_sha, mode, engine, credential_kind, level?, model?, config_effective?}` | 201 `{job_id}`; 200 `{job_id, state, duplicate: true}`; 400 |
+| `POST /runner/register` | runner token | `{placement: box\|laptop, credentials: [{engine, kind, fingerprint, concurrency}]}` | 200 `{runner_id, credentials, heartbeat_timeout_s, lease_wait_max_s}`; 400; 409 `duplicate-fingerprint` |
+| `GET /runner/lease?engine=&kind=&wait=` | runner token | `wait` 0 to 20 s, default 20 | 200 `{job, installation_token, installation_token_expires_at, heartbeat_timeout_s}`; 204 no job; 400; 409 `unregistered-credential`; 502 `token-mint-failed`; 503 `app-unconfigured` |
+| `POST /runner/jobs/:id/events` | runner token | `{events: [assayer/v1 ...]}`, `[]` is a heartbeat | 204; 400 `invalid-event`; 403 `not-lease-holder`; 404; 409 `lease-lost`; 413 `too-many-events` or `event-too-large` |
+
+Every runner route also answers 401 with an empty body for a missing, malformed, unknown or
+revoked token, 413 for a body over 1 MB and 429 when rate limited.
+
+### Runner tokens
+
+`POST /api/runners` returns the token once. D1 holds its SHA-256 only, so a lost token is
+revoked and a new runner created. One token per registration: revoking a runner
+(`DELETE /api/runners/:id`) stops that runner alone and releases its credential fingerprints.
+
+```bash
+curl -X POST https://assayer.sfun.cloud/api/runners \
+  -H "Content-Type: application/json" \
+  -H "CF-Access-Client-Id: <SERVICE_TOKEN_CLIENT_ID>" \
+  -H "CF-Access-Client-Secret: <SERVICE_TOKEN_CLIENT_SECRET>" \
+  -d '{"name": "vps-1"}'
+```
+
+Registration refuses a fingerprint a different, unrevoked runner holds (design §7). The same
+runner re-registering after a restart replaces its own set. A `user-login` credential is
+concurrency 1.
+
+### Jobs
+
+One active job per pull request. `POST /api/jobs` with the head an active job already has is
+idempotent; a new head marks the queued job `superseded` and enqueues; a leased or running job is
+left to finish. The webhook (bullet 4) enqueues through the same `enqueueJob`.
+
+```
+queued ──lease──▶ leased ──first event──▶ running ──finished event──▶ finished
+  ▲                  │                       │
+  └── heartbeat timeout, first expiry ───────┘   second expiry ──▶ failed (heartbeat-timeout)
+queued ──new head──▶ superseded
+leased ──App not installed on the repository──▶ failed (app-not-installed)
+```
+
+The heartbeat sweep runs at the top of `GET /runner/lease` and `POST /runner/register`, not on a
+cron: it only matters while a runner is polling. A lease is claimed only for an
+`(engine, credential_kind)` pair the runner registered.
+
+On `finished`, the events route writes the round: one `usage_records` row keyed by the job id
+(`ingest_auth = 'runner'`, `engine`, repository and range from the job) and one `round_agents` row
+per `agent` event. `finding` and `summary` events stay in `job_events` for the poster (bullet 5).
+
+### The installation token
+
+The lease mints a token scoped to the job's one repository with `contents`, `metadata`,
+`pull_requests` and `issues` read (`worker/github-app.js`). The Worker returns it and never
+stores it, encrypted or not. The runner revokes it with `DELETE /installation/token` before it
+reports `finished`; that call authenticates with the token itself. If a runner dies holding a
+lease, no party holds the token and it lapses at GitHub's one-hour expiry.
+
+### Rate-limit budget
+
+`INGEST_RATE_LIMITER` allows 30 requests a minute per IP, shared with ingest. A runner long-polls
+the lease at 20 s and batches events at 10 s or more, which stays inside it.
+
+### Known limits
+
+- The Worker does not enforce `concurrency`; the runner leases one job per slot (design §3.2).
+- `credential_type` on a runner round is the job's `credential_kind` verbatim (`api-key`, ...),
+  while the Actions lane writes `oauth` or `api_key`. Bullet 6 reconciles the vocabulary.
+
+### Secrets and vars
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `GITHUB_APP_ID` | secret | The App's numeric id |
+| `GITHUB_APP_PRIVATE_KEY` | secret | The App's key in PKCS#8. GitHub hands out PKCS#1; convert it with `openssl pkcs8 -topk8 -nocrypt -in app.pem -out app-pkcs8.pem` |
+| `GITHUB_WEBHOOK_SECRET` | secret | Reserved for `POST /webhook/github` (bullet 4) |
+| `RUNNER_HEARTBEAT_TIMEOUT_S` | var | Seconds without a heartbeat before a lease expires; default 300 |
+| `LEASE_POLL_MS` | var | Interval between claim attempts inside one long-poll; default 2000 |
+
+### Registering the App
+
+`worker/github-app.manifest.json` pins the App's permissions (`tests/test-app-manifest.py`).
+One App per install; there is no shared App.
+
+1. Replace `CONTROL_PLANE_HOST` in the manifest's `hook_attributes.url` with the Worker's host.
+2. Submit the JSON as the `manifest` field of a form POST to
+   `https://github.com/organizations/prismalens/settings/apps/new`, and confirm on GitHub.
+3. Within an hour, exchange the returned `code`:
+   `gh api -X POST /app-manifests/<code>/conversions`. The response carries `id`, `pem` and
+   `webhook_secret`.
+4. Convert `pem` to PKCS#8 (the openssl line above), then `wrangler secret put` each of
+   `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` and `GITHUB_WEBHOOK_SECRET`.
+5. Install the App on sreforge only.
+6. Apply migration 0016 with the **Apply D1 migrations** workflow.
+
+---
+
 ## Local Development & Deployment
 
 ```bash

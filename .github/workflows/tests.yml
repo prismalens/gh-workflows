@@ -169,6 +169,10 @@ jobs:
       - name: Fleet routes never select text (#185)
         run: python3 tests/test-fleet-wall.py
 
+      # The App manifest's permissions are pinned, and the minted token is read-only (#184).
+      - name: App manifest permissions (#184)
+        run: python3 tests/test-app-manifest.py
+
       # A test file this job does not name is a test that never runs (#130).
       - name: Every test file is wired into this job
         run: |
