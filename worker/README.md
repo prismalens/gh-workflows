@@ -605,10 +605,8 @@ per `agent` event. `finding` and `summary` events stay in `job_events` for the p
 ### The installation token
 
 The lease mints a token scoped to the job's one repository with `contents`, `metadata`,
-`pull_requests` and `issues` read (`worker/github-app.js`). The Worker returns it and never
-stores it, encrypted or not. The runner revokes it with `DELETE /installation/token` before it
-reports `finished`; that call authenticates with the token itself. If a runner dies holding a
-lease, no party holds the token and it lapses at GitHub's one-hour expiry.
+`pull_requests` and `issues` read (`worker/github-app.js`) and returns it to the runner.
+The control plane never stores the installation token and cannot revoke it. The runner revokes it on every exit path; a runner that dies without revoking leaves a read-only, one-repository token that lapses at GitHub's fixed one-hour expiry. Revoke a suspect runner with `DELETE /api/runners/:id`, which ends its leases and events immediately.
 
 ### Rate-limit budget
 

@@ -6064,3 +6064,48 @@ describe("Runner events (#184)", () => {
     assert.deepEqual(writes.slice(1).map((q) => cpInsertColumns(q).seq), [3, 4]);
   });
 });
+
+import { readFileSync } from "node:fs";
+
+describe("Revocation ruling (#184)", () => {
+  it("a revoked runner token gets a 401 on lease and events, and nothing is written", async () => {
+    const cases = [
+      ["GET", "/runner/lease?engine=opencode&kind=api-key&wait=0", undefined],
+      ["POST", `/runner/jobs/${CP_JOB_ID}/events`, { events: [cpEv("finished", { conclusion: "completed" })] }],
+    ];
+    for (const [method, path, body] of cases) {
+      // The fake answers the lookup like D1 would without the revoked_at filter: the row exists.
+      const db = createFakeDb({
+        handler(sql, args) {
+          if (/FROM runners WHERE token_hash = \?/.test(sql)) {
+            return args[0] === cpRunnerTokenHash && !/revoked_at IS NULL/.test(sql) ? { id: CP_RUNNER_ID } : null;
+          }
+          if (/FROM runner_credentials/.test(sql)) return { fingerprint: "0123456789ab" };
+          if (/SET state='leased'/.test(sql)) return cpClaimedRow();
+          if (/FROM jobs WHERE id = \?/.test(sql)) return cpJobRow();
+          return null;
+        },
+      });
+      const stub = cpStubMinter();
+      const res = await worker.fetch(cpRunnerRequest(path, { method, body }), { DB: db }, { mintInstallationToken: stub.mint });
+      assert.equal(res.status, 401, `${method} ${path}`);
+      assert.equal(await res.text(), "");
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0, `${method} ${path}`);
+      assert.equal(stub.calls.length, 0);
+    }
+  });
+
+  it("migration 0016 has no token column other than runners.token_hash", () => {
+    const sql = readFileSync(new URL("./migrations/0016_runners_and_jobs.sql", import.meta.url), "utf8").replace(/--[^\n]*/g, "");
+    const columns = [];
+    for (const m of sql.matchAll(/CREATE TABLE (\w+) \(([\s\S]*?)\n\);/g)) {
+      for (const line of m[2].split(",\n")) {
+        const name = line.trim().split(/\s+/)[0];
+        if (name && !/^(PRIMARY|UNIQUE|CHECK|FOREIGN|CONSTRAINT)$/i.test(name)) columns.push(`${m[1]}.${name}`);
+      }
+    }
+    for (const m of sql.matchAll(/ALTER TABLE (\w+) ADD COLUMN (\w+)/g)) columns.push(`${m[1]}.${m[2]}`);
+    assert.ok(columns.includes("jobs.installation_id"), "the parser reads the jobs table");
+    assert.deepEqual(columns.filter((c) => /token/i.test(c)), ["runners.token_hash"]);
+  });
+});

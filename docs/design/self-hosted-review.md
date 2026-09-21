@@ -87,8 +87,10 @@ The telemetry Worker grows a job queue and a poster. It keeps every existing rou
   that repository (`contents: read`, `pull_requests: read`, `issues: read`), the resolved
   config, the prompt template hash, and the manifest inputs the `build-prompt` step assembles
   today (profile, linked issues, CI failures, dependencies, base pull request). The control
-  plane never stores the installation token; the runner revokes it before `finished`, and an
-  expired lease's token lapses at GitHub's one-hour expiry.
+  plane never stores the installation token and cannot revoke it. The runner revokes it on
+  every exit path; a runner that dies without revoking leaves a read-only, one-repository
+  token that lapses at GitHub's fixed one-hour expiry. Revoke a suspect runner with
+  `DELETE /api/runners/:id`, which ends its leases and events immediately.
 - `POST /runner/jobs/:id/events`: the normalized event stream (section 4). The control plane
   updates `heartbeat_at`, writes `round_agents`, and on `finished` writes `usage_records` with
   `credential_type`, `failure_class`, `level`, `config_effective` and the new nullable `engine`
