@@ -5047,7 +5047,7 @@ describe("Worker telemetry read API", () => {
   describe("GET /api/fleet/repos (#185)", () => {
     const TEXT_COLUMNS = /pr_title|pr_author|verdict_text|header_raw|body_excerpt|raw_result|diff_hunk/;
 
-    function fleetDb({ sevenDayCount = 0, fiftiethAt = null, lastRecorded = [], windowed = [], lastRounds = [], malformed = {} } = {}) {
+    function fleetDb({ sevenDayCount = 0, totalCount = 0, fiftiethAt = null, lastRecorded = [], windowed = [], lastRounds = [], malformed = {} } = {}) {
       return createFakeDb({
         handler: (sql) => {
           if (sql.includes("OFFSET 49")) {
@@ -5055,6 +5055,9 @@ describe("Worker telemetry read API", () => {
           }
           if (sql.includes("COUNT(*) AS cnt")) {
             return { cnt: sevenDayCount };
+          }
+          if (sql.includes("COUNT(*) AS total")) {
+            return { total: totalCount };
           }
           if (sql.includes("MAX(recorded_at) AS last_recorded_at")) {
             return lastRecorded;
@@ -5146,6 +5149,27 @@ describe("Worker telemetry read API", () => {
       const windowedQuery = byCount.queries.find((q) => q.sql.includes("COUNT(*) AS rounds"));
       assert.deepEqual(windowedQuery.args, ["2026-09-01T00:00:00.000Z"]);
       assertWall(byCount);
+    });
+
+    it("keeps every round under the rolling range when fewer than 50 exist, as applyRange does", async () => {
+      // 30 rounds, 10 of them older than 7 days: applyRange's 50-round side holds
+      // all 30, more than the 20 the 7-day side holds, so it wins with its label.
+      const db = fleetDb({
+        sevenDayCount: 20,
+        totalCount: 30,
+        fiftiethAt: null,
+        lastRecorded: [{ repository: "o/a", last_recorded_at: "2026-09-20T00:00:00.000Z" }],
+        windowed: [{ repository: "o/a", rounds: 30, denials: 0 }],
+      });
+      const res = await getFleet("/api/fleet/repos?range=rolling", db);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.deepEqual(data.window, { range: "rolling", since: null, label: "the last 50 rounds" });
+      assert.equal(data.rounds, 30);
+      const windowedQuery = db.queries.find((q) => q.sql.includes("COUNT(*) AS rounds"));
+      assert.doesNotMatch(windowedQuery.sql, /recorded_at >= \?/);
+      assert.equal(windowedQuery.args.length, 0);
+      assertWall(db);
     });
 
     it("keeps a repository quiet in the window, with zero rounds and its all-time last round", async () => {

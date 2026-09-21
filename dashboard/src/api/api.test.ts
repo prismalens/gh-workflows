@@ -731,3 +731,24 @@ describe("GET /api/fleet/repos (#185)", () => {
     });
   });
 });
+
+describe("the fleet fixture and the Worker agree on a thin rolling window (#185)", () => {
+  it("keeps all 30 rounds when 10 are older than 7 days, under the 50-round label", async () => {
+    const now = new Date();
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const thin = makeRounds({ count: 30, now }).map((row, i) => ({
+      ...row,
+      session_id: `thin-${i}`,
+      recorded_at: new Date(
+        i < 20 ? now.getTime() - i * 3600 * 1000 : now.getTime() - (8 + i) * DAY_MS,
+      ).toISOString(),
+    }));
+    // What worker/index.js answers for 30 rounds, 20 of them in the last 7 days.
+    const workerWindow = { range: "rolling", since: null, label: "the last 50 rounds" };
+
+    const fixture = await makeFixtureApi(thin).fetchFleetRepos({ range: "rolling" });
+    expect(fixture.window).toEqual(workerWindow);
+    expect(fixture.rounds).toBe(30);
+    expect(isFleetReposResponse(fixture)).toBe(true);
+  });
+});

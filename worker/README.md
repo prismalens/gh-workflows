@@ -506,9 +506,11 @@ The Worker computes the window, so the label always agrees with the rows counted
 
 - `30d` / `90d`: `recorded_at >= now - N days`, labelled `the last N days`.
 - `all`: no predicate, labelled `all recorded rounds`.
-- `rolling`: the last 50 rounds or the last 7 days, whichever holds more. When at least 50 rounds
-  fall in the last 7 days, or fewer than 50 rounds exist at all, the window is 7 days
-  (`the last 7 days`); otherwise it starts at the 50th most recent round (`the last 50 rounds`).
+- `rolling`: the last 50 rounds or the last 7 days, whichever holds more, the same rule as
+  `applyRange` in `dashboard/src/honesty/range.ts`. When the last 7 days hold at least as many
+  rounds as the 50-round side, the window is 7 days (`the last 7 days`). Otherwise it starts at
+  the 50th most recent round (`the last 50 rounds`), or, when fewer than 50 rounds exist, keeps
+  every round under the same label with `since: null`.
 
 #### Response Shape
 
@@ -531,7 +533,7 @@ The Worker computes the window, so the label always agrees with the rows counted
 
 - `repositories` lists every repository that has ever posted, sorted. One quiet in the window has
   `rounds: 0`, `denials: 0` and `last_round: null`; `last_recorded_at` is its all-time latest round.
-- `rounds` is the sum across `repositories`. `window.since` is `null` for `all`.
+- `rounds` is the sum across `repositories`. `window.since` is `null` for `all`, and for `rolling` when fewer than 50 rounds exist.
 - `malformed_configs` names each repository and layer where the newest round in the window carrying
   that layer recorded it as `unparseable` or `schema-rejected`, decided in SQL over
   `config_resolution`, sorted by repository and then layer order `repo_config`, `org_defaults`,

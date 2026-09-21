@@ -2819,12 +2819,25 @@ async function handleFleetRepos(url, env) {
         .prepare("SELECT COUNT(*) AS cnt FROM usage_records WHERE recorded_at >= ?")
         .bind(c7)
         .first();
-      if ((sevenDay?.cnt ?? 0) >= 50 || !r50?.recorded_at) {
-        since = c7;
-        label = "the last 7 days";
+      const inSevenDays = sevenDay?.cnt ?? 0;
+      if (r50?.recorded_at) {
+        if (inSevenDays >= 50) {
+          since = c7;
+          label = "the last 7 days";
+        } else {
+          since = r50.recorded_at;
+          label = "the last 50 rounds";
+        }
       } else {
-        since = r50.recorded_at;
-        label = "the last 50 rounds";
+        // Fewer than 50 rounds exist, so the 50-round side is every round. It
+        // wins unless the 7 days hold them all, as in applyRange.
+        const all = await db.prepare("SELECT COUNT(*) AS total FROM usage_records").first();
+        if (inSevenDays >= (all?.total ?? 0)) {
+          since = c7;
+          label = "the last 7 days";
+        } else {
+          label = "the last 50 rounds";
+        }
       }
     }
 

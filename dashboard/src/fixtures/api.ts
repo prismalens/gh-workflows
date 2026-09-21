@@ -351,12 +351,13 @@ export function makeFixtureApi(
       }));
 
       const DAY_MS = 24 * 60 * 60 * 1000;
-      const oldest = windowed.rows[windowed.rows.length - 1];
+      // The Worker's since for the 50-round side is the 50th round, or none at
+      // all when fewer than 50 exist.
       const since =
         range === "all"
           ? null
           : range === "rolling" && windowed.label === "the last 50 rounds"
-            ? (oldest?.recorded_at ?? null)
+            ? (sorted[49]?.recorded_at ?? null)
             : new Date(
                 now.getTime() - (range === "90d" ? 90 : range === "30d" ? 30 : 7) * DAY_MS,
               ).toISOString();
