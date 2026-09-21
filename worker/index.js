@@ -223,6 +223,32 @@ const FINDING_NULLABLE_INTEGER_FIELDS = new Set(["original_line", "line"]);
 const VALID_FIX_SHA_SOURCES = new Set(["verify_table", "human_reply"]);
 const VALID_VERIFY_VERDICTS = new Set(["fixed", "still_applies", "cannot_verify"]);
 
+// Control plane vocabularies (#184). RUNNER_EVENT_TYPES is assayer/v1, runner/src/events.js.
+const ENGINES = Object.freeze(new Set(["opencode", "claude-code", "codex", "diff-only"]));
+const CREDENTIAL_KINDS = Object.freeze(
+  new Set(["api-key", "user-login", "bedrock", "vertex", "foundry", "keyless"])
+);
+const JOB_MODES = Object.freeze(new Set(["review", "review-full", "incremental"]));
+const JOB_LEVELS = Object.freeze(new Set(["low", "medium", "high"]));
+const JOB_STATES = Object.freeze(
+  new Set(["queued", "leased", "running", "finished", "failed", "superseded"])
+);
+const RUNNER_EVENT_TYPES = Object.freeze(
+  new Set(["started", "read", "agent", "finding", "summary", "usage", "error", "finished"])
+);
+const RUNNER_PLACEMENTS = Object.freeze(new Set(["box", "laptop"]));
+const RUNNER_TOKEN_PATTERN = /^Bearer (asr_[A-Za-z0-9_-]{43})$/;
+const FINGERPRINT_PATTERN = /^[0-9a-f]{12}$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const SHA_PATTERN = /^[0-9a-f]{40}$/;
+const RUNNER_MAX_CREDENTIALS = 16;
+const RUNNER_MAX_CONCURRENCY = 16;
+const LEASE_WAIT_MAX_S = 20;
+const MAX_EVENTS_PER_POST = 100;
+const MAX_EVENT_BYTES = 16384;
+const CONTROL_HEADERS = { "content-type": "application/json", "cache-control": "no-store" };
+
 function truncateString(val, maxLen = 512) {
   if (typeof val !== "string") {
     return null;
@@ -2930,6 +2956,279 @@ async function handleFleetRepos(url, env) {
   }
 }
 
+// ── Control plane (#184) ─────────────────────────────────────
+
+function controlError(code, status) {
+  return new Response(JSON.stringify({ error: code }), { status, headers: CONTROL_HEADERS });
+}
+
+function controlJson(body, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: CONTROL_HEADERS });
+}
+
+// Returns { payload } or { response } carrying the 413 or 400.
+async function readControlBody(request, { expect = "object" } = {}) {
+  const text = await readBoundedText(request, MAX_INGEST_BYTES);
+  if (text === null) {
+    return { response: controlError("payload-too-large", 413) };
+  }
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return { response: controlError("invalid-json", 400) };
+  }
+  if (expect === "object" && (!payload || typeof payload !== "object" || Array.isArray(payload))) {
+    return { response: controlError("invalid-body", 400) };
+  }
+  return { payload };
+}
+
+function generateRunnerToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = "";
+  for (const b of bytes) {
+    binary += String.fromCharCode(b);
+  }
+  return "asr_" + btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// The token only ever reaches D1 as its hash; every failure is the same empty 401.
+async function authenticateRunner(request, env) {
+  const match = RUNNER_TOKEN_PATTERN.exec(request.headers.get("authorization") ?? "");
+  if (!match) {
+    return new Response(null, { status: 401 });
+  }
+  const tokenHash = await sha256Hex(match[1]);
+  let row;
+  try {
+    row = await env.DB.prepare(
+      "SELECT id FROM runners WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1"
+    )
+      .bind(tokenHash)
+      .first();
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  if (!row) {
+    return new Response(null, { status: 401 });
+  }
+  return { runner_id: row.id };
+}
+
+function heartbeatTimeoutS(env) {
+  const parsed = Number(env?.RUNNER_HEARTBEAT_TIMEOUT_S);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 300;
+}
+
+// A lease whose heartbeat is older than the timeout goes back to the queue once; the second
+// time it expires the job fails (design §7: retried once on another slot). Lazy, not a cron:
+// it only matters while a runner is polling.
+async function sweepExpiredLeases(env, nowMs) {
+  const cutoff = new Date(nowMs - heartbeatTimeoutS(env) * 1000).toISOString();
+  await env.DB.prepare(
+    `UPDATE jobs SET
+      state = CASE WHEN attempts >= 2 THEN 'failed' ELSE 'queued' END,
+      conclusion = CASE WHEN attempts >= 2 THEN 'heartbeat-timeout' ELSE conclusion END,
+      finished_at = CASE WHEN attempts >= 2 THEN ?2 ELSE finished_at END,
+      runner_id = CASE WHEN attempts >= 2 THEN runner_id ELSE NULL END,
+      credential_fingerprint = CASE WHEN attempts >= 2 THEN credential_fingerprint ELSE NULL END,
+      leased_at = CASE WHEN attempts >= 2 THEN leased_at ELSE NULL END,
+      heartbeat_at = CASE WHEN attempts >= 2 THEN heartbeat_at ELSE NULL END
+    WHERE state IN ('leased', 'running') AND heartbeat_at < ?1`
+  )
+    .bind(cutoff, new Date(nowMs).toISOString())
+    .run();
+}
+
+async function handlePostRunners(request, env) {
+  const { payload, response } = await readControlBody(request);
+  if (response) {
+    return response;
+  }
+  if (typeof payload.name !== "string" || payload.name.length === 0 || payload.name.length > 100) {
+    return controlError("invalid-name", 400);
+  }
+  const id = crypto.randomUUID();
+  const token = generateRunnerToken();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO runners (
+        id,
+        name,
+        token_hash,
+        created_at
+      ) VALUES (?1, ?2, ?3, ?4)`
+    )
+      .bind(id, payload.name, await sha256Hex(token), new Date().toISOString())
+      .run();
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  return controlJson({ id, name: payload.name, token }, 201);
+}
+
+async function handleGetRunners(env) {
+  const { results: runnerRows } = await env.DB.prepare(
+    "SELECT id, name, created_at, revoked_at, last_seen_at, placement FROM runners ORDER BY created_at DESC"
+  )
+    .bind()
+    .all();
+  const { results: credentialRows } = await env.DB.prepare(
+    "SELECT runner_id, engine, credential_kind, fingerprint, concurrency, registered_at FROM runner_credentials ORDER BY runner_id, engine, credential_kind"
+  )
+    .bind()
+    .all();
+  const byRunner = new Map();
+  for (const c of credentialRows ?? []) {
+    const list = byRunner.get(c.runner_id) ?? [];
+    list.push({
+      engine: c.engine,
+      credential_kind: c.credential_kind,
+      fingerprint: c.fingerprint,
+      concurrency: c.concurrency,
+      registered_at: c.registered_at,
+    });
+    byRunner.set(c.runner_id, list);
+  }
+  const rows = (runnerRows ?? []).map((r) => ({
+    id: r.id,
+    name: r.name,
+    created_at: r.created_at,
+    revoked_at: r.revoked_at,
+    last_seen_at: r.last_seen_at,
+    placement: r.placement,
+    credentials: byRunner.get(r.id) ?? [],
+  }));
+  return controlJson({ rows });
+}
+
+// Revoking also releases the runner's credentials: fingerprint is UNIQUE, so a revoked
+// runner's rows would otherwise block the same key registering under a new token.
+async function handleDeleteRunner(id, env) {
+  try {
+    await env.DB.batch([
+      env.DB.prepare("UPDATE runners SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL").bind(
+        new Date().toISOString(),
+        id
+      ),
+      env.DB.prepare("DELETE FROM runner_credentials WHERE runner_id = ?").bind(id),
+    ]);
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  return new Response(null, { status: 204 });
+}
+
+function validateRegistration(payload) {
+  if (!RUNNER_PLACEMENTS.has(payload.placement)) {
+    return "invalid-placement";
+  }
+  const creds = payload.credentials;
+  if (!Array.isArray(creds) || creds.length < 1 || creds.length > RUNNER_MAX_CREDENTIALS) {
+    return "invalid-credentials";
+  }
+  const pairs = new Set();
+  for (const c of creds) {
+    if (!c || typeof c !== "object" || Array.isArray(c)) {
+      return "invalid-credential";
+    }
+    if (!ENGINES.has(c.engine)) {
+      return "invalid-engine";
+    }
+    if (!CREDENTIAL_KINDS.has(c.kind)) {
+      return "invalid-kind";
+    }
+    if (typeof c.fingerprint !== "string" || !FINGERPRINT_PATTERN.test(c.fingerprint)) {
+      return "invalid-fingerprint";
+    }
+    if (
+      !Number.isInteger(c.concurrency) ||
+      c.concurrency < 1 ||
+      c.concurrency > RUNNER_MAX_CONCURRENCY ||
+      (c.kind === "user-login" && c.concurrency !== 1)
+    ) {
+      return "invalid-concurrency";
+    }
+    const pair = `${c.engine}\u0000${c.kind}`;
+    if (pairs.has(pair)) {
+      return "duplicate-credential";
+    }
+    pairs.add(pair);
+  }
+  return null;
+}
+
+async function handleRunnerRegister(request, env) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+  const auth = await authenticateRunner(request, env);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const { payload, response } = await readControlBody(request);
+  if (response) {
+    return response;
+  }
+  const invalid = validateRegistration(payload);
+  if (invalid) {
+    return controlError(invalid, 400);
+  }
+
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const fingerprints = payload.credentials.map((c) => c.fingerprint);
+  try {
+    await sweepExpiredLeases(env, nowMs);
+    const held = await env.DB.prepare(
+      `SELECT fingerprint FROM runner_credentials
+      WHERE fingerprint IN (${fingerprints.map(() => "?").join(", ")})
+        AND runner_id != ?
+        AND runner_id IN (SELECT id FROM runners WHERE revoked_at IS NULL)
+      LIMIT 1`
+    )
+      .bind(...fingerprints, auth.runner_id)
+      .first();
+    if (held) {
+      return controlError("duplicate-fingerprint", 409);
+    }
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM runner_credentials WHERE runner_id = ?").bind(auth.runner_id),
+      ...payload.credentials.map((c) =>
+        env.DB.prepare(
+          `INSERT INTO runner_credentials (
+            runner_id,
+            engine,
+            credential_kind,
+            fingerprint,
+            concurrency,
+            registered_at
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+        ).bind(auth.runner_id, c.engine, c.kind, c.fingerprint, c.concurrency, nowIso)
+      ),
+      env.DB.prepare("UPDATE runners SET last_seen_at = ?1, placement = ?2 WHERE id = ?3").bind(
+        nowIso,
+        payload.placement,
+        auth.runner_id
+      ),
+    ]);
+  } catch (err) {
+    // Two runners racing for one fingerprint lose to the UNIQUE constraint, not to the check.
+    if (/UNIQUE/i.test(String(err?.message))) {
+      return controlError("duplicate-fingerprint", 409);
+    }
+    return new Response(null, { status: 500 });
+  }
+
+  return controlJson({
+    runner_id: auth.runner_id,
+    credentials: payload.credentials.length,
+    heartbeat_timeout_s: heartbeatTimeoutS(env),
+    lease_wait_max_s: LEASE_WAIT_MAX_S,
+  });
+}
+
 export default {
   async fetch(request, env, ctx, options = {}) {
     const opts = (ctx && typeof ctx === "object" && typeof ctx.getKey === "function") ? ctx : (options || {});
@@ -2954,6 +3253,10 @@ export default {
 
     if (method === "POST" && pathname === "/ingest/findings") {
       return handleIngestFindings(request, env, authOptions);
+    }
+
+    if (method === "POST" && pathname === "/runner/register") {
+      return handleRunnerRegister(request, env);
     }
 
     if (
@@ -3031,6 +3334,27 @@ export default {
       return new Response(null, { status: 404 });
     }
 
+    if (pathname === "/api/runners" || pathname.startsWith("/api/runners/")) {
+      const authError = await verifyAccess(request, env);
+      if (authError) {
+        return authError;
+      }
+      if (method === "GET" && pathname === "/api/runners") {
+        return handleGetRunners(env);
+      }
+      if (method === "POST" && pathname === "/api/runners") {
+        return handlePostRunners(request, env);
+      }
+      if (method === "DELETE" && pathname.startsWith("/api/runners/")) {
+        const id = pathname.slice("/api/runners/".length);
+        if (!UUID_PATTERN.test(id)) {
+          return controlError("invalid-id", 400);
+        }
+        return handleDeleteRunner(id, env);
+      }
+      return new Response(null, { status: 404 });
+    }
+
     // run_worker_first routes GET / here so POST / keeps reaching the ingest
     // handler, so the SPA shell has to be served from the Worker (#46). Assets
     // answer GET and HEAD only; the API and ingest paths stay 404 rather than
@@ -3039,7 +3363,9 @@ export default {
       (method === "GET" || method === "HEAD") &&
       pathname !== "/ingest" &&
       pathname !== "/api" &&
-      !pathname.startsWith("/api/");
+      !pathname.startsWith("/api/") &&
+      !pathname.startsWith("/runner/") &&
+      pathname !== "/webhook/github";
     if (wantsAsset && env?.ASSETS) {
       return env.ASSETS.fetch(request);
     }

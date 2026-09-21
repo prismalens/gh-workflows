@@ -60,6 +60,7 @@ USAGE_RECORDS_READ_ALLOWLIST = {
     "size_override":    "Whether @claude full review bypassed max_reviewable_lines (#105); not yet surfaced in dashboard read API",
     "ingest_auth":      "Ingest authentication method ('oidc' | 'bearer') (#176); not yet surfaced in dashboard read API",
     "repository_id":    "GitHub repository ID from OIDC claims (#176); not yet surfaced in dashboard read API",
+    "engine":           "Which engine ran the round (#184); surfaced by #185 with the dashboard column",
 }
 
 # GET /api/findings (#111) selects every review_findings column.

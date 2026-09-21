@@ -5265,3 +5265,301 @@ describe("Worker telemetry read API", () => {
     });
   });
 });
+
+// ── Control plane (#184) ─────────────────────────────────────
+import { after } from "node:test";
+// The read-API Access helper lives inside its describe, and verifyAccess caches the first key
+// set it fetches for an hour. These blocks sign with their own key, so they move Date.now past
+// that cache while they run and restore it after.
+const CP_TEAM_DOMAIN = "test.cloudflareaccess.com";
+const CP_AUD = "test-aud-12345";
+const CP_KID = "cp-184-kid";
+const CP_CLOCK_SHIFT_MS = 2 * 3600 * 1000;
+const cpKeyPair = await crypto.subtle.generateKey(
+  { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+  true,
+  ["sign", "verify"]
+);
+const cpJwk = { ...(await crypto.subtle.exportKey("jwk", cpKeyPair.publicKey)), kid: CP_KID, alg: "RS256" };
+const cpB64 = (buf) => Buffer.from(buf).toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+
+function useControlPlaneAccess() {
+  const state = { jwt: null, env: { ACCESS_TEAM_DOMAIN: CP_TEAM_DOMAIN, ACCESS_AUD: CP_AUD } };
+  let realNow;
+  let realFetch;
+  before(async () => {
+    realNow = Date.now;
+    realFetch = globalThis.fetch;
+    Date.now = () => realNow() + CP_CLOCK_SHIFT_MS;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === "string" && url.includes("/cdn-cgi/access/certs")) {
+        return new Response(JSON.stringify({ keys: [cpJwk] }), { status: 200 });
+      }
+      return realFetch(url, init);
+    };
+    const header = cpB64(JSON.stringify({ alg: "RS256", kid: CP_KID, typ: "JWT" }));
+    const payload = cpB64(
+      JSON.stringify({ aud: CP_AUD, iss: `https://${CP_TEAM_DOMAIN}`, exp: Math.floor(Date.now() / 1000) + 3600 })
+    );
+    const sig = await crypto.subtle.sign(
+      "RSASSA-PKCS1-v1_5",
+      cpKeyPair.privateKey,
+      new TextEncoder().encode(`${header}.${payload}`)
+    );
+    state.jwt = `${header}.${payload}.${cpB64(sig)}`;
+  });
+  after(() => {
+    Date.now = realNow;
+    globalThis.fetch = realFetch;
+  });
+  return state;
+}
+
+async function cpSha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const CP_RUNNER_ID = "11111111-2222-4333-8444-555555555555";
+const CP_OTHER_RUNNER_ID = "99999999-2222-4333-8444-555555555555";
+const cpRunnerToken = "asr_" + cpB64(crypto.getRandomValues(new Uint8Array(32)));
+const cpRunnerTokenHash = await cpSha256Hex(cpRunnerToken);
+
+// Answers the runner-token lookup for cpRunnerToken only; `extra` answers everything else.
+function cpRunnerDb(extra = () => null, { revoked = false } = {}) {
+  return createFakeDb({
+    handler(sql, args) {
+      if (/FROM runners WHERE token_hash = \?/.test(sql)) {
+        return !revoked && args[0] === cpRunnerTokenHash ? { id: CP_RUNNER_ID } : null;
+      }
+      return extra(sql, args);
+    },
+  });
+}
+
+function cpRunnerRequest(path, { method = "POST", body, token = cpRunnerToken } = {}) {
+  const headers = token === null ? {} : { authorization: `Bearer ${token}` };
+  return makeRequest(path, { method, headers, body });
+}
+
+function cpRecordBatches(db) {
+  const batches = [];
+  const batch = db.batch.bind(db);
+  db.batch = async (stmts) => {
+    const start = db.queries.length;
+    const out = await batch(stmts);
+    batches.push(db.queries.slice(start));
+    return out;
+  };
+  return batches;
+}
+
+async function cpCaptureConsole(fn) {
+  const lines = [];
+  const saved = {};
+  for (const k of ["log", "info", "warn", "error", "debug"]) {
+    saved[k] = console[k];
+    console[k] = (...a) => lines.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
+  }
+  try {
+    return { result: await fn(), lines };
+  } finally {
+    Object.assign(console, saved);
+  }
+}
+
+const CP_WRITE = /^\s*(INSERT|UPDATE|DELETE)/i;
+
+describe("Runner registry (#184)", () => {
+  const access = useControlPlaneAccess();
+  const accessed = (path, opts = {}) =>
+    makeRequest(path, { ...opts, headers: { "Cf-Access-Jwt-Assertion": access.jwt, ...(opts.headers || {}) } });
+  const validRegistration = () => ({
+    placement: "box",
+    credentials: [
+      { engine: "opencode", kind: "api-key", fingerprint: "0123456789ab", concurrency: 2 },
+      { engine: "claude-code", kind: "api-key", fingerprint: "ba9876543210", concurrency: 1 },
+    ],
+  });
+
+  it("POST /api/runners returns the token once, stores only its hash, and logs nothing", async () => {
+    const db = createFakeDb();
+    const env = { ...access.env, DB: db };
+    const { result: res, lines } = await cpCaptureConsole(() =>
+      worker.fetch(accessed("/api/runners", { body: { name: "box-1" } }), env)
+    );
+    assert.equal(res.status, 201);
+    const body = await res.json();
+    assert.match(body.token, /^asr_[A-Za-z0-9_-]{43}$/);
+    assert.equal(body.name, "box-1");
+    assert.match(body.id, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(Object.keys(body).sort(), ["id", "name", "token"]);
+    const insert = db.queries.find((q) => /INSERT INTO runners/.test(q.sql));
+    assert.ok(insert, "runners INSERT issued");
+    assert.ok(insert.args.includes(await cpSha256Hex(body.token)), "hash is bound");
+    assert.ok(!JSON.stringify(db.queries).includes(body.token), "token never reaches a D1 arg");
+    assert.ok(!lines.join("\n").includes(body.token), "token never reaches console output");
+  });
+
+  it("POST /api/runners refuses a missing or oversized name and an unparseable body", async () => {
+    for (const body of [{}, { name: "" }, { name: "x".repeat(101) }, { name: 7 }, "not json", [1]]) {
+      const db = createFakeDb();
+      const res = await worker.fetch(accessed("/api/runners", { body }), { ...access.env, DB: db });
+      assert.equal(res.status, 400, JSON.stringify(body));
+      assert.equal(res.headers.get("content-type"), "application/json");
+      assert.equal(typeof (await res.json()).error, "string");
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+    }
+  });
+
+  it("the /api/runners routes sit behind Access", async () => {
+    for (const [method, path] of [["GET", "/api/runners"], ["POST", "/api/runners"], ["DELETE", `/api/runners/${CP_RUNNER_ID}`]]) {
+      const db = createFakeDb();
+      const res = await worker.fetch(makeRequest(path, { method, body: method === "POST" ? { name: "a" } : undefined }), { ...access.env, DB: db });
+      assert.equal(res.status, 403, `${method} ${path}`);
+      assert.equal(db.queries.length, 0);
+    }
+  });
+
+  it("GET /api/runners never returns token_hash, and nests each runner's credentials", async () => {
+    const db = createFakeDb({
+      handler(sql) {
+        if (/FROM runners/.test(sql)) {
+          return [{ id: CP_RUNNER_ID, name: "box-1", created_at: "2026-09-21T00:00:00.000Z", revoked_at: null, last_seen_at: null, placement: "box", token_hash: "deadbeefcafe" }];
+        }
+        if (/FROM runner_credentials/.test(sql)) {
+          return [{ runner_id: CP_RUNNER_ID, engine: "opencode", credential_kind: "api-key", fingerprint: "0123456789ab", concurrency: 2, registered_at: "2026-09-21T00:00:01.000Z" }];
+        }
+        return null;
+      },
+    });
+    const res = await worker.fetch(accessed("/api/runners", { method: "GET" }), { ...access.env, DB: db });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(!text.includes("token_hash") && !text.includes("deadbeefcafe"), text);
+    assert.ok(db.queries.every((q) => !/token_hash/.test(q.sql)), "no SELECT names token_hash");
+    assert.deepEqual(JSON.parse(text), {
+      rows: [{
+        id: CP_RUNNER_ID, name: "box-1", created_at: "2026-09-21T00:00:00.000Z", revoked_at: null, last_seen_at: null, placement: "box",
+        credentials: [{ engine: "opencode", credential_kind: "api-key", fingerprint: "0123456789ab", concurrency: 2, registered_at: "2026-09-21T00:00:01.000Z" }],
+      }],
+    });
+  });
+
+  it("DELETE /api/runners/:id revokes and is idempotent", async () => {
+    for (let i = 0; i < 2; i++) {
+      const db = createFakeDb();
+      const res = await worker.fetch(accessed(`/api/runners/${CP_RUNNER_ID}`, { method: "DELETE" }), { ...access.env, DB: db });
+      assert.equal(res.status, 204);
+      const revoke = db.queries.find((q) => /UPDATE runners SET revoked_at/.test(q.sql));
+      assert.ok(revoke, "revoked_at is set");
+      assert.match(revoke.sql, /revoked_at IS NULL/);
+      assert.ok(revoke.args.includes(CP_RUNNER_ID));
+      const release = db.queries.find((q) => /DELETE FROM runner_credentials WHERE runner_id = \?/.test(q.sql));
+      assert.deepEqual(release?.args, [CP_RUNNER_ID], "a revoked runner's fingerprints are released");
+    }
+  });
+
+  it("a missing, malformed, unknown or revoked runner token is a 401 with an empty body", async () => {
+    const cases = [
+      { token: null },
+      { token: "asr_short" },
+      { token: "asr_" + "A".repeat(43) },
+      { token: cpRunnerToken, revoked: true },
+    ];
+    for (const { token, revoked } of cases) {
+      const db = cpRunnerDb(() => null, { revoked });
+      const { result: res, lines } = await cpCaptureConsole(() =>
+        worker.fetch(cpRunnerRequest("/runner/register", { token, body: validRegistration() }), { DB: db })
+      );
+      assert.equal(res.status, 401, String(token));
+      assert.equal(await res.text(), "");
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+      if (token) assert.ok(!lines.join("\n").includes(token));
+    }
+    const db = cpRunnerDb(() => null, { revoked: true });
+    await worker.fetch(cpRunnerRequest("/runner/register", { body: validRegistration() }), { DB: db });
+    const lookup = db.queries.find((q) => /FROM runners WHERE token_hash/.test(q.sql));
+    assert.match(lookup.sql, /revoked_at IS NULL/);
+    assert.deepEqual(lookup.args, [cpRunnerTokenHash]);
+  });
+
+  it("/runner/register is rate limited before the token is looked up", async () => {
+    const db = cpRunnerDb();
+    const env = { DB: db, INGEST_RATE_LIMITER: { limit: async () => ({ success: false }) } };
+    const res = await worker.fetch(cpRunnerRequest("/runner/register", { body: validRegistration() }), env);
+    assert.equal(res.status, 429);
+    assert.equal(db.queries.length, 0);
+  });
+
+  it("refuses each malformed registration with a 400 and writes nothing", async () => {
+    const cred = (o = {}) => ({ engine: "opencode", kind: "api-key", fingerprint: "0123456789ab", concurrency: 1, ...o });
+    const bodies = {
+      "not json": "{",
+      "array body": [],
+      "bad placement": { placement: "vps", credentials: [cred()] },
+      "no credentials": { placement: "box", credentials: [] },
+      "credentials not array": { placement: "box", credentials: {} },
+      "17 credentials": { placement: "box", credentials: Array.from({ length: 17 }, (_, i) => cred({ fingerprint: i.toString(16).padStart(12, "0") })) },
+      "unknown engine": { placement: "box", credentials: [cred({ engine: "gpt" })] },
+      "unknown kind": { placement: "box", credentials: [cred({ kind: "oauth" })] },
+      "short fingerprint": { placement: "box", credentials: [cred({ fingerprint: "0123" })] },
+      "uppercase fingerprint": { placement: "box", credentials: [cred({ fingerprint: "0123456789AB" })] },
+      "concurrency 0": { placement: "box", credentials: [cred({ concurrency: 0 })] },
+      "concurrency 17": { placement: "box", credentials: [cred({ concurrency: 17 })] },
+      "concurrency 1.5": { placement: "box", credentials: [cred({ concurrency: 1.5 })] },
+      "user-login concurrency 2": { placement: "laptop", credentials: [cred({ engine: "claude-code", kind: "user-login", concurrency: 2 })] },
+      "duplicate engine and kind": { placement: "box", credentials: [cred(), cred({ fingerprint: "ffffffffffff" })] },
+    };
+    for (const [label, body] of Object.entries(bodies)) {
+      const db = cpRunnerDb();
+      const res = await worker.fetch(cpRunnerRequest("/runner/register", { body }), { DB: db });
+      assert.equal(res.status, 400, label);
+      assert.equal(res.headers.get("content-type"), "application/json", label);
+      assert.equal(typeof (await res.json()).error, "string", label);
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0, label);
+    }
+  });
+
+  it("a fingerprint held by another live runner is a 409 duplicate-fingerprint and nothing is registered", async () => {
+    const db = cpRunnerDb((sql) => (/FROM runner_credentials/.test(sql) ? { fingerprint: "0123456789ab" } : null));
+    const batches = cpRecordBatches(db);
+    const res = await worker.fetch(cpRunnerRequest("/runner/register", { body: validRegistration() }), { DB: db });
+    assert.equal(res.status, 409);
+    assert.deepEqual(await res.json(), { error: "duplicate-fingerprint" });
+    const check = db.queries.find((q) => /FROM runner_credentials/.test(q.sql));
+    assert.match(check.sql, /runner_id != \?/);
+    assert.match(check.sql, /revoked_at IS NULL/);
+    assert.ok(check.args.includes(CP_RUNNER_ID));
+    assert.equal(batches.length, 0);
+    assert.equal(db.queries.filter((q) => /INSERT|DELETE|UPDATE runners/.test(q.sql)).length, 0);
+  });
+
+  it("the same runner re-registering replaces its set in one batch: DELETE, INSERTs, UPDATE", async () => {
+    const db = cpRunnerDb();
+    const batches = cpRecordBatches(db);
+    const res = await worker.fetch(cpRunnerRequest("/runner/register", { body: validRegistration() }), { DB: db });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { runner_id: CP_RUNNER_ID, credentials: 2, heartbeat_timeout_s: 300, lease_wait_max_s: 20 });
+    assert.equal(batches.length, 1);
+    const [del, ins1, ins2, upd] = batches[0];
+    assert.match(del.sql, /DELETE FROM runner_credentials WHERE runner_id = \?/);
+    assert.deepEqual(del.args, [CP_RUNNER_ID]);
+    assert.match(ins1.sql, /INSERT INTO runner_credentials/);
+    assert.deepEqual(ins1.args.slice(0, 5), [CP_RUNNER_ID, "opencode", "api-key", "0123456789ab", 2]);
+    assert.deepEqual(ins2.args.slice(0, 5), [CP_RUNNER_ID, "claude-code", "api-key", "ba9876543210", 1]);
+    assert.match(upd.sql, /UPDATE runners SET last_seen_at = \?/);
+    assert.ok(upd.args.includes("box") && upd.args.includes(CP_RUNNER_ID));
+    assert.ok(!JSON.stringify(db.queries).includes(cpRunnerToken));
+    const sweepIdx = db.queries.findIndex((q) => /UPDATE jobs/.test(q.sql));
+    const checkIdx = db.queries.findIndex((q) => /FROM runner_credentials/.test(q.sql));
+    assert.ok(sweepIdx !== -1 && sweepIdx < checkIdx, "the heartbeat sweep runs before the fingerprint check");
+  });
+
+  it("a user-login credential at concurrency 1 on a laptop registers", async () => {
+    const db = cpRunnerDb();
+    const body = { placement: "laptop", credentials: [{ engine: "claude-code", kind: "user-login", fingerprint: "abcdefabcdef", concurrency: 1 }] };
+    const res = await worker.fetch(cpRunnerRequest("/runner/register", { body }), { DB: db });
+    assert.equal(res.status, 200);
+  });
+});
