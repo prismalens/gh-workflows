@@ -5827,3 +5827,240 @@ describe("Jobs and lease (#184)", () => {
     }
   });
 });
+
+const cpEv = (type, fields = {}, at = "2026-09-21T10:00:00.000Z") => ({ v: "assayer/v1", type, at, ...fields });
+
+function cpFullStream() {
+  return [
+    cpEv("started", { engine: "opencode", model: "opencode/muse-spark", credential_fingerprint: null, prompt_hash: "e775e965", lane_version: "1b1c597" }),
+    cpEv("read", { path: ".claude-review.diff" }),
+    cpEv("agent", { agent_id: "call_01", role: "Bug hunt agent 3", model: "muse-spark", usage: { input: 10, output: 5, cache_read: 1, cache_write: 2 } }),
+    cpEv("finding", { path: "a.js", line: 3, side: "RIGHT", category: "bug", severity: "high", effort: "low", body: "x", verification_note: null, ai_prompt: null, confirmed: true }),
+    cpEv("summary", { header: null, body: "## Code review\n\nNo issues found." }),
+    cpEv("usage", { input: 2273, output: 362, cache_read: null, cache_write: null, cost_estimate_usd: 0.25, model: "opencode/muse-spark" }),
+    cpEv("finished", { conclusion: "completed" }, "2026-09-21T10:01:32.253Z"),
+  ];
+}
+
+function cpJobRow(overrides = {}) {
+  return {
+    id: CP_JOB_ID, runner_id: CP_RUNNER_ID, state: "running", repository: "prismalens/sreforge", pr_number: 183,
+    base_sha: CP_BASE, head_sha: CP_HEAD, mode: "review", level: "medium", model: null, engine: "opencode",
+    credential_kind: "api-key", config_effective: '{"max_reviewable_lines":6000}', ...overrides,
+  };
+}
+
+function cpEventsDb({ job = cpJobRow(), maxSeq = 0, earlier = [] } = {}) {
+  return cpRunnerDb((sql) => {
+    if (/FROM jobs WHERE id = \?/.test(sql)) return job;
+    if (/MAX\(seq\)/.test(sql)) return { max_seq: maxSeq };
+    if (/FROM job_events WHERE job_id = \? AND type IN/.test(sql)) {
+      return earlier.map((e, i) => ({ seq: i + 1, type: e.type, payload: JSON.stringify(e) }));
+    }
+    return null;
+  });
+}
+
+const cpPostEvents = (db, events, id = CP_JOB_ID) =>
+  worker.fetch(cpRunnerRequest(`/runner/jobs/${id}/events`, { body: events === undefined ? undefined : { events } }), { DB: db });
+
+function cpInsertColumns(q) {
+  const cols = /INSERT INTO \w+ \(([^)]+)\)/.exec(q.sql)[1].split(",").map((c) => c.trim());
+  return Object.fromEntries(cols.map((c, i) => [c, q.args[i]]));
+}
+
+describe("Runner events (#184)", () => {
+  it("an empty batch is a heartbeat: 204 and only the jobs UPDATE is written", async () => {
+    const db = cpEventsDb({ job: cpJobRow({ state: "leased" }) });
+    const res = await cpPostEvents(db, []);
+    assert.equal(res.status, 204);
+    const writes = db.queries.filter((q) => CP_WRITE.test(q.sql));
+    assert.equal(writes.length, 1);
+    assert.match(writes[0].sql, /UPDATE jobs SET heartbeat_at = \?, state = 'running'/);
+    assert.match(writes[0].sql, /WHERE id = \? AND runner_id = \? AND state IN \('leased', 'running'\)/);
+    assert.ok(writes[0].args.includes(CP_JOB_ID) && writes[0].args.includes(CP_RUNNER_ID));
+  });
+
+  it("a job id that is not a UUID is a 404", async () => {
+    const db = cpEventsDb();
+    const res = await cpPostEvents(db, [], "not-a-uuid");
+    assert.equal(res.status, 404);
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+  });
+
+  it("a job that does not exist is a 404", async () => {
+    const db = cpEventsDb({ job: null });
+    const res = await cpPostEvents(db, []);
+    assert.equal(res.status, 404);
+  });
+
+  it("another runner's job is a 403 not-lease-holder with nothing written", async () => {
+    const db = cpEventsDb({ job: cpJobRow({ runner_id: CP_OTHER_RUNNER_ID }) });
+    const res = await cpPostEvents(db, cpFullStream());
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), { error: "not-lease-holder" });
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+  });
+
+  it("a queued or finished job is a 409 lease-lost with nothing written", async () => {
+    for (const state of ["queued", "finished"]) {
+      const db = cpEventsDb({ job: cpJobRow({ state }) });
+      const res = await cpPostEvents(db, []);
+      assert.equal(res.status, 409, state);
+      assert.deepEqual(await res.json(), { error: "lease-lost" });
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0, state);
+    }
+  });
+
+  it("101 events is a 413 too-many-events with nothing written", async () => {
+    const db = cpEventsDb();
+    const res = await cpPostEvents(db, Array.from({ length: 101 }, () => cpEv("read", { path: "a" })));
+    assert.equal(res.status, 413);
+    assert.deepEqual(await res.json(), { error: "too-many-events" });
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+  });
+
+  it("a 17 KiB event is a 413 event-too-large with nothing written", async () => {
+    const db = cpEventsDb();
+    const res = await cpPostEvents(db, [cpEv("summary", { header: null, body: "x".repeat(17 * 1024) })]);
+    assert.equal(res.status, 413);
+    assert.deepEqual(await res.json(), { error: "event-too-large" });
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+  });
+
+  it("an event without v, with an unknown type or an unparseable at is a 400 invalid-event", async () => {
+    const { v, ...noV } = cpEv("read", { path: "a" });
+    for (const bad of [noV, cpEv("progress"), cpEv("read", { path: "a" }, "yesterday"), "read", null]) {
+      const db = cpEventsDb();
+      const res = await cpPostEvents(db, [cpEv("read", { path: "b" }), bad]);
+      assert.equal(res.status, 400, JSON.stringify(bad));
+      assert.deepEqual(await res.json(), { error: "invalid-event" });
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+    }
+    const db = cpEventsDb();
+    const res = await cpPostEvents(db, undefined);
+    assert.equal(res.status, 400);
+  });
+
+  it("events need a runner token", async () => {
+    const db = cpEventsDb();
+    const res = await worker.fetch(cpRunnerRequest(`/runner/jobs/${CP_JOB_ID}/events`, { body: { events: [] }, token: null }), { DB: db });
+    assert.equal(res.status, 401);
+    assert.equal(db.queries.length, 0);
+  });
+
+  it("a full stream finishes the job and records the round with its engine, in one batch", async () => {
+    const db = cpEventsDb();
+    const batches = cpRecordBatches(db);
+    const res = await cpPostEvents(db, cpFullStream());
+    assert.equal(res.status, 204);
+    assert.equal(batches.length, 1);
+    const batch = batches[0];
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, batch.length, "every write is in the batch");
+
+    const jobUpdate = batch[0];
+    assert.match(jobUpdate.sql, /UPDATE jobs SET heartbeat_at = \?, state = 'finished', conclusion = \?, finished_at = \?/);
+    assert.ok(jobUpdate.args.includes("completed"));
+
+    const events = batch.filter((q) => /INSERT INTO job_events/.test(q.sql)).map(cpInsertColumns);
+    assert.deepEqual(events.map((e) => e.seq), [1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual(events.map((e) => e.type), ["started", "read", "agent", "finding", "summary", "usage", "finished"]);
+    assert.ok(events.every((e) => e.job_id === CP_JOB_ID));
+    assert.deepEqual(JSON.parse(events[3].payload), cpFullStream()[3]);
+
+    const usage = batch.filter((q) => /INSERT INTO usage_records/.test(q.sql));
+    assert.equal(usage.length, 1);
+    const row = cpInsertColumns(usage[0]);
+    assert.equal(row.session_id, CP_JOB_ID);
+    assert.equal(row.engine, "opencode");
+    assert.equal(row.ingest_auth, "runner");
+    assert.equal(row.credential_type, "api-key");
+    assert.equal(row.round_type, "review");
+    assert.equal(row.job_conclusion, "completed");
+    assert.equal(row.repository, "prismalens/sreforge");
+    assert.equal(row.pr_number, 183);
+    assert.equal(row.pr_url, "https://github.com/prismalens/sreforge/pull/183");
+    assert.equal(row.head_sha, CP_HEAD);
+    assert.equal(row.range_base, CP_BASE);
+    assert.equal(row.range_head, CP_HEAD);
+    assert.equal(row.model, "opencode/muse-spark");
+    assert.equal(row.input_tokens, 2273);
+    assert.equal(row.output_tokens, 362);
+    assert.equal(row.cache_read_input_tokens, null);
+    assert.equal(row.total_cost_usd, 0.25);
+    assert.equal(row.duration_ms, 92253);
+    assert.equal(row.lane_version, "1b1c597");
+    assert.equal(row.prompt_hash, "e775e965");
+    assert.equal(row.level, "medium");
+    assert.equal(row.config_effective, '{"max_reviewable_lines":6000}');
+    assert.equal(row.repository_id, null);
+    assert.equal(row.failure_class, null);
+    assert.deepEqual(JSON.parse(row.per_model_usage), {
+      "opencode/muse-spark": { input: 2273, output: 362, cache_read: null, cache_write: null },
+    });
+
+    const agents = batch.filter((q) => /INSERT INTO round_agents/.test(q.sql));
+    assert.equal(agents.length, 1);
+    assert.match(agents[0].sql, /ON CONFLICT\(session_id, agent_id\) DO UPDATE/);
+    const agent = cpInsertColumns(agents[0]);
+    assert.deepEqual(agent, {
+      session_id: CP_JOB_ID, agent_id: "call_01", subagent_type: "Bug hunt agent 3", model: "muse-spark",
+      input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 1, cache_creation_input_tokens: 2, engine: "opencode",
+    });
+  });
+
+  it("an error event lands on the job and on the round: failure_class, failure_retryable, reset_at", async () => {
+    const db = cpEventsDb();
+    const stream = [
+      cpEv("started", { engine: "opencode", model: "m" }),
+      cpEv("error", { failure_class: "rate-limited", retryable: true, reset_at: "2026-09-21T15:00:00Z", message: "429" }),
+      cpEv("finished", { conclusion: "failed" }, "2026-09-21T10:00:05.000Z"),
+    ];
+    const res = await cpPostEvents(db, stream);
+    assert.equal(res.status, 204);
+    const jobUpdate = db.queries.find((q) => /^UPDATE jobs SET heartbeat_at/.test(q.sql));
+    assert.match(jobUpdate.sql, /failure_class = \?, reset_at = \?/);
+    assert.ok(jobUpdate.args.includes("rate-limited") && jobUpdate.args.includes("2026-09-21T15:00:00Z"));
+    const row = cpInsertColumns(db.queries.find((q) => /INSERT INTO usage_records/.test(q.sql)));
+    assert.equal(row.failure_class, "rate-limited");
+    assert.equal(row.failure_retryable, 1);
+    assert.equal(row.failure_reset_at, "2026-09-21T15:00:00Z");
+    assert.equal(row.job_conclusion, "failed");
+    assert.equal(row.duration_ms, 5000);
+  });
+
+  it("finished without started records a null duration", async () => {
+    const db = cpEventsDb();
+    const res = await cpPostEvents(db, [cpEv("finished", { conclusion: "completed" })]);
+    assert.equal(res.status, 204);
+    const row = cpInsertColumns(db.queries.find((q) => /INSERT INTO usage_records/.test(q.sql)));
+    assert.equal(row.duration_ms, null);
+    assert.equal(row.engine, "opencode", "the job's engine when no started event names one");
+    assert.equal(row.model, null);
+    assert.equal(row.per_model_usage, "{}");
+  });
+
+  it("seq continues across posts, and the round merges events from earlier posts", async () => {
+    const earlier = cpFullStream().slice(0, 6);
+    const db = cpEventsDb({ maxSeq: 6, earlier });
+    const res = await cpPostEvents(db, [cpFullStream()[6]]);
+    assert.equal(res.status, 204);
+    const events = db.queries.filter((q) => /INSERT INTO job_events/.test(q.sql)).map(cpInsertColumns);
+    assert.deepEqual(events.map((e) => e.seq), [7]);
+    const row = cpInsertColumns(db.queries.find((q) => /INSERT INTO usage_records/.test(q.sql)));
+    assert.equal(row.duration_ms, 92253);
+    assert.equal(row.input_tokens, 2273);
+    assert.equal(row.prompt_hash, "e775e965");
+    assert.equal(db.queries.filter((q) => /INSERT INTO round_agents/.test(q.sql)).length, 1);
+  });
+
+  it("events without finished keep the job running and record no round", async () => {
+    const db = cpEventsDb({ maxSeq: 2 });
+    const res = await cpPostEvents(db, [cpEv("read", { path: "x" }), cpEv("agent", { agent_id: "a", role: "r", model: "m", usage: null })]);
+    assert.equal(res.status, 204);
+    const writes = db.queries.filter((q) => CP_WRITE.test(q.sql));
+    assert.equal(writes.length, 3);
+    assert.match(writes[0].sql, /state = 'running'/);
+    assert.deepEqual(writes.slice(1).map((q) => cpInsertColumns(q).seq), [3, 4]);
+  });
+});

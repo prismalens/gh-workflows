@@ -3493,6 +3493,274 @@ RETURNING id, repository, pr_number, base_sha, head_sha, mode, level, model, eng
   });
 }
 
+function stringOrNull(val) {
+  return typeof val === "string" ? val : null;
+}
+
+function finiteOrNull(val) {
+  return typeof val === "number" && Number.isFinite(val) ? val : null;
+}
+
+function isValidRunnerEvent(ev) {
+  return (
+    ev !== null &&
+    typeof ev === "object" &&
+    !Array.isArray(ev) &&
+    ev.v === "assayer/v1" &&
+    RUNNER_EVENT_TYPES.has(ev.type) &&
+    typeof ev.at === "string" &&
+    !Number.isNaN(Date.parse(ev.at))
+  );
+}
+
+function lastOfType(events, type) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type === type) {
+      return events[i];
+    }
+  }
+  return null;
+}
+
+// The round a finished job writes: the same usage_records and round_agents rows the Actions
+// lane ingests, keyed by the job id, with repository and range taken from the job, never from
+// the events.
+function roundStatements(env, job, events, finished, nowIso) {
+  const started = lastOfType(events, "started");
+  const usage = lastOfType(events, "usage");
+  const error = lastOfType(events, "error");
+  const engine = stringOrNull(started?.engine) ?? job.engine;
+  const model = stringOrNull(usage?.model) ?? stringOrNull(started?.model) ?? job.model ?? null;
+  const tokens = {
+    input: toIntegerOrNull(usage?.input),
+    output: toIntegerOrNull(usage?.output),
+    cache_read: toIntegerOrNull(usage?.cache_read),
+    cache_write: toIntegerOrNull(usage?.cache_write),
+  };
+  const startedMs = started ? Date.parse(started.at) : NaN;
+  const durationMs = Number.isNaN(startedMs) ? null : Date.parse(finished.at) - startedMs;
+
+  const usageStmt = env.DB.prepare(
+    `INSERT INTO usage_records (
+      session_id,
+      recorded_at,
+      repository,
+      pr_number,
+      pr_url,
+      head_sha,
+      round_type,
+      model,
+      input_tokens,
+      output_tokens,
+      cache_read_input_tokens,
+      cache_creation_input_tokens,
+      total_cost_usd,
+      duration_ms,
+      per_model_usage,
+      lane_version,
+      prompt_hash,
+      range_base,
+      range_head,
+      job_conclusion,
+      level,
+      config_effective,
+      failure_class,
+      failure_retryable,
+      failure_reset_at,
+      credential_type,
+      ingest_auth,
+      repository_id,
+      engine
+    ) VALUES (
+      ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+      ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+      ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
+    )
+    ON CONFLICT(session_id) DO NOTHING`
+  ).bind(
+    job.id,
+    nowIso,
+    job.repository,
+    toIntegerOrNull(job.pr_number),
+    `https://github.com/${job.repository}/pull/${job.pr_number}`,
+    job.head_sha,
+    job.mode,
+    truncateString(model),
+    tokens.input,
+    tokens.output,
+    tokens.cache_read,
+    tokens.cache_write,
+    finiteOrNull(usage?.cost_estimate_usd),
+    durationMs,
+    JSON.stringify(model ? { [model]: tokens } : {}),
+    truncateString(started?.lane_version),
+    truncateString(started?.prompt_hash),
+    job.base_sha,
+    job.head_sha,
+    truncateString(finished.conclusion),
+    job.level,
+    job.config_effective ?? null,
+    truncateString(error?.failure_class),
+    typeof error?.retryable === "boolean" ? (error.retryable ? 1 : 0) : null,
+    truncateString(error?.reset_at),
+    job.credential_kind,
+    "runner",
+    null,
+    truncateString(engine)
+  );
+
+  const agentStmts = [];
+  for (const agent of events) {
+    if (agent.type !== "agent" || typeof agent.agent_id !== "string" || agent.agent_id === "") {
+      continue;
+    }
+    const u = agent.usage && typeof agent.usage === "object" ? agent.usage : {};
+    agentStmts.push(
+      env.DB.prepare(
+        `INSERT INTO round_agents (
+          session_id,
+          agent_id,
+          subagent_type,
+          model,
+          input_tokens,
+          output_tokens,
+          cache_read_input_tokens,
+          cache_creation_input_tokens,
+          engine
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        ON CONFLICT(session_id, agent_id) DO UPDATE SET
+          subagent_type = excluded.subagent_type,
+          model = excluded.model,
+          input_tokens = excluded.input_tokens,
+          output_tokens = excluded.output_tokens,
+          cache_read_input_tokens = excluded.cache_read_input_tokens,
+          cache_creation_input_tokens = excluded.cache_creation_input_tokens,
+          engine = excluded.engine`
+      ).bind(
+        job.id,
+        truncateString(agent.agent_id, AGENT_ID_MAX_LENGTH),
+        truncateString(agent.role),
+        truncateString(agent.model),
+        toIntegerOrNull(u.input),
+        toIntegerOrNull(u.output),
+        toIntegerOrNull(u.cache_read),
+        toIntegerOrNull(u.cache_write),
+        truncateString(engine)
+      )
+    );
+  }
+  return [usageStmt, ...agentStmts];
+}
+
+async function handleRunnerEvents(request, env, jobId) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+  const auth = await authenticateRunner(request, env);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  if (!UUID_PATTERN.test(jobId)) {
+    return new Response(null, { status: 404 });
+  }
+  const { payload, response } = await readControlBody(request);
+  if (response) {
+    return response;
+  }
+  const events = payload.events;
+  if (!Array.isArray(events)) {
+    return controlError("invalid-body", 400);
+  }
+  if (events.length > MAX_EVENTS_PER_POST) {
+    return controlError("too-many-events", 413);
+  }
+  const encoder = new TextEncoder();
+  for (const ev of events) {
+    if (encoder.encode(JSON.stringify(ev) ?? "").length > MAX_EVENT_BYTES) {
+      return controlError("event-too-large", 413);
+    }
+  }
+  if (!events.every(isValidRunnerEvent)) {
+    return controlError("invalid-event", 400);
+  }
+
+  try {
+    const job = await env.DB.prepare(
+      `SELECT id, runner_id, state, repository, pr_number, base_sha, head_sha, mode, level, model,
+        engine, credential_kind, config_effective FROM jobs WHERE id = ?`
+    )
+      .bind(jobId)
+      .first();
+    if (!job) {
+      return new Response(null, { status: 404 });
+    }
+    if (job.runner_id !== auth.runner_id) {
+      return controlError("not-lease-holder", 403);
+    }
+    if (job.state !== "leased" && job.state !== "running") {
+      return controlError("lease-lost", 409);
+    }
+
+    const nowIso = new Date().toISOString();
+    const finished = lastOfType(events, "finished");
+    const error = lastOfType(events, "error");
+    let set = "heartbeat_at = ?, state = 'running'";
+    const setArgs = [nowIso];
+    if (finished) {
+      set = "heartbeat_at = ?, state = 'finished', conclusion = ?, finished_at = ?";
+      setArgs.push(truncateString(finished.conclusion), nowIso);
+    }
+    if (error) {
+      set += ", failure_class = ?, reset_at = ?";
+      setArgs.push(truncateString(error.failure_class), truncateString(error.reset_at));
+    }
+    const statements = [
+      env.DB.prepare(
+        `UPDATE jobs SET ${set} WHERE id = ? AND runner_id = ? AND state IN ('leased', 'running')`
+      ).bind(...setArgs, job.id, auth.runner_id),
+    ];
+
+    if (events.length > 0) {
+      const seqRow = await env.DB.prepare(
+        "SELECT COALESCE(MAX(seq), 0) AS max_seq FROM job_events WHERE job_id = ?"
+      )
+        .bind(job.id)
+        .first();
+      const baseSeq = toIntegerOrNull(seqRow?.max_seq) ?? 0;
+      events.forEach((ev, i) => {
+        statements.push(
+          env.DB.prepare(
+            "INSERT INTO job_events (job_id, seq, type, at, payload) VALUES (?1, ?2, ?3, ?4, ?5)"
+          ).bind(job.id, baseSeq + i + 1, ev.type, truncateString(ev.at, 64), JSON.stringify(ev))
+        );
+      });
+    }
+
+    if (finished) {
+      const { results } = await env.DB.prepare(
+        `SELECT seq, type, payload FROM job_events WHERE job_id = ? AND type IN ('started', 'usage', 'error', 'agent')
+          ORDER BY seq`
+      )
+        .bind(job.id)
+        .all();
+      const earlier = [];
+      for (const row of results ?? []) {
+        try {
+          earlier.push(JSON.parse(row.payload));
+        } catch {
+          // A row this route wrote always parses; skip rather than fail the round.
+        }
+      }
+      statements.push(...roundStatements(env, job, [...earlier, ...events], finished, nowIso));
+    }
+
+    await env.DB.batch(statements);
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  return new Response(null, { status: 204 });
+}
+
 export default {
   async fetch(request, env, ctx, options = {}) {
     const opts = (ctx && typeof ctx === "object" && (typeof ctx.getKey === "function" || typeof ctx.mintInstallationToken === "function")) ? ctx : (options || {});
@@ -3521,6 +3789,14 @@ export default {
 
     if (method === "POST" && pathname === "/runner/register") {
       return handleRunnerRegister(request, env);
+    }
+
+    if (method === "POST" && pathname.startsWith("/runner/jobs/")) {
+      const match = /^\/runner\/jobs\/([^/]+)\/events$/.exec(pathname);
+      if (!match) {
+        return new Response(null, { status: 404 });
+      }
+      return handleRunnerEvents(request, env, match[1]);
     }
 
     if (method === "GET" && pathname === "/runner/lease") {
