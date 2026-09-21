@@ -380,6 +380,9 @@ export const LANE_EVENT_REASONS = [
   "paused-by-request",
   "refused-size",
   "api-error",
+  "admission-off",
+  "skip-label",
+  "awaiting-label",
 ] as const;
 
 export type LaneEventReasonKey = (typeof LANE_EVENT_REASONS)[number];
@@ -401,6 +404,12 @@ export const LANE_EVENT_DEFINITIONS: Record<LaneEventReasonKey, string> = {
   "api-error":
     "Run failed on an account, auth or quota error before it read the diff; the failure_class " +
     "field on the round's usage_records row names which.",
+  "admission-off":
+    "Run skipped because review.admission is off in the repository's config; nothing reviews, comments or records a marker",
+  "skip-label":
+    "Run skipped because the claude_review_skip label is on the pull request; summons are refused too",
+  "awaiting-label":
+    "Run skipped because review.admission is label and the claude_review label is absent",
 };
 
 export const FORK_HEAD_FOOTNOTE =

@@ -1698,7 +1698,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(query.args[11], 6000);
     });
 
-    it("supports all valid reasons: no-token, auto-paused, paused-by-request, fork-head, skip-author, refused-size, draft, skip-trivial, superseded, unchanged-patch (#154, #162)", async () => {
+    it("supports all valid reasons: no-token, auto-paused, paused-by-request, fork-head, skip-author, refused-size, draft, skip-trivial, superseded, unchanged-patch, admission-off, skip-label, awaiting-label (#154, #162, #189)", async () => {
       const reasons = [
         "no-token",
         "auto-paused",
@@ -1710,6 +1710,9 @@ describe("Worker telemetry ingest", () => {
         "skip-trivial",
         "superseded",
         "unchanged-patch",
+        "admission-off",
+        "skip-label",
+        "awaiting-label",
       ];
       for (const reason of reasons) {
         const db = createFakeDb();

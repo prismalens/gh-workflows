@@ -19,6 +19,14 @@ Extracts REAL shell bodies out of claude-code-review.yml and runs them against f
     are open and skips as reply-no-threads when none are, leaving the marker untouched, and
     a reply-triggered verify round carries paused=1 and paused_by forward rather than
     clearing them.
+13. `admission: off` (#189) refuses the automatic round, every summon and every reply as
+    admission-off; announce posts nothing and the lane event records admission-off.
+14. The claude_review_skip label refuses everything as skip-label under any admission,
+    and its verdict carries the pause marker forward unchanged.
+15. `admission: label` without claude_review refuses everything as awaiting-label, and
+    with the label the round is admitted.
+16. `resolve` reads both labels as booleans only, gates label events to the two labels,
+    and scripts/setup-repo.sh creates both.
 
 A pause is the COMMENT layer and is therefore soft: it stops the automatic round, and
 `incremental`, `full` and `resume` all lift it. A stop is `admission: off` or the skip
@@ -26,7 +34,8 @@ label, never a comment, because the comment layer is per-round and ephemeral, so
 comment-driven stop is liftable by the next comment. #191 briefly made pause refuse every
 non-`resume` summon; that is reverted, and cases 4a, 4c, 6b and 14a pin the revert. The
 half of #191 that stands is the marker persistence in case 14 and the carry-forward in
-6a/6c: a pause must never be ERASED by a push or a reply. Ruling: #189.
+6a/6c: a pause must never be ERASED by a push or a reply. Ruling: #189. The stops
+themselves are cases 15-18: `admission: off` and the skip label refuse summons too.
 
 Run: python3 tests/test-pause-resume.py
 """
@@ -118,7 +127,8 @@ exit 0
 """
 
 
-def run_mode_step(script, *, event="pull_request", summon="none", fake_liveness="", head_sha=NEW, fake_threads="[]"):
+def run_mode_step(script, *, event="pull_request", summon="none", fake_liveness="", head_sha=NEW, fake_threads="[]",
+                  extra_env=None):
     cleanup_tmp()
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -152,6 +162,8 @@ def run_mode_step(script, *, event="pull_request", summon="none", fake_liveness=
                 FAKE_LIVENESS=fake_liveness,
                 FAKE_THREADS=fake_threads,
             )
+            if extra_env:
+                env.update(extra_env)
 
             p = subprocess.run(["bash", "-c", script], env=env,
                                capture_output=True, text=True)
@@ -241,6 +253,47 @@ def run_announce_step(script, *, marker_body=None, skip_reason="", event="pull_r
             return p.returncode, captured_comment, outputs, p.stdout + p.stderr
     finally:
         cleanup_tmp()
+
+
+GH_STUB_PR = r"""#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"pulls?state=open"*) printf '' ; exit 0 ;;
+  *"pulls/"*)           printf '%s' "$FAKE_PR" ; exit 0 ;;
+esac
+echo "gh stub: unrouted call: $args" >&2
+exit 1
+"""
+
+
+def run_pr_step(script, *, pr_json):
+    with tempfile.TemporaryDirectory() as td:
+        tdp = pathlib.Path(td)
+        binp = tdp / "bin"
+        binp.mkdir()
+        (binp / "gh").write_text(GH_STUB_PR)
+        (binp / "gh").chmod(0o755)
+        out_file = tdp / "output.txt"
+        out_file.touch()
+        env = dict(os.environ)
+        env.update(
+            PATH=f"{binp}:{env.get('PATH', '')}",
+            GITHUB_OUTPUT=str(out_file),
+            GH_TOKEN="fake-token",
+            PR_NUMBER="124",
+            EVENT_NAME="pull_request",
+            GITHUB_REPOSITORY="prismalens/test-repo",
+            LABEL_OPT_IN="claude_review",
+            LABEL_SKIP="claude_review_skip",
+            FAKE_PR=json.dumps(pr_json),
+        )
+        p = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+        outputs = {}
+        for line in out_file.read_text().splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                outputs.setdefault(k, v)
+        return p.returncode, outputs, p.stdout + p.stderr
 
 
 def run_lane_event_step(script, *, skip_reason="", actor=""):
@@ -797,6 +850,149 @@ def main():
         fails.append(f"case 14c: a no-transition skip on an already-reviewed head overwrote the verdict: {body!r}")
     else:
         print("  ok    a skip that changes no pause state is still withheld (#149 holds)")
+
+    # -------------------------------------------------------------
+    # 15-18. Admission (#189): `off` and the skip label are stops, `label` delegates
+    # admission to the opt-in label alone. Every summon and reply is refused too.
+    # -------------------------------------------------------------
+    paused_old = f"<!-- claude-review-liveness rounds=2 sha={OLD} paused=1 paused_by=alice -->"
+    summon_matrix = [
+        ("pull_request", "none", "[]"),
+        ("issue_comment", "incremental", "[]"),
+        ("issue_comment", "full", "[]"),
+        ("issue_comment", "pause", "[]"),
+        ("issue_comment", "resume", "[]"),
+        ("pull_request_review_comment", "reply", '[{"id":"T_1"}]'),
+    ]
+
+    def refused_everywhere(case, extra, want):
+        wrong = []
+        for ev, verb, threads in summon_matrix:
+            rc, outs, err = run_mode_step(mode_script, event=ev, summon=verb,
+                                          fake_threads=threads, extra_env=extra)
+            if rc != 0 or outs.get("mode") != "skip" or outs.get("skip_reason") != want:
+                wrong.append(f"{ev}/{verb}: rc={rc} mode={outs.get('mode')!r} skip_reason={outs.get('skip_reason')!r}")
+        if wrong:
+            fails.append(f"case {case}: want skip {want} on every event, got " + "; ".join(wrong))
+        else:
+            print(f"  ok    {want}: the automatic round, all four summons and a reply are refused (#189)")
+
+    def lane_event_records(case, reason):
+        rc, payload, err = run_lane_event_step(lane_event_script, skip_reason=reason)
+        if rc != 0 or not isinstance(payload, dict) or payload.get("reason") != reason:
+            fails.append(f"case {case}: lane event want reason={reason}, got rc={rc} payload={payload!r} {err}")
+        else:
+            print(f"  ok    lane event records {reason} (#189)")
+
+    # 15. admission: off
+    refused_everywhere("15", {"ADMISSION": "off"}, "admission-off")
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=paused_old, skip_reason="admission-off",
+        event="pull_request", mode="skip", head_sha=NEW,
+    )
+    if rc != 0:
+        fails.append(f"case 15 announce: exited {rc}: {err}")
+    elif body:
+        fails.append(f"case 15 announce: an off repository got a liveness comment: {body!r}")
+    else:
+        print("  ok    admission-off: announce writes no liveness comment (#189)")
+    lane_event_records("15", "admission-off")
+
+    # 16. claude_review_skip label
+    refused_everywhere("16", {"HAS_SKIP_LABEL": "true"}, "skip-label")
+    rc, outs, err = run_mode_step(
+        mode_script, event="pull_request",
+        extra_env={"ADMISSION": "label", "HAS_SKIP_LABEL": "true", "HAS_OPT_IN_LABEL": "true"},
+    )
+    if outs.get("skip_reason") != "skip-label":
+        fails.append(f"case 16: skip label must beat the opt-in label, got {outs}")
+    else:
+        print("  ok    skip-label beats the opt-in label (#189)")
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=paused_old, skip_reason="skip-label",
+        event="pull_request", mode="skip", head_sha=NEW,
+    )
+    marker_line = body.splitlines()[0] if body else ""
+    if rc != 0:
+        fails.append(f"case 16 announce: exited {rc}: {err}")
+    elif outs.get("verdict_kind") != "skip-label":
+        fails.append(f"case 16 announce: want verdict_kind=skip-label, got {outs.get('verdict_kind')!r}")
+    elif "`claude_review_skip`" not in body or "no machine review on record" not in body:
+        fails.append(f"case 16 announce: verdict does not name the label or the missing review: {body!r}")
+    elif f"rounds=2 sha={OLD} paused=1 paused_by=alice" not in marker_line:
+        fails.append(f"case 16 announce: a label skip changed the pause state: {marker_line!r}")
+    else:
+        print("  ok    skip-label verdict names the label and carries paused=1 paused_by=alice forward (#189)")
+    lane_event_records("16", "skip-label")
+
+    # 17. admission: label without the opt-in label
+    refused_everywhere("17", {"ADMISSION": "label"}, "awaiting-label")
+    rc, outs, err = run_mode_step(
+        mode_script, event="pull_request", fake_liveness="",
+        extra_env={"ADMISSION": "label", "HAS_OPT_IN_LABEL": "true"},
+    )
+    if rc != 0 or outs.get("mode") != "review":
+        fails.append(f"case 17: labelled pull request under admission: label was not admitted: rc={rc} {outs}")
+    else:
+        print("  ok    admission: label with claude_review admits the round (#189)")
+    rc, outs, err = run_mode_step(
+        mode_script, event="issue_comment", summon="incremental",
+        extra_env={"ADMISSION": "label", "HAS_OPT_IN_LABEL": "true"},
+    )
+    if outs.get("skip_reason") == "awaiting-label":
+        fails.append(f"case 17: a summon on a labelled pull request was refused as awaiting-label: {outs}")
+    else:
+        print("  ok    admission: label with claude_review admits a summon (#189)")
+    rc, body, outs, err = run_announce_step(
+        announce_script, marker_body=paused_old, skip_reason="awaiting-label",
+        event="pull_request", mode="skip", head_sha=NEW,
+    )
+    if rc != 0:
+        fails.append(f"case 17 announce: exited {rc}: {err}")
+    elif outs.get("verdict_kind") != "awaiting-label":
+        fails.append(f"case 17 announce: want verdict_kind=awaiting-label, got {outs.get('verdict_kind')!r}")
+    elif "`claude_review`" not in body or "admission: label" not in body:
+        fails.append(f"case 17 announce: verdict does not name the label and the admission mode: {body!r}")
+    else:
+        print("  ok    awaiting-label verdict names claude_review and admission: label (#189)")
+    lane_event_records("17", "awaiting-label")
+
+    # 18a. resolve turns labels into booleans, and nothing else.
+    pr_script = extract_step_script("resolve", "Fetch PR metadata and validate origin")
+    base_pr = {"head": {"sha": NEW, "repo": {"full_name": "prismalens/test-repo"}},
+               "base": {"sha": OLD, "ref": "main"}, "draft": False}
+    for labels, want_opt, want_skip in [
+        ([{"name": "claude_review_skip"}], "false", "true"),
+        ([{"name": "claude_review"}, {"name": "bug"}], "true", "false"),
+        (None, "false", "false"),
+    ]:
+        pr_json = dict(base_pr)
+        if labels is not None:
+            pr_json["labels"] = labels
+        rc, outs, err = run_pr_step(pr_script, pr_json=pr_json)
+        got = (outs.get("has_opt_in_label"), outs.get("has_skip_label"))
+        if rc != 0 or got != (want_opt, want_skip):
+            fails.append(f"case 18a: labels={labels!r}: want opt_in={want_opt} skip={want_skip}, got {got} rc={rc} {err}")
+        else:
+            print(f"  ok    resolve reads labels={labels!r} as opt_in={want_opt} skip={want_skip} (#189)")
+
+    # 18b. Label events are gated to the two labels, the names are pinned, and setup-repo creates both.
+    resolve_if = resolve_job.get("if", "")
+    for needle in ("github.event.label.name == 'claude_review'",
+                   "github.event.label.name == 'claude_review_skip'",
+                   "github.event.action != 'labeled'"):
+        if needle not in resolve_if:
+            fails.append(f"case 18b: resolve job if lacks {needle!r}")
+    pr_step = next((st for st in resolve_steps if st.get("id") == "pr"), {})
+    pr_env = pr_step.get("env", {})
+    if pr_env.get("LABEL_OPT_IN") != "claude_review" or pr_env.get("LABEL_SKIP") != "claude_review_skip":
+        fails.append(f"case 18b: pr step env pins the wrong label names: {pr_env!r}")
+    setup_text = (ROOT / "scripts/setup-repo.sh").read_text()
+    for label in ("claude_review", "claude_review_skip"):
+        if not re.search(rf'^\s*"{label}\|', setup_text, re.M):
+            fails.append(f"case 18b: scripts/setup-repo.sh REQUIRED_LABELS does not create {label}")
+    if not any(f.startswith("case 18b") for f in fails):
+        print("  ok    label events gated to the two labels; names pinned; setup-repo creates both (#189)")
 
     print()
     if fails:
