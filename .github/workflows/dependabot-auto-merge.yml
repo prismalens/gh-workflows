@@ -83,9 +83,14 @@ jobs:
         # Dependabot force-pushes a grouped PR in place as membership changes,
         # re-running this workflow on the same PR. If an earlier push queued
         # auto-merge and this push no longer qualifies, take the queue back
-        # off. `--disable-auto` errors when auto-merge isn't enabled, which is
-        # the common case, so that's expected and not a failure here.
-        run: gh pr merge --disable-auto "$PR_URL" || true
+        # off. `--disable-auto` errors when auto-merge isn't enabled, the
+        # common case, so look first; any other failure must fail the job,
+        # or an ineligible PR stays armed.
+        run: |
+          armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [[ "$armed" == "true" ]]; then
+            gh pr merge --disable-auto "$PR_URL"
+          fi
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
