@@ -1,7 +1,8 @@
 import { describe, it, before, mock } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from "jose";
-import worker, { computeVariantKey, reviewableLinesFromFiles } from "./index.js";
+import worker, { computeVariantKey } from "./index.js";
+import { reviewableLinesFromFiles } from "./review-size.js";
 
 // Ingest lowers a row past the text cutoff to rounds (#183), so a describe whose
 // fixtures are dated in 2026 pins a clock that does not move past them. The control
