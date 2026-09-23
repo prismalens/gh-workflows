@@ -213,8 +213,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
       assert.equal(db.queries.length, 1);
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 2], "oidc");
-      assert.equal(query.args[query.args.length - 1], 12345);
+      assert.equal(query.args[query.args.length - 3], "oidc");
+      assert.equal(query.args[query.args.length - 2], 12345);
     });
 
     it("rejects an OIDC token with wrong audience (401)", async () => {
@@ -359,8 +359,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
       assert.equal(db.queries.length, 1);
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 2], "bearer");
-      assert.equal(query.args[query.args.length - 1], null);
+      assert.equal(query.args[query.args.length - 3], "bearer");
+      assert.equal(query.args[query.args.length - 2], null);
     });
 
     it("rejects request when neither bearer nor valid OIDC token is present (401)", async () => {
@@ -498,7 +498,8 @@ describe("Worker telemetry ingest", () => {
 
       const query = db.queries[0];
       assert.match(query.sql, /INSERT INTO usage_records/);
-      assert.equal(query.args.length, 65);
+      assert.equal(query.args.length, 66);
+      assert.equal(query.args[65], "full");
       assert.equal(query.args[63], "bearer");
       assert.equal(query.args[64], null);
 
@@ -946,7 +947,7 @@ describe("Worker telemetry ingest", () => {
       assert.match(query.sql, /config_effective/);
       // config_effective sits 5 params before the end: level and level_source (#101),
       // context_repositories and context_lines (#90) were appended after it.
-      assert.equal(query.args[query.args.length - 14], JSON.stringify(configEffective));
+      assert.equal(query.args[query.args.length - 15], JSON.stringify(configEffective));
     });
 
     it("stores null for config_effective when the payload omits it (#75)", async () => {
@@ -963,7 +964,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 14], null);
+      assert.equal(query.args[query.args.length - 15], null);
     });
 
     it("stores level and level_source for a v2 payload that sets them (#101)", async () => {
@@ -982,8 +983,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 13], "high");
-      assert.equal(query.args[query.args.length - 12], "repo");
+      assert.equal(query.args[query.args.length - 14], "high");
+      assert.equal(query.args[query.args.length - 13], "repo");
     });
 
     it("stores null for level and level_source when the payload omits them (#101)", async () => {
@@ -1000,8 +1001,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 14], null);
       assert.equal(query.args[query.args.length - 13], null);
-      assert.equal(query.args[query.args.length - 12], null);
     });
 
     it("stores context_repositories and context_lines for a v2 payload that sets them (#90)", async () => {
@@ -1020,8 +1021,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 11], 2);
-      assert.equal(query.args[query.args.length - 10], 450);
+      assert.equal(query.args[query.args.length - 12], 2);
+      assert.equal(query.args[query.args.length - 11], 450);
     });
 
     it("stores null for context_repositories and context_lines when the payload omits them (#90)", async () => {
@@ -1038,8 +1039,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 12], null);
       assert.equal(query.args[query.args.length - 11], null);
-      assert.equal(query.args[query.args.length - 10], null);
     });
 
     it("returns 400 when context_repositories or context_lines is not a number (#90)", async () => {
@@ -1076,10 +1077,10 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 9], "account-limit");
-      assert.equal(query.args[query.args.length - 8], 0);
-      assert.equal(query.args[query.args.length - 7], "2026-09-13T10:10:00Z");
-      assert.equal(query.args[query.args.length - 6], 429);
+      assert.equal(query.args[query.args.length - 10], "account-limit");
+      assert.equal(query.args[query.args.length - 9], 0);
+      assert.equal(query.args[query.args.length - 8], "2026-09-13T10:10:00Z");
+      assert.equal(query.args[query.args.length - 7], 429);
     });
 
     it("stores null for failure_class, failure_retryable, failure_reset_at and api_error_status when the payload omits them (#174)", async () => {
@@ -1096,10 +1097,10 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 10], null);
       assert.equal(query.args[query.args.length - 9], null);
       assert.equal(query.args[query.args.length - 8], null);
       assert.equal(query.args[query.args.length - 7], null);
-      assert.equal(query.args[query.args.length - 6], null);
     });
 
     it("returns 400 when failure_retryable or api_error_status is not a number (#174)", async () => {
@@ -1133,7 +1134,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 5], "api_key");
+      assert.equal(query.args[query.args.length - 6], "api_key");
     });
 
     it("stores null for credential_type when the payload omits it (#174)", async () => {
@@ -1150,7 +1151,7 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 5], null);
+      assert.equal(query.args[query.args.length - 6], null);
     });
 
     it("returns 400 when level or level_source is not a string", async () => {
@@ -1185,8 +1186,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 4], 90);
-      assert.equal(query.args[query.args.length - 3], "f".repeat(64));
+      assert.equal(query.args[query.args.length - 5], 90);
+      assert.equal(query.args[query.args.length - 4], "f".repeat(64));
     });
 
     it("stores null for base_pr_number and patch_fingerprint when the payload omits them (#174)", async () => {
@@ -1203,8 +1204,8 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
+      assert.equal(query.args[query.args.length - 5], null);
       assert.equal(query.args[query.args.length - 4], null);
-      assert.equal(query.args[query.args.length - 3], null);
     });
   });
 
@@ -1663,6 +1664,8 @@ describe("Worker telemetry ingest", () => {
         null,
         "bearer",
         null,
+        // share_level (#183): absent means full.
+        "full",
       ]);
     });
 
@@ -1828,9 +1831,9 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 3], "octocat");
-      assert.equal(query.args[query.args.length - 2], "bearer");
-      assert.equal(query.args[query.args.length - 1], null);
+      assert.equal(query.args[query.args.length - 4], "octocat");
+      assert.equal(query.args[query.args.length - 3], "bearer");
+      assert.equal(query.args[query.args.length - 2], null);
     });
 
     it("stores actor as null when the payload omits it (#124)", async () => {
@@ -1850,9 +1853,9 @@ describe("Worker telemetry ingest", () => {
       assert.equal(res.status, 204);
 
       const query = db.queries[0];
-      assert.equal(query.args[query.args.length - 3], null);
-      assert.equal(query.args[query.args.length - 2], "bearer");
-      assert.equal(query.args[query.args.length - 1], null);
+      assert.equal(query.args[query.args.length - 4], null);
+      assert.equal(query.args[query.args.length - 3], "bearer");
+      assert.equal(query.args[query.args.length - 2], null);
     });
 
     it("returns 400 when actor is not a string", async () => {
@@ -3729,8 +3732,8 @@ describe("Worker telemetry read API", () => {
 
         assert.equal(db.queries.length, 2);
         const insertQuery = db.queries[1];
-        assert.ok(insertQuery.sql.includes("title = COALESCE(excluded.title, prs.title)"));
-        assert.ok(insertQuery.sql.includes("author = COALESCE(excluded.author, prs.author)"));
+        assert.ok(insertQuery.sql.includes("THEN COALESCE(excluded.title, prs.title) ELSE NULL END"));
+        assert.ok(insertQuery.sql.includes("THEN COALESCE(excluded.author, prs.author) ELSE NULL END"));
         assert.ok(insertQuery.sql.includes("base_ref = COALESCE(excluded.base_ref, prs.base_ref)"));
         assert.ok(insertQuery.sql.includes("head_ref = COALESCE(excluded.head_ref, prs.head_ref)"));
         assert.ok(insertQuery.sql.includes("head_sha = COALESCE(excluded.head_sha, prs.head_sha)"));
@@ -6440,5 +6443,215 @@ describe("Revocation ruling (#184)", () => {
     for (const m of sql.matchAll(/ALTER TABLE (\w+) ADD COLUMN (\w+)/g)) columns.push(`${m[1]}.${m[2]}`);
     assert.ok(columns.includes("jobs.installation_id"), "the parser reads the jobs table");
     assert.deepEqual(columns.filter((c) => /token/i.test(c)), ["runners.token_hash"]);
+  });
+});
+
+describe("share levels (#183)", () => {
+  // Real SQLite behind a D1-shaped shim, so what a share level stores is read back, not matched.
+  async function sqliteDb() {
+    const { DatabaseSync } = await import("node:sqlite");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const dir = path.join(path.dirname(new URL(import.meta.url).pathname), "migrations");
+    const sqlite = new DatabaseSync(":memory:");
+    for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
+      sqlite.exec(fs.readFileSync(path.join(dir, file), "utf8"));
+    }
+    const statement = (sql, args) => ({
+      async run() {
+        const info = sqlite.prepare(sql).run(...args);
+        return { success: true, meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid) } };
+      },
+      async all() {
+        return { results: sqlite.prepare(sql).all(...args) };
+      },
+      async first() {
+        return sqlite.prepare(sql).get(...args) ?? null;
+      },
+    });
+    return {
+      sqlite,
+      prepare(sql) {
+        return { bind: (...args) => statement(sql, args), ...statement(sql, []) };
+      },
+      async batch(statements) {
+        const results = [];
+        for (const s of statements) results.push(await s.run());
+        return results;
+      },
+    };
+  }
+
+  const auth = { authorization: `Bearer ${VALID_TOKEN}` };
+  const post = (path, body, db) =>
+    worker.fetch(makeRequest(path, { headers: auth, body }), { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db });
+
+  const round = (overrides = {}) => ({
+    session_id: "s-1",
+    recorded_at: "2026-09-01T00:00:00Z",
+    repository: "o/a",
+    pr_number: 7,
+    head_sha: "a".repeat(40),
+    run_id: 99,
+    round_type: "full",
+    model: "claude-sonnet-5",
+    input_tokens: 10,
+    total_cost_usd: 0.5,
+    verdict_kind: "reviewed",
+    verdict_text: "reviewed aaaaaaa and posted 1 inline",
+    raw_result: { result: "free text" },
+    pr_title: "a title",
+    pr_author: "alice",
+    pr_base_ref: "main",
+    pr_head_ref: "feat/x",
+    ...overrides,
+  });
+
+  const finding = (overrides = {}) => ({
+    thread_node_id: "PRRT_1",
+    repository: "o/a",
+    pr_number: 7,
+    path: "worker/index.js",
+    original_line: 1,
+    line: 1,
+    is_resolved: 1,
+    is_outdated: 0,
+    resolved_by_login: "alice",
+    thread_created_at: "2026-09-01T00:00:00Z",
+    header_raw: "Bug",
+    body_excerpt: "This looks off.",
+    diff_hunk: "@@ -1 +1 @@",
+    human_reply_count: 1,
+    human_reply_sha: null,
+    fix_sha: "b".repeat(7),
+    fix_sha_source: "human_reply",
+    verify_verdict: "fixed",
+    head_sha_reviewed: "c".repeat(7),
+    last_swept_at: "2026-09-01T01:00:00Z",
+    row_set_incomplete: 0,
+    ...overrides,
+  });
+
+  it("places every column of every tiered table in exactly one tier", async () => {
+    const { TIERS } = await import("./tiers.js");
+    const db = await sqliteDb();
+    for (const [table, tiers] of Object.entries(TIERS)) {
+      const columns = db.sqlite.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name).sort();
+      const placed = [...tiers.counts, ...tiers.rounds, ...tiers.text];
+      assert.equal(new Set(placed).size, placed.length, `${table}: a column sits in two tiers`);
+      assert.deepEqual([...placed].sort(), columns, `${table}: tier map and schema differ`);
+    }
+  });
+
+  it("stores a rounds payload with every text-tier field null and the rest kept", async () => {
+    const db = await sqliteDb();
+    const res = await post("/ingest", round({ share_level: "rounds" }), db);
+    assert.equal(res.status, 204);
+    const row = db.sqlite.prepare("SELECT * FROM usage_records").get();
+    for (const column of ["pr_title", "pr_author", "verdict_text", "raw_result", "pr_base_ref", "pr_head_ref"]) {
+      assert.equal(row[column], null, column);
+    }
+    assert.equal(row.share_level, "rounds");
+    assert.equal(row.repository, "o/a");
+    assert.equal(row.pr_number, 7);
+    assert.equal(row.verdict_kind, "reviewed");
+    assert.equal(row.total_cost_usd, 0.5);
+  });
+
+  it("treats a payload with no share_level as full, which is what older lanes meant", async () => {
+    const db = await sqliteDb();
+    assert.equal((await post("/ingest", round(), db)).status, 204);
+    const row = db.sqlite.prepare("SELECT pr_title, share_level FROM usage_records").get();
+    assert.deepEqual({ ...row }, { pr_title: "a title", share_level: "full" });
+  });
+
+  it("refuses counts until its keys are ruled on, and off or any other value, writing nothing", async () => {
+    for (const level of ["counts", "off", "FULL", 3]) {
+      const db = await sqliteDb();
+      const res = await post("/ingest", round({ share_level: level }), db);
+      assert.equal(res.status, 400, String(level));
+      assert.deepEqual(await res.json(), { error: "invalid share_level" });
+      assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM usage_records").get().n, 0);
+    }
+  });
+
+  it("drops a lane event's actor below full", async () => {
+    const db = await sqliteDb();
+    const event = {
+      event_kind: "lane_event",
+      repository: "o/a",
+      reason: "paused-by-request",
+      run_id: 5,
+      run_attempt: 1,
+      actor: "alice",
+      share_level: "rounds",
+    };
+    assert.equal((await post("/ingest", event, db)).status, 204);
+    const row = db.sqlite.prepare("SELECT actor, reason, share_level FROM lane_events").get();
+    assert.deepEqual({ ...row }, { actor: null, reason: "paused-by-request", share_level: "rounds" });
+  });
+
+  it("blanks a pull request's stored title and author when a later write comes in at rounds", async () => {
+    const db = await sqliteDb();
+    const base = { repository: "o/a", pr_number: 7, source: "hook" };
+    await post("/pr-state", { ...base, title: "t", author: "alice", updated_at: "2026-09-01T00:00:00Z" }, db);
+    // A partial hook payload at full keeps the text, as before #183.
+    await post("/pr-state", { ...base, state: "open", updated_at: "2026-09-01T00:01:00Z" }, db);
+    let row = db.sqlite.prepare("SELECT title, author, share_level FROM prs").get();
+    assert.deepEqual({ ...row }, { title: "t", author: "alice", share_level: "full" });
+    const res = await post("/pr-state", { ...base, state: "merged", share_level: "rounds", updated_at: "2026-09-01T00:02:00Z" }, db);
+    assert.equal(res.status, 204);
+    row = db.sqlite.prepare("SELECT title, author, state, share_level FROM prs").get();
+    assert.deepEqual({ ...row }, { title: null, author: null, state: "merged", share_level: "rounds" });
+  });
+
+  it("stores a rounds sweep with the finding's text and resolver null and its fate fields kept", async () => {
+    const db = await sqliteDb();
+    const res = await post("/ingest/findings", { share_level: "rounds", findings: [finding()] }, db);
+    assert.equal(res.status, 204);
+    const row = db.sqlite.prepare("SELECT * FROM review_findings").get();
+    for (const column of ["resolved_by_login", "header_raw", "body_excerpt", "diff_hunk"]) {
+      assert.equal(row[column], null, column);
+    }
+    assert.equal(row.is_resolved, 1);
+    assert.equal(row.verify_verdict, "fixed");
+    assert.equal(row.path, "worker/index.js");
+    assert.equal(row.share_level, "rounds");
+  });
+
+  it("purges text older than TEXT_RETENTION_DAYS, lowers the level, and leaves newer rows alone", async () => {
+    const { purgeExpired } = await import("./index.js");
+    const db = await sqliteDb();
+    await post("/ingest", round({ session_id: "old", recorded_at: "2026-07-01T00:00:00Z" }), db);
+    await post("/ingest", round({ session_id: "new", recorded_at: "2026-09-20T00:00:00Z" }), db);
+    await post("/ingest/findings", { findings: [finding({ thread_created_at: "2026-07-01T00:00:00Z" })] }, db);
+    const result = await purgeExpired({ DB: db, TEXT_RETENTION_DAYS: "30" }, new Date("2026-09-22T00:00:00Z"));
+    assert.equal(result.text_cutoff, "2026-08-23T00:00:00.000Z");
+    assert.equal(result.text_purged.usage_records, 1);
+    assert.equal(result.text_purged.review_findings, 1);
+
+    const old = db.sqlite.prepare("SELECT * FROM usage_records WHERE session_id = 'old'").get();
+    assert.equal(old.pr_title, null);
+    assert.equal(old.raw_result, null);
+    assert.equal(old.share_level, "rounds");
+    assert.equal(old.total_cost_usd, 0.5);
+    assert.equal(old.pr_number, 7);
+    const fresh = db.sqlite.prepare("SELECT pr_title, share_level FROM usage_records WHERE session_id = 'new'").get();
+    assert.deepEqual({ ...fresh }, { pr_title: "a title", share_level: "full" });
+    const f = db.sqlite.prepare("SELECT header_raw, verify_verdict, share_level FROM review_findings").get();
+    assert.deepEqual({ ...f }, { header_raw: null, verify_verdict: "fixed", share_level: "rounds" });
+
+    // Idempotent: a second run finds nothing left at full past the cutoff.
+    const again = await purgeExpired({ DB: db }, new Date("2026-09-22T00:00:00Z"));
+    assert.equal(again.text_purged.usage_records, 0);
+  });
+
+  it("runs the purge from the scheduled handler at the event's time", async () => {
+    const db = await sqliteDb();
+    await post("/ingest", round({ recorded_at: "2026-07-01T00:00:00Z" }), db);
+    const waits = [];
+    await worker.scheduled({ scheduledTime: Date.parse("2026-09-22T04:23:00Z") }, { DB: db }, { waitUntil: (p) => waits.push(p) });
+    await Promise.all(waits);
+    assert.equal(db.sqlite.prepare("SELECT share_level FROM usage_records").get().share_level, "rounds");
   });
 });

@@ -1,5 +1,6 @@
 import { jwtVerify, createRemoteJWKSet } from "jose";
 import { createInstallationTokenMinter, MintError } from "./github-app.js";
+import { parseShareLevel, stripToLevel, TIERS } from "./tiers.js";
 
 let cachedCerts = null;
 let certsExpiry = 0;
@@ -1542,7 +1543,9 @@ async function handleHealth(request, env, { getKey } = {}) {
     });
   }
 
-  if (payload.share !== "full" && payload.share !== "off") {
+  // `rounds` joins with #183. A health report is a run-id reconciliation, so it is
+  // never sent at `counts`, where rows carry no run id to reconcile against.
+  if (payload.share !== "full" && payload.share !== "rounds" && payload.share !== "off") {
     return new Response(JSON.stringify({ error: "missing or invalid share" }), {
       status: 400,
       headers: { "content-type": "application/json" },
@@ -1852,6 +1855,16 @@ async function handleIngest(request, env, { getKey } = {}) {
       }
     }
 
+    // Nothing above the sender's share level is stored (#183).
+    const share = parseShareLevel(payload.share_level);
+    if (share.error) {
+      return new Response(JSON.stringify({ error: share.error }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    payload = stripToLevel("usage_records", share.level, payload);
+
     // Computed here, not in the workflow, so it cannot drift between callers pinned at
     // @main: one implementation. Story: #47 amendment.
     const variantKey = await computeVariantKey(
@@ -1931,7 +1944,8 @@ async function handleIngest(request, env, { getKey } = {}) {
           base_pr_number,
           patch_fingerprint,
           ingest_auth,
-          repository_id
+          repository_id,
+          share_level
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
@@ -1939,7 +1953,7 @@ async function handleIngest(request, env, { getKey } = {}) {
           ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
           ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
           ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61, ?62, ?63,
-          ?64, ?65
+          ?64, ?65, ?66
         )
         ON CONFLICT(session_id) DO NOTHING`
       ).bind(
@@ -2007,7 +2021,8 @@ async function handleIngest(request, env, { getKey } = {}) {
         payload.base_pr_number ?? null,
         payload.patch_fingerprint ?? null,
         auth.method,
-        auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
+        auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null,
+        share.level
       );
 
       const agentStmts = [];
@@ -2110,6 +2125,14 @@ async function handleIngest(request, env, { getKey } = {}) {
       });
     }
 
+    const share = parseShareLevel(payload.share_level);
+    if (share.error) {
+      return new Response(JSON.stringify({ error: share.error }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     if (!VALID_LANE_EVENT_REASONS.has(payload.reason)) {
       return new Response(JSON.stringify({ error: "invalid reason" }), {
         status: 400,
@@ -2154,8 +2177,9 @@ async function handleIngest(request, env, { getKey } = {}) {
           max_reviewable_lines,
           actor,
           ingest_auth,
-          repository_id
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+          repository_id,
+          share_level
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         ON CONFLICT(run_id, run_attempt) DO NOTHING`
       ).bind(
         payload.run_id,
@@ -2170,9 +2194,10 @@ async function handleIngest(request, env, { getKey } = {}) {
         payload.lane_version ?? null,
         payload.reviewable_lines ?? null,
         payload.max_reviewable_lines ?? null,
-        payload.actor ?? null,
+        stripToLevel("lane_events", share.level, payload).actor ?? null,
         auth.method,
-        auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
+        auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null,
+        share.level
       ).run();
     } catch {
       return new Response(null, { status: 500 });
@@ -2277,6 +2302,15 @@ async function handlePrState(request, env, { getKey } = {}) {
     }
   }
 
+  const share = parseShareLevel(payload.share_level);
+  if (share.error) {
+    return new Response(JSON.stringify({ error: share.error }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  const pr = stripToLevel("prs", share.level, payload);
+
   // Stale-write protection keys on when event occurred, not Worker receipt time (#136, finding 3944010389).
   let updatedAt;
   if (payload.updated_at !== undefined && payload.updated_at !== null) {
@@ -2315,12 +2349,15 @@ async function handlePrState(request, env, { getKey } = {}) {
         updated_at,
         source,
         ingest_auth,
-        repository_id
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        repository_id,
+        share_level
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
       ON CONFLICT(repository, pr_number) DO UPDATE SET
         state = COALESCE(excluded.state, prs.state),
-        title = COALESCE(excluded.title, prs.title),
-        author = COALESCE(excluded.author, prs.author),
+        -- COALESCE keeps a partial hook payload from blanking the text at full; below full
+        -- the stored text is dropped too, or the row would hold more than its level (#183).
+        title = CASE WHEN excluded.share_level = 'full' THEN COALESCE(excluded.title, prs.title) ELSE NULL END,
+        author = CASE WHEN excluded.share_level = 'full' THEN COALESCE(excluded.author, prs.author) ELSE NULL END,
         base_ref = COALESCE(excluded.base_ref, prs.base_ref),
         head_ref = COALESCE(excluded.head_ref, prs.head_ref),
         head_sha = COALESCE(excluded.head_sha, prs.head_sha),
@@ -2329,14 +2366,15 @@ async function handlePrState(request, env, { getKey } = {}) {
         updated_at = excluded.updated_at,
         source = excluded.source,
         ingest_auth = excluded.ingest_auth,
-        repository_id = COALESCE(excluded.repository_id, prs.repository_id)
+        repository_id = COALESCE(excluded.repository_id, prs.repository_id),
+        share_level = excluded.share_level
       WHERE excluded.updated_at >= prs.updated_at`
     ).bind(
       truncateString(payload.repository, 512),
       payload.pr_number,
       payload.state ?? null,
-      truncateString(payload.title, 512),
-      truncateString(payload.author, 512),
+      truncateString(pr.title, 512),
+      truncateString(pr.author, 512),
       truncateString(payload.base_ref, 512),
       truncateString(payload.head_ref, 512),
       truncateString(payload.head_sha, 512),
@@ -2345,7 +2383,8 @@ async function handlePrState(request, env, { getKey } = {}) {
       updatedAt,
       payload.source,
       auth.method,
-      auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
+      auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null,
+      share.level
     ).run();
   } catch {
     return new Response(null, { status: 500 });
@@ -2478,6 +2517,15 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
     }
   }
 
+  // One sweep is one repository at one level, so the level rides the batch, not each finding (#183).
+  const share = parseShareLevel(payload.share_level);
+  if (share.error) {
+    return new Response(JSON.stringify({ error: share.error }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   if (payload.findings.length === 0) {
     return new Response(null, { status: 204 });
   }
@@ -2506,8 +2554,9 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
       last_swept_at,
       row_set_incomplete,
       ingest_auth,
-      repository_id
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+      repository_id,
+      share_level
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
     -- A thread is mutable state, not an immutable event (#47): every column is overwritten
     -- from the latest sweep pass rather than only filled in when currently null, so a newly
     -- resolved thread or an edited comment settles here on the very next sweep.
@@ -2533,10 +2582,13 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
       last_swept_at = excluded.last_swept_at,
       row_set_incomplete = excluded.row_set_incomplete,
       ingest_auth = excluded.ingest_auth,
-      repository_id = COALESCE(excluded.repository_id, review_findings.repository_id)`
+      repository_id = COALESCE(excluded.repository_id, review_findings.repository_id),
+      share_level = excluded.share_level`
   );
 
-  const stmts = payload.findings.map((finding) =>
+  const stmts = payload.findings
+    .map((finding) => stripToLevel("review_findings", share.level, finding))
+    .map((finding) =>
     stmt.bind(
       finding.thread_node_id,
       truncateString(finding.repository, 512),
@@ -2560,7 +2612,8 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
       truncateString(finding.last_swept_at, 512),
       finding.row_set_incomplete,
       auth.method,
-      auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null
+      auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null,
+      share.level
     )
   );
 
@@ -3992,6 +4045,40 @@ async function handleFleetFindings(url, env) {
   }
 }
 
+// Retention (#183): text-tier fields go after TEXT_RETENTION_DAYS (default 30) and the
+// row's share_level drops to `rounds`, so a row still never holds more than its level
+// says. The rounds-tier purge at 180 days lowers rows to `counts`, which stores
+// pseudonymous keys and waits on the operator's answer on #183, so it is not run yet.
+const PURGE_CLOCKS = Object.freeze({
+  usage_records: "recorded_at",
+  lane_events: "recorded_at",
+  review_findings: "thread_created_at",
+  prs: "updated_at",
+});
+
+function retentionDays(value, fallback) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+export async function purgeExpired(env, now = new Date()) {
+  const days = retentionDays(env?.TEXT_RETENTION_DAYS, 30);
+  const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+  const statements = Object.entries(PURGE_CLOCKS).map(([table, clock]) => {
+    const nulls = TIERS[table].text.map((column) => `${column} = NULL`).join(", ");
+    return env.DB.prepare(
+      `UPDATE ${table} SET ${nulls}, share_level = 'rounds' WHERE share_level = 'full' AND ${clock} < ?`
+    ).bind(cutoff);
+  });
+  const results = await env.DB.batch(statements);
+  return {
+    text_cutoff: cutoff,
+    text_purged: Object.fromEntries(
+      Object.keys(PURGE_CLOCKS).map((table, i) => [table, results[i]?.meta?.changes ?? 0])
+    ),
+  };
+}
+
 export default {
   async fetch(request, env, ctx, options = {}) {
     const opts = (ctx && typeof ctx === "object" && (typeof ctx.getKey === "function" || typeof ctx.mintInstallationToken === "function")) ? ctx : (options || {});
@@ -4170,5 +4257,10 @@ export default {
     }
 
     return new Response(null, { status: 404 });
+  },
+
+  // wrangler.toml [triggers] crons (#183).
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(purgeExpired(env, new Date(event.scheduledTime)));
   },
 };
