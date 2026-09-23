@@ -2938,6 +2938,29 @@ describe("Worker telemetry read API", () => {
       assert.ok(query.sql.includes("(recorded_at < ? OR (recorded_at = ? AND run_id < ?))"));
       assert.deepEqual(query.args, ["2026-08-31T15:00:00.000Z", "2026-08-31T15:00:00.000Z", 1002, 100]);
     });
+
+    it("follows a cursor ending on a webhook's negative run id and still rejects a non-integer one", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb();
+      const env = { ...helper.env, DB: db };
+
+      for (const bad of ["1.5", "--7", "-", "7-"]) {
+        const req = makeAuthenticatedRequest(`/api/lane-events?cursor=2026-08-31T15:00:00.000Z|${bad}`, helper.jwt);
+        assert.equal((await worker.fetch(req, env)).status, 400, bad);
+      }
+
+      const req = makeAuthenticatedRequest(
+        "/api/lane-events?cursor=2026-08-31T15:00:00.000Z|-4503599627370495",
+        helper.jwt
+      );
+      assert.equal((await worker.fetch(req, env)).status, 200);
+      assert.deepEqual(db.queries[0].args, [
+        "2026-08-31T15:00:00.000Z",
+        "2026-08-31T15:00:00.000Z",
+        -4503599627370495,
+        100,
+      ]);
+    });
   });
 
   describe("GET /api/round-agents (#93)", () => {

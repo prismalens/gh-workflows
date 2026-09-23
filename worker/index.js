@@ -961,7 +961,7 @@ async function handleLaneEvents(url, env) {
     }
     const cursorRecordedAt = cursor.slice(0, pipeIndex);
     const cursorRunId = cursor.slice(pipeIndex + 1);
-    if (!cursorRecordedAt || !cursorRunId || !/^\d+$/.test(cursorRunId)) {
+    if (!cursorRecordedAt || !cursorRunId || !/^-?\d+$/.test(cursorRunId)) {
       return new Response(JSON.stringify({ error: "invalid cursor" }), {
         status: 400,
         headers: READ_HEADERS,
