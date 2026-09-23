@@ -92,6 +92,17 @@ on:
           diff, which is already public there.
         type: boolean
         default: false
+      org_defaults_repo:
+        description: >-
+          The repository whose `.github/claude-review-defaults.yml` is the org layer. Empty skips
+          the org layer, recorded as `not-configured` in config_resolution (#182). The default is
+          today's value until every consumer stub passes it explicitly, then it becomes empty.
+        type: string
+        default: prismalens/gh-workflows
+      org_defaults_ref:
+        description: The ref the org layer is read at. Read only when org_defaults_repo is set (#182).
+        type: string
+        default: main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         # required:false so fork pull_request runs — where the secrets context is always
@@ -442,6 +453,8 @@ jobs:
           INPUT_MAX_FILE_LINES: ${{ inputs.max_file_lines }}
           INPUT_ISSUE_CONTEXT_BYTE_BUDGET: ${{ inputs.issue_context_byte_budget }}
           INPUT_ISSUE_CONTEXT_TOTAL_BYTE_BUDGET: ${{ inputs.issue_context_total_byte_budget }}
+          INPUT_ORG_DEFAULTS_REPO: ${{ inputs.org_defaults_repo }}
+          INPUT_ORG_DEFAULTS_REF: ${{ inputs.org_defaults_ref }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -859,13 +872,12 @@ jobs:
 
               return errors
 
-          # Org defaults are read from prismalens/gh-workflows at main (#54).
+          # Org defaults are read from org_defaults_repo at org_defaults_ref (#54, #182).
           # No github.* context exposes the callee's own ref from inside a called workflow,
           # so a version-matched read is not available. The schema's required version key
-          # guards compatibility. If a consumer ever pins a SHA, add a workflows_ref input
-          # to that stub and thread it here.
-          org_repo = "prismalens/gh-workflows"
-          org_ref = "main"
+          # guards compatibility. An empty repo skips the layer: nothing assumes prismalens.
+          org_repo = os.environ.get("INPUT_ORG_DEFAULTS_REPO", "prismalens/gh-workflows").strip()
+          org_ref = (os.environ.get("INPUT_ORG_DEFAULTS_REF", "main").strip() or "main") if org_repo else ""
 
           layers = {
               "workflow_inputs": {
@@ -888,7 +900,12 @@ jobs:
           # true 404 falls through to the next layer (#177, thread 4006669598).
           org_telemetry_forced_off = False
           org_telemetry_forced_off_reason = ""
-          if yaml is not None:
+          if not org_repo:
+              # Not configured is a choice, not a failure: no fetch, no warning, and consent
+              # falls through to the repo layer exactly as an absent file does.
+              org_outcome = "not-configured"
+              print("Org defaults not configured; applying workflow defaults.")
+          elif yaml is not None:
               org_fetch_cmd = ["gh", "api", f"repos/{org_repo}/contents/.github/claude-review-defaults.yml?ref={org_ref}", "--jq", ".content"]
               org_res = subprocess.run(org_fetch_cmd, capture_output=True, text=True)
 
@@ -1031,6 +1048,9 @@ jobs:
           layers["org_defaults"] = {
               "outcome": org_outcome,
               "unconsumed": sorted(org_unconsumed),
+              # Which repository and ref supplied the layer, empty when not configured (#59, #182).
+              "repo": org_repo,
+              "ref": org_ref,
           }
 
           unconsumed = []
@@ -4371,6 +4391,8 @@ jobs:
           url: ${{ secrets.REVIEW_TELEMETRY_URL }}
           bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
           share: ${{ needs.review.outputs.telemetry_share }}
+          org_defaults_repo: ${{ inputs.org_defaults_repo }}
+          org_defaults_ref: ${{ inputs.org_defaults_ref }}
 
       - name: Post the review round record
         env:
@@ -5760,6 +5782,8 @@ jobs:
           url: ${{ secrets.REVIEW_TELEMETRY_URL }}
           bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
           share: ${{ needs.review.outputs.telemetry_share }}
+          org_defaults_repo: ${{ inputs.org_defaults_repo }}
+          org_defaults_ref: ${{ inputs.org_defaults_ref }}
 
       - name: Record lane event
         env:

@@ -46,7 +46,12 @@ def run_action_step(
     stub_curl_fail=False,
     repo_fetch_fail=False,
     repo_bad_base64=None,
+    org_repo=None,
 ):
+    # A case that supplies an org file wires the org layer the way the review lane does,
+    # by passing org_defaults_repo; the action's own default is empty (#182).
+    if org_repo is None:
+        org_repo = "prismalens/gh-workflows" if org_config is not None else ""
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
@@ -127,6 +132,8 @@ esac
             TARGET_URL=TEST_URL,
             BEARER_TOKEN="",
             SHARE_OVERRIDE="",
+            ORG_DEFAULTS_REPO=org_repo,
+            ORG_DEFAULTS_REF="main",
             GITHUB_REPOSITORY="acme/widgets",
         )
         if env_vars:
@@ -291,6 +298,15 @@ def main():
         print("  FAIL  Case 9: org default applies with no repository file")
     else:
         print("  ok    Case 9: org default applies with no repository file")
+
+    # Case 9c: with org_defaults_repo empty, the org file is never read, even when it
+    # exists and says off: an unconfigured org layer is absent, not a failure (#182)
+    proc, outputs = run_action_step(script, org_config="telemetry:\n  share: 'off'\n", org_repo="")
+    if outputs.get("share") != "full":
+        fails.append(f"Case 9c expected share=full with no org layer configured, got {outputs.get('share')}")
+        print("  FAIL  Case 9c: empty org_defaults_repo skips the org layer")
+    else:
+        print("  ok    Case 9c: empty org_defaults_repo skips the org layer")
 
     # Case 10: share defaults to full when nothing is configured anywhere
     proc, outputs = run_action_step(script)

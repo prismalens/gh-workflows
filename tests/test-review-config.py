@@ -106,7 +106,10 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
                     no_pyyaml=False,
                     expected_base_sha=None,
                     expected_org_repo=None,
-                    expected_org_ref=None):
+                    expected_org_ref=None,
+                    input_org_defaults_repo="prismalens/gh-workflows",
+                    input_org_defaults_ref="main",
+                    gh_log=None):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
@@ -165,6 +168,9 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
             INPUT_DEFAULT_MODEL=str(input_default_model),
             INPUT_AUTO_PAUSE_ROUNDS=str(input_auto_pause_rounds),
             INPUT_SKIP_AUTHORS=str(input_skip_authors),
+            INPUT_ORG_DEFAULTS_REPO=input_org_defaults_repo,
+            INPUT_ORG_DEFAULTS_REF=input_org_defaults_ref,
+            GH_CALL_LOG=str(gh_log) if gh_log else "",
             FAKE_ORG_CONFIG_404="1" if org_is_404 else "0",
             FAKE_ORG_CONFIG_FAIL="1" if org_fail else "0",
             FAKE_ORG_CONFIG_B64=fake_org_b64,
@@ -749,6 +755,36 @@ def main():
     check("org defaults target invariant: fetched from prismalens/gh-workflows@main exits 0", rc == 0, f"rc={rc}")
     check("org defaults target invariant: applies org config", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
     check("org defaults target invariant: produces no warning", "::warning::" not in stdout, f"stdout={stdout}")
+
+    # 4d-2. The org layer comes from the org_defaults_repo input at org_defaults_ref, and
+    # nowhere else (#182).
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, is_404=True,
+                                              input_org_defaults_repo="acme/policy", input_org_defaults_ref="v2",
+                                              expected_org_repo="acme/policy", expected_org_ref="v2")
+    check("org defaults input: read from acme/policy@v2", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
+    resolution = json.loads(out.get("config_resolution") or "{}")
+    check("org defaults input: config_resolution names repo and ref",
+          resolution.get("layers", {}).get("org_defaults", {}).get("repo") == "acme/policy"
+          and resolution["layers"]["org_defaults"].get("ref") == "v2",
+          f"got {resolution.get('layers', {}).get('org_defaults')}")
+
+    # 4d-3. An empty org_defaults_repo skips the org layer: no fetch, no warning, and
+    # config_resolution says not-configured rather than an error (#182).
+    with tempfile.TemporaryDirectory() as td:
+        log = pathlib.Path(td) / "gh.log"
+        log.touch()
+        rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, is_404=True,
+                                                  input_org_defaults_repo="", gh_log=log)
+        calls = log.read_text()
+    resolution = json.loads(out.get("config_resolution") or "{}")
+    check("org defaults not configured: exits 0", rc == 0, f"rc={rc}")
+    check("org defaults not configured: org file never fetched", "claude-review-defaults.yml" not in calls, f"calls={calls!r}")
+    check("org defaults not configured: org config not applied", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
+    check("org defaults not configured: no warning", "::warning::" not in stdout, f"stdout={stdout!r}")
+    check("org defaults not configured: layer recorded as not-configured",
+          resolution.get("layers", {}).get("org_defaults") == {"outcome": "not-configured", "unconsumed": [], "repo": "", "ref": ""},
+          f"got {resolution.get('layers', {}).get('org_defaults')}")
+    check("org defaults not configured: telemetry falls through to full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
 
     # 4e. Org defaults fetch failure (non-404): emits warning, applies defaults, does not report file absent
     rc, out, stdout, stderr = run_config_case(config_script, org_fail=True, is_404=False)

@@ -15,6 +15,16 @@ inputs:
     description: Optional telemetry.share override ('full' | 'off')
     required: false
     default: ''
+  org_defaults_repo:
+    description: >-
+      Repository holding .github/claude-review-defaults.yml, the org layer for telemetry.share.
+      Empty (the default) skips the org layer; the review lane passes its own input (#182).
+    required: false
+    default: ''
+  org_defaults_ref:
+    description: Ref the org layer is read at, when org_defaults_repo is set (#182).
+    required: false
+    default: main
   token:
     description: GitHub token for API queries (defaults to github.token)
     required: false
@@ -41,6 +51,8 @@ runs:
         TARGET_URL: ${{ inputs.url }}
         BEARER_TOKEN: ${{ inputs.bearer }}
         SHARE_OVERRIDE: ${{ inputs.share }}
+        ORG_DEFAULTS_REPO: ${{ inputs.org_defaults_repo }}
+        ORG_DEFAULTS_REF: ${{ inputs.org_defaults_ref }}
         GH_TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
@@ -179,8 +191,10 @@ runs:
               repo_share, repo_warn = fetch_layer(repo_name, None, '.github/claude-review.yml')
 
           org_share, org_warn = (None, None)
-          if repo_share is None:
-              org_share, org_warn = fetch_layer('prismalens/gh-workflows', 'main', '.github/claude-review-defaults.yml')
+          org_repo = (os.environ.get('ORG_DEFAULTS_REPO') or '').strip()
+          org_ref = (os.environ.get('ORG_DEFAULTS_REF') or '').strip() or 'main'
+          if repo_share is None and org_repo:
+              org_share, org_warn = fetch_layer(org_repo, org_ref, '.github/claude-review-defaults.yml')
 
           result = repo_share if repo_share is not None else org_share
           warn = repo_warn if repo_share is not None else org_warn
