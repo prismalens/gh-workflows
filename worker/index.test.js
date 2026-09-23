@@ -5047,11 +5047,11 @@ describe("Worker telemetry read API", () => {
   describe("GET /api/fleet/repos (#185)", () => {
     const TEXT_COLUMNS = /pr_title|pr_author|verdict_text|header_raw|body_excerpt|raw_result|diff_hunk/;
 
-    function fleetDb({ sevenDayCount = 0, totalCount = 0, fiftiethAt = null, lastRecorded = [], windowed = [], lastRounds = [], malformed = {} } = {}) {
+    function fleetDb({ sevenDayCount = 0, totalCount = 0, fiftiethAt = null, fiftiethSession = "s-50", lastRecorded = [], windowed = [], lastRounds = [], malformed = {} } = {}) {
       return createFakeDb({
         handler: (sql) => {
           if (sql.includes("OFFSET 49")) {
-            return fiftiethAt ? { recorded_at: fiftiethAt } : null;
+            return fiftiethAt ? { recorded_at: fiftiethAt, session_id: fiftiethSession } : null;
           }
           if (sql.includes("COUNT(*) AS cnt")) {
             return { cnt: sevenDayCount };
@@ -5146,8 +5146,17 @@ describe("Worker telemetry read API", () => {
         since: "2026-09-01T00:00:00.000Z",
         label: "the last 50 rounds",
       });
+      // Rounds tied with the 50th on recorded_at are cut by session_id, so the
+      // window holds 50 rounds, not 50 plus every tie.
+      for (const query of byCount.queries.filter((q) => q.args.length > 0 && !q.sql.includes("COUNT(*) AS cnt"))) {
+        assert.match(query.sql, /\(recorded_at > \? OR \(recorded_at = \? AND session_id >= \?\)\)/);
+        assert.deepEqual(query.args, ["2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z", "s-50"]);
+      }
       const windowedQuery = byCount.queries.find((q) => q.sql.includes("COUNT(*) AS rounds"));
-      assert.deepEqual(windowedQuery.args, ["2026-09-01T00:00:00.000Z"]);
+      assert.ok(windowedQuery);
+      const daysQuery = byDays.queries.find((q) => q.sql.includes("COUNT(*) AS rounds"));
+      assert.match(daysQuery.sql, /WHERE recorded_at >= \?/);
+      assert.equal(daysQuery.args.length, 1);
       assertWall(byCount);
     });
 

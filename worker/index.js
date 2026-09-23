@@ -2803,6 +2803,9 @@ async function handleFleetRepos(url, env) {
     // The rolling rule mirrors applyRange in dashboard/src/honesty/range.ts: the
     // last 50 rounds or the last 7 days, whichever holds more.
     let since = null;
+    // Set only when the 50-round side wins: rows tied with the 50th on
+    // recorded_at are cut by session_id, the same order the cutoff read uses.
+    let cutSession = null;
     let label = "all recorded rounds";
     if (range === "30d" || range === "90d") {
       const days = range === "30d" ? 30 : 90;
@@ -2812,7 +2815,7 @@ async function handleFleetRepos(url, env) {
       const c7 = new Date(now - 7 * DAY_MS).toISOString();
       const r50 = await db
         .prepare(
-          "SELECT recorded_at FROM usage_records ORDER BY recorded_at DESC, session_id DESC LIMIT 1 OFFSET 49"
+          "SELECT recorded_at, session_id FROM usage_records ORDER BY recorded_at DESC, session_id DESC LIMIT 1 OFFSET 49"
         )
         .first();
       const sevenDay = await db
@@ -2826,6 +2829,7 @@ async function handleFleetRepos(url, env) {
           label = "the last 7 days";
         } else {
           since = r50.recorded_at;
+          cutSession = r50.session_id;
           label = "the last 50 rounds";
         }
       } else {
@@ -2841,11 +2845,17 @@ async function handleFleetRepos(url, env) {
       }
     }
 
-    const where = since === null ? "" : "WHERE recorded_at >= ?";
-    const and = since === null ? "" : "recorded_at >= ? AND";
+    const inWindow =
+      cutSession === null
+        ? "recorded_at >= ?"
+        : "(recorded_at > ? OR (recorded_at = ? AND session_id >= ?))";
+    const windowArgs =
+      since === null ? [] : cutSession === null ? [since] : [since, since, cutSession];
+    const where = since === null ? "" : `WHERE ${inWindow}`;
+    const and = since === null ? "" : `${inWindow} AND`;
     const windowed = (sql) => {
       const stmt = db.prepare(sql);
-      return since === null ? stmt : stmt.bind(since);
+      return since === null ? stmt : stmt.bind(...windowArgs);
     };
 
     const everPosted = await db
