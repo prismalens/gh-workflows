@@ -394,6 +394,34 @@ def main():
             print("  ok    telemetry happy path: carries all wave 2 fields with correct types")
 
     # -------------------------------------------------------------
+    # 1b. The share level rides the record and the lane event (#183)
+    # -------------------------------------------------------------
+    ret, payload, stdout, stderr = run_telemetry_post_step(
+        telemetry_script, env_overrides={"TELEMETRY_SHARE": "rounds"}
+    )
+    if ret != 0 or not isinstance(payload, dict) or payload.get("share_level") != "rounds":
+        fails.append(f"telemetry share level: record carries {payload.get('share_level') if isinstance(payload, dict) else payload!r}, want rounds")
+        print("  FAIL  telemetry share level on the round record")
+    else:
+        print("  ok    telemetry share level: the round record carries share_level")
+
+    ret, payload, stdout, stderr = run_lane_event_step(
+        lane_event_script, env_overrides={"TELEMETRY_SHARE": "rounds"}
+    )
+    if ret != 0 or not isinstance(payload, dict) or payload.get("share_level") != "rounds":
+        fails.append(f"lane event share level: got {payload!r}")
+        print("  FAIL  lane event share level")
+    else:
+        print("  ok    lane event share level: the lane event carries share_level")
+
+    ret, payload, stdout, stderr = run_lane_event_step(lane_event_script)
+    if ret != 0 or not isinstance(payload, dict) or "share_level" in payload:
+        fails.append(f"lane event without a level: got {payload!r}")
+        print("  FAIL  lane event without a level sends no share_level")
+    else:
+        print("  ok    lane event without a level sends no share_level, which the Worker reads as full")
+
+    # -------------------------------------------------------------
     # 2. Empty verdict fields yield null (not "")
     # -------------------------------------------------------------
     ret, payload, stdout, stderr = run_telemetry_post_step(

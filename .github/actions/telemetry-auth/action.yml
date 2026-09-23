@@ -12,7 +12,7 @@ inputs:
     required: false
     default: ''
   share:
-    description: Optional telemetry.share override ('full' | 'off')
+    description: Optional telemetry.share override ('full' | 'rounds' | 'off')
     required: false
     default: ''
   token:
@@ -28,7 +28,7 @@ outputs:
     description: "Authentication method used: 'oidc', 'bearer', or 'none'"
     value: ${{ steps.auth.outputs.method }}
   share:
-    description: "Telemetry share consent: 'full' or 'off'"
+    description: "Telemetry share consent: 'full', 'rounds' or 'off'"
     value: ${{ steps.auth.outputs.share }}
 
 runs:
@@ -94,6 +94,9 @@ runs:
             full|true)
               RESOLVED_SHARE="full"
               ;;
+            rounds)
+              RESOLVED_SHARE="rounds"
+              ;;
             off|false)
               RESOLVED_SHARE="off"
               ;;
@@ -140,6 +143,8 @@ runs:
               s = tel.get('share')
               if s == 'full' or s is True:
                   return 'full', None, data
+              if s == 'rounds':
+                  return 'rounds', None, data
               if s == 'off' or s is False:
                   return 'off', None, data
               return 'off', f'telemetry.share has invalid value {s!r}; resolving telemetry.share as off', data
@@ -209,11 +214,11 @@ runs:
           if warn:
               print(f'::warning::{warn} (#177)', file=sys.stderr)
 
-          print(result if result in ('full', 'off') else 'full')
+          print(result if result in ('full', 'rounds', 'off') else 'full')
           '''))")"
         fi
 
-        if [ "$RESOLVED_SHARE" != "off" ] && [ "$RESOLVED_SHARE" != "full" ]; then
+        if [ "$RESOLVED_SHARE" != "off" ] && [ "$RESOLVED_SHARE" != "full" ] && [ "$RESOLVED_SHARE" != "rounds" ]; then
           echo "::warning::telemetry.share resolver returned an unexpected value; resolving off (#177)"
           RESOLVED_SHARE="off"
         fi

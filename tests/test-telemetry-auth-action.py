@@ -310,6 +310,19 @@ def main():
     else:
         print("  ok    Case 9: shared default named by extends applies")
 
+    # Case 9b: `rounds` resolves as itself, from the override and from the repository file (#183)
+    proc, outputs = run_action_step(script, env_vars={"SHARE_OVERRIDE": "rounds"})
+    proc2, outputs2 = run_action_step(script, repo_config="telemetry:\n  share: rounds\n")
+    proc3, outputs3 = run_action_step(script, repo_config="telemetry:\n  share: counts\n")
+    if outputs.get("share") != "rounds" or outputs2.get("share") != "rounds":
+        fails.append(f"Case 9b expected share=rounds, got {outputs.get('share')} / {outputs2.get('share')}")
+        print("  FAIL  Case 9b: rounds resolves as rounds")
+    elif outputs3.get("share") != "off":
+        fails.append(f"Case 9b expected counts to fail closed to off until ruled, got {outputs3.get('share')}")
+        print("  FAIL  Case 9b: counts fails closed")
+    else:
+        print("  ok    Case 9b: rounds resolves as rounds; counts fails closed to off")
+
     # Case 10: share defaults to full when nothing is configured anywhere
     proc, outputs = run_action_step(script)
     if outputs.get("share") != "full":

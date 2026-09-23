@@ -582,6 +582,20 @@ telemetry:
   share: off
 """
 
+REPO_CONFIG_TELEMETRY_SHARE_ROUNDS = """
+version: 1
+
+telemetry:
+  share: rounds
+"""
+
+REPO_CONFIG_TELEMETRY_SHARE_COUNTS = """
+version: 1
+
+telemetry:
+  share: counts
+"""
+
 MALFORMED_TELEMETRY_SHARE_MAYBE = """
 version: 1
 
@@ -1067,6 +1081,17 @@ def main():
     check("telemetry unquoted off: exits 0", rc == 0, f"rc={rc}")
     check("telemetry unquoted off: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
     check("telemetry unquoted off: no validation error", "Invalid value for 'telemetry.share'" not in stdout, f"stdout: {stdout}")
+
+    # `rounds` is a level of its own (#183): valid, and resolved as itself.
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=REPO_CONFIG_TELEMETRY_SHARE_ROUNDS)
+    check("telemetry share rounds: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry share rounds: resolves rounds", out.get("telemetry_share") == "rounds", f"got {out.get('telemetry_share')}")
+    check("telemetry share rounds: no validation error", "Invalid value for 'telemetry.share'" not in stdout, f"stdout: {stdout}")
+
+    # `counts` waits on the operator's ruling on #183, so it is still invalid and fails closed.
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=REPO_CONFIG_TELEMETRY_SHARE_COUNTS)
+    check("telemetry share counts: resolves off until ruled", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry share counts: fails validation", "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
 
     # 'share: maybe' is not full/off/true/false: fails validation and still
     # fails closed to off (#176).

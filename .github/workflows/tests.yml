@@ -173,6 +173,10 @@ jobs:
       - name: App manifest permissions (#184)
         run: python3 tests/test-app-manifest.py
 
+      # The text-tier audit prints field names and lengths, never a value (#183).
+      - name: Text-tier audit prints no contents (#183)
+        run: python3 tests/test-audit-telemetry-text.py
+
       # A test file this job does not name is a test that never runs (#130).
       - name: Every test file is wired into this job
         run: |

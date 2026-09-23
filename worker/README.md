@@ -61,6 +61,40 @@ The payload discriminator routes to one of two ingest targets:
 
 Backward and forward compatibility is permanent (#70 amendment). Payload fields are never rejected for being unknown (unmapped fields are dropped). Older payload shapes omitting new columns insert cleanly with `NULL` for missing columns.
 
+### Share Levels (#183)
+
+A repository chooses how much it sends with `telemetry.share` in `.github/claude-review.yml`,
+and the Worker enforces it: a row never holds more than its `share_level` says.
+
+- Every ingest payload (`POST /ingest`, `POST /pr-state`, `POST /ingest/findings`) may carry
+  `share_level`: `rounds` or `full`. Absent means `full`, which is what a lane pinned before
+  #183 meant. `counts` is refused with 400 until its key columns are ruled on (#183, comment
+  5787138299). So is `off`, which a sender never sends, and any other value:
+  `{"error": "invalid share_level"}`.
+- The tier map is `worker/tiers.js`. Every column of `usage_records`, `lane_events`,
+  `review_findings`, `prs` and `round_agents` sits in exactly one tier (counts, rounds,
+  text), which a Worker test pins against the migrations.
+- At `rounds`, every text-tier field is stored `NULL`: `pr_title`, `pr_author`,
+  `verdict_text`, `raw_result`, `pr_base_ref` and `pr_head_ref`, a lane event's `actor`, a
+  finding's `resolved_by_login`, `header_raw`, `body_excerpt` and `diff_hunk`, and a pull
+  request's `title` and `author`. A `rounds` write to `prs` also clears title and author
+  stored by an earlier `full` write.
+- `share_level` is stored on each of the four tables (migration 0017) and returned by
+  `GET /api/runs` and `GET /api/findings`.
+- `POST /ingest/health` accepts `share` of `full`, `rounds` or `off`.
+
+### Retention (#183)
+
+A daily cron (`23 4 * * *`) runs `purgeExpired`. Text-tier fields on rows older than
+`TEXT_RETENTION_DAYS` (default 30) are set to `NULL`, and the row's `share_level` drops from
+`full` to `rounds`. The clock is `recorded_at` for `usage_records` and `lane_events`,
+`thread_created_at` for `review_findings`, and `updated_at` for `prs`. The purge is
+idempotent. The 180-day rounds-tier purge lowers rows to `counts`, so it waits on the same
+ruling.
+
+`scripts/audit-telemetry-text.py --remote` reports what `raw_result` and `verdict_text` hold
+across stored rows, as field names and lengths, never contents.
+
 ### Truncation Rule
 
 Attacker-influencable strings (`pr_title`, `pr_author`, `pr_base_ref`, `pr_head_ref`) are length-capped to 512 characters at ingest rather than rejected (#72).

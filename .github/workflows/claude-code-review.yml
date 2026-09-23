@@ -541,7 +541,10 @@ jobs:
           # string, so it is held to characters a branch, tag or SHA can use.
           EXTENDS_RE = re.compile(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(?:@([A-Za-z0-9_./-]+))?")
           ALLOWED_TELEMETRY_KEYS = {"share"}
-          ALLOWED_TELEMETRY_SHARE = {"full", "off"}
+          # `rounds` drops text-tier fields on the Worker (#183). `counts` is not accepted
+          # yet: it waits on the operator's ruling on #183, and until then it is invalid,
+          # which fails closed to off.
+          ALLOWED_TELEMETRY_SHARE = {"full", "rounds", "off"}
           ALLOWED_REVIEW_KEYS = {
               "default_model",
               "auto_pause_rounds",
@@ -606,6 +609,8 @@ jobs:
               s = telemetry["share"]
               if s == "full" or s is True:
                   return "full", False
+              if s == "rounds":
+                  return "rounds", False
               if s == "off" or s is False:
                   return "off", False
               return "off", True
@@ -914,7 +919,7 @@ jobs:
                           if not (isinstance(s, bool) or (isinstance(s, str) and s in ALLOWED_TELEMETRY_SHARE)):
                               errors.append(
                                   f"Invalid value for 'telemetry.share' in {filename}: {s!r}. "
-                                  f"Allowed values: full, off (true/false also accepted)"
+                                  f"Allowed values: full, rounds, off (true/false also accepted)"
                               )
 
               return errors
@@ -4566,6 +4571,7 @@ jobs:
             --arg pr_state "${PR_STATE:-}" \
             --arg pr_base_ref "${PR_BASE_REF:-}" \
             --arg pr_head_ref "${PR_HEAD_REF:-}" \
+            --arg share_level "${TELEMETRY_SHARE:-}" \
             '
             def str_val(s): if s == "" then null else s end;
             def num_val(s): if s == "" then null else (s | tonumber? // null) end;
@@ -4590,12 +4596,18 @@ jobs:
               pr_state: str_val($pr_state),
               pr_base_ref: str_val($pr_base_ref),
               pr_head_ref: str_val($pr_head_ref)
-            }
+            } + (if $share_level == "" then {} else {share_level: $share_level} end)
           ' 2>/dev/null || true)
 
           if [ -z "$merged" ]; then
             echo "::warning::telemetry: failed to merge wave 2 fields into telemetry record; posting base record."
-            merged="$RECORD"
+            # The base record still carries the share level, or the Worker would read it as
+            # full and store text the repository did not allow (#183).
+            merged=$(printf '%s' "$RECORD" | jq -c --arg s "${TELEMETRY_SHARE:-full}" '. + {share_level: $s}' 2>/dev/null || true)
+            if [ -z "$merged" ]; then
+              echo "::warning::telemetry: the base record could not carry share_level; not posted."
+              exit 0
+            fi
           fi
 
           hdr="$(mktemp)"
@@ -4626,6 +4638,9 @@ jobs:
           esac
 
           echo "Recorded review round telemetry (HTTP $code)."
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            echo "Review round record posted at telemetry.share: ${TELEMETRY_SHARE:-full} (HTTP $code)." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # The verify round runs here and nowhere else, because its verdicts drive the
   # write-capable `mutate` job. Two load-bearing lines, both invariants, not tuning:
@@ -6018,10 +6033,11 @@ jobs:
             --arg reviewable_lines "${REVIEWABLE_LINES:-}" \
             --arg max_reviewable_lines "${MAX_REVIEWABLE_LINES:-}" \
             --arg actor "${ACTOR:-}" \
+            --arg share_level "${TELEMETRY_SHARE:-}" \
             '
             def str_val(s): if s == "" then null else s end;
             def num_val(s): if s == "" then null else (s | tonumber? // null) end;
-            {
+            (if $share_level == "" then {} else {share_level: $share_level} end) + {
               event_kind: "lane_event",
               repository: $repo,
               reason: $reason,
@@ -6067,3 +6083,6 @@ jobs:
           esac
 
           echo "Recorded lane event ($reason, HTTP $code)."
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            echo "Lane event \`$reason\` recorded at telemetry.share: ${TELEMETRY_SHARE:-full} (HTTP $code)." >> "$GITHUB_STEP_SUMMARY"
+          fi

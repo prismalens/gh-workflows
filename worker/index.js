@@ -865,6 +865,8 @@ async function handleRuns(url, env) {
     "patch_fingerprint",
     "ingest_auth",
     "repository_id",
+    // The level the row was written at, so a null text field reads as not collected (#183, #185 F6).
+    "share_level",
   ];
   if (includeBlobs) {
     columns.push(
@@ -2715,6 +2717,7 @@ async function handleFindings(url, env) {
     "head_sha_reviewed",
     "last_swept_at",
     "row_set_incomplete",
+    "share_level",
   ];
 
   let query = `SELECT
