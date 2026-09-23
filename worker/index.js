@@ -3930,7 +3930,7 @@ async function handleFleetFindings(url, env) {
       .all();
     const merged = await db
       .prepare(
-        `SELECT MIN(f.thread_created_at) AS first_finding_at, p.merged_at AS merged_at
+        `SELECT f.repository AS repository, MIN(f.thread_created_at) AS first_finding_at, p.merged_at AS merged_at
         ${from}${where ? " AND" : " WHERE"} p.state = 'merged' AND p.merged_at IS NOT NULL AND f.thread_created_at IS NOT NULL
         GROUP BY f.repository, f.pr_number`
       )
@@ -3949,23 +3949,29 @@ async function handleFleetFindings(url, env) {
       "not_addressed_but_resolved",
       "incomplete_prs",
     ];
+    // Floored at zero, as reviewToMergeHours does: a merge recorded a fraction
+    // before the review timestamp settled is not review after merge.
+    const hoursByRepo = new Map();
+    for (const r of merged.results ?? []) {
+      const hours = (Date.parse(r.merged_at) - Date.parse(r.first_finding_at)) / (60 * 60 * 1000);
+      if (!Number.isFinite(hours)) continue;
+      const list = hoursByRepo.get(r.repository) ?? [];
+      list.push(Math.max(0, hours));
+      hoursByRepo.set(r.repository, list);
+    }
+    const byNumber = (a, b) => a - b;
+
     const repositories = (perRepo.results ?? []).map((row) => {
       const out = { repository: row.repository };
       for (const key of COUNT_KEYS) out[key] = row[key] ?? 0;
+      out.review_to_merge_hours = (hoursByRepo.get(row.repository) ?? []).sort(byNumber);
       return out;
     });
     const totals = {};
     for (const key of COUNT_KEYS) {
       totals[key] = repositories.reduce((sum, r) => sum + r[key], 0);
     }
-
-    // Floored at zero, as reviewToMergeHours does: a merge recorded a fraction
-    // before the review timestamp settled is not review after merge.
-    const reviewToMergeHours = (merged.results ?? [])
-      .map((r) => (Date.parse(r.merged_at) - Date.parse(r.first_finding_at)) / (60 * 60 * 1000))
-      .filter((h) => Number.isFinite(h))
-      .map((h) => Math.max(0, h))
-      .sort((a, b) => a - b);
+    const reviewToMergeHours = repositories.flatMap((r) => r.review_to_merge_hours).sort(byNumber);
 
     return new Response(
       JSON.stringify({

@@ -5517,8 +5517,8 @@ describe("Worker telemetry read API", () => {
         incomplete_prs: 1,
       });
       assert.deepEqual(
-        data.repositories.map((r) => [r.repository, r.findings]),
-        [["o/a", 7], ["o/b", 1]]
+        data.repositories.map((r) => [r.repository, r.findings, r.review_to_merge_hours]),
+        [["o/a", 7, [12]], ["o/b", 1, []]]
       );
       // o/a#1: first finding 00:00, merged 12:00.
       assert.deepEqual(data.review_to_merge_hours, [12]);

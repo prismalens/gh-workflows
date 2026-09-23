@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createRoute } from "@tanstack/react-router";
+import { createRoute, Link } from "@tanstack/react-router";
 import { z } from "zod";
 
-import { useFindingsQuery, usePRsQuery, useSummaryQuery } from "@/api/queries";
+import {
+  useFindingsQuery,
+  useFleetFindingsQuery,
+  usePRsQuery,
+  useSummaryQuery,
+} from "@/api/queries";
 import type { FindingRow, PrRow } from "@/api/types";
 import { FilterChips } from "@/components/FilterChips";
 import { LoadingRows, QueryError } from "@/components/QueryState";
@@ -11,6 +16,7 @@ import { DivergenceList } from "@/features/findings/DivergenceList";
 import { FindingsHonestyHeader } from "@/features/findings/FindingsHonestyHeader";
 import { FindingsTable } from "@/features/findings/FindingsTable";
 import { FindingsTiles, FixLoopQualitySection } from "@/features/findings/FindingsTiles";
+import { FleetFindingsView } from "@/features/findings/FleetFindingsView";
 import {
   FATE_FILTER_OPTIONS,
   incompletePrKeys,
@@ -29,6 +35,9 @@ const EMPTY_PRS: PrRow[] = [];
 const PR_STATE_OPTIONS = ["open", "all", "merged", "closed"];
 
 const findingsSearchSchema = z.object({
+  // `counts` is the Fleet altitude, read from /api/fleet/findings; absent is the
+  // Investigate altitude, which reads rows (#185 F3).
+  view: z.enum(["counts"]).optional().catch(undefined),
   q: z.string().min(1).optional().catch(undefined),
   fate: z
     .enum(["never-answered", "pushback-open", "resolved-by-human", "self-graded", "fix-cited"])
@@ -55,6 +64,83 @@ function prStateFor(row: FindingRow, prsByKey: Map<string, PrRow>): string | und
 }
 
 function FindingsPage() {
+  const search = findingsRoute.useSearch();
+  return search.view === "counts" ? <FindingsCounts /> : <FindingsRows />;
+}
+
+function ViewSwitch({ view }: { view: "counts" | undefined }) {
+  const base = "rounded-md px-2 py-1 text-xs";
+  const active = `${base} bg-secondary text-secondary-foreground`;
+  const idle = `${base} text-muted-foreground hover:text-foreground`;
+  return (
+    <div role="group" aria-label="View" className="flex items-center gap-1">
+      <Link
+        to="/findings"
+        search={{ view: "counts" }}
+        className={view === "counts" ? active : idle}
+        aria-current={view === "counts" ? "page" : undefined}
+      >
+        Counts
+      </Link>
+      <Link
+        to="/findings"
+        search={{}}
+        className={view === undefined ? active : idle}
+        aria-current={view === undefined ? "page" : undefined}
+      >
+        Rows
+      </Link>
+    </div>
+  );
+}
+
+function FindingsCounts() {
+  const search = findingsRoute.useSearch();
+  const navigate = findingsRoute.useNavigate();
+  const prState = search.pr_state === "all" ? undefined : search.pr_state;
+  const fleet = useFleetFindingsQuery({ pr_state: prState });
+  const repositories = (fleet.data?.repositories ?? []).map((r) => r.repository);
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="text-base font-semibold tracking-tight">Findings</h1>
+        <ViewSwitch view="counts" />
+      </div>
+
+      <FindingsHonestyHeader />
+
+      <div className="flex flex-wrap items-center gap-3">
+        <FilterChips
+          label="Repository"
+          options={repositories}
+          value={search.repository}
+          onChange={(repository) => void navigate({ search: (prev) => ({ ...prev, repository }) })}
+        />
+        <FilterChips
+          label="PR state"
+          options={PR_STATE_OPTIONS}
+          value={search.pr_state}
+          onChange={(pr_state) =>
+            void navigate({
+              search: (prev) => ({ ...prev, pr_state: pr_state as typeof prev.pr_state }),
+            })
+          }
+        />
+      </div>
+
+      {fleet.isPending ? (
+        <LoadingRows rows={6} label="Loading finding counts" />
+      ) : fleet.isError ? (
+        <QueryError error={fleet.error} title="Could not load finding counts" />
+      ) : (
+        <FleetFindingsView data={fleet.data} repository={search.repository} />
+      )}
+    </div>
+  );
+}
+
+function FindingsRows() {
   const search = findingsRoute.useSearch();
   const navigate = findingsRoute.useNavigate();
 
@@ -137,6 +223,7 @@ function FindingsPage() {
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-base font-semibold tracking-tight">Findings</h1>
+        <ViewSwitch view={undefined} />
       </div>
 
       <FindingsHonestyHeader />
