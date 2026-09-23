@@ -3866,6 +3866,124 @@ async function handleRunnerEvents(request, env, jobId) {
   return new Response(null, { status: 204 });
 }
 
+// Logins that resolve a thread on the lane's own behalf. Mirrors
+// WORKFLOW_ACTOR_LOGINS in dashboard/src/features/findings/findings.ts, pinned
+// by tests/test-fleet-wall.py, so a fate counted here is the fate the rows page
+// decodes (#111, #185).
+const FLEET_WORKFLOW_ACTOR_LOGINS = Object.freeze(["github-actions[bot]", "claude[bot]"]);
+const FLEET_PR_STATES = Object.freeze(["open", "merged", "closed", "all"]);
+
+// The fate-count mode of Findings: decodeFate and decodeDivergence as SQL sums,
+// so the Fleet altitude never reads a finding row (#185 F3).
+async function handleFleetFindings(url, env) {
+  const repository = url.searchParams.get("repository");
+  const prState = url.searchParams.get("pr_state");
+  if (prState !== null && !FLEET_PR_STATES.includes(prState)) {
+    return new Response(JSON.stringify({ error: "invalid pr_state" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+  if (repository !== null && repository.length === 0) {
+    return new Response(JSON.stringify({ error: "invalid repository" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const conditions = [];
+  const args = [];
+  if (repository !== null) {
+    conditions.push("f.repository = ?");
+    args.push(repository);
+  }
+  if (prState !== null && prState !== "all") {
+    conditions.push("p.state = ?");
+    args.push(prState);
+  }
+  const where = conditions.length === 0 ? "" : `WHERE ${conditions.join(" AND ")}`;
+  const from = `FROM review_findings f LEFT JOIN prs p ON p.repository = f.repository AND p.pr_number = f.pr_number ${where}`;
+  const actors = FLEET_WORKFLOW_ACTOR_LOGINS.map(() => "?").join(", ");
+  const resolved = "COALESCE(f.is_resolved, 0) = 1";
+  const human = `f.verify_verdict IS NOT 'fixed' AND COALESCE(f.resolved_by_login, '') != '' AND f.resolved_by_login NOT IN (${actors})`;
+
+  try {
+    const db = env.DB;
+    const perRepo = await db
+      .prepare(
+        `SELECT f.repository AS repository,
+          COUNT(*) AS findings,
+          SUM(CASE WHEN NOT ${resolved} AND COALESCE(f.human_reply_count, 0) = 0 THEN 1 ELSE 0 END) AS never_answered,
+          SUM(CASE WHEN NOT ${resolved} AND COALESCE(f.human_reply_count, 0) > 0 THEN 1 ELSE 0 END) AS pushback_open,
+          SUM(CASE WHEN ${resolved} AND ${human} THEN 1 ELSE 0 END) AS resolved_by_human,
+          SUM(CASE WHEN ${resolved} AND NOT (${human}) THEN 1 ELSE 0 END) AS self_graded,
+          SUM(CASE WHEN COALESCE(f.fix_sha, '') != '' THEN 1 ELSE 0 END) AS fix_cited,
+          SUM(CASE WHEN f.verify_verdict = 'still_applies' THEN 1 ELSE 0 END) AS still_applies,
+          SUM(CASE WHEN f.verify_verdict = 'fixed' AND NOT ${resolved} THEN 1 ELSE 0 END) AS verified_fixed_but_open,
+          SUM(CASE WHEN f.verify_verdict = 'still_applies' AND ${resolved} THEN 1 ELSE 0 END) AS not_addressed_but_resolved,
+          COUNT(DISTINCT CASE WHEN f.row_set_incomplete = 1 THEN f.pr_number END) AS incomplete_prs
+        ${from}
+        GROUP BY f.repository
+        ORDER BY f.repository`
+      )
+      .bind(...FLEET_WORKFLOW_ACTOR_LOGINS, ...FLEET_WORKFLOW_ACTOR_LOGINS, ...args)
+      .all();
+    const merged = await db
+      .prepare(
+        `SELECT MIN(f.thread_created_at) AS first_finding_at, p.merged_at AS merged_at
+        ${from}${where ? " AND" : " WHERE"} p.state = 'merged' AND p.merged_at IS NOT NULL AND f.thread_created_at IS NOT NULL
+        GROUP BY f.repository, f.pr_number`
+      )
+      .bind(...args)
+      .all();
+
+    const COUNT_KEYS = [
+      "findings",
+      "never_answered",
+      "pushback_open",
+      "resolved_by_human",
+      "self_graded",
+      "fix_cited",
+      "still_applies",
+      "verified_fixed_but_open",
+      "not_addressed_but_resolved",
+      "incomplete_prs",
+    ];
+    const repositories = (perRepo.results ?? []).map((row) => {
+      const out = { repository: row.repository };
+      for (const key of COUNT_KEYS) out[key] = row[key] ?? 0;
+      return out;
+    });
+    const totals = {};
+    for (const key of COUNT_KEYS) {
+      totals[key] = repositories.reduce((sum, r) => sum + r[key], 0);
+    }
+
+    // Floored at zero, as reviewToMergeHours does: a merge recorded a fraction
+    // before the review timestamp settled is not review after merge.
+    const reviewToMergeHours = (merged.results ?? [])
+      .map((r) => (Date.parse(r.merged_at) - Date.parse(r.first_finding_at)) / (60 * 60 * 1000))
+      .filter((h) => Number.isFinite(h))
+      .map((h) => Math.max(0, h))
+      .sort((a, b) => a - b);
+
+    return new Response(
+      JSON.stringify({
+        filter: { repository, pr_state: prState },
+        totals,
+        repositories,
+        review_to_merge_hours: reviewToMergeHours,
+      }),
+      { headers: READ_HEADERS }
+    );
+  } catch {
+    return new Response(JSON.stringify({ error: "query failed" }), {
+      status: 500,
+      headers: READ_HEADERS,
+    });
+  }
+}
+
 export default {
   async fetch(request, env, ctx, options = {}) {
     const opts = (ctx && typeof ctx === "object" && (typeof ctx.getKey === "function" || typeof ctx.mintInstallationToken === "function")) ? ctx : (options || {});
@@ -3962,6 +4080,14 @@ export default {
         return authError;
       }
       return handleFleetRepos(url, env);
+    }
+
+    if (method === "GET" && pathname === "/api/fleet/findings") {
+      const authError = await verifyAccess(request, env);
+      if (authError) {
+        return authError;
+      }
+      return handleFleetFindings(url, env);
     }
 
     if (pathname === "/api/changes" || pathname.startsWith("/api/changes/")) {
