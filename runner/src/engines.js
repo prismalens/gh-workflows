@@ -56,8 +56,10 @@ export const ENGINES = Object.freeze({
   },
 });
 
-export function engineEnv(row, source = process.env) {
+// `extraAllow` names one credential variable the daemon handed this round (--credential-env),
+// so a key under a name of the operator's choosing reaches the engine and nothing else does.
+export function engineEnv(row, source = process.env, extraAllow = []) {
   const out = {};
-  for (const k of row.envAllow) if (source[k] !== undefined) out[k] = source[k];
+  for (const k of [...row.envAllow, ...extraAllow]) if (source[k] !== undefined) out[k] = source[k];
   return out;
 }

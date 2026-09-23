@@ -159,3 +159,19 @@ test('the current template.md hash documents its provenance (real telemetry cros
   assert.match(REAL_RUN.promptHash, /^[0-9a-f]{64}$/);
   assert.notEqual(promptHash(template), REAL_RUN.promptHash);
 });
+
+test('laneTokens and scripts/render-prompt.mjs render one prompt, for every mode (#184)', async () => {
+  const { laneTokens } = await import('../src/prompt.js');
+  const script = path.join(__dirname, '..', 'scripts', 'render-prompt.mjs');
+  const cases = [
+    [{ repo: 'o/a', pr: 7 }, ['--repo', 'o/a', '--pr', '7']],
+    [{ repo: 'o/a', pr: 7, mode: 'review-full', level: 'high' }, ['--repo', 'o/a', '--pr', '7', '--mode', 'review-full', '--level', 'high']],
+    [{ repo: 'o/a', pr: 7, mode: 'incremental', rangeBase: 'a'.repeat(40), rangeHead: 'b'.repeat(40), pathInstructions: true },
+      ['--repo', 'o/a', '--pr', '7', '--mode', 'incremental', '--range-base', 'a'.repeat(40), '--range-head', 'b'.repeat(40), '--path-instructions']],
+  ];
+  for (const [opts, argv] of cases) {
+    const printed = execFileSync(process.execPath, [script, ...argv], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    assert.equal(renderPrompt(template, laneTokens(opts)), printed);
+    assert.doesNotMatch(printed, /@@[A-Z0-9_]+@@/);
+  }
+});

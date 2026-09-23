@@ -18,7 +18,7 @@ import { buildManifest } from './manifest.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export function parseArgs(argv) {
-  const o = { engine: 'opencode', model: null, timeoutMs: 20 * 60 * 1000, idleMs: 8 * 60 * 1000, laneVersion: null, promptHash: null, stage: false, repo: null, pr: null, headSha: '', mode: 'review' };
+  const o = { engine: 'opencode', model: null, timeoutMs: 20 * 60 * 1000, idleMs: 8 * 60 * 1000, laneVersion: null, promptHash: null, stage: false, repo: null, pr: null, headSha: '', mode: 'review', credentialEnv: null, credentialFingerprint: null };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]; const v = argv[i + 1];
     const need = () => { if (v === undefined) throw new Error(`${a} needs a value`); i += 1; return v; };
@@ -36,12 +36,16 @@ export function parseArgs(argv) {
     else if (a === '--pr') o.pr = need();
     else if (a === '--head-sha') o.headSha = need();
     else if (a === '--mode') o.mode = need();
+    else if (a === '--credential-env') o.credentialEnv = need();
+    else if (a === '--credential-fingerprint') o.credentialFingerprint = need();
     else throw new Error(`unknown argument ${a}`);
   }
   for (const k of ['cwd', 'prompt', 'out']) if (!o[k]) throw new Error(`--${k} is required`);
   if (!(o.engine in ENGINES)) throw new Error(`unknown engine ${o.engine}; known: ${Object.keys(ENGINES).join(', ')}`);
   if (!Number.isFinite(o.timeoutMs) || o.timeoutMs <= 0) throw new Error('--timeout-min must be a positive number');
   if (!Number.isFinite(o.idleMs) || o.idleMs <= 0) throw new Error('--idle-min must be a positive number');
+  if (o.credentialEnv !== null && !/^[A-Z_][A-Z0-9_]*$/.test(o.credentialEnv)) throw new Error('--credential-env must be an environment variable name');
+  if (o.credentialFingerprint !== null && !/^[0-9a-f]{12}$/.test(o.credentialFingerprint)) throw new Error('--credential-fingerprint must be 12 lowercase hex');
   if (o.stage) {
     if (!o.repo || !/^[\w.-]+\/[\w.-]+$/.test(o.repo)) throw new Error('--stage-manifest needs --repo owner/name');
     if (!o.pr || !/^\d+$/.test(o.pr)) throw new Error('--stage-manifest needs --pr N');
@@ -91,7 +95,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
       staged = { files: m.manifest?.files?.length ?? null, reviewable: (m.manifest?.files ?? []).filter((f) => !f.filtered_by).length, diff_bytes: m.diffBytes, ms: Date.now() - t0 };
       writeFileSync(path.join(out, 'manifest-stderr.log'), m.stderr ?? '');
     } catch (e) {
-      const mapper = new SessionMapper({ cwd, engine: opts.engine, model: opts.model, promptHash: opts.promptHash, laneVersion: opts.laneVersion });
+      const mapper = new SessionMapper({ cwd, engine: opts.engine, model: opts.model, promptHash: opts.promptHash, laneVersion: opts.laneVersion, credentialFingerprint: opts.credentialFingerprint });
       mapper.onError(Object.assign(new Error(`manifest staging failed: ${e.message}`), { stage: 'manifest' }), 'manifest');
       const events = mapper.finish({ conclusion: 'failed', wallClockMs: Date.now() - t0 });
       writeFileSync(path.join(out, 'events.jsonl'), events.map((x) => JSON.stringify(x)).join('\n') + '\n');
@@ -101,7 +105,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
       return summary;
     }
   }
-  const baseEnv = engineEnv(row);
+  const baseEnv = engineEnv(row, process.env, opts.credentialEnv ? [opts.credentialEnv] : []);
   // The engine's `gh` is the shim: `pr comment` is recorded, never posted. Story: #184 day one.
   const realGh = whichGh(baseEnv.PATH ?? process.env.PATH ?? '');
   if (!realGh) throw new Error('gh is not on PATH; the lane\'s prompt needs it for read commands');
@@ -121,7 +125,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
   child.on('exit', (code, signal) => { childExit = { code, signal }; });
   child.on('error', (e) => { childExit = { code: null, signal: null, spawnError: e.message }; });
 
-  const mapper = new SessionMapper({ cwd, engine: opts.engine, model: opts.model, promptHash: opts.promptHash, laneVersion: opts.laneVersion });
+  const mapper = new SessionMapper({ cwd, engine: opts.engine, model: opts.model, promptHash: opts.promptHash, laneVersion: opts.laneVersion, credentialFingerprint: opts.credentialFingerprint });
   const raw = (kind, payload) => appendFileSync(rawPath, JSON.stringify({ at: new Date().toISOString(), kind, ...payload }) + '\n');
   const started = Date.now();
   let conclusion = null; let permissions = { allowed: 0, rejected: 0 };

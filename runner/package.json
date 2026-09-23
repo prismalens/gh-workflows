@@ -8,7 +8,8 @@
     "test": "node --test"
   },
   "bin": {
-    "assayer-run": "src/run.js"
+    "assayer-run": "src/run.js",
+    "assayer-runner": "src/daemon.js"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
