@@ -4098,6 +4098,373 @@ export async function purgeExpired(env, now = new Date()) {
   };
 }
 
+// ── GitHub App webhook (#184 bullet 4) ───────────────────────────────────────────────
+// Admits `pull_request` on the allowlisted repositories into the jobs queue, with the
+// review lane's draft, fork and size refusals ported. Spec: Fable, 2026-09-23, on #184.
+
+// The sreforge caller stub's `pull_request` types, which is what admits a round today.
+const WEBHOOK_ACTIONS = Object.freeze(new Set(["opened", "synchronize", "reopened", "ready_for_review"]));
+const WEBHOOK_DELIVERY_RETENTION_DAYS = 7;
+const WEBHOOK_MAX_REVIEWABLE_LINES = 6000;
+const WEBHOOK_MAX_FILE_LINES = 2000;
+const WEBHOOK_FILES_MAX_PAGES = 30;
+
+// Ported from the review lane's "Build review manifest" step (claude-code-review.yml, #105),
+// which counts over the same `pulls/{n}/files` JSON. Repository config is not read here.
+export const DEFAULT_PATH_FILTERS = Object.freeze([
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "Cargo.lock",
+  "poetry.lock",
+  "go.sum",
+  "dist/**",
+  "build/**",
+  "vendor/**",
+  "**/__snapshots__/**",
+  "*.min.js",
+  "*.min.css",
+  "**/node_modules/**",
+]);
+
+const FILE_STATUS_MAP = Object.freeze({
+  added: "added",
+  removed: "deleted",
+  modified: "modified",
+  renamed: "renamed",
+  changed: "modified",
+  copied: "modified",
+  unchanged: "modified",
+});
+
+// Python's fnmatch on Linux: `*` crosses `/`, `?` is one character, case-sensitive.
+function fnmatch(path, pattern) {
+  let re = "";
+  for (const ch of pattern) {
+    if (ch === "*") re += ".*";
+    else if (ch === "?") re += ".";
+    else re += ch.replace(/[\\^$.|+(){}[\]]/g, "\\$&");
+  }
+  return new RegExp(`^${re}$`, "s").test(path);
+}
+
+function matchesPathFilter(path, pattern) {
+  if (pattern.endsWith("/**")) {
+    const prefix = pattern.slice(0, -3);
+    if (path === prefix || path.startsWith(`${prefix}/`)) return true;
+  }
+  return fnmatch(path, pattern);
+}
+
+export function reviewableLinesFromFiles(
+  files,
+  { maxFileLines = WEBHOOK_MAX_FILE_LINES, pathFilters = DEFAULT_PATH_FILTERS } = {}
+) {
+  let total = 0;
+  for (const item of files) {
+    if (!item || typeof item !== "object") continue;
+    const name = typeof item.filename === "string" ? item.filename : "";
+    let status = FILE_STATUS_MAP[item.status] ?? "modified";
+    const additions = Number(item.additions) || 0;
+    const deletions = Number(item.deletions) || 0;
+    // GitHub omits `patch` for binary content and for an unchanged rename alike.
+    if ((item.patch === undefined || item.patch === null) && status !== "renamed") {
+      status = "binary";
+    }
+    const reviewable =
+      status === "added" || status === "modified" || (status === "renamed" && (additions > 0 || deletions > 0));
+    const lines = additions + deletions;
+    let filtered = pathFilters.some((pattern) => matchesPathFilter(name, pattern));
+    if (!filtered && reviewable && maxFileLines > 0 && lines > maxFileLines) {
+      filtered = true;
+    }
+    if (!filtered && reviewable) total += lines;
+  }
+  return total;
+}
+
+async function hmacSha256Hex(secret, bytes) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, bytes);
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function webhookJson(body, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+function webhookAllowlist(env) {
+  return new Set(
+    String(env?.WEBHOOK_REPOSITORIES ?? "")
+      .split(",")
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+function githubApiHeaders(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "assayer-control-plane",
+  };
+}
+
+// A synthetic lane_events run id: negative, so it never collides with an Actions run id,
+// and stable per delivery, which (run_id, run_attempt) needs as its primary key.
+async function webhookRunId(deliveryId) {
+  return -parseInt((await sha256Hex(deliveryId)).slice(0, 13), 16);
+}
+
+function isValidWebhookPullRequest(payload) {
+  const repo = payload?.repository;
+  const pr = payload?.pull_request;
+  return (
+    repo &&
+    typeof repo.full_name === "string" &&
+    REPOSITORY_PATTERN.test(repo.full_name) &&
+    Number.isInteger(repo.id) &&
+    pr &&
+    Number.isInteger(pr.number) &&
+    pr.number >= 1 &&
+    typeof pr.head?.sha === "string" &&
+    SHA_PATTERN.test(pr.head.sha) &&
+    typeof pr.base?.sha === "string" &&
+    SHA_PATTERN.test(pr.base.sha) &&
+    typeof pr.draft === "boolean" &&
+    (pr.head.repo === null || (typeof pr.head.repo === "object" && pr.head.repo !== undefined))
+  );
+}
+
+async function handleWebhook(request, env, { mint, fetch: fetchImpl }) {
+  const secret = env?.GITHUB_WEBHOOK_SECRET;
+  if (!secret) {
+    return webhookJson({ error: "webhook-unconfigured" }, 503);
+  }
+
+  const rawBody = await readBoundedText(request, MAX_INGEST_BYTES).catch(() => null);
+  if (rawBody === null) {
+    return webhookJson({ error: "payload-too-large" }, 413);
+  }
+
+  const signature = request.headers.get("x-hub-signature-256") ?? "";
+  const expected = `sha256=${await hmacSha256Hex(secret, new TextEncoder().encode(rawBody))}`;
+  if (!timingSafeEqual(signature, expected)) {
+    return webhookJson({ error: "invalid-signature" }, 401);
+  }
+
+  const deliveryId = request.headers.get("x-github-delivery") ?? "";
+  if (!deliveryId || deliveryId.length > 128) {
+    return webhookJson({ error: "missing-delivery-id" }, 400);
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {
+    return webhookJson({ error: "invalid-json" }, 400);
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return webhookJson({ error: "invalid-body" }, 400);
+  }
+
+  const event = request.headers.get("x-github-event") ?? "";
+  const action = typeof payload.action === "string" ? payload.action : null;
+  const db = env.DB;
+
+  try {
+    const seen = await db
+      .prepare("SELECT delivery_id FROM webhook_deliveries WHERE delivery_id = ?")
+      .bind(deliveryId)
+      .first();
+    if (seen) {
+      return webhookJson({ outcome: "duplicate" });
+    }
+
+    const nowIso = new Date().toISOString();
+    const cutoff = new Date(Date.now() - WEBHOOK_DELIVERY_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const settle = async (outcome, body, statements = [], status = 200, repo = null, prNumber = null) => {
+      await db.batch([
+        ...statements,
+        db
+          .prepare(
+            `INSERT INTO webhook_deliveries (delivery_id, received_at, event, action, repository, pr_number, outcome)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+          )
+          .bind(deliveryId, nowIso, event || "unknown", action, repo, prNumber, outcome),
+        db.prepare("DELETE FROM webhook_deliveries WHERE received_at < ?").bind(cutoff),
+      ]);
+      return webhookJson({ outcome, ...body }, status);
+    };
+
+    if (event !== "pull_request") {
+      return settle("ignored", { why: "event" });
+    }
+    if (!WEBHOOK_ACTIONS.has(action)) {
+      return settle("ignored", { why: "action" });
+    }
+    if (!isValidWebhookPullRequest(payload)) {
+      return webhookJson({ error: "invalid-payload" }, 400);
+    }
+
+    const repository = payload.repository.full_name;
+    const pr = payload.pull_request;
+    const headSha = pr.head.sha;
+    if (!webhookAllowlist(env).has(repository.toLowerCase())) {
+      return settle("ignored", { why: "repository" }, [], 200, repository, pr.number);
+    }
+
+    const engine = env?.WEBHOOK_JOB_ENGINE;
+    const credentialKind = env?.WEBHOOK_JOB_CREDENTIAL_KIND;
+    if (!ENGINES.has(engine) || !CREDENTIAL_KINDS.has(credentialKind)) {
+      return webhookJson({ error: "webhook-job-unconfigured" }, 503);
+    }
+
+    const laneEvent = async (reason, reviewable = null, max = null) =>
+      db
+        .prepare(
+          `INSERT INTO lane_events (
+            run_id,
+            run_attempt,
+            recorded_at,
+            repository,
+            reason,
+            pr_number,
+            head_sha,
+            run_url,
+            rounds_used,
+            lane_version,
+            reviewable_lines,
+            max_reviewable_lines,
+            actor,
+            ingest_auth,
+            repository_id
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+          ON CONFLICT(run_id, run_attempt) DO NOTHING`
+        )
+        .bind(
+          await webhookRunId(deliveryId),
+          1,
+          nowIso,
+          repository,
+          reason,
+          pr.number,
+          headSha,
+          null,
+          null,
+          null,
+          reviewable,
+          max,
+          null,
+          "webhook",
+          payload.repository.id
+        );
+
+    // The review job's gate skips a draft without a lane event; the lane records `draft`
+    // only for a summon on a draft, which this route does not take yet.
+    if (pr.draft === true) {
+      return settle("draft", {}, [], 200, repository, pr.number);
+    }
+    // The resolve job's fork guard: a head outside the base repository is never reviewed.
+    if (pr.head.repo === null || pr.head.repo.full_name !== repository) {
+      return settle("fork-head", {}, [await laneEvent("fork-head")], 200, repository, pr.number);
+    }
+
+    const [owner, repo] = repository.split("/");
+    let token;
+    try {
+      ({ token } = await mint({ owner, repo }));
+    } catch (err) {
+      if (err instanceof MintError && (err.code === "app-unconfigured" || err.code === "app-key-not-pkcs8")) {
+        return webhookJson({ error: "app-unconfigured" }, 503);
+      }
+      return webhookJson({ error: "github-error" }, 502);
+    }
+
+    // The installation token lives only in this function and is revoked before any write;
+    // it is never bound to a statement or logged (Fable ruling on #184, 2026-09-21).
+    const revoke = async () => {
+      await fetchImpl("https://api.github.com/installation/token", {
+        method: "DELETE",
+        headers: githubApiHeaders(token),
+      }).catch(() => null);
+    };
+    const api = `https://api.github.com/repos/${owner}/${repo}/pulls/${pr.number}`;
+
+    let live;
+    let files = [];
+    try {
+      const liveRes = await fetchImpl(api, { headers: githubApiHeaders(token) });
+      if (liveRes.status !== 200) {
+        await revoke();
+        return webhookJson({ error: "github-error" }, 502);
+      }
+      live = await liveRes.json();
+      // The manifest step's head-moved guard: the newer `synchronize` carries the new head.
+      if (live?.head?.sha !== headSha) {
+        await revoke();
+        return settle("stale", { head_sha: live?.head?.sha ?? null }, [], 200, repository, pr.number);
+      }
+      for (let page = 1; page <= WEBHOOK_FILES_MAX_PAGES; page++) {
+        const res = await fetchImpl(`${api}/files?per_page=100&page=${page}`, { headers: githubApiHeaders(token) });
+        if (res.status !== 200) {
+          await revoke();
+          return webhookJson({ error: "github-error" }, 502);
+        }
+        const batch = await res.json();
+        if (!Array.isArray(batch)) {
+          await revoke();
+          return webhookJson({ error: "github-error" }, 502);
+        }
+        files = files.concat(batch);
+        if (batch.length < 100) break;
+      }
+    } catch {
+      await revoke();
+      return webhookJson({ error: "github-error" }, 502);
+    }
+    await revoke();
+
+    const reviewableLines = reviewableLinesFromFiles(files);
+    if (reviewableLines > WEBHOOK_MAX_REVIEWABLE_LINES) {
+      return settle(
+        "refused-size",
+        { reviewable_lines: reviewableLines, max_reviewable_lines: WEBHOOK_MAX_REVIEWABLE_LINES },
+        [await laneEvent("refused-size", reviewableLines, WEBHOOK_MAX_REVIEWABLE_LINES)],
+        200,
+        repository,
+        pr.number
+      );
+    }
+
+    const baseSha = typeof live?.base?.sha === "string" && SHA_PATTERN.test(live.base.sha) ? live.base.sha : pr.base.sha;
+    const result = await enqueueJob(env, {
+      repository,
+      pr_number: pr.number,
+      base_sha: baseSha,
+      head_sha: headSha,
+      mode: "review",
+      engine,
+      credential_kind: credentialKind,
+    });
+    if (result.duplicate) {
+      return settle("duplicate-head", { job_id: result.job_id }, [], 200, repository, pr.number);
+    }
+    return settle("queued", { job_id: result.job_id }, [], 201, repository, pr.number);
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+}
+
 export default {
   async fetch(request, env, ctx, options = {}) {
     const opts = (ctx && typeof ctx === "object" && (typeof ctx.getKey === "function" || typeof ctx.mintInstallationToken === "function")) ? ctx : (options || {});
@@ -4122,6 +4489,11 @@ export default {
 
     if (method === "POST" && pathname === "/ingest/findings") {
       return handleIngestFindings(request, env, authOptions);
+    }
+
+    if (method === "POST" && pathname === "/webhook/github") {
+      const mint = opts.mintInstallationToken || createInstallationTokenMinter(env).mint;
+      return handleWebhook(request, env, { mint, fetch: opts.fetch || globalThis.fetch });
     }
 
     if (method === "POST" && pathname === "/runner/register") {

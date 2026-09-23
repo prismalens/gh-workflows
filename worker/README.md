@@ -723,7 +723,10 @@ the lease at 20 s and batches events at 10 s or more, which stays inside it.
 |---|---|---|
 | `GITHUB_APP_ID` | secret | The App's numeric id |
 | `GITHUB_APP_PRIVATE_KEY` | secret | The App's key in PKCS#8. GitHub hands out PKCS#1; convert it with `openssl pkcs8 -topk8 -nocrypt -in app.pem -out app-pkcs8.pem` |
-| `GITHUB_WEBHOOK_SECRET` | secret | Reserved for `POST /webhook/github` (bullet 4) |
+| `GITHUB_WEBHOOK_SECRET` | secret | Verifies `X-Hub-Signature-256` on `POST /webhook/github`; unset answers 503 |
+| `WEBHOOK_REPOSITORIES` | var | Comma-separated repositories the webhook admits, case-insensitive; default `prismalens/sreforge` |
+| `WEBHOOK_JOB_ENGINE` | var | Engine of a job the webhook enqueues; default `opencode` |
+| `WEBHOOK_JOB_CREDENTIAL_KIND` | var | Credential kind of a job the webhook enqueues; default `api-key` |
 | `RUNNER_HEARTBEAT_TIMEOUT_S` | var | Seconds without a heartbeat before a lease expires; default 300 |
 | `LEASE_POLL_MS` | var | Interval between claim attempts inside one long-poll; default 2000 |
 
@@ -741,7 +744,36 @@ One App per install; there is no shared App.
 4. Convert `pem` to PKCS#8 (the openssl line above), then `wrangler secret put` each of
    `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` and `GITHUB_WEBHOOK_SECRET`.
 5. Install the App on sreforge only.
-6. Apply migration 0016 with the **Apply D1 migrations** workflow.
+6. Apply migrations 0016 and 0018 with the **Apply D1 migrations** workflow.
+
+### `POST /webhook/github` (#184 bullet 4)
+
+The App's webhook. It answers within GitHub's 10-second window. It is not rate limited: the
+HMAC is the auth, and GitHub never retries a failed delivery on its own.
+
+| Step | Answer | Writes |
+|---|---|---|
+| `GITHUB_WEBHOOK_SECRET` unset | 503 `webhook-unconfigured` | nothing |
+| Body over the ingest bound | 413 `payload-too-large` | nothing |
+| `X-Hub-Signature-256` missing or wrong | 401 `invalid-signature` | nothing |
+| `X-GitHub-Delivery` missing | 400 `missing-delivery-id` | nothing |
+| Delivery already handled | 200 `duplicate` | nothing |
+| Not `pull_request`, or not `opened`, `synchronize`, `reopened`, `ready_for_review` | 200 `ignored` | delivery row |
+| Repository not in `WEBHOOK_REPOSITORIES` | 200 `ignored` | delivery row |
+| Engine or credential kind var invalid | 503 `webhook-job-unconfigured` | nothing |
+| Draft | 200 `draft` | delivery row, no lane event (as the lane: only a summon on a draft records one) |
+| Head outside the base repository | 200 `fork-head` | lane event `fork-head`, delivery row |
+| Mint fails | 503 `app-unconfigured` or 502 `github-error` | nothing |
+| Live head differs from the payload's | 200 `stale` | delivery row |
+| Reviewable lines over 6000 | 200 `refused-size` | lane event `refused-size` with both numbers, delivery row |
+| Otherwise | 201 `queued`, or 200 `duplicate-head` for a head already queued | job, delivery row |
+
+Reviewable lines are counted over `pulls/{n}/files` exactly as the lane's "Build review
+manifest" step counts them: the same default path filters, 2000 lines per file, binary and
+removed files skipped. Repository config is not read. The installation token is revoked before
+any write and is never stored. Lane events carry `ingest_auth = 'webhook'` and a negative
+`run_id` derived from the delivery id, so they never collide with an Actions run. Delivery rows
+are kept 7 days.
 
 ---
 

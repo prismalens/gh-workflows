@@ -1,7 +1,7 @@
 import { describe, it, before, mock } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from "jose";
-import worker, { computeVariantKey } from "./index.js";
+import worker, { computeVariantKey, reviewableLinesFromFiles } from "./index.js";
 
 // Ingest lowers a row past the text cutoff to rounds (#183), so a describe whose
 // fixtures are dated in 2026 pins a clock that does not move past them. The control
@@ -6680,5 +6680,313 @@ describe("share levels (#183)", () => {
     await worker.scheduled({ scheduledTime: Date.parse("2026-10-22T04:23:00Z") }, { DB: db }, { waitUntil: (p) => waits.push(p) });
     await Promise.all(waits);
     assert.equal(db.sqlite.prepare("SELECT share_level FROM usage_records").get().share_level, "rounds");
+  });
+});
+
+describe("Webhook (#184 bullet 4)", () => {
+  const WH_SECRET = "wh-secret-test";
+  const HEAD = "a".repeat(40);
+  const BASE = "b".repeat(40);
+
+  async function sqliteDb() {
+    const { DatabaseSync } = await import("node:sqlite");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const dir = path.join(path.dirname(new URL(import.meta.url).pathname), "migrations");
+    const sqlite = new DatabaseSync(":memory:");
+    for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
+      sqlite.exec(fs.readFileSync(path.join(dir, file), "utf8"));
+    }
+    const statements = [];
+    const statement = (sql, args) => ({
+      sql,
+      args,
+      async run() {
+        statements.push({ sql, args });
+        const info = sqlite.prepare(sql).run(...args);
+        return { success: true, meta: { changes: Number(info.changes) } };
+      },
+      async all() {
+        return { results: sqlite.prepare(sql).all(...args) };
+      },
+      async first() {
+        return sqlite.prepare(sql).get(...args) ?? null;
+      },
+    });
+    return {
+      sqlite,
+      statements,
+      prepare(sql) {
+        return { bind: (...args) => statement(sql, args), ...statement(sql, []) };
+      },
+      async batch(list) {
+        sqlite.exec("BEGIN");
+        try {
+          const out = [];
+          for (const s of list) out.push(await s.run());
+          sqlite.exec("COMMIT");
+          return out;
+        } catch (e) {
+          sqlite.exec("ROLLBACK");
+          throw e;
+        }
+      },
+    };
+  }
+
+  async function sign(secret, body) {
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+    return "sha256=" + Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function payload(over = {}) {
+    const base = {
+      action: "opened",
+      repository: { full_name: "prismalens/sreforge", id: 1191857183 },
+      pull_request: {
+        number: 183,
+        draft: false,
+        head: { sha: HEAD, repo: { full_name: "prismalens/sreforge" } },
+        base: { sha: BASE },
+      },
+    };
+    return { ...base, ...over, pull_request: { ...base.pull_request, ...(over.pull_request ?? {}) } };
+  }
+
+  async function request(body, { event = "pull_request", delivery = "d-1", secret = WH_SECRET, sig } = {}) {
+    const text = typeof body === "string" ? body : JSON.stringify(body);
+    const headers = { "content-type": "application/json", "x-github-event": event };
+    if (delivery !== null) headers["x-github-delivery"] = delivery;
+    const signature = sig === undefined ? await sign(secret, text) : sig;
+    if (signature !== null) headers["x-hub-signature-256"] = signature;
+    return new Request("https://telemetry.example.test/webhook/github", { method: "POST", headers, body: text });
+  }
+
+  const env = (db, over = {}) => ({
+    DB: db,
+    GITHUB_WEBHOOK_SECRET: WH_SECRET,
+    WEBHOOK_REPOSITORIES: "prismalens/sreforge",
+    WEBHOOK_JOB_ENGINE: "opencode",
+    WEBHOOK_JOB_CREDENTIAL_KIND: "api-key",
+    ...over,
+  });
+
+  function github({ head = HEAD, base = BASE, pages = [[]], prStatus = 200, filesStatus = 200 } = {}) {
+    const calls = [];
+    const fetch = async (url, init = {}) => {
+      calls.push({ url: String(url), method: init.method ?? "GET", auth: init.headers?.Authorization });
+      if (init.method === "DELETE") return new Response(null, { status: 204 });
+      const u = new URL(url);
+      if (u.pathname.endsWith("/files")) {
+        const page = Number(u.searchParams.get("page"));
+        return new Response(JSON.stringify(pages[page - 1] ?? []), { status: filesStatus });
+      }
+      return new Response(JSON.stringify({ head: { sha: head }, base: { sha: base } }), { status: prStatus });
+    };
+    const mints = [];
+    const mint = async (args) => {
+      mints.push(args);
+      return { token: "ghs_stub_1", expires_at: "2026-09-23T02:00:00Z" };
+    };
+    return { fetch, calls, mint, mints };
+  }
+
+  const file = (filename, lines, over = {}) => ({ filename, status: "modified", additions: lines, deletions: 0, patch: "@@", ...over });
+
+  async function send(db, body, opts = {}, envOver = {}, gh = github()) {
+    const res = await worker.fetch(await request(body, opts), env(db, envOver), { mintInstallationToken: gh.mint, fetch: gh.fetch });
+    return { res, gh, data: res.status === 500 ? null : await res.json().catch(() => null) };
+  }
+
+  const count = (db, table) => db.sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
+
+  it("answers 503 and reads nothing when no webhook secret is set", async () => {
+    const db = await sqliteDb();
+    const { res, data } = await send(db, payload(), {}, { GITHUB_WEBHOOK_SECRET: "" });
+    assert.equal(res.status, 503);
+    assert.deepEqual(data, { error: "webhook-unconfigured" });
+    assert.equal(db.statements.length, 0);
+  });
+
+  it("refuses a missing, wrong or foreign signature with 401 and writes nothing", async () => {
+    for (const opts of [{ sig: null }, { sig: "sha256=" + "0".repeat(64) }, { secret: "other" }, { sig: "sha1=abc" }]) {
+      const db = await sqliteDb();
+      const { res, data, gh } = await send(db, payload(), opts);
+      assert.equal(res.status, 401);
+      assert.deepEqual(data, { error: "invalid-signature" });
+      assert.equal(count(db, "webhook_deliveries"), 0);
+      assert.equal(gh.mints.length, 0);
+    }
+  });
+
+  it("refuses a missing delivery id or a body that is not JSON", async () => {
+    const db = await sqliteDb();
+    assert.equal((await send(db, payload(), { delivery: null })).res.status, 400);
+    assert.equal((await send(db, "not json")).res.status, 400);
+    assert.equal(count(db, "webhook_deliveries"), 0);
+  });
+
+  it("treats a redelivery of a handled delivery as a no-op", async () => {
+    const db = await sqliteDb();
+    const first = await send(db, payload());
+    assert.equal(first.res.status, 201);
+    const again = await send(db, payload());
+    assert.equal(again.res.status, 200);
+    assert.deepEqual(again.data, { outcome: "duplicate" });
+    assert.equal(again.gh.mints.length, 0);
+    assert.equal(count(db, "jobs"), 1);
+  });
+
+  it("records a ping or an unadmitted action as ignored, and prunes deliveries older than 7 days", async () => {
+    const db = await sqliteDb();
+    db.sqlite
+      .prepare("INSERT INTO webhook_deliveries (delivery_id, received_at, event, outcome) VALUES ('old', '2020-01-01T00:00:00.000Z', 'ping', 'ignored')")
+      .run();
+    const ping = await send(db, { zen: "hi" }, { event: "ping" });
+    assert.deepEqual(ping.data, { outcome: "ignored", why: "event" });
+    const closed = await send(db, payload({ action: "closed" }), { delivery: "d-2" });
+    assert.deepEqual(closed.data, { outcome: "ignored", why: "action" });
+    assert.equal(ping.gh.mints.length + closed.gh.mints.length, 0);
+    const rows = db.sqlite.prepare("SELECT delivery_id, outcome FROM webhook_deliveries ORDER BY delivery_id").all();
+    assert.deepEqual(rows.map((r) => [r.delivery_id, r.outcome]), [["d-1", "ignored"], ["d-2", "ignored"]]);
+  });
+
+  it("ignores a repository outside the allowlist, matching names without case", async () => {
+    const db = await sqliteDb();
+    const other = await send(db, payload({ repository: { full_name: "prismalens/prismalens", id: 1 } }));
+    assert.deepEqual(other.data, { outcome: "ignored", why: "repository" });
+    const unset = await send(db, payload(), { delivery: "d-2" }, { WEBHOOK_REPOSITORIES: "" });
+    assert.deepEqual(unset.data, { outcome: "ignored", why: "repository" });
+    const upper = await send(db, payload(), { delivery: "d-3" }, { WEBHOOK_REPOSITORIES: " PRISMALENS/SREFORGE " });
+    assert.equal(upper.res.status, 201);
+  });
+
+  it("answers 503 when the job engine or credential kind is not configured", async () => {
+    for (const over of [{ WEBHOOK_JOB_ENGINE: "" }, { WEBHOOK_JOB_ENGINE: "gpt" }, { WEBHOOK_JOB_CREDENTIAL_KIND: "x" }]) {
+      const db = await sqliteDb();
+      const { res, data, gh } = await send(db, payload(), {}, over);
+      assert.equal(res.status, 503);
+      assert.deepEqual(data, { error: "webhook-job-unconfigured" });
+      assert.equal(count(db, "webhook_deliveries"), 0);
+      assert.equal(gh.mints.length, 0);
+    }
+  });
+
+  it("skips a draft without a lane event or a mint", async () => {
+    const db = await sqliteDb();
+    const { data, gh } = await send(db, payload({ pull_request: { draft: true } }));
+    assert.deepEqual(data, { outcome: "draft" });
+    assert.equal(count(db, "lane_events"), 0);
+    assert.equal(gh.mints.length, 0);
+  });
+
+  it("refuses a fork head with a fork-head lane event carrying the webhook's identity", async () => {
+    for (const repo of [{ full_name: "someone/sreforge" }, null]) {
+      const db = await sqliteDb();
+      const { data, gh } = await send(db, payload({ pull_request: { head: { sha: HEAD, repo } } }));
+      assert.deepEqual(data, { outcome: "fork-head" });
+      assert.equal(gh.mints.length, 0);
+      const ev = db.sqlite.prepare("SELECT * FROM lane_events").get();
+      assert.ok(Number.isInteger(ev.run_id) && ev.run_id < 0);
+      assert.equal(ev.run_attempt, 1);
+      assert.equal(ev.reason, "fork-head");
+      assert.equal(ev.repository, "prismalens/sreforge");
+      assert.equal(ev.pr_number, 183);
+      assert.equal(ev.head_sha, HEAD);
+      assert.equal(ev.ingest_auth, "webhook");
+      assert.equal(ev.repository_id, 1191857183);
+    }
+  });
+
+  it("is not rate limited: the HMAC is the auth", async () => {
+    const db = await sqliteDb();
+    const { res } = await send(db, payload(), {}, { INGEST_RATE_LIMITER: { limit: async () => ({ success: false }) } });
+    assert.equal(res.status, 201);
+  });
+
+  it("refuses over 6000 reviewable lines with a refused-size event, revokes the token, and stores it nowhere", async () => {
+    const page1 = [
+      file("package-lock.json", 9000),
+      file("gone.js", 500, { status: "removed" }),
+      file("logo.png", 300, { patch: undefined }),
+      file("huge.js", 2500, { status: "added" }),
+      ...Array.from({ length: 96 }, (_, i) => file(`src/f${i}.js`, 60)),
+    ];
+    const page2 = [file("src/last.js", 241)];
+    const db = await sqliteDb();
+    const gh = github({ pages: [page1, page2] });
+    const { data } = await send(db, payload(), {}, {}, gh);
+    assert.deepEqual(data, { outcome: "refused-size", reviewable_lines: 6001, max_reviewable_lines: 6000 });
+    assert.deepEqual(gh.mints, [{ owner: "prismalens", repo: "sreforge" }]);
+    const deletes = gh.calls.filter((c) => c.method === "DELETE");
+    assert.equal(deletes.length, 1);
+    assert.equal(deletes[0].auth, "Bearer ghs_stub_1");
+    const ev = db.sqlite.prepare("SELECT reason, reviewable_lines, max_reviewable_lines FROM lane_events").get();
+    assert.deepEqual({ ...ev }, { reason: "refused-size", reviewable_lines: 6001, max_reviewable_lines: 6000 });
+    assert.equal(count(db, "jobs"), 0);
+    assert.doesNotMatch(JSON.stringify(db.statements), /ghs_stub/);
+
+    // At exactly the cap it is admitted.
+    const db2 = await sqliteDb();
+    const ok = await send(db2, payload(), {}, {}, github({ pages: [page1, [file("src/last.js", 240)]] }));
+    assert.equal(ok.res.status, 201);
+  });
+
+  it("queues a job from the live base, once per head", async () => {
+    const db = await sqliteDb();
+    const liveBase = "c".repeat(40);
+    const { res, data } = await send(db, payload(), {}, {}, github({ base: liveBase }));
+    assert.equal(res.status, 201);
+    assert.equal(data.outcome, "queued");
+    const job = db.sqlite.prepare("SELECT * FROM jobs").get();
+    assert.equal(job.id, data.job_id);
+    assert.deepEqual(
+      [job.repository, job.pr_number, job.base_sha, job.head_sha, job.mode, job.level, job.engine, job.credential_kind, job.state],
+      ["prismalens/sreforge", 183, liveBase, HEAD, "review", "medium", "opencode", "api-key", "queued"]
+    );
+    assert.equal(count(db, "lane_events"), 0);
+    const sync = await send(db, payload({ action: "synchronize" }), { delivery: "d-2" });
+    assert.deepEqual(sync.data, { outcome: "duplicate-head", job_id: data.job_id });
+    assert.equal(count(db, "jobs"), 1);
+  });
+
+  it("drops a delivery whose head already moved, before reading files", async () => {
+    const db = await sqliteDb();
+    const gh = github({ head: "d".repeat(40) });
+    const { data } = await send(db, payload(), {}, {}, gh);
+    assert.deepEqual(data, { outcome: "stale", head_sha: "d".repeat(40) });
+    assert.equal(gh.calls.filter((c) => c.url.includes("/files")).length, 0);
+    assert.equal(gh.calls.filter((c) => c.method === "DELETE").length, 1);
+    assert.equal(count(db, "jobs") + count(db, "lane_events"), 0);
+  });
+
+  it("writes nothing on a mint or GitHub failure, so a redelivery is handled again", async () => {
+    const cases = [
+      [async () => { throw new MintError("app-unconfigured"); }, {}, 503],
+      [async () => { throw new MintError("github-error", 500); }, {}, 502],
+      [null, { filesStatus: 500 }, 502],
+      [null, { prStatus: 404 }, 502],
+    ];
+    for (const [mint, ghOpts, status] of cases) {
+      const db = await sqliteDb();
+      const gh = github(ghOpts);
+      if (mint) gh.mint = mint;
+      const { res } = await send(db, payload(), {}, {}, gh);
+      assert.equal(res.status, status);
+      assert.equal(count(db, "webhook_deliveries") + count(db, "jobs") + count(db, "lane_events"), 0);
+    }
+  });
+
+  it("counts reviewable lines as the lane's manifest step does", () => {
+    const f = (filename, lines, over) => file(filename, lines, over);
+    assert.equal(reviewableLinesFromFiles([f("dist/a.js", 5), f("build", 5), f("x/__snapshots__/a.snap", 5), f("lib/a.min.js", 5)]), 0);
+    assert.equal(reviewableLinesFromFiles([f("a.js", 0, { status: "renamed", patch: undefined })]), 0);
+    assert.equal(reviewableLinesFromFiles([f("a.js", 1, { status: "renamed", patch: undefined })]), 1);
+    assert.equal(reviewableLinesFromFiles([f("a.js", 3, { status: "changed" }), f("b.js", 4, { status: "removed" })]), 3);
+    assert.equal(reviewableLinesFromFiles([f("a.js", 2500)]), 0);
+    assert.equal(reviewableLinesFromFiles([f("a.js", 2500)], { maxFileLines: 0 }), 2500);
+    // `*` crosses `/`, as Python's fnmatch does; `**/node_modules/**` needs a leading directory.
+    assert.equal(reviewableLinesFromFiles([f("deep/x.min.css", 5), f("node_modules/a.js", 5), f("w/node_modules/a.js", 5)]), 5);
   });
 });
