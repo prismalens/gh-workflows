@@ -226,8 +226,9 @@ const VALID_VERIFY_VERDICTS = new Set(["fixed", "still_applies", "cannot_verify"
 
 // Control plane vocabularies (#184). RUNNER_EVENT_TYPES is assayer/v1, runner/src/events.js.
 const ENGINES = Object.freeze(new Set(["opencode", "claude-code", "codex", "diff-only"]));
+// No subscription kind: a subscription runs only in the author's own harness (#184 ruling, 2026-09-23).
 const CREDENTIAL_KINDS = Object.freeze(
-  new Set(["api-key", "user-login", "bedrock", "vertex", "foundry", "keyless"])
+  new Set(["api-key", "bedrock", "vertex", "foundry", "keyless"])
 );
 const JOB_MODES = Object.freeze(new Set(["review", "review-full", "incremental"]));
 const JOB_LEVELS = Object.freeze(new Set(["low", "medium", "high"]));
@@ -237,7 +238,7 @@ const JOB_STATES = Object.freeze(
 const RUNNER_EVENT_TYPES = Object.freeze(
   new Set(["started", "read", "agent", "finding", "summary", "usage", "error", "finished"])
 );
-const RUNNER_PLACEMENTS = Object.freeze(new Set(["box", "laptop"]));
+const RUNNER_PLACEMENTS = Object.freeze(new Set(["box"]));
 const RUNNER_TOKEN_PATTERN = /^Bearer (asr_[A-Za-z0-9_-]{43})$/;
 const FINGERPRINT_PATTERN = /^[0-9a-f]{12}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -3146,8 +3147,7 @@ function validateRegistration(payload) {
     if (
       !Number.isInteger(c.concurrency) ||
       c.concurrency < 1 ||
-      c.concurrency > RUNNER_MAX_CONCURRENCY ||
-      (c.kind === "user-login" && c.concurrency !== 1)
+      c.concurrency > RUNNER_MAX_CONCURRENCY
     ) {
       return "invalid-concurrency";
     }

@@ -5508,7 +5508,8 @@ describe("Runner registry (#184)", () => {
       "concurrency 0": { placement: "box", credentials: [cred({ concurrency: 0 })] },
       "concurrency 17": { placement: "box", credentials: [cred({ concurrency: 17 })] },
       "concurrency 1.5": { placement: "box", credentials: [cred({ concurrency: 1.5 })] },
-      "user-login concurrency 2": { placement: "laptop", credentials: [cred({ engine: "claude-code", kind: "user-login", concurrency: 2 })] },
+      "laptop placement": { placement: "laptop", credentials: [cred()] },
+      "user-login kind": { placement: "box", credentials: [cred({ engine: "claude-code", kind: "user-login" })] },
       "duplicate engine and kind": { placement: "box", credentials: [cred(), cred({ fingerprint: "ffffffffffff" })] },
     };
     for (const [label, body] of Object.entries(bodies)) {
@@ -5556,11 +5557,12 @@ describe("Runner registry (#184)", () => {
     assert.ok(sweepIdx !== -1 && sweepIdx < checkIdx, "the heartbeat sweep runs before the fingerprint check");
   });
 
-  it("a user-login credential at concurrency 1 on a laptop registers", async () => {
+  it("a user-login credential on a laptop is refused with a 400 and nothing is written", async () => {
     const db = cpRunnerDb();
     const body = { placement: "laptop", credentials: [{ engine: "claude-code", kind: "user-login", fingerprint: "abcdefabcdef", concurrency: 1 }] };
     const res = await worker.fetch(cpRunnerRequest("/runner/register", { body }), { DB: db });
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 400);
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
   });
 });
 
@@ -5636,6 +5638,7 @@ describe("Jobs and lease (#184)", () => {
       mode: validJob({ mode: "summon" }),
       engine: validJob({ engine: "gpt" }),
       credential_kind: validJob({ credential_kind: "oauth" }),
+      "credential_kind user-login": validJob({ credential_kind: "user-login" }),
       level: validJob({ level: "max" }),
       model: validJob({ model: "m".repeat(129) }),
       config_effective: validJob({ config_effective: [1] }),
@@ -5749,7 +5752,7 @@ describe("Jobs and lease (#184)", () => {
   });
 
   it("refuses bad lease parameters with a 400", async () => {
-    for (const qs of ["kind=api-key", "engine=opencode", "engine=gpt&kind=api-key", "engine=opencode&kind=oauth", "engine=opencode&kind=api-key&wait=21", "engine=opencode&kind=api-key&wait=-1", "engine=opencode&kind=api-key&wait=1.5", "engine=opencode&kind=api-key&wait=x"]) {
+    for (const qs of ["kind=api-key", "engine=opencode", "engine=gpt&kind=api-key", "engine=opencode&kind=oauth", "engine=claude-code&kind=user-login", "engine=opencode&kind=api-key&wait=21", "engine=opencode&kind=api-key&wait=-1", "engine=opencode&kind=api-key&wait=1.5", "engine=opencode&kind=api-key&wait=x"]) {
       const { db, claims } = cpLeaseDb();
       const res = await cpLease(qs, db, cpStubMinter());
       assert.equal(res.status, 400, qs);

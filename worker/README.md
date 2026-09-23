@@ -555,7 +555,7 @@ limited before the token is looked up, and every error body is `{"error": "<code
 | `GET /api/runners` | Access | none | 200 `{rows: [{id, name, created_at, revoked_at, last_seen_at, placement, credentials: [...]}]}` |
 | `DELETE /api/runners/:id` | Access | none | 204, idempotent; 400 `invalid-id` |
 | `POST /api/jobs` | Access | `{repository, pr_number, base_sha, head_sha, mode, engine, credential_kind, level?, model?, config_effective?}` | 201 `{job_id}`; 200 `{job_id, state, duplicate: true}`; 400 |
-| `POST /runner/register` | runner token | `{placement: box\|laptop, credentials: [{engine, kind, fingerprint, concurrency}]}` | 200 `{runner_id, credentials, heartbeat_timeout_s, lease_wait_max_s}`; 400; 409 `duplicate-fingerprint` |
+| `POST /runner/register` | runner token | `{placement: box, credentials: [{engine, kind, fingerprint, concurrency}]}` | 200 `{runner_id, credentials, heartbeat_timeout_s, lease_wait_max_s}`; 400; 409 `duplicate-fingerprint` |
 | `GET /runner/lease?engine=&kind=&wait=` | runner token | `wait` 0 to 20 s, default 20 | 200 `{job, installation_token, installation_token_expires_at, heartbeat_timeout_s}`; 204 no job; 400; 409 `unregistered-credential`; 502 `token-mint-failed`; 503 `app-unconfigured` |
 | `POST /runner/jobs/:id/events` | runner token | `{events: [assayer/v1 ...]}`, `[]` is a heartbeat | 204; 400 `invalid-event`; 403 `not-lease-holder`; 404; 409 `lease-lost`; 413 `too-many-events` or `event-too-large` |
 
@@ -577,8 +577,8 @@ curl -X POST https://assayer.sfun.cloud/api/runners \
 ```
 
 Registration refuses a fingerprint a different, unrevoked runner holds (design §7). The same
-runner re-registering after a restart replaces its own set. A `user-login` credential is
-concurrency 1.
+runner re-registering after a restart replaces its own set. There is no subscription credential
+kind and no laptop placement: a subscription runs only in the author's own harness (#184).
 
 ### Jobs
 
