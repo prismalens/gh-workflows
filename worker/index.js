@@ -1,4 +1,5 @@
 import { jwtVerify, createRemoteJWKSet } from "jose";
+import { createInstallationTokenMinter, MintError } from "./github-app.js";
 
 let cachedCerts = null;
 let certsExpiry = 0;
@@ -222,6 +223,33 @@ const FINDING_NULLABLE_INTEGER_FIELDS = new Set(["original_line", "line"]);
 
 const VALID_FIX_SHA_SOURCES = new Set(["verify_table", "human_reply"]);
 const VALID_VERIFY_VERDICTS = new Set(["fixed", "still_applies", "cannot_verify"]);
+
+// Control plane vocabularies (#184). RUNNER_EVENT_TYPES is assayer/v1, runner/src/events.js.
+const ENGINES = Object.freeze(new Set(["opencode", "claude-code", "codex", "diff-only"]));
+// No subscription kind: a subscription runs only in the author's own harness (#184 ruling, 2026-09-23).
+const CREDENTIAL_KINDS = Object.freeze(
+  new Set(["api-key", "bedrock", "vertex", "foundry", "keyless"])
+);
+const JOB_MODES = Object.freeze(new Set(["review", "review-full", "incremental"]));
+const JOB_LEVELS = Object.freeze(new Set(["low", "medium", "high"]));
+const JOB_STATES = Object.freeze(
+  new Set(["queued", "leased", "running", "finished", "failed", "superseded"])
+);
+const RUNNER_EVENT_TYPES = Object.freeze(
+  new Set(["started", "read", "agent", "finding", "summary", "usage", "error", "finished"])
+);
+const RUNNER_PLACEMENTS = Object.freeze(new Set(["box"]));
+const RUNNER_TOKEN_PATTERN = /^Bearer (asr_[A-Za-z0-9_-]{43})$/;
+const FINGERPRINT_PATTERN = /^[0-9a-f]{12}$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const SHA_PATTERN = /^[0-9a-f]{40}$/;
+const RUNNER_MAX_CREDENTIALS = 16;
+const RUNNER_MAX_CONCURRENCY = 16;
+const LEASE_WAIT_MAX_S = 20;
+const MAX_EVENTS_PER_POST = 100;
+const MAX_EVENT_BYTES = 16384;
+const CONTROL_HEADERS = { "content-type": "application/json", "cache-control": "no-store" };
 
 function truncateString(val, maxLen = 512) {
   if (typeof val !== "string") {
@@ -2930,9 +2958,812 @@ async function handleFleetRepos(url, env) {
   }
 }
 
+// ── Control plane (#184) ─────────────────────────────────────
+
+function controlError(code, status) {
+  return new Response(JSON.stringify({ error: code }), { status, headers: CONTROL_HEADERS });
+}
+
+function controlJson(body, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: CONTROL_HEADERS });
+}
+
+// Returns { payload } or { response } carrying the 413 or 400.
+async function readControlBody(request, { expect = "object" } = {}) {
+  const text = await readBoundedText(request, MAX_INGEST_BYTES);
+  if (text === null) {
+    return { response: controlError("payload-too-large", 413) };
+  }
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return { response: controlError("invalid-json", 400) };
+  }
+  if (expect === "object" && (!payload || typeof payload !== "object" || Array.isArray(payload))) {
+    return { response: controlError("invalid-body", 400) };
+  }
+  return { payload };
+}
+
+function generateRunnerToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = "";
+  for (const b of bytes) {
+    binary += String.fromCharCode(b);
+  }
+  return "asr_" + btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// The token only ever reaches D1 as its hash; every failure is the same empty 401.
+async function authenticateRunner(request, env) {
+  const match = RUNNER_TOKEN_PATTERN.exec(request.headers.get("authorization") ?? "");
+  if (!match) {
+    return new Response(null, { status: 401 });
+  }
+  const tokenHash = await sha256Hex(match[1]);
+  let row;
+  try {
+    row = await env.DB.prepare(
+      "SELECT id FROM runners WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1"
+    )
+      .bind(tokenHash)
+      .first();
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  if (!row) {
+    return new Response(null, { status: 401 });
+  }
+  return { runner_id: row.id };
+}
+
+function heartbeatTimeoutS(env) {
+  const parsed = Number(env?.RUNNER_HEARTBEAT_TIMEOUT_S);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 300;
+}
+
+// A lease whose heartbeat is older than the timeout goes back to the queue once; the second
+// time it expires the job fails (design §7: retried once on another slot). Lazy, not a cron:
+// it only matters while a runner is polling.
+async function sweepExpiredLeases(env, nowMs) {
+  const cutoff = new Date(nowMs - heartbeatTimeoutS(env) * 1000).toISOString();
+  await env.DB.prepare(
+    `UPDATE jobs SET
+      state = CASE WHEN attempts >= 2 THEN 'failed' ELSE 'queued' END,
+      conclusion = CASE WHEN attempts >= 2 THEN 'heartbeat-timeout' ELSE conclusion END,
+      finished_at = CASE WHEN attempts >= 2 THEN ?2 ELSE finished_at END,
+      runner_id = CASE WHEN attempts >= 2 THEN runner_id ELSE NULL END,
+      credential_fingerprint = CASE WHEN attempts >= 2 THEN credential_fingerprint ELSE NULL END,
+      leased_at = CASE WHEN attempts >= 2 THEN leased_at ELSE NULL END,
+      heartbeat_at = CASE WHEN attempts >= 2 THEN heartbeat_at ELSE NULL END
+    WHERE state IN ('leased', 'running') AND heartbeat_at < ?1`
+  )
+    .bind(cutoff, new Date(nowMs).toISOString())
+    .run();
+}
+
+async function handlePostRunners(request, env) {
+  const { payload, response } = await readControlBody(request);
+  if (response) {
+    return response;
+  }
+  if (typeof payload.name !== "string" || payload.name.length === 0 || payload.name.length > 100) {
+    return controlError("invalid-name", 400);
+  }
+  const id = crypto.randomUUID();
+  const token = generateRunnerToken();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO runners (
+        id,
+        name,
+        token_hash,
+        created_at
+      ) VALUES (?1, ?2, ?3, ?4)`
+    )
+      .bind(id, payload.name, await sha256Hex(token), new Date().toISOString())
+      .run();
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  return controlJson({ id, name: payload.name, token }, 201);
+}
+
+async function handleGetRunners(env) {
+  const { results: runnerRows } = await env.DB.prepare(
+    "SELECT id, name, created_at, revoked_at, last_seen_at, placement FROM runners ORDER BY created_at DESC"
+  )
+    .bind()
+    .all();
+  const { results: credentialRows } = await env.DB.prepare(
+    "SELECT runner_id, engine, credential_kind, fingerprint, concurrency, registered_at FROM runner_credentials ORDER BY runner_id, engine, credential_kind"
+  )
+    .bind()
+    .all();
+  const byRunner = new Map();
+  for (const c of credentialRows ?? []) {
+    const list = byRunner.get(c.runner_id) ?? [];
+    list.push({
+      engine: c.engine,
+      credential_kind: c.credential_kind,
+      fingerprint: c.fingerprint,
+      concurrency: c.concurrency,
+      registered_at: c.registered_at,
+    });
+    byRunner.set(c.runner_id, list);
+  }
+  const rows = (runnerRows ?? []).map((r) => ({
+    id: r.id,
+    name: r.name,
+    created_at: r.created_at,
+    revoked_at: r.revoked_at,
+    last_seen_at: r.last_seen_at,
+    placement: r.placement,
+    credentials: byRunner.get(r.id) ?? [],
+  }));
+  return controlJson({ rows });
+}
+
+// Revoking also releases the runner's credentials: fingerprint is UNIQUE, so a revoked
+// runner's rows would otherwise block the same key registering under a new token.
+async function handleDeleteRunner(id, env) {
+  try {
+    await env.DB.batch([
+      env.DB.prepare("UPDATE runners SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL").bind(
+        new Date().toISOString(),
+        id
+      ),
+      env.DB.prepare("DELETE FROM runner_credentials WHERE runner_id = ?").bind(id),
+    ]);
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  return new Response(null, { status: 204 });
+}
+
+function validateRegistration(payload) {
+  if (!RUNNER_PLACEMENTS.has(payload.placement)) {
+    return "invalid-placement";
+  }
+  const creds = payload.credentials;
+  if (!Array.isArray(creds) || creds.length < 1 || creds.length > RUNNER_MAX_CREDENTIALS) {
+    return "invalid-credentials";
+  }
+  const pairs = new Set();
+  for (const c of creds) {
+    if (!c || typeof c !== "object" || Array.isArray(c)) {
+      return "invalid-credential";
+    }
+    if (!ENGINES.has(c.engine)) {
+      return "invalid-engine";
+    }
+    if (!CREDENTIAL_KINDS.has(c.kind)) {
+      return "invalid-kind";
+    }
+    if (typeof c.fingerprint !== "string" || !FINGERPRINT_PATTERN.test(c.fingerprint)) {
+      return "invalid-fingerprint";
+    }
+    if (
+      !Number.isInteger(c.concurrency) ||
+      c.concurrency < 1 ||
+      c.concurrency > RUNNER_MAX_CONCURRENCY
+    ) {
+      return "invalid-concurrency";
+    }
+    const pair = `${c.engine}\u0000${c.kind}`;
+    if (pairs.has(pair)) {
+      return "duplicate-credential";
+    }
+    pairs.add(pair);
+  }
+  return null;
+}
+
+async function handleRunnerRegister(request, env) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+  const auth = await authenticateRunner(request, env);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const { payload, response } = await readControlBody(request);
+  if (response) {
+    return response;
+  }
+  const invalid = validateRegistration(payload);
+  if (invalid) {
+    return controlError(invalid, 400);
+  }
+
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const fingerprints = payload.credentials.map((c) => c.fingerprint);
+  try {
+    await sweepExpiredLeases(env, nowMs);
+    const held = await env.DB.prepare(
+      `SELECT fingerprint FROM runner_credentials
+      WHERE fingerprint IN (${fingerprints.map(() => "?").join(", ")})
+        AND runner_id != ?
+        AND runner_id IN (SELECT id FROM runners WHERE revoked_at IS NULL)
+      LIMIT 1`
+    )
+      .bind(...fingerprints, auth.runner_id)
+      .first();
+    if (held) {
+      return controlError("duplicate-fingerprint", 409);
+    }
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM runner_credentials WHERE runner_id = ?").bind(auth.runner_id),
+      ...payload.credentials.map((c) =>
+        env.DB.prepare(
+          `INSERT INTO runner_credentials (
+            runner_id,
+            engine,
+            credential_kind,
+            fingerprint,
+            concurrency,
+            registered_at
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+        ).bind(auth.runner_id, c.engine, c.kind, c.fingerprint, c.concurrency, nowIso)
+      ),
+      env.DB.prepare("UPDATE runners SET last_seen_at = ?1, placement = ?2 WHERE id = ?3").bind(
+        nowIso,
+        payload.placement,
+        auth.runner_id
+      ),
+    ]);
+  } catch (err) {
+    // Two runners racing for one fingerprint lose to the UNIQUE constraint, not to the check.
+    if (/UNIQUE/i.test(String(err?.message))) {
+      return controlError("duplicate-fingerprint", 409);
+    }
+    return new Response(null, { status: 500 });
+  }
+
+  return controlJson({
+    runner_id: auth.runner_id,
+    credentials: payload.credentials.length,
+    heartbeat_timeout_s: heartbeatTimeoutS(env),
+    lease_wait_max_s: LEASE_WAIT_MAX_S,
+  });
+}
+
+function validateJob(payload) {
+  if (typeof payload.repository !== "string" || !REPOSITORY_PATTERN.test(payload.repository)) {
+    return "invalid-repository";
+  }
+  if (!Number.isInteger(payload.pr_number) || payload.pr_number < 1) {
+    return "invalid-pr-number";
+  }
+  if (typeof payload.base_sha !== "string" || !SHA_PATTERN.test(payload.base_sha)) {
+    return "invalid-base-sha";
+  }
+  if (typeof payload.head_sha !== "string" || !SHA_PATTERN.test(payload.head_sha)) {
+    return "invalid-head-sha";
+  }
+  if (!JOB_MODES.has(payload.mode)) {
+    return "invalid-mode";
+  }
+  if (!ENGINES.has(payload.engine)) {
+    return "invalid-engine";
+  }
+  if (!CREDENTIAL_KINDS.has(payload.credential_kind)) {
+    return "invalid-credential-kind";
+  }
+  if (payload.level !== undefined && !JOB_LEVELS.has(payload.level)) {
+    return "invalid-level";
+  }
+  if (
+    payload.model !== undefined &&
+    payload.model !== null &&
+    (typeof payload.model !== "string" || payload.model.length > 128)
+  ) {
+    return "invalid-model";
+  }
+  const config = payload.config_effective;
+  if (config !== undefined && config !== null && (typeof config !== "object" || Array.isArray(config))) {
+    return "invalid-config-effective";
+  }
+  return null;
+}
+
+// One active job per pull request (design §5, the lane's concurrency group). The same head is
+// idempotent; a new head supersedes what is still queued and leaves a leased or running job to
+// finish. Bullet 4's webhook enqueues through this same function.
+async function enqueueJob(env, job) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, state, head_sha FROM jobs WHERE repository = ? AND pr_number = ?
+      AND state IN ('queued', 'leased', 'running') ORDER BY created_at DESC`
+  )
+    .bind(job.repository, job.pr_number)
+    .all();
+  const same = (results ?? []).find((r) => r.head_sha === job.head_sha);
+  if (same) {
+    return { job_id: same.id, state: same.state, duplicate: true };
+  }
+  const id = crypto.randomUUID();
+  const nowIso = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE jobs SET state='superseded', finished_at=? WHERE repository=? AND pr_number=? AND state='queued'"
+    ).bind(nowIso, job.repository, job.pr_number),
+    env.DB.prepare(
+      `INSERT INTO jobs (
+        id,
+        repository,
+        pr_number,
+        base_sha,
+        head_sha,
+        mode,
+        level,
+        model,
+        engine,
+        credential_kind,
+        config_effective,
+        state,
+        attempts,
+        created_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`
+    ).bind(
+      id,
+      job.repository,
+      job.pr_number,
+      job.base_sha,
+      job.head_sha,
+      job.mode,
+      job.level ?? "medium",
+      job.model ?? null,
+      job.engine,
+      job.credential_kind,
+      serializeJson(job.config_effective, null),
+      "queued",
+      0,
+      nowIso
+    ),
+  ]);
+  return { job_id: id, state: "queued", duplicate: false };
+}
+
+async function handlePostJobs(request, env) {
+  const { payload, response } = await readControlBody(request);
+  if (response) {
+    return response;
+  }
+  const invalid = validateJob(payload);
+  if (invalid) {
+    return controlError(invalid, 400);
+  }
+  let result;
+  try {
+    result = await enqueueJob(env, payload);
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  if (result.duplicate) {
+    return controlJson({ job_id: result.job_id, state: result.state, duplicate: true });
+  }
+  return controlJson({ job_id: result.job_id }, 201);
+}
+
+function leasePollMs(env) {
+  const parsed = Number(env?.LEASE_POLL_MS);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 2000;
+}
+
+function parseJsonObjectOrNull(text) {
+  if (typeof text !== "string") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// The installation token is minted here and returned, never written to D1: the runner revokes
+// it before it reports finished, and a lease that dies with its runner lets it lapse at
+// GitHub's one-hour expiry.
+async function handleRunnerLease(request, url, env, mint) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+  const auth = await authenticateRunner(request, env);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const engine = url.searchParams.get("engine");
+  const kind = url.searchParams.get("kind");
+  if (!ENGINES.has(engine)) {
+    return controlError("invalid-engine", 400);
+  }
+  if (!CREDENTIAL_KINDS.has(kind)) {
+    return controlError("invalid-kind", 400);
+  }
+  const waitParam = url.searchParams.get("wait");
+  if (waitParam !== null && !/^\d+$/.test(waitParam)) {
+    return controlError("invalid-wait", 400);
+  }
+  const wait = waitParam === null ? LEASE_WAIT_MAX_S : Number(waitParam);
+  if (wait > LEASE_WAIT_MAX_S) {
+    return controlError("invalid-wait", 400);
+  }
+
+  let credential;
+  try {
+    const nowMs = Date.now();
+    await env.DB.prepare("UPDATE runners SET last_seen_at = ?1 WHERE id = ?2")
+      .bind(new Date(nowMs).toISOString(), auth.runner_id)
+      .run();
+    await sweepExpiredLeases(env, nowMs);
+    credential = await env.DB.prepare(
+      "SELECT fingerprint FROM runner_credentials WHERE runner_id = ? AND engine = ? AND credential_kind = ?"
+    )
+      .bind(auth.runner_id, engine, kind)
+      .first();
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  if (!credential) {
+    return controlError("unregistered-credential", 409);
+  }
+
+  const pollMs = leasePollMs(env);
+  const deadline = Date.now() + wait * 1000;
+  let job = null;
+  try {
+    for (;;) {
+      job = await env.DB.prepare(
+        `UPDATE jobs SET state='leased', runner_id=?1, credential_fingerprint=?2, leased_at=?3, heartbeat_at=?3, attempts=attempts+1
+WHERE id = (SELECT id FROM jobs WHERE state='queued' AND engine=?4 AND credential_kind=?5 ORDER BY created_at ASC LIMIT 1)
+  AND state='queued'
+RETURNING id, repository, pr_number, base_sha, head_sha, mode, level, model, engine, credential_kind, config_effective, attempts`
+      )
+        .bind(auth.runner_id, credential.fingerprint, new Date().toISOString(), engine, kind)
+        .first();
+      if (job || Date.now() + pollMs > deadline) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  if (!job) {
+    return new Response(null, { status: 204 });
+  }
+
+  const [owner, repo] = job.repository.split("/");
+  let minted;
+  try {
+    minted = await mint({ owner, repo });
+  } catch (err) {
+    const code = err instanceof MintError ? err.code : null;
+    try {
+      if (code === "not-installed") {
+        await env.DB.prepare(
+          "UPDATE jobs SET state='failed', conclusion='app-not-installed', finished_at=? WHERE id=?"
+        )
+          .bind(new Date().toISOString(), job.id)
+          .run();
+        return new Response(null, { status: 204 });
+      }
+      await env.DB.prepare(
+        "UPDATE jobs SET state='queued', runner_id=NULL, credential_fingerprint=NULL, leased_at=NULL, heartbeat_at=NULL, attempts=attempts-1 WHERE id=?"
+      )
+        .bind(job.id)
+        .run();
+    } catch {
+      return new Response(null, { status: 500 });
+    }
+    return code === "app-unconfigured"
+      ? controlError("app-unconfigured", 503)
+      : controlError("token-mint-failed", 502);
+  }
+
+  try {
+    await env.DB.prepare("UPDATE jobs SET installation_id=? WHERE id=?")
+      .bind(minted.installation_id, job.id)
+      .run();
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+
+  return controlJson({
+    job: {
+      id: job.id,
+      repository: job.repository,
+      pr_number: job.pr_number,
+      base_sha: job.base_sha,
+      head_sha: job.head_sha,
+      mode: job.mode,
+      level: job.level,
+      model: job.model,
+      engine: job.engine,
+      credential_kind: job.credential_kind,
+      config_effective: parseJsonObjectOrNull(job.config_effective),
+      attempt: job.attempts,
+    },
+    installation_token: minted.token,
+    installation_token_expires_at: minted.expires_at,
+    heartbeat_timeout_s: heartbeatTimeoutS(env),
+  });
+}
+
+function stringOrNull(val) {
+  return typeof val === "string" ? val : null;
+}
+
+function finiteOrNull(val) {
+  return typeof val === "number" && Number.isFinite(val) ? val : null;
+}
+
+function isValidRunnerEvent(ev) {
+  return (
+    ev !== null &&
+    typeof ev === "object" &&
+    !Array.isArray(ev) &&
+    ev.v === "assayer/v1" &&
+    RUNNER_EVENT_TYPES.has(ev.type) &&
+    typeof ev.at === "string" &&
+    !Number.isNaN(Date.parse(ev.at))
+  );
+}
+
+function lastOfType(events, type) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type === type) {
+      return events[i];
+    }
+  }
+  return null;
+}
+
+// The round a finished job writes: the same usage_records and round_agents rows the Actions
+// lane ingests, keyed by the job id, with repository and range taken from the job, never from
+// the events.
+function roundStatements(env, job, events, finished, nowIso) {
+  const started = lastOfType(events, "started");
+  const usage = lastOfType(events, "usage");
+  const error = lastOfType(events, "error");
+  const engine = stringOrNull(started?.engine) ?? job.engine;
+  const model = stringOrNull(usage?.model) ?? stringOrNull(started?.model) ?? job.model ?? null;
+  const tokens = {
+    input: toIntegerOrNull(usage?.input),
+    output: toIntegerOrNull(usage?.output),
+    cache_read: toIntegerOrNull(usage?.cache_read),
+    cache_write: toIntegerOrNull(usage?.cache_write),
+  };
+  const startedMs = started ? Date.parse(started.at) : NaN;
+  const durationMs = Number.isNaN(startedMs) ? null : Date.parse(finished.at) - startedMs;
+
+  const usageStmt = env.DB.prepare(
+    `INSERT INTO usage_records (
+      session_id,
+      recorded_at,
+      repository,
+      pr_number,
+      pr_url,
+      head_sha,
+      round_type,
+      model,
+      input_tokens,
+      output_tokens,
+      cache_read_input_tokens,
+      cache_creation_input_tokens,
+      total_cost_usd,
+      duration_ms,
+      per_model_usage,
+      lane_version,
+      prompt_hash,
+      range_base,
+      range_head,
+      job_conclusion,
+      level,
+      config_effective,
+      failure_class,
+      failure_retryable,
+      failure_reset_at,
+      credential_type,
+      ingest_auth,
+      repository_id,
+      engine
+    ) VALUES (
+      ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+      ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+      ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
+    )
+    ON CONFLICT(session_id) DO NOTHING`
+  ).bind(
+    job.id,
+    nowIso,
+    job.repository,
+    toIntegerOrNull(job.pr_number),
+    `https://github.com/${job.repository}/pull/${job.pr_number}`,
+    job.head_sha,
+    job.mode,
+    truncateString(model),
+    tokens.input,
+    tokens.output,
+    tokens.cache_read,
+    tokens.cache_write,
+    finiteOrNull(usage?.cost_estimate_usd),
+    durationMs,
+    JSON.stringify(model ? { [model]: tokens } : {}),
+    truncateString(started?.lane_version),
+    truncateString(started?.prompt_hash),
+    job.base_sha,
+    job.head_sha,
+    truncateString(finished.conclusion),
+    job.level,
+    job.config_effective ?? null,
+    truncateString(error?.failure_class),
+    typeof error?.retryable === "boolean" ? (error.retryable ? 1 : 0) : null,
+    truncateString(error?.reset_at),
+    job.credential_kind,
+    "runner",
+    null,
+    truncateString(engine)
+  );
+
+  const agentStmts = [];
+  for (const agent of events) {
+    if (agent.type !== "agent" || typeof agent.agent_id !== "string" || agent.agent_id === "") {
+      continue;
+    }
+    const u = agent.usage && typeof agent.usage === "object" ? agent.usage : {};
+    agentStmts.push(
+      env.DB.prepare(
+        `INSERT INTO round_agents (
+          session_id,
+          agent_id,
+          subagent_type,
+          model,
+          input_tokens,
+          output_tokens,
+          cache_read_input_tokens,
+          cache_creation_input_tokens,
+          engine
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        ON CONFLICT(session_id, agent_id) DO UPDATE SET
+          subagent_type = excluded.subagent_type,
+          model = excluded.model,
+          input_tokens = excluded.input_tokens,
+          output_tokens = excluded.output_tokens,
+          cache_read_input_tokens = excluded.cache_read_input_tokens,
+          cache_creation_input_tokens = excluded.cache_creation_input_tokens,
+          engine = excluded.engine`
+      ).bind(
+        job.id,
+        truncateString(agent.agent_id, AGENT_ID_MAX_LENGTH),
+        truncateString(agent.role),
+        truncateString(agent.model),
+        toIntegerOrNull(u.input),
+        toIntegerOrNull(u.output),
+        toIntegerOrNull(u.cache_read),
+        toIntegerOrNull(u.cache_write),
+        truncateString(engine)
+      )
+    );
+  }
+  return [usageStmt, ...agentStmts];
+}
+
+async function handleRunnerEvents(request, env, jobId) {
+  if (await isIngestRateLimited(request, env)) {
+    return new Response(null, { status: 429 });
+  }
+  const auth = await authenticateRunner(request, env);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  if (!UUID_PATTERN.test(jobId)) {
+    return new Response(null, { status: 404 });
+  }
+  const { payload, response } = await readControlBody(request);
+  if (response) {
+    return response;
+  }
+  const events = payload.events;
+  if (!Array.isArray(events)) {
+    return controlError("invalid-body", 400);
+  }
+  if (events.length > MAX_EVENTS_PER_POST) {
+    return controlError("too-many-events", 413);
+  }
+  const encoder = new TextEncoder();
+  for (const ev of events) {
+    if (encoder.encode(JSON.stringify(ev) ?? "").length > MAX_EVENT_BYTES) {
+      return controlError("event-too-large", 413);
+    }
+  }
+  if (!events.every(isValidRunnerEvent)) {
+    return controlError("invalid-event", 400);
+  }
+
+  try {
+    const job = await env.DB.prepare(
+      `SELECT id, runner_id, state, repository, pr_number, base_sha, head_sha, mode, level, model,
+        engine, credential_kind, config_effective FROM jobs WHERE id = ?`
+    )
+      .bind(jobId)
+      .first();
+    if (!job) {
+      return new Response(null, { status: 404 });
+    }
+    if (job.runner_id !== auth.runner_id) {
+      return controlError("not-lease-holder", 403);
+    }
+    if (job.state !== "leased" && job.state !== "running") {
+      return controlError("lease-lost", 409);
+    }
+
+    const nowIso = new Date().toISOString();
+    const finished = lastOfType(events, "finished");
+    const error = lastOfType(events, "error");
+    let set = "heartbeat_at = ?, state = 'running'";
+    const setArgs = [nowIso];
+    if (finished) {
+      set = "heartbeat_at = ?, state = 'finished', conclusion = ?, finished_at = ?";
+      setArgs.push(truncateString(finished.conclusion), nowIso);
+    }
+    if (error) {
+      set += ", failure_class = ?, reset_at = ?";
+      setArgs.push(truncateString(error.failure_class), truncateString(error.reset_at));
+    }
+    const statements = [
+      env.DB.prepare(
+        `UPDATE jobs SET ${set} WHERE id = ? AND runner_id = ? AND state IN ('leased', 'running')`
+      ).bind(...setArgs, job.id, auth.runner_id),
+    ];
+
+    if (events.length > 0) {
+      const seqRow = await env.DB.prepare(
+        "SELECT COALESCE(MAX(seq), 0) AS max_seq FROM job_events WHERE job_id = ?"
+      )
+        .bind(job.id)
+        .first();
+      const baseSeq = toIntegerOrNull(seqRow?.max_seq) ?? 0;
+      events.forEach((ev, i) => {
+        statements.push(
+          env.DB.prepare(
+            "INSERT INTO job_events (job_id, seq, type, at, payload) VALUES (?1, ?2, ?3, ?4, ?5)"
+          ).bind(job.id, baseSeq + i + 1, ev.type, truncateString(ev.at, 64), JSON.stringify(ev))
+        );
+      });
+    }
+
+    if (finished) {
+      const { results } = await env.DB.prepare(
+        `SELECT seq, type, payload FROM job_events WHERE job_id = ? AND type IN ('started', 'usage', 'error', 'agent')
+          ORDER BY seq`
+      )
+        .bind(job.id)
+        .all();
+      const earlier = [];
+      for (const row of results ?? []) {
+        try {
+          earlier.push(JSON.parse(row.payload));
+        } catch {
+          // A row this route wrote always parses; skip rather than fail the round.
+        }
+      }
+      statements.push(...roundStatements(env, job, [...earlier, ...events], finished, nowIso));
+    }
+
+    await env.DB.batch(statements);
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  return new Response(null, { status: 204 });
+}
+
 export default {
   async fetch(request, env, ctx, options = {}) {
-    const opts = (ctx && typeof ctx === "object" && typeof ctx.getKey === "function") ? ctx : (options || {});
+    const opts = (ctx && typeof ctx === "object" && (typeof ctx.getKey === "function" || typeof ctx.mintInstallationToken === "function")) ? ctx : (options || {});
     const getKey = opts.getKey || env?.getKey;
     const authOptions = getKey ? { getKey } : {};
 
@@ -2954,6 +3785,23 @@ export default {
 
     if (method === "POST" && pathname === "/ingest/findings") {
       return handleIngestFindings(request, env, authOptions);
+    }
+
+    if (method === "POST" && pathname === "/runner/register") {
+      return handleRunnerRegister(request, env);
+    }
+
+    if (method === "POST" && pathname.startsWith("/runner/jobs/")) {
+      const match = /^\/runner\/jobs\/([^/]+)\/events$/.exec(pathname);
+      if (!match) {
+        return new Response(null, { status: 404 });
+      }
+      return handleRunnerEvents(request, env, match[1]);
+    }
+
+    if (method === "GET" && pathname === "/runner/lease") {
+      const mint = opts.mintInstallationToken || createInstallationTokenMinter(env).mint;
+      return handleRunnerLease(request, url, env, mint);
     }
 
     if (
@@ -3031,6 +3879,38 @@ export default {
       return new Response(null, { status: 404 });
     }
 
+    if (pathname === "/api/runners" || pathname.startsWith("/api/runners/")) {
+      const authError = await verifyAccess(request, env);
+      if (authError) {
+        return authError;
+      }
+      if (method === "GET" && pathname === "/api/runners") {
+        return handleGetRunners(env);
+      }
+      if (method === "POST" && pathname === "/api/runners") {
+        return handlePostRunners(request, env);
+      }
+      if (method === "DELETE" && pathname.startsWith("/api/runners/")) {
+        const id = pathname.slice("/api/runners/".length);
+        if (!UUID_PATTERN.test(id)) {
+          return controlError("invalid-id", 400);
+        }
+        return handleDeleteRunner(id, env);
+      }
+      return new Response(null, { status: 404 });
+    }
+
+    if (pathname === "/api/jobs") {
+      const authError = await verifyAccess(request, env);
+      if (authError) {
+        return authError;
+      }
+      if (method === "POST" && pathname === "/api/jobs") {
+        return handlePostJobs(request, env);
+      }
+      return new Response(null, { status: 404 });
+    }
+
     // run_worker_first routes GET / here so POST / keeps reaching the ingest
     // handler, so the SPA shell has to be served from the Worker (#46). Assets
     // answer GET and HEAD only; the API and ingest paths stay 404 rather than
@@ -3039,7 +3919,9 @@ export default {
       (method === "GET" || method === "HEAD") &&
       pathname !== "/ingest" &&
       pathname !== "/api" &&
-      !pathname.startsWith("/api/");
+      !pathname.startsWith("/api/") &&
+      !pathname.startsWith("/runner/") &&
+      pathname !== "/webhook/github";
     if (wantsAsset && env?.ASSETS) {
       return env.ASSETS.fetch(request);
     }

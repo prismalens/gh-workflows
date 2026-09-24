@@ -5265,3 +5265,850 @@ describe("Worker telemetry read API", () => {
     });
   });
 });
+
+// ── Control plane (#184) ─────────────────────────────────────
+import { after } from "node:test";
+// The read-API Access helper lives inside its describe, and verifyAccess caches the first key
+// set it fetches for an hour. These blocks sign with their own key, so they move Date.now past
+// that cache while they run and restore it after.
+const CP_TEAM_DOMAIN = "test.cloudflareaccess.com";
+const CP_AUD = "test-aud-12345";
+const CP_KID = "cp-184-kid";
+const CP_CLOCK_SHIFT_MS = 2 * 3600 * 1000;
+const cpKeyPair = await crypto.subtle.generateKey(
+  { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+  true,
+  ["sign", "verify"]
+);
+const cpJwk = { ...(await crypto.subtle.exportKey("jwk", cpKeyPair.publicKey)), kid: CP_KID, alg: "RS256" };
+const cpB64 = (buf) => Buffer.from(buf).toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+
+function useControlPlaneAccess() {
+  const state = { jwt: null, env: { ACCESS_TEAM_DOMAIN: CP_TEAM_DOMAIN, ACCESS_AUD: CP_AUD } };
+  let realNow;
+  let realFetch;
+  before(async () => {
+    realNow = Date.now;
+    realFetch = globalThis.fetch;
+    Date.now = () => realNow() + CP_CLOCK_SHIFT_MS;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === "string" && url.includes("/cdn-cgi/access/certs")) {
+        return new Response(JSON.stringify({ keys: [cpJwk] }), { status: 200 });
+      }
+      return realFetch(url, init);
+    };
+    const header = cpB64(JSON.stringify({ alg: "RS256", kid: CP_KID, typ: "JWT" }));
+    const payload = cpB64(
+      JSON.stringify({ aud: CP_AUD, iss: `https://${CP_TEAM_DOMAIN}`, exp: Math.floor(Date.now() / 1000) + 3600 })
+    );
+    const sig = await crypto.subtle.sign(
+      "RSASSA-PKCS1-v1_5",
+      cpKeyPair.privateKey,
+      new TextEncoder().encode(`${header}.${payload}`)
+    );
+    state.jwt = `${header}.${payload}.${cpB64(sig)}`;
+  });
+  after(() => {
+    Date.now = realNow;
+    globalThis.fetch = realFetch;
+  });
+  return state;
+}
+
+async function cpSha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const CP_RUNNER_ID = "11111111-2222-4333-8444-555555555555";
+const CP_OTHER_RUNNER_ID = "99999999-2222-4333-8444-555555555555";
+const cpRunnerToken = "asr_" + cpB64(crypto.getRandomValues(new Uint8Array(32)));
+const cpRunnerTokenHash = await cpSha256Hex(cpRunnerToken);
+
+// Answers the runner-token lookup for cpRunnerToken only; `extra` answers everything else.
+function cpRunnerDb(extra = () => null, { revoked = false } = {}) {
+  return createFakeDb({
+    handler(sql, args) {
+      if (/FROM runners WHERE token_hash = \?/.test(sql)) {
+        return !revoked && args[0] === cpRunnerTokenHash ? { id: CP_RUNNER_ID } : null;
+      }
+      return extra(sql, args);
+    },
+  });
+}
+
+function cpRunnerRequest(path, { method = "POST", body, token = cpRunnerToken } = {}) {
+  const headers = token === null ? {} : { authorization: `Bearer ${token}` };
+  return makeRequest(path, { method, headers, body });
+}
+
+function cpRecordBatches(db) {
+  const batches = [];
+  const batch = db.batch.bind(db);
+  db.batch = async (stmts) => {
+    const start = db.queries.length;
+    const out = await batch(stmts);
+    batches.push(db.queries.slice(start));
+    return out;
+  };
+  return batches;
+}
+
+async function cpCaptureConsole(fn) {
+  const lines = [];
+  const saved = {};
+  for (const k of ["log", "info", "warn", "error", "debug"]) {
+    saved[k] = console[k];
+    console[k] = (...a) => lines.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
+  }
+  try {
+    return { result: await fn(), lines };
+  } finally {
+    Object.assign(console, saved);
+  }
+}
+
+const CP_WRITE = /^\s*(INSERT|UPDATE|DELETE)/i;
+
+describe("Runner registry (#184)", () => {
+  const access = useControlPlaneAccess();
+  const accessed = (path, opts = {}) =>
+    makeRequest(path, { ...opts, headers: { "Cf-Access-Jwt-Assertion": access.jwt, ...(opts.headers || {}) } });
+  const validRegistration = () => ({
+    placement: "box",
+    credentials: [
+      { engine: "opencode", kind: "api-key", fingerprint: "0123456789ab", concurrency: 2 },
+      { engine: "claude-code", kind: "api-key", fingerprint: "ba9876543210", concurrency: 1 },
+    ],
+  });
+
+  it("POST /api/runners returns the token once, stores only its hash, and logs nothing", async () => {
+    const db = createFakeDb();
+    const env = { ...access.env, DB: db };
+    const { result: res, lines } = await cpCaptureConsole(() =>
+      worker.fetch(accessed("/api/runners", { body: { name: "box-1" } }), env)
+    );
+    assert.equal(res.status, 201);
+    const body = await res.json();
+    assert.match(body.token, /^asr_[A-Za-z0-9_-]{43}$/);
+    assert.equal(body.name, "box-1");
+    assert.match(body.id, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(Object.keys(body).sort(), ["id", "name", "token"]);
+    const insert = db.queries.find((q) => /INSERT INTO runners/.test(q.sql));
+    assert.ok(insert, "runners INSERT issued");
+    assert.ok(insert.args.includes(await cpSha256Hex(body.token)), "hash is bound");
+    assert.ok(!JSON.stringify(db.queries).includes(body.token), "token never reaches a D1 arg");
+    assert.ok(!lines.join("\n").includes(body.token), "token never reaches console output");
+  });
+
+  it("POST /api/runners refuses a missing or oversized name and an unparseable body", async () => {
+    for (const body of [{}, { name: "" }, { name: "x".repeat(101) }, { name: 7 }, "not json", [1]]) {
+      const db = createFakeDb();
+      const res = await worker.fetch(accessed("/api/runners", { body }), { ...access.env, DB: db });
+      assert.equal(res.status, 400, JSON.stringify(body));
+      assert.equal(res.headers.get("content-type"), "application/json");
+      assert.equal(typeof (await res.json()).error, "string");
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+    }
+  });
+
+  it("the /api/runners routes sit behind Access", async () => {
+    for (const [method, path] of [["GET", "/api/runners"], ["POST", "/api/runners"], ["DELETE", `/api/runners/${CP_RUNNER_ID}`]]) {
+      const db = createFakeDb();
+      const res = await worker.fetch(makeRequest(path, { method, body: method === "POST" ? { name: "a" } : undefined }), { ...access.env, DB: db });
+      assert.equal(res.status, 403, `${method} ${path}`);
+      assert.equal(db.queries.length, 0);
+    }
+  });
+
+  it("GET /api/runners never returns token_hash, and nests each runner's credentials", async () => {
+    const db = createFakeDb({
+      handler(sql) {
+        if (/FROM runners/.test(sql)) {
+          return [{ id: CP_RUNNER_ID, name: "box-1", created_at: "2026-09-21T00:00:00.000Z", revoked_at: null, last_seen_at: null, placement: "box", token_hash: "deadbeefcafe" }];
+        }
+        if (/FROM runner_credentials/.test(sql)) {
+          return [{ runner_id: CP_RUNNER_ID, engine: "opencode", credential_kind: "api-key", fingerprint: "0123456789ab", concurrency: 2, registered_at: "2026-09-21T00:00:01.000Z" }];
+        }
+        return null;
+      },
+    });
+    const res = await worker.fetch(accessed("/api/runners", { method: "GET" }), { ...access.env, DB: db });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(!text.includes("token_hash") && !text.includes("deadbeefcafe"), text);
+    assert.ok(db.queries.every((q) => !/token_hash/.test(q.sql)), "no SELECT names token_hash");
+    assert.deepEqual(JSON.parse(text), {
+      rows: [{
+        id: CP_RUNNER_ID, name: "box-1", created_at: "2026-09-21T00:00:00.000Z", revoked_at: null, last_seen_at: null, placement: "box",
+        credentials: [{ engine: "opencode", credential_kind: "api-key", fingerprint: "0123456789ab", concurrency: 2, registered_at: "2026-09-21T00:00:01.000Z" }],
+      }],
+    });
+  });
+
+  it("DELETE /api/runners/:id revokes and is idempotent", async () => {
+    for (let i = 0; i < 2; i++) {
+      const db = createFakeDb();
+      const res = await worker.fetch(accessed(`/api/runners/${CP_RUNNER_ID}`, { method: "DELETE" }), { ...access.env, DB: db });
+      assert.equal(res.status, 204);
+      const revoke = db.queries.find((q) => /UPDATE runners SET revoked_at/.test(q.sql));
+      assert.ok(revoke, "revoked_at is set");
+      assert.match(revoke.sql, /revoked_at IS NULL/);
+      assert.ok(revoke.args.includes(CP_RUNNER_ID));
+      const release = db.queries.find((q) => /DELETE FROM runner_credentials WHERE runner_id = \?/.test(q.sql));
+      assert.deepEqual(release?.args, [CP_RUNNER_ID], "a revoked runner's fingerprints are released");
+    }
+  });
+
+  it("a missing, malformed, unknown or revoked runner token is a 401 with an empty body", async () => {
+    const cases = [
+      { token: null },
+      { token: "asr_short" },
+      { token: "asr_" + "A".repeat(43) },
+      { token: cpRunnerToken, revoked: true },
+    ];
+    for (const { token, revoked } of cases) {
+      const db = cpRunnerDb(() => null, { revoked });
+      const { result: res, lines } = await cpCaptureConsole(() =>
+        worker.fetch(cpRunnerRequest("/runner/register", { token, body: validRegistration() }), { DB: db })
+      );
+      assert.equal(res.status, 401, String(token));
+      assert.equal(await res.text(), "");
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+      if (token) assert.ok(!lines.join("\n").includes(token));
+    }
+    const db = cpRunnerDb(() => null, { revoked: true });
+    await worker.fetch(cpRunnerRequest("/runner/register", { body: validRegistration() }), { DB: db });
+    const lookup = db.queries.find((q) => /FROM runners WHERE token_hash/.test(q.sql));
+    assert.match(lookup.sql, /revoked_at IS NULL/);
+    assert.deepEqual(lookup.args, [cpRunnerTokenHash]);
+  });
+
+  it("/runner/register is rate limited before the token is looked up", async () => {
+    const db = cpRunnerDb();
+    const env = { DB: db, INGEST_RATE_LIMITER: { limit: async () => ({ success: false }) } };
+    const res = await worker.fetch(cpRunnerRequest("/runner/register", { body: validRegistration() }), env);
+    assert.equal(res.status, 429);
+    assert.equal(db.queries.length, 0);
+  });
+
+  it("refuses each malformed registration with a 400 and writes nothing", async () => {
+    const cred = (o = {}) => ({ engine: "opencode", kind: "api-key", fingerprint: "0123456789ab", concurrency: 1, ...o });
+    const bodies = {
+      "not json": "{",
+      "array body": [],
+      "bad placement": { placement: "vps", credentials: [cred()] },
+      "no credentials": { placement: "box", credentials: [] },
+      "credentials not array": { placement: "box", credentials: {} },
+      "17 credentials": { placement: "box", credentials: Array.from({ length: 17 }, (_, i) => cred({ fingerprint: i.toString(16).padStart(12, "0") })) },
+      "unknown engine": { placement: "box", credentials: [cred({ engine: "gpt" })] },
+      "unknown kind": { placement: "box", credentials: [cred({ kind: "oauth" })] },
+      "short fingerprint": { placement: "box", credentials: [cred({ fingerprint: "0123" })] },
+      "uppercase fingerprint": { placement: "box", credentials: [cred({ fingerprint: "0123456789AB" })] },
+      "concurrency 0": { placement: "box", credentials: [cred({ concurrency: 0 })] },
+      "concurrency 17": { placement: "box", credentials: [cred({ concurrency: 17 })] },
+      "concurrency 1.5": { placement: "box", credentials: [cred({ concurrency: 1.5 })] },
+      "laptop placement": { placement: "laptop", credentials: [cred()] },
+      "user-login kind": { placement: "box", credentials: [cred({ engine: "claude-code", kind: "user-login" })] },
+      "duplicate engine and kind": { placement: "box", credentials: [cred(), cred({ fingerprint: "ffffffffffff" })] },
+    };
+    for (const [label, body] of Object.entries(bodies)) {
+      const db = cpRunnerDb();
+      const res = await worker.fetch(cpRunnerRequest("/runner/register", { body }), { DB: db });
+      assert.equal(res.status, 400, label);
+      assert.equal(res.headers.get("content-type"), "application/json", label);
+      assert.equal(typeof (await res.json()).error, "string", label);
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0, label);
+    }
+  });
+
+  it("a fingerprint held by another live runner is a 409 duplicate-fingerprint and nothing is registered", async () => {
+    const db = cpRunnerDb((sql) => (/FROM runner_credentials/.test(sql) ? { fingerprint: "0123456789ab" } : null));
+    const batches = cpRecordBatches(db);
+    const res = await worker.fetch(cpRunnerRequest("/runner/register", { body: validRegistration() }), { DB: db });
+    assert.equal(res.status, 409);
+    assert.deepEqual(await res.json(), { error: "duplicate-fingerprint" });
+    const check = db.queries.find((q) => /FROM runner_credentials/.test(q.sql));
+    assert.match(check.sql, /runner_id != \?/);
+    assert.match(check.sql, /revoked_at IS NULL/);
+    assert.ok(check.args.includes(CP_RUNNER_ID));
+    assert.equal(batches.length, 0);
+    assert.equal(db.queries.filter((q) => /INSERT|DELETE|UPDATE runners/.test(q.sql)).length, 0);
+  });
+
+  it("the same runner re-registering replaces its set in one batch: DELETE, INSERTs, UPDATE", async () => {
+    const db = cpRunnerDb();
+    const batches = cpRecordBatches(db);
+    const res = await worker.fetch(cpRunnerRequest("/runner/register", { body: validRegistration() }), { DB: db });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { runner_id: CP_RUNNER_ID, credentials: 2, heartbeat_timeout_s: 300, lease_wait_max_s: 20 });
+    assert.equal(batches.length, 1);
+    const [del, ins1, ins2, upd] = batches[0];
+    assert.match(del.sql, /DELETE FROM runner_credentials WHERE runner_id = \?/);
+    assert.deepEqual(del.args, [CP_RUNNER_ID]);
+    assert.match(ins1.sql, /INSERT INTO runner_credentials/);
+    assert.deepEqual(ins1.args.slice(0, 5), [CP_RUNNER_ID, "opencode", "api-key", "0123456789ab", 2]);
+    assert.deepEqual(ins2.args.slice(0, 5), [CP_RUNNER_ID, "claude-code", "api-key", "ba9876543210", 1]);
+    assert.match(upd.sql, /UPDATE runners SET last_seen_at = \?/);
+    assert.ok(upd.args.includes("box") && upd.args.includes(CP_RUNNER_ID));
+    assert.ok(!JSON.stringify(db.queries).includes(cpRunnerToken));
+    const sweepIdx = db.queries.findIndex((q) => /UPDATE jobs/.test(q.sql));
+    const checkIdx = db.queries.findIndex((q) => /FROM runner_credentials/.test(q.sql));
+    assert.ok(sweepIdx !== -1 && sweepIdx < checkIdx, "the heartbeat sweep runs before the fingerprint check");
+  });
+
+  it("a user-login credential on a laptop is refused with a 400 and nothing is written", async () => {
+    const db = cpRunnerDb();
+    const body = { placement: "laptop", credentials: [{ engine: "claude-code", kind: "user-login", fingerprint: "abcdefabcdef", concurrency: 1 }] };
+    const res = await worker.fetch(cpRunnerRequest("/runner/register", { body }), { DB: db });
+    assert.equal(res.status, 400);
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+  });
+});
+
+import { MintError } from "./github-app.js";
+
+const CP_JOB_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const CP_BASE = "a".repeat(40);
+const CP_HEAD = "b".repeat(40);
+
+function cpStubMinter({ fail } = {}) {
+  const calls = [];
+  const mint = async ({ owner, repo }) => {
+    calls.push({ owner, repo });
+    if (fail) throw new MintError(fail, fail === "github-error" ? 500 : undefined);
+    return { token: `ghs_stub_${calls.length}`, expires_at: "2026-09-21T13:00:00Z", installation_id: 42 };
+  };
+  return { calls, mint };
+}
+
+function cpClaimedRow(overrides = {}) {
+  return {
+    id: CP_JOB_ID, repository: "prismalens/sreforge", pr_number: 183, base_sha: CP_BASE, head_sha: CP_HEAD,
+    mode: "review", level: "medium", model: null, engine: "opencode", credential_kind: "api-key",
+    config_effective: '{"max_reviewable_lines":6000}', attempts: 1, ...overrides,
+  };
+}
+
+// A lease DB: the runner holds `registered` pairs; `queue` holds queued rows the claim may take.
+function cpLeaseDb({ registered = [["opencode", "api-key"]], queue = [] } = {}) {
+  const claims = [];
+  const db = cpRunnerDb((sql, args) => {
+    if (/FROM runner_credentials WHERE runner_id = \?/.test(sql)) {
+      return registered.some(([e, k]) => e === args[1] && k === args[2]) ? { fingerprint: "0123456789ab" } : null;
+    }
+    if (/SET state='leased'/.test(sql)) {
+      claims.push(args);
+      const i = queue.findIndex((j) => j.engine === args[3] && j.credential_kind === args[4]);
+      return i === -1 ? null : queue.splice(i, 1)[0];
+    }
+    return null;
+  });
+  return { db, claims };
+}
+
+const cpLease = (qs, db, mintStub, env = {}) =>
+  worker.fetch(cpRunnerRequest(`/runner/lease?${qs}`, { method: "GET" }), { DB: db, ...env }, { mintInstallationToken: mintStub.mint });
+
+describe("Jobs and lease (#184)", () => {
+  const access = useControlPlaneAccess();
+  const postJob = (body, db) =>
+    worker.fetch(
+      makeRequest("/api/jobs", { body, headers: { "Cf-Access-Jwt-Assertion": access.jwt } }),
+      { ...access.env, DB: db }
+    );
+  const validJob = (o = {}) => ({
+    repository: "prismalens/sreforge", pr_number: 183, base_sha: CP_BASE, head_sha: CP_HEAD,
+    mode: "review", engine: "opencode", credential_kind: "api-key", ...o,
+  });
+
+  it("POST /api/jobs sits behind Access", async () => {
+    const db = createFakeDb();
+    const res = await worker.fetch(makeRequest("/api/jobs", { body: validJob() }), { ...access.env, DB: db });
+    assert.equal(res.status, 403);
+    assert.equal(db.queries.length, 0);
+  });
+
+  it("POST /api/jobs refuses a malformed job with a 400", async () => {
+    const bad = {
+      repository: validJob({ repository: "no-slash" }),
+      pr_number: validJob({ pr_number: 0 }),
+      base_sha: validJob({ base_sha: "abc" }),
+      head_sha: validJob({ head_sha: "B".repeat(40) }),
+      mode: validJob({ mode: "summon" }),
+      engine: validJob({ engine: "gpt" }),
+      credential_kind: validJob({ credential_kind: "oauth" }),
+      "credential_kind user-login": validJob({ credential_kind: "user-login" }),
+      level: validJob({ level: "max" }),
+      model: validJob({ model: "m".repeat(129) }),
+      config_effective: validJob({ config_effective: [1] }),
+    };
+    for (const [label, body] of Object.entries(bad)) {
+      const db = createFakeDb();
+      const res = await postJob(body, db);
+      assert.equal(res.status, 400, label);
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0, label);
+    }
+  });
+
+  it("the same head on an active job is idempotent: 200 duplicate and nothing written", async () => {
+    const db = createFakeDb({
+      handler: (sql) => (/FROM jobs WHERE repository = \?/.test(sql) ? [{ id: CP_JOB_ID, state: "leased", head_sha: CP_HEAD }] : null),
+    });
+    const res = await postJob(validJob(), db);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { job_id: CP_JOB_ID, state: "leased", duplicate: true });
+    const read = db.queries.find((q) => /FROM jobs WHERE repository = \?/.test(q.sql));
+    assert.match(read.sql, /state IN \('queued', 'leased', 'running'\)/);
+    assert.deepEqual(read.args, ["prismalens/sreforge", 183]);
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+  });
+
+  it("a new head supersedes the queued job and enqueues, leaving a leased one alone", async () => {
+    const db = createFakeDb({
+      handler: (sql) => (/FROM jobs WHERE repository = \?/.test(sql) ? [{ id: CP_JOB_ID, state: "queued", head_sha: "c".repeat(40) }] : null),
+    });
+    const res = await postJob(validJob({ level: "high", model: "opencode/x", config_effective: { a: 1 } }), db);
+    assert.equal(res.status, 201);
+    const { job_id } = await res.json();
+    assert.match(job_id, /^[0-9a-f-]{36}$/);
+    assert.notEqual(job_id, CP_JOB_ID);
+    const writes = db.queries.filter((q) => CP_WRITE.test(q.sql));
+    assert.equal(writes.length, 2);
+    assert.match(writes[0].sql, /UPDATE jobs SET state='superseded', finished_at=\? WHERE repository=\? AND pr_number=\? AND state='queued'/);
+    assert.deepEqual(writes[0].args.slice(1), ["prismalens/sreforge", 183]);
+    assert.match(writes[1].sql, /INSERT INTO jobs/);
+    assert.deepEqual(writes[1].args.slice(0, 12), [
+      job_id, "prismalens/sreforge", 183, CP_BASE, CP_HEAD, "review", "high", "opencode/x", "opencode", "api-key", '{"a":1}', "queued",
+    ]);
+  });
+
+  it("a lease with wait=0 and nothing queued is one claim, a 204, and no mint", async () => {
+    const { db, claims } = cpLeaseDb();
+    const stub = cpStubMinter();
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, stub);
+    assert.equal(res.status, 204);
+    assert.equal(claims.length, 1);
+    assert.equal(stub.calls.length, 0);
+    assert.ok(db.queries.some((q) => /UPDATE runners SET last_seen_at = \?/.test(q.sql)), "last_seen_at on every lease call");
+  });
+
+  it("a lease keeps polling for up to wait seconds", async () => {
+    const { db, claims } = cpLeaseDb();
+    const started = Date.now();
+    const res = await cpLease("engine=opencode&kind=api-key&wait=1", db, cpStubMinter(), { LEASE_POLL_MS: "200" });
+    assert.equal(res.status, 204);
+    assert.ok(claims.length >= 3 && claims.length <= 6, `claims ${claims.length}`);
+    assert.ok(Date.now() - started >= 800);
+  });
+
+  it("a lease returns the job and a read token minted for its repository, and stores neither the token nor logs it", async () => {
+    const { db, claims } = cpLeaseDb({ queue: [cpClaimedRow()] });
+    const stub = cpStubMinter();
+    const { result: res, lines } = await cpCaptureConsole(() => cpLease("engine=opencode&kind=api-key&wait=0", db, stub));
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.deepEqual(stub.calls, [{ owner: "prismalens", repo: "sreforge" }]);
+    assert.deepEqual(body, {
+      job: {
+        id: CP_JOB_ID, repository: "prismalens/sreforge", pr_number: 183, base_sha: CP_BASE, head_sha: CP_HEAD,
+        mode: "review", level: "medium", model: null, engine: "opencode", credential_kind: "api-key",
+        config_effective: { max_reviewable_lines: 6000 }, attempt: 1,
+      },
+      installation_token: "ghs_stub_1",
+      installation_token_expires_at: "2026-09-21T13:00:00Z",
+      heartbeat_timeout_s: 300,
+    });
+    assert.equal(claims[0][0], CP_RUNNER_ID);
+    assert.equal(claims[0][1], "0123456789ab");
+    const stamp = db.queries.find((q) => /UPDATE jobs SET installation_id=\? WHERE id=\?/.test(q.sql));
+    assert.deepEqual(stamp.args, [42, CP_JOB_ID]);
+    assert.ok(!JSON.stringify(db.queries).includes("ghs_stub_1"), "installation token never reaches D1");
+    assert.ok(!lines.join("\n").includes("ghs_stub_1"), "installation token never reaches console output");
+  });
+
+  it("the claim binds the requested engine and kind, so a claude-code job never goes to an opencode lease", async () => {
+    const { db, claims } = cpLeaseDb({
+      registered: [["opencode", "api-key"], ["claude-code", "api-key"]],
+      queue: [cpClaimedRow({ engine: "claude-code" })],
+    });
+    const stub = cpStubMinter();
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, stub);
+    assert.equal(res.status, 204);
+    assert.deepEqual([claims[0][3], claims[0][4]], ["opencode", "api-key"]);
+    const claim = db.queries.find((q) => /SET state='leased'/.test(q.sql));
+    assert.match(claim.sql, /WHERE state='queued' AND engine=\?4 AND credential_kind=\?5 ORDER BY created_at ASC LIMIT 1\)\s+AND state='queued'/);
+    assert.match(claim.sql, /RETURNING id, repository, pr_number/);
+    assert.equal(stub.calls.length, 0);
+  });
+
+  it("a lease for a pair the runner did not register is a 409 and claims nothing", async () => {
+    const { db, claims } = cpLeaseDb({ registered: [["opencode", "api-key"]], queue: [cpClaimedRow({ engine: "claude-code" })] });
+    const res = await cpLease("engine=claude-code&kind=api-key&wait=0", db, cpStubMinter());
+    assert.equal(res.status, 409);
+    assert.deepEqual(await res.json(), { error: "unregistered-credential" });
+    assert.equal(claims.length, 0);
+  });
+
+  it("refuses bad lease parameters with a 400", async () => {
+    for (const qs of ["kind=api-key", "engine=opencode", "engine=gpt&kind=api-key", "engine=opencode&kind=oauth", "engine=claude-code&kind=user-login", "engine=opencode&kind=api-key&wait=21", "engine=opencode&kind=api-key&wait=-1", "engine=opencode&kind=api-key&wait=1.5", "engine=opencode&kind=api-key&wait=x"]) {
+      const { db, claims } = cpLeaseDb();
+      const res = await cpLease(qs, db, cpStubMinter());
+      assert.equal(res.status, 400, qs);
+      assert.equal(claims.length, 0, qs);
+    }
+  });
+
+  it("a lease without a runner token is a 401, and is rate limited first", async () => {
+    const { db } = cpLeaseDb();
+    const res = await worker.fetch(cpRunnerRequest("/runner/lease?engine=opencode&kind=api-key&wait=0", { method: "GET", token: null }), { DB: db });
+    assert.equal(res.status, 401);
+    const limited = cpLeaseDb();
+    const res2 = await cpLease("engine=opencode&kind=api-key&wait=0", limited.db, cpStubMinter(), { INGEST_RATE_LIMITER: { limit: async () => ({ success: false }) } });
+    assert.equal(res2.status, 429);
+    assert.equal(limited.db.queries.length, 0);
+  });
+
+  it("an App not installed on the repository fails the job with app-not-installed and answers 204", async () => {
+    const { db } = cpLeaseDb({ queue: [cpClaimedRow()] });
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, cpStubMinter({ fail: "not-installed" }));
+    assert.equal(res.status, 204);
+    const fail = db.queries.find((q) => /conclusion='app-not-installed'/.test(q.sql));
+    assert.match(fail.sql, /state='failed'/);
+    assert.equal(fail.args.at(-1), CP_JOB_ID);
+  });
+
+  it("an unconfigured App puts the job back and answers 503", async () => {
+    const { db } = cpLeaseDb({ queue: [cpClaimedRow()] });
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, cpStubMinter({ fail: "app-unconfigured" }));
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), { error: "app-unconfigured" });
+    const back = db.queries.find((q) => /attempts=attempts-1/.test(q.sql));
+    assert.match(back.sql, /state='queued', runner_id=NULL, credential_fingerprint=NULL, leased_at=NULL, heartbeat_at=NULL/);
+    assert.deepEqual(back.args, [CP_JOB_ID]);
+  });
+
+  it("any other mint failure puts the job back and answers 502", async () => {
+    const { db } = cpLeaseDb({ queue: [cpClaimedRow()] });
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, cpStubMinter({ fail: "github-error" }));
+    assert.equal(res.status, 502);
+    assert.deepEqual(await res.json(), { error: "token-mint-failed" });
+    assert.ok(db.queries.some((q) => /attempts=attempts-1/.test(q.sql)));
+  });
+
+  it("the heartbeat sweep requeues a first expiry and fails a second with heartbeat-timeout", async () => {
+    const { db } = cpLeaseDb();
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, cpStubMinter(), { RUNNER_HEARTBEAT_TIMEOUT_S: "120" });
+    assert.equal(res.status, 204);
+    const sweepIdx = db.queries.findIndex((q) => /UPDATE jobs SET\s+state = CASE/.test(q.sql));
+    const claimIdx = db.queries.findIndex((q) => /SET state='leased'/.test(q.sql));
+    assert.ok(sweepIdx !== -1 && sweepIdx < claimIdx, "the sweep runs before the claim");
+    const sweep = db.queries[sweepIdx];
+    assert.match(sweep.sql, /WHERE state IN \('leased', 'running'\) AND heartbeat_at < \?1/);
+    // attempts=1 goes back to queued with its lease cleared; attempts=2 fails.
+    assert.match(sweep.sql, /state = CASE WHEN attempts >= 2 THEN 'failed' ELSE 'queued' END/);
+    assert.match(sweep.sql, /conclusion = CASE WHEN attempts >= 2 THEN 'heartbeat-timeout' ELSE conclusion END/);
+    assert.match(sweep.sql, /runner_id = CASE WHEN attempts >= 2 THEN runner_id ELSE NULL END/);
+    const [cutoff, now] = sweep.args;
+    assert.equal(Date.parse(now) - Date.parse(cutoff), 120_000);
+  });
+
+  it("RUNNER_HEARTBEAT_TIMEOUT_S unset is 300 in the lease response and the sweep cutoff", async () => {
+    const { db } = cpLeaseDb({ queue: [cpClaimedRow()] });
+    const res = await cpLease("engine=opencode&kind=api-key&wait=0", db, cpStubMinter());
+    assert.equal((await res.json()).heartbeat_timeout_s, 300);
+    const [cutoff, now] = db.queries.find((q) => /state = CASE/.test(q.sql)).args;
+    assert.equal(Date.parse(now) - Date.parse(cutoff), 300_000);
+  });
+
+  it("a GET under /runner/ that matches no route is a 404, not the SPA", async () => {
+    const assets = { fetch: async () => new Response("<html>", { status: 200 }) };
+    for (const path of ["/runner/nope", "/webhook/github"]) {
+      const res = await worker.fetch(makeRequest(path, { method: "GET" }), { ASSETS: assets, DB: createFakeDb() });
+      assert.equal(res.status, 404, path);
+    }
+  });
+});
+
+const cpEv = (type, fields = {}, at = "2026-09-21T10:00:00.000Z") => ({ v: "assayer/v1", type, at, ...fields });
+
+function cpFullStream() {
+  return [
+    cpEv("started", { engine: "opencode", model: "opencode/muse-spark", credential_fingerprint: null, prompt_hash: "e775e965", lane_version: "1b1c597" }),
+    cpEv("read", { path: ".claude-review.diff" }),
+    cpEv("agent", { agent_id: "call_01", role: "Bug hunt agent 3", model: "muse-spark", usage: { input: 10, output: 5, cache_read: 1, cache_write: 2 } }),
+    cpEv("finding", { path: "a.js", line: 3, side: "RIGHT", category: "bug", severity: "high", effort: "low", body: "x", verification_note: null, ai_prompt: null, confirmed: true }),
+    cpEv("summary", { header: null, body: "## Code review\n\nNo issues found." }),
+    cpEv("usage", { input: 2273, output: 362, cache_read: null, cache_write: null, cost_estimate_usd: 0.25, model: "opencode/muse-spark" }),
+    cpEv("finished", { conclusion: "completed" }, "2026-09-21T10:01:32.253Z"),
+  ];
+}
+
+function cpJobRow(overrides = {}) {
+  return {
+    id: CP_JOB_ID, runner_id: CP_RUNNER_ID, state: "running", repository: "prismalens/sreforge", pr_number: 183,
+    base_sha: CP_BASE, head_sha: CP_HEAD, mode: "review", level: "medium", model: null, engine: "opencode",
+    credential_kind: "api-key", config_effective: '{"max_reviewable_lines":6000}', ...overrides,
+  };
+}
+
+function cpEventsDb({ job = cpJobRow(), maxSeq = 0, earlier = [] } = {}) {
+  return cpRunnerDb((sql) => {
+    if (/FROM jobs WHERE id = \?/.test(sql)) return job;
+    if (/MAX\(seq\)/.test(sql)) return { max_seq: maxSeq };
+    if (/FROM job_events WHERE job_id = \? AND type IN/.test(sql)) {
+      return earlier.map((e, i) => ({ seq: i + 1, type: e.type, payload: JSON.stringify(e) }));
+    }
+    return null;
+  });
+}
+
+const cpPostEvents = (db, events, id = CP_JOB_ID) =>
+  worker.fetch(cpRunnerRequest(`/runner/jobs/${id}/events`, { body: events === undefined ? undefined : { events } }), { DB: db });
+
+function cpInsertColumns(q) {
+  const cols = /INSERT INTO \w+ \(([^)]+)\)/.exec(q.sql)[1].split(",").map((c) => c.trim());
+  return Object.fromEntries(cols.map((c, i) => [c, q.args[i]]));
+}
+
+describe("Runner events (#184)", () => {
+  it("an empty batch is a heartbeat: 204 and only the jobs UPDATE is written", async () => {
+    const db = cpEventsDb({ job: cpJobRow({ state: "leased" }) });
+    const res = await cpPostEvents(db, []);
+    assert.equal(res.status, 204);
+    const writes = db.queries.filter((q) => CP_WRITE.test(q.sql));
+    assert.equal(writes.length, 1);
+    assert.match(writes[0].sql, /UPDATE jobs SET heartbeat_at = \?, state = 'running'/);
+    assert.match(writes[0].sql, /WHERE id = \? AND runner_id = \? AND state IN \('leased', 'running'\)/);
+    assert.ok(writes[0].args.includes(CP_JOB_ID) && writes[0].args.includes(CP_RUNNER_ID));
+  });
+
+  it("a job id that is not a UUID is a 404", async () => {
+    const db = cpEventsDb();
+    const res = await cpPostEvents(db, [], "not-a-uuid");
+    assert.equal(res.status, 404);
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+  });
+
+  it("a job that does not exist is a 404", async () => {
+    const db = cpEventsDb({ job: null });
+    const res = await cpPostEvents(db, []);
+    assert.equal(res.status, 404);
+  });
+
+  it("another runner's job is a 403 not-lease-holder with nothing written", async () => {
+    const db = cpEventsDb({ job: cpJobRow({ runner_id: CP_OTHER_RUNNER_ID }) });
+    const res = await cpPostEvents(db, cpFullStream());
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), { error: "not-lease-holder" });
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+  });
+
+  it("a queued or finished job is a 409 lease-lost with nothing written", async () => {
+    for (const state of ["queued", "finished"]) {
+      const db = cpEventsDb({ job: cpJobRow({ state }) });
+      const res = await cpPostEvents(db, []);
+      assert.equal(res.status, 409, state);
+      assert.deepEqual(await res.json(), { error: "lease-lost" });
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0, state);
+    }
+  });
+
+  it("101 events is a 413 too-many-events with nothing written", async () => {
+    const db = cpEventsDb();
+    const res = await cpPostEvents(db, Array.from({ length: 101 }, () => cpEv("read", { path: "a" })));
+    assert.equal(res.status, 413);
+    assert.deepEqual(await res.json(), { error: "too-many-events" });
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+  });
+
+  it("a 17 KiB event is a 413 event-too-large with nothing written", async () => {
+    const db = cpEventsDb();
+    const res = await cpPostEvents(db, [cpEv("summary", { header: null, body: "x".repeat(17 * 1024) })]);
+    assert.equal(res.status, 413);
+    assert.deepEqual(await res.json(), { error: "event-too-large" });
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+  });
+
+  it("an event without v, with an unknown type or an unparseable at is a 400 invalid-event", async () => {
+    const { v, ...noV } = cpEv("read", { path: "a" });
+    for (const bad of [noV, cpEv("progress"), cpEv("read", { path: "a" }, "yesterday"), "read", null]) {
+      const db = cpEventsDb();
+      const res = await cpPostEvents(db, [cpEv("read", { path: "b" }), bad]);
+      assert.equal(res.status, 400, JSON.stringify(bad));
+      assert.deepEqual(await res.json(), { error: "invalid-event" });
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+    }
+    const db = cpEventsDb();
+    const res = await cpPostEvents(db, undefined);
+    assert.equal(res.status, 400);
+  });
+
+  it("events need a runner token", async () => {
+    const db = cpEventsDb();
+    const res = await worker.fetch(cpRunnerRequest(`/runner/jobs/${CP_JOB_ID}/events`, { body: { events: [] }, token: null }), { DB: db });
+    assert.equal(res.status, 401);
+    assert.equal(db.queries.length, 0);
+  });
+
+  it("a full stream finishes the job and records the round with its engine, in one batch", async () => {
+    const db = cpEventsDb();
+    const batches = cpRecordBatches(db);
+    const res = await cpPostEvents(db, cpFullStream());
+    assert.equal(res.status, 204);
+    assert.equal(batches.length, 1);
+    const batch = batches[0];
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, batch.length, "every write is in the batch");
+
+    const jobUpdate = batch[0];
+    assert.match(jobUpdate.sql, /UPDATE jobs SET heartbeat_at = \?, state = 'finished', conclusion = \?, finished_at = \?/);
+    assert.ok(jobUpdate.args.includes("completed"));
+
+    const events = batch.filter((q) => /INSERT INTO job_events/.test(q.sql)).map(cpInsertColumns);
+    assert.deepEqual(events.map((e) => e.seq), [1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual(events.map((e) => e.type), ["started", "read", "agent", "finding", "summary", "usage", "finished"]);
+    assert.ok(events.every((e) => e.job_id === CP_JOB_ID));
+    assert.deepEqual(JSON.parse(events[3].payload), cpFullStream()[3]);
+
+    const usage = batch.filter((q) => /INSERT INTO usage_records/.test(q.sql));
+    assert.equal(usage.length, 1);
+    const row = cpInsertColumns(usage[0]);
+    assert.equal(row.session_id, CP_JOB_ID);
+    assert.equal(row.engine, "opencode");
+    assert.equal(row.ingest_auth, "runner");
+    assert.equal(row.credential_type, "api-key");
+    assert.equal(row.round_type, "review");
+    assert.equal(row.job_conclusion, "completed");
+    assert.equal(row.repository, "prismalens/sreforge");
+    assert.equal(row.pr_number, 183);
+    assert.equal(row.pr_url, "https://github.com/prismalens/sreforge/pull/183");
+    assert.equal(row.head_sha, CP_HEAD);
+    assert.equal(row.range_base, CP_BASE);
+    assert.equal(row.range_head, CP_HEAD);
+    assert.equal(row.model, "opencode/muse-spark");
+    assert.equal(row.input_tokens, 2273);
+    assert.equal(row.output_tokens, 362);
+    assert.equal(row.cache_read_input_tokens, null);
+    assert.equal(row.total_cost_usd, 0.25);
+    assert.equal(row.duration_ms, 92253);
+    assert.equal(row.lane_version, "1b1c597");
+    assert.equal(row.prompt_hash, "e775e965");
+    assert.equal(row.level, "medium");
+    assert.equal(row.config_effective, '{"max_reviewable_lines":6000}');
+    assert.equal(row.repository_id, null);
+    assert.equal(row.failure_class, null);
+    assert.deepEqual(JSON.parse(row.per_model_usage), {
+      "opencode/muse-spark": { input: 2273, output: 362, cache_read: null, cache_write: null },
+    });
+
+    const agents = batch.filter((q) => /INSERT INTO round_agents/.test(q.sql));
+    assert.equal(agents.length, 1);
+    assert.match(agents[0].sql, /ON CONFLICT\(session_id, agent_id\) DO UPDATE/);
+    const agent = cpInsertColumns(agents[0]);
+    assert.deepEqual(agent, {
+      session_id: CP_JOB_ID, agent_id: "call_01", subagent_type: "Bug hunt agent 3", model: "muse-spark",
+      input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 1, cache_creation_input_tokens: 2, engine: "opencode",
+    });
+  });
+
+  it("an error event lands on the job and on the round: failure_class, failure_retryable, reset_at", async () => {
+    const db = cpEventsDb();
+    const stream = [
+      cpEv("started", { engine: "opencode", model: "m" }),
+      cpEv("error", { failure_class: "rate-limited", retryable: true, reset_at: "2026-09-21T15:00:00Z", message: "429" }),
+      cpEv("finished", { conclusion: "failed" }, "2026-09-21T10:00:05.000Z"),
+    ];
+    const res = await cpPostEvents(db, stream);
+    assert.equal(res.status, 204);
+    const jobUpdate = db.queries.find((q) => /^UPDATE jobs SET heartbeat_at/.test(q.sql));
+    assert.match(jobUpdate.sql, /failure_class = \?, reset_at = \?/);
+    assert.ok(jobUpdate.args.includes("rate-limited") && jobUpdate.args.includes("2026-09-21T15:00:00Z"));
+    const row = cpInsertColumns(db.queries.find((q) => /INSERT INTO usage_records/.test(q.sql)));
+    assert.equal(row.failure_class, "rate-limited");
+    assert.equal(row.failure_retryable, 1);
+    assert.equal(row.failure_reset_at, "2026-09-21T15:00:00Z");
+    assert.equal(row.job_conclusion, "failed");
+    assert.equal(row.duration_ms, 5000);
+  });
+
+  it("finished without started records a null duration", async () => {
+    const db = cpEventsDb();
+    const res = await cpPostEvents(db, [cpEv("finished", { conclusion: "completed" })]);
+    assert.equal(res.status, 204);
+    const row = cpInsertColumns(db.queries.find((q) => /INSERT INTO usage_records/.test(q.sql)));
+    assert.equal(row.duration_ms, null);
+    assert.equal(row.engine, "opencode", "the job's engine when no started event names one");
+    assert.equal(row.model, null);
+    assert.equal(row.per_model_usage, "{}");
+  });
+
+  it("seq continues across posts, and the round merges events from earlier posts", async () => {
+    const earlier = cpFullStream().slice(0, 6);
+    const db = cpEventsDb({ maxSeq: 6, earlier });
+    const res = await cpPostEvents(db, [cpFullStream()[6]]);
+    assert.equal(res.status, 204);
+    const events = db.queries.filter((q) => /INSERT INTO job_events/.test(q.sql)).map(cpInsertColumns);
+    assert.deepEqual(events.map((e) => e.seq), [7]);
+    const row = cpInsertColumns(db.queries.find((q) => /INSERT INTO usage_records/.test(q.sql)));
+    assert.equal(row.duration_ms, 92253);
+    assert.equal(row.input_tokens, 2273);
+    assert.equal(row.prompt_hash, "e775e965");
+    assert.equal(db.queries.filter((q) => /INSERT INTO round_agents/.test(q.sql)).length, 1);
+  });
+
+  it("events without finished keep the job running and record no round", async () => {
+    const db = cpEventsDb({ maxSeq: 2 });
+    const res = await cpPostEvents(db, [cpEv("read", { path: "x" }), cpEv("agent", { agent_id: "a", role: "r", model: "m", usage: null })]);
+    assert.equal(res.status, 204);
+    const writes = db.queries.filter((q) => CP_WRITE.test(q.sql));
+    assert.equal(writes.length, 3);
+    assert.match(writes[0].sql, /state = 'running'/);
+    assert.deepEqual(writes.slice(1).map((q) => cpInsertColumns(q).seq), [3, 4]);
+  });
+});
+
+import { readFileSync } from "node:fs";
+
+describe("Revocation ruling (#184)", () => {
+  it("a revoked runner token gets a 401 on lease and events, and nothing is written", async () => {
+    const cases = [
+      ["GET", "/runner/lease?engine=opencode&kind=api-key&wait=0", undefined],
+      ["POST", `/runner/jobs/${CP_JOB_ID}/events`, { events: [cpEv("finished", { conclusion: "completed" })] }],
+    ];
+    for (const [method, path, body] of cases) {
+      // The fake answers the lookup like D1 would without the revoked_at filter: the row exists.
+      const db = createFakeDb({
+        handler(sql, args) {
+          if (/FROM runners WHERE token_hash = \?/.test(sql)) {
+            return args[0] === cpRunnerTokenHash && !/revoked_at IS NULL/.test(sql) ? { id: CP_RUNNER_ID } : null;
+          }
+          if (/FROM runner_credentials/.test(sql)) return { fingerprint: "0123456789ab" };
+          if (/SET state='leased'/.test(sql)) return cpClaimedRow();
+          if (/FROM jobs WHERE id = \?/.test(sql)) return cpJobRow();
+          return null;
+        },
+      });
+      const stub = cpStubMinter();
+      const res = await worker.fetch(cpRunnerRequest(path, { method, body }), { DB: db }, { mintInstallationToken: stub.mint });
+      assert.equal(res.status, 401, `${method} ${path}`);
+      assert.equal(await res.text(), "");
+      assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0, `${method} ${path}`);
+      assert.equal(stub.calls.length, 0);
+    }
+  });
+
+  it("migration 0016 has no token column other than runners.token_hash", () => {
+    const sql = readFileSync(new URL("./migrations/0016_runners_and_jobs.sql", import.meta.url), "utf8").replace(/--[^\n]*/g, "");
+    const columns = [];
+    for (const m of sql.matchAll(/CREATE TABLE (\w+) \(([\s\S]*?)\n\);/g)) {
+      for (const line of m[2].split(",\n")) {
+        const name = line.trim().split(/\s+/)[0];
+        if (name && !/^(PRIMARY|UNIQUE|CHECK|FOREIGN|CONSTRAINT)$/i.test(name)) columns.push(`${m[1]}.${name}`);
+      }
+    }
+    for (const m of sql.matchAll(/ALTER TABLE (\w+) ADD COLUMN (\w+)/g)) columns.push(`${m[1]}.${m[2]}`);
+    assert.ok(columns.includes("jobs.installation_id"), "the parser reads the jobs table");
+    assert.deepEqual(columns.filter((c) => /token/i.test(c)), ["runners.token_hash"]);
+  });
+});

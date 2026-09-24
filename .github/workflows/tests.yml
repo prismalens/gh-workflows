@@ -153,7 +153,7 @@ jobs:
       - name: rotate-telemetry-token.sh behaviour
         run: python3 tests/test-rotate-telemetry-token.py
 
-      # Verifies wrangler.toml run_worker_first covers all POST routes (#176).
+      # Verifies wrangler.toml run_worker_first covers all routes, GET and DELETE as well as POST (#176, #184).
       - name: Worker route coverage in wrangler.toml
         run: python3 tests/test-worker-routes-reach-worker.py
 
@@ -168,6 +168,10 @@ jobs:
       # A fleet handler's SQL never names a text column (#185).
       - name: Fleet routes never select text (#185)
         run: python3 tests/test-fleet-wall.py
+
+      # The App manifest's permissions are pinned, and the minted token is read-only (#184).
+      - name: App manifest permissions (#184)
+        run: python3 tests/test-app-manifest.py
 
       # A test file this job does not name is a test that never runs (#130).
       - name: Every test file is wired into this job
