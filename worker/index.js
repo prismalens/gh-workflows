@@ -123,6 +123,9 @@ const VALID_LANE_EVENT_REASONS = new Set([
   "superseded", // #154: debounce_minutes lever
   "unchanged-patch", // #162: restack with unchanged patch
   "api-error", // #174: account, auth or quota failure; the class is on usage_records.failure_class
+  "admission-off", // #189: review.admission is off
+  "skip-label", // #189: claude_review_skip on the pull request
+  "awaiting-label", // #189: admission by label and claude_review absent
 ]);
 
 // A round that did not run writes no usage_records row, so its verdict never
@@ -138,6 +141,8 @@ const LANE_REASON_TO_VERDICT_KIND = {
   "refused-size": "refused-size",
   "no-token": "no-token",
   "api-error": "api-error",
+  "skip-label": "skip-label",
+  "awaiting-label": "awaiting-label",
 };
 
 const LANE_EVENT_NUMERIC_FIELDS = [

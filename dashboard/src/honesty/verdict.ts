@@ -42,6 +42,8 @@ export const VERDICT_KIND_MAP: Record<string, VerdictState> = {
   "counts-unread": "unknown",
   "verify-unread": "unknown",
   "api-error": "did-not-run",
+  "skip-label": "did-not-run",
+  "awaiting-label": "did-not-run",
 };
 
 export const ALL_VERDICT_KINDS = [
@@ -64,6 +66,8 @@ export const ALL_VERDICT_KINDS = [
   "counts-unread",
   "verify-unread",
   "api-error",
+  "skip-label",
+  "awaiting-label",
 ] as const;
 
 export type VerdictKind = (typeof ALL_VERDICT_KINDS)[number];
@@ -147,6 +151,16 @@ export const VERDICT_KIND_DEFINITIONS: Record<
     group: "did-not-run",
     definition:
       "An account, auth or quota failure stopped the round before it read the diff. The failure_class field on the round's usage_records row names which.",
+  },
+  "skip-label": {
+    group: "did-not-run",
+    definition:
+      "The claude_review_skip label keeps the lane off this pull request, summons included; this head has no machine review on record. Removing the label resumes.",
+  },
+  "awaiting-label": {
+    group: "did-not-run",
+    definition:
+      "The repository admits reviews by label (admission: label) and the claude_review label is absent; this head has no machine review on record. Applying the label starts a round.",
   },
   silent: {
     group: "silent",
@@ -263,6 +277,8 @@ const VERDICT_KIND_BUCKET_MAP: Record<string, VerdictKindBucket> = {
   "no-token": "did-not-run",
   "no-new-commits": "did-not-run",
   "api-error": "did-not-run",
+  "skip-label": "did-not-run",
+  "awaiting-label": "did-not-run",
   silent: "silent",
   "verify-silent": "silent",
   "verify-cancelled": "silent",

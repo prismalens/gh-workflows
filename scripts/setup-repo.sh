@@ -15,8 +15,11 @@ SYNC_TEMPLATES=0
 # Labels every repo needs because doctrine references them by name. `coderabbit_review`
 # is the manual admission gate in the coderabbit-lane skill; without it the escalation
 # path that skill documents cannot be used at all.
+# `claude_review` and `claude_review_skip` are the Claude lane's admission labels (#189).
 REQUIRED_LABELS=(
   "coderabbit_review|5319e7|Admit this PR to the CodeRabbit lane"
+  "claude_review|1d76db|Admit this PR to the Claude review lane (review.admission: label)"
+  "claude_review_skip|b60205|Keep the Claude review lane off this PR"
 )
 
 usage() {

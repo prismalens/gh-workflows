@@ -307,6 +307,8 @@ def run_resolve_step(script, *, pr_json_obj=None):
             GH_TOKEN="x",
             PR_NUMBER="42",
             EVENT_NAME="pull_request",
+            LABEL_OPT_IN="claude_review",
+            LABEL_SKIP="claude_review_skip",
             FAKE_PR_JSON=json.dumps(pr_json_obj),
         )
 

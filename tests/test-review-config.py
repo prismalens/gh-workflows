@@ -439,6 +439,50 @@ review:
   level: "high"
 """
 
+# review.admission (#189): auto (default) / label / off. PyYAML reads an unquoted `off`
+# as False, and that spelling is accepted; an unquoted `on` reads as True and is not.
+REPO_CONFIG_ADMISSION_LABEL = """
+version: 1
+review:
+  admission: "label"
+"""
+
+REPO_CONFIG_ADMISSION_OFF_QUOTED = """
+version: 1
+review:
+  admission: "off"
+"""
+
+REPO_CONFIG_ADMISSION_OFF_UNQUOTED = """
+version: 1
+review:
+  admission: off
+"""
+
+REPO_CONFIG_ADMISSION_AUTO = """
+version: 1
+review:
+  admission: "auto"
+"""
+
+ORG_CONFIG_ADMISSION_LABEL = """
+version: 1
+review:
+  admission: "label"
+"""
+
+MALFORMED_ADMISSION_SOMETIMES = """
+version: 1
+review:
+  admission: sometimes
+"""
+
+MALFORMED_ADMISSION_ON = """
+version: 1
+review:
+  admission: on
+"""
+
 REPO_CONFIG_PARTIAL = """
 version: 1
 
@@ -619,7 +663,7 @@ def main():
               "default_model", "auto_pause_rounds", "skip_authors", "escalation_paths",
               "path_filters", "path_instructions", "max_reviewable_lines", "max_file_lines",
               "language_map", "tool_findings", "issue_context_byte_budget",
-              "issue_context_total_byte_budget", "level", "context",
+              "issue_context_total_byte_budget", "level", "context", "admission",
           },
           f"got keys {sorted(config_effective.keys())}")
     check("config_effective excludes variant, same as config_hash", "variant" not in config_effective, f"got keys {sorted(config_effective.keys())}")
@@ -771,6 +815,53 @@ def main():
     # 4g. Whitespace in skip_authors is stripped cleanly
     rc, out, stdout, stderr = run_config_case(config_script, input_skip_authors=" dependabot[bot] , renovate[bot] , custom-bot ", is_404=True)
     check("skip_authors input with whitespace is stripped", out.get("skip_authors") == "dependabot[bot],renovate[bot],custom-bot", f"got {out.get('skip_authors')}")
+
+    print("\n=== Testing review.admission (#189) ===")
+
+    rc, out, stdout, stderr = run_config_case(config_script, org_is_404=True, is_404=True)
+    check("admission absent both layers: exits 0", rc == 0, f"rc={rc}")
+    check("admission absent both layers: resolves auto", out.get("admission") == "auto", f"got {out.get('admission')}")
+    check("admission absent both layers: logs workflow default source",
+          "review.admission: auto (source: workflow default)" in stdout, f"stdout: {stdout}")
+    check("admission absent both layers: config_effective layer=workflow",
+          json.loads(out.get("config_effective", "{}")).get("admission") == {"value": "auto", "layer": "workflow"},
+          f"got {out.get('config_effective')}")
+
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=REPO_CONFIG_ADMISSION_LABEL)
+    check("admission repo label: resolves label", out.get("admission") == "label", f"got {out.get('admission')}")
+    check("admission repo label: no warning", "::warning::" not in stdout, f"stdout: {stdout}")
+    check("admission repo label: logs repo config source",
+          "review.admission: label (source: repo config)" in stdout, f"stdout: {stdout}")
+    check("admission repo label: config_effective layer=repo",
+          json.loads(out.get("config_effective", "{}")).get("admission") == {"value": "label", "layer": "repo"},
+          f"got {out.get('config_effective')}")
+
+    for label, cfg in [("quoted", REPO_CONFIG_ADMISSION_OFF_QUOTED), ("unquoted, PyYAML False", REPO_CONFIG_ADMISSION_OFF_UNQUOTED)]:
+        rc, out, stdout, stderr = run_config_case(config_script, config_yaml=cfg)
+        check(f"admission repo off ({label}): resolves off", out.get("admission") == "off", f"got {out.get('admission')}")
+        check(f"admission repo off ({label}): not schema-rejected",
+              "Invalid value for 'review.admission'" not in stdout, f"stdout: {stdout}")
+
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_ADMISSION_LABEL, is_404=True)
+    check("admission org label, repo absent: resolves label", out.get("admission") == "label", f"got {out.get('admission')}")
+    check("admission org label, repo absent: config_effective layer=org",
+          json.loads(out.get("config_effective", "{}")).get("admission") == {"value": "label", "layer": "org"},
+          f"got {out.get('config_effective')}")
+
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_ADMISSION_LABEL,
+                                              config_yaml=REPO_CONFIG_ADMISSION_AUTO)
+    check("admission org label, repo auto: resolves auto", out.get("admission") == "auto", f"got {out.get('admission')}")
+    check("admission org label, repo auto: config_effective layer=repo",
+          json.loads(out.get("config_effective", "{}")).get("admission") == {"value": "auto", "layer": "repo"},
+          f"got {out.get('config_effective')}")
+
+    for label, cfg in [("sometimes", MALFORMED_ADMISSION_SOMETIMES), ("unquoted on, PyYAML True", MALFORMED_ADMISSION_ON)]:
+        rc, out, stdout, stderr = run_config_case(config_script, config_yaml=cfg)
+        check(f"admission malformed ({label}): falls back to auto", out.get("admission") == "auto", f"got {out.get('admission')}")
+        check(f"admission malformed ({label}): whole file rejected, default_model is the workflow default",
+              out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
+        check(f"admission malformed ({label}): warns naming review.admission",
+              "::warning::" in stdout and "Invalid value for 'review.admission'" in stdout, f"stdout: {stdout}")
 
     print("\n=== Testing Telemetry Configuration (#176) ===")
 
