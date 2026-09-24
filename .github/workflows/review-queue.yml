@@ -1,0 +1,40 @@
+# Hourly review queue: merges clean PRs and summons CodeRabbit (Sumit1993/rig#150).
+name: Review Queue
+
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no merges or summons posted)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: review-queue
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  review-queue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install dependencies
+        run: pip install --quiet pyyaml
+
+      - name: Run review queue
+        env:
+          REVIEW_QUEUE_TOKEN_PRISMALENS: ${{ secrets.REVIEW_QUEUE_TOKEN_PRISMALENS }}
+          REVIEW_QUEUE_TOKEN_SUMIT1993: ${{ secrets.REVIEW_QUEUE_TOKEN_SUMIT1993 }}
+          IS_LIVE: ${{ vars.REVIEW_QUEUE_LIVE == 'true' && (github.event_name == 'schedule' || inputs.dry_run == false) }}
+        run: |
+          if [ "${IS_LIVE}" = "true" ]; then
+            python3 scripts/review-queue.py
+          else
+            python3 scripts/review-queue.py --dry-run
+          fi
