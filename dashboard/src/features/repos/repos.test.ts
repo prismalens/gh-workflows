@@ -1,33 +1,31 @@
 import { describe, expect, it } from "vitest";
 
-import type { RoundRow } from "@/api/types";
-import { makeRounds } from "@/fixtures/rounds";
+import type { FleetRepoRow } from "@/api/types";
 import { malformedConfigs, quietRepos, summariseRepos } from "./repos";
 
-const BASE = makeRounds({ count: 1 })[0];
-
-function round(overrides: Partial<RoundRow>): RoundRow {
-  return { ...BASE, ...overrides };
-}
-
-function configResolution(outcome: string): string {
-  return JSON.stringify({
-    layers: {
-      repo_config: { outcome, unconsumed: [] },
-      org_defaults: { outcome: "absent", unconsumed: [] },
-      workflow_inputs: { outcome: "ok", unconsumed: [] },
-    },
-  });
+function repo(overrides: Partial<FleetRepoRow> & { repository: string }): FleetRepoRow {
+  return { rounds: 0, denials: 0, last_round: null, last_recorded_at: null, ...overrides };
 }
 
 describe("the repos list", () => {
   const rows = [
-    round({ session_id: "r1", repository: "o/one", recorded_at: "2026-08-29T01:00:00.000Z", round_type: "full", permission_denials: 1 }),
-    round({ session_id: "r2", repository: "o/one", recorded_at: "2026-08-30T01:00:00.000Z", round_type: "verify", permission_denials: 0 }),
+    repo({
+      repository: "o/one",
+      rounds: 2,
+      denials: 1,
+      last_round: {
+        session_id: "r2",
+        recorded_at: "2026-08-30T01:00:00.000Z",
+        round_type: "verify",
+        verdict_kind: null,
+      },
+      last_recorded_at: "2026-08-30T01:00:00.000Z",
+    }),
+    repo({ repository: "o/quiet", last_recorded_at: "2026-07-15T00:00:00.000Z" }),
   ];
 
   it("takes the last round per repository and decodes its state", () => {
-    const [one] = summariseRepos(rows, ["o/one"]);
+    const [one] = summariseRepos(rows);
     expect(one.rounds).toBe(2);
     expect(one.lastRound?.session_id).toBe("r2");
     expect(one.lastState).toBe("unknown");
@@ -35,8 +33,8 @@ describe("the repos list", () => {
   });
 
   it("keeps a repository that has posted but not in this window", () => {
-    const summarised = summariseRepos(rows, ["o/one", "o/quiet"]);
-    const quiet = summarised.find((repo) => repo.repository === "o/quiet");
+    const summarised = summariseRepos(rows);
+    const quiet = summarised.find((r) => r.repository === "o/quiet");
     expect(quiet).toBeDefined();
     expect(quiet?.rounds).toBe(0);
     expect(quiet?.lastRound).toBeNull();
@@ -45,49 +43,29 @@ describe("the repos list", () => {
 });
 
 describe("malformedConfigs", () => {
-  it("names a repository whose most recently seen layer failed to parse", () => {
-    const blobRows = [
-      round({
-        session_id: "b1",
-        repository: "o/broken",
-        recorded_at: "2026-08-30T01:00:00.000Z",
-        config_resolution: configResolution("unparseable"),
-      }),
-    ];
-    const watch = malformedConfigs(blobRows);
-    expect(watch).toEqual([{ repository: "o/broken", layer: "Repo config" }]);
+  it("names a repository whose most recently seen layer failed to parse, by its layer title", () => {
+    expect(malformedConfigs([{ repository: "o/broken", layer: "repo_config" }])).toEqual([
+      { repository: "o/broken", layer: "Repo config" },
+    ]);
   });
 
-  it("says nothing about a repository whose layers all parsed", () => {
-    const blobRows = [
-      round({
-        session_id: "b2",
-        repository: "o/fine",
-        recorded_at: "2026-08-30T01:00:00.000Z",
-        config_resolution: configResolution("ok"),
-      }),
-    ];
-    expect(malformedConfigs(blobRows)).toEqual([]);
+  it("says nothing when the fleet route reports no malformed layer", () => {
+    expect(malformedConfigs([])).toEqual([]);
   });
 });
 
 describe("quietRepos", () => {
-  it("names a windowed-quiet repository's true last round from the summary's per_repository array", () => {
-    const windowedRepos = summariseRepos([], ["o/quiet"]);
-    const perRepository = [
-      { repository: "o/quiet", rounds: 2, last_recorded_at: "2026-07-15T00:00:00.000Z" },
-    ];
-    expect(quietRepos(windowedRepos, perRepository)).toEqual([
+  it("names a windowed-quiet repository's true last round from the fleet row", () => {
+    const rows = [repo({ repository: "o/quiet", last_recorded_at: "2026-07-15T00:00:00.000Z" })];
+    expect(quietRepos(rows)).toEqual([
       { repository: "o/quiet", lastRoundAt: "2026-07-15T00:00:00.000Z" },
     ]);
   });
 
   it("leaves out a repository that posted in the window", () => {
-    const posted = [round({ session_id: "p1", repository: "o/one" })];
-    const windowedRepos = summariseRepos(posted, ["o/one"]);
-    const perRepository = [
-      { repository: "o/one", rounds: 1, last_recorded_at: posted[0].recorded_at },
+    const rows = [
+      repo({ repository: "o/one", rounds: 1, last_recorded_at: "2026-08-30T01:00:00.000Z" }),
     ];
-    expect(quietRepos(windowedRepos, perRepository)).toEqual([]);
+    expect(quietRepos(rows)).toEqual([]);
   });
 });

@@ -2781,6 +2781,155 @@ async function handleDeleteChange(id, env) {
   return new Response(null, { status: 204 });
 }
 
+// Fleet routes return aggregates keyed by repository and identifiers, never a
+// name, a title or a body: the text columns stay out of every fleet handler's
+// SQL, pinned by tests/test-fleet-wall.py (#185).
+const FLEET_CONFIG_LAYERS = Object.freeze(["repo_config", "org_defaults", "workflow_inputs"]);
+
+async function handleFleetRepos(url, env) {
+  const range = url.searchParams.get("range");
+  if (range !== "rolling" && range !== "30d" && range !== "90d" && range !== "all") {
+    return new Response(JSON.stringify({ error: "invalid range" }), {
+      status: 400,
+      headers: READ_HEADERS,
+    });
+  }
+
+  const db = env.DB;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  try {
+    // The rolling rule mirrors applyRange in dashboard/src/honesty/range.ts: the
+    // last 50 rounds or the last 7 days, whichever holds more.
+    let since = null;
+    // Set only when the 50-round side wins: rows tied with the 50th on
+    // recorded_at are cut by session_id, the same order the cutoff read uses.
+    let cutSession = null;
+    let label = "all recorded rounds";
+    if (range === "30d" || range === "90d") {
+      const days = range === "30d" ? 30 : 90;
+      since = new Date(now - days * DAY_MS).toISOString();
+      label = `the last ${days} days`;
+    } else if (range === "rolling") {
+      const c7 = new Date(now - 7 * DAY_MS).toISOString();
+      const r50 = await db
+        .prepare(
+          "SELECT recorded_at, session_id FROM usage_records ORDER BY recorded_at DESC, session_id DESC LIMIT 1 OFFSET 49"
+        )
+        .first();
+      const sevenDay = await db
+        .prepare("SELECT COUNT(*) AS cnt FROM usage_records WHERE recorded_at >= ?")
+        .bind(c7)
+        .first();
+      const inSevenDays = sevenDay?.cnt ?? 0;
+      if (r50?.recorded_at) {
+        if (inSevenDays >= 50) {
+          since = c7;
+          label = "the last 7 days";
+        } else {
+          since = r50.recorded_at;
+          cutSession = r50.session_id;
+          label = "the last 50 rounds";
+        }
+      } else {
+        // Fewer than 50 rounds exist, so the 50-round side is every round. It
+        // wins unless the 7 days hold them all, as in applyRange.
+        const all = await db.prepare("SELECT COUNT(*) AS total FROM usage_records").first();
+        if (inSevenDays >= (all?.total ?? 0)) {
+          since = c7;
+          label = "the last 7 days";
+        } else {
+          label = "the last 50 rounds";
+        }
+      }
+    }
+
+    const inWindow =
+      cutSession === null
+        ? "recorded_at >= ?"
+        : "(recorded_at > ? OR (recorded_at = ? AND session_id >= ?))";
+    const windowArgs =
+      since === null ? [] : cutSession === null ? [since] : [since, since, cutSession];
+    const where = since === null ? "" : `WHERE ${inWindow}`;
+    const and = since === null ? "" : `${inWindow} AND`;
+    const windowed = (sql) => {
+      const stmt = db.prepare(sql);
+      return since === null ? stmt : stmt.bind(...windowArgs);
+    };
+
+    const everPosted = await db
+      .prepare(
+        "SELECT repository, MAX(recorded_at) AS last_recorded_at FROM usage_records GROUP BY repository ORDER BY repository"
+      )
+      .all();
+    const counts = await windowed(
+      `SELECT repository, COUNT(*) AS rounds, SUM(COALESCE(permission_denials, 0)) AS denials FROM usage_records ${where} GROUP BY repository`
+    ).all();
+    const lastRounds = await windowed(
+      `SELECT repository, session_id, recorded_at, round_type, verdict_kind FROM (SELECT repository, session_id, recorded_at, round_type, verdict_kind, ROW_NUMBER() OVER (PARTITION BY repository ORDER BY recorded_at DESC, session_id DESC) AS rn FROM usage_records ${where}) WHERE rn = 1`
+    ).all();
+
+    const malformedByLayer = [];
+    for (const layer of FLEET_CONFIG_LAYERS) {
+      const rows = await windowed(
+        `SELECT repository, json_extract(config_resolution, '$.layers.${layer}.outcome') AS outcome FROM (SELECT repository, config_resolution, ROW_NUMBER() OVER (PARTITION BY repository ORDER BY recorded_at DESC, session_id DESC) AS rn FROM usage_records WHERE ${and} config_resolution IS NOT NULL AND json_valid(config_resolution) AND json_type(config_resolution, '$.layers.${layer}') IS NOT NULL) WHERE rn = 1 AND outcome IN ('unparseable', 'schema-rejected')`
+      ).all();
+      malformedByLayer.push({ layer, rows: rows.results ?? [] });
+    }
+
+    const lastRecordedByRepo = new Map(
+      (everPosted.results ?? []).map((r) => [r.repository, r.last_recorded_at])
+    );
+    const countsByRepo = new Map((counts.results ?? []).map((r) => [r.repository, r]));
+    const lastRoundByRepo = new Map((lastRounds.results ?? []).map((r) => [r.repository, r]));
+    const names = [...new Set([...lastRecordedByRepo.keys(), ...countsByRepo.keys()])].sort();
+
+    const repositories = names.map((repository) => {
+      const count = countsByRepo.get(repository);
+      const last = lastRoundByRepo.get(repository);
+      return {
+        repository,
+        rounds: count?.rounds ?? 0,
+        denials: count?.denials ?? 0,
+        last_round: last
+          ? {
+              session_id: last.session_id,
+              recorded_at: last.recorded_at,
+              round_type: last.round_type ?? null,
+              verdict_kind: last.verdict_kind ?? null,
+            }
+          : null,
+        last_recorded_at: lastRecordedByRepo.get(repository) ?? null,
+      };
+    });
+
+    const malformed_configs = malformedByLayer
+      .flatMap(({ layer, rows }, order) =>
+        rows.map((r) => ({ repository: r.repository, layer, order }))
+      )
+      .sort((a, b) =>
+        a.repository < b.repository ? -1 : a.repository > b.repository ? 1 : a.order - b.order
+      )
+      .map(({ repository, layer }) => ({ repository, layer }));
+
+    return new Response(
+      JSON.stringify({
+        window: { range, since, label },
+        rounds: repositories.reduce((sum, r) => sum + r.rounds, 0),
+        repositories,
+        malformed_configs,
+      }),
+      { headers: READ_HEADERS }
+    );
+  } catch {
+    return new Response(JSON.stringify({ error: "query failed" }), {
+      status: 500,
+      headers: READ_HEADERS,
+    });
+  }
+}
+
 export default {
   async fetch(request, env, ctx, options = {}) {
     const opts = (ctx && typeof ctx === "object" && typeof ctx.getKey === "function") ? ctx : (options || {});
@@ -2848,6 +2997,14 @@ export default {
       if (pathname === "/api/findings") {
         return handleFindings(url, env);
       }
+    }
+
+    if (method === "GET" && pathname === "/api/fleet/repos") {
+      const authError = await verifyAccess(request, env);
+      if (authError) {
+        return authError;
+      }
+      return handleFleetRepos(url, env);
     }
 
     if (pathname === "/api/changes" || pathname.startsWith("/api/changes/")) {

@@ -202,113 +202,71 @@ describe("/repos", () => {
   });
 
   it("keeps a repository that posted nothing in the window on the list", async () => {
-    // One repository's rounds reach the table; the summary still knows all three
-    // have posted, which is the denominator that must not silently shrink.
+    // Only one repository posted in the window; the fleet route still lists all
+    // three that have ever posted, which is the denominator that must not shrink.
     const base = makeFixtureApi(makeRounds({ count: 64, now }));
     const oneRepo = {
       ...base,
-      fetchRuns: async (query?: Parameters<typeof base.fetchRuns>[0]) => {
-        const page = await base.fetchRuns(query);
+      fetchFleetRepos: async (query: Parameters<typeof base.fetchFleetRepos>[0]) => {
+        const fleet = await base.fetchFleetRepos(query);
         return {
-          ...page,
-          rows: page.rows.filter((row) => row.repository === "prismalens/prismalens"),
+          ...fleet,
+          repositories: fleet.repositories.map((row) =>
+            row.repository === "prismalens/prismalens"
+              ? row
+              : { ...row, rounds: 0, denials: 0, last_round: null },
+          ),
         };
       },
     };
     renderRoute({ path: "/repos", api: oneRepo });
     const table = await screen.findByRole("table");
     expect(within(table).getByText("prismalens/sreforge")).toBeInTheDocument();
-    // Quiet in this window, but the summary's per_repository array still knows
-    // when it last posted (#142 finding 3944697641), so the cell is a real
-    // timestamp rather than the old "no round over" placeholder.
+    // Quiet in this window, but last_recorded_at is all-time (#142 finding
+    // 3944697641), so the cell is a real timestamp rather than the old
+    // "no round over" placeholder.
     expect(within(table).queryByText(/no round over/)).toBeNull();
     const sreforgeRow = within(table).getByText("prismalens/sreforge").closest("tr") as HTMLElement;
     expect(within(sreforgeRow).getByText(/^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/)).toBeInTheDocument();
   });
 
-  it("a quiet repository's Last round comes from the summary, with no all-time rounds query issued (#142 finding 3944697641)", async () => {
+  it("a quiet repository's Last round is its all-time last_recorded_at from the fleet route (#142 finding 3944697641, #185)", async () => {
     const base = makeFixtureApi(makeRounds({ count: 64, now }));
-    let sawAllTimeQuery = false;
     const oneRepo = {
       ...base,
-      fetchRuns: async (query?: Parameters<typeof base.fetchRuns>[0]) => {
-        // The removed all-time call (`range: "all"`) is the only one that ever
-        // carried no `since`; a windowed range=30d call always has one.
-        if (query?.since === undefined) {
-          sawAllTimeQuery = true;
-        }
-        const page = await base.fetchRuns(query);
+      fetchFleetRepos: async (query: Parameters<typeof base.fetchFleetRepos>[0]) => {
+        const fleet = await base.fetchFleetRepos(query);
         return {
-          ...page,
-          rows: page.rows.filter((row) => row.repository === "prismalens/prismalens"),
+          ...fleet,
+          repositories: fleet.repositories.map((row) =>
+            row.repository === "prismalens/prismalens"
+              ? row
+              : { ...row, rounds: 0, denials: 0, last_round: null },
+          ),
         };
       },
     };
-    const summaryResult = await base.fetchSummary();
-    const sreforgeSummary = summaryResult.per_repository.find(
-      (r) => r.repository === "prismalens/sreforge",
-    );
-    expect(sreforgeSummary?.last_recorded_at).toBeTruthy();
+    const fleet = await base.fetchFleetRepos({ range: "30d" });
+    const sreforge = fleet.repositories.find((r) => r.repository === "prismalens/sreforge");
+    expect(sreforge?.last_recorded_at).toBeTruthy();
 
     renderRoute({ path: "/repos?range=30d", api: oneRepo });
     const table = await screen.findByRole("table");
     const sreforgeRow = within(table).getByText("prismalens/sreforge").closest("tr") as HTMLElement;
-    const cell = within(sreforgeRow).getByTitle(formatTimestamp(sreforgeSummary!.last_recorded_at));
-    expect(cell).toHaveTextContent(formatTimestampCompact(sreforgeSummary!.last_recorded_at));
-
-    // The one useRoundsQuery call left on this page is windowed (range=30d);
-    // the removed all-time query never fires.
-    expect(sawAllTimeQuery).toBe(false);
+    const cell = within(sreforgeRow).getByTitle(formatTimestamp(sreforge!.last_recorded_at));
+    expect(cell).toHaveTextContent(formatTimestampCompact(sreforge!.last_recorded_at));
   });
 
-  it("waits for the all-time list before drawing a denominator it would get wrong", async () => {
-    // The two queries resolve independently and rounds win the race. Without the
-    // gate, the render that commits the rounds data draws a list built from the
-    // window alone: every quiet repository dropped and the count under-reporting,
-    // with nothing on screen saying so.
+  it("surfaces a failed fleet query instead of a silently short list", async () => {
     const base = makeFixtureApi(makeRounds({ count: 64, now }));
-    let roundsSettled = false;
-    let release: () => void = () => {};
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const slowSummary = {
+    const brokenFleet = {
       ...base,
-      fetchRuns: async (query?: Parameters<typeof base.fetchRuns>[0]) => {
-        const page = await base.fetchRuns(query);
-        roundsSettled = true;
-        return page;
-      },
-      fetchSummary: async () => {
-        await held;
-        return base.fetchSummary();
+      fetchFleetRepos: async () => {
+        throw new Error("fleet route is down");
       },
     };
 
-    renderRoute({ path: "/repos", api: slowSummary });
-    await waitFor(() => expect(roundsSettled).toBe(true));
-    // Let React commit the rounds result. This is the render the gate has to hold.
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(screen.queryByRole("table")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Loading repositories")).toBeInTheDocument();
-
-    release();
-    const table = await screen.findByRole("table");
-    expect(within(table).getByText("prismalens/sreforge")).toBeInTheDocument();
-  });
-
-  it("surfaces a failed summary instead of a silently short list", async () => {
-    const base = makeFixtureApi(makeRounds({ count: 64, now }));
-    const brokenSummary = {
-      ...base,
-      fetchSummary: async () => {
-        throw new Error("summary route is down");
-      },
-    };
-
-    renderRoute({ path: "/repos", api: brokenSummary });
+    renderRoute({ path: "/repos", api: brokenFleet });
     expect(await screen.findByText("Could not load repositories")).toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });

@@ -3,7 +3,8 @@
 The review telemetry viewing layer for `prismalens/gh-workflows`. A Vite + React SPA served by
 the telemetry Worker in `../worker` through its `[assets]` binding, reading the Worker's
 `GET /api/summary`, `GET /api/runs`, `GET /api/lane-events`, `GET /api/changes`,
-`GET /api/round-agents`, `GET /api/prs` and `GET /api/findings` routes behind Cloudflare Access.
+`GET /api/round-agents`, `GET /api/prs`, `GET /api/findings` and `GET /api/fleet/repos` routes
+behind Cloudflare Access.
 
 Eight routes ship: `/` overview, `/rounds`, `/rounds/$sessionId`, `/repos`, `/failures`, `/prs`,
 `/prs/$owner/$repo/$number` and `/findings`. Compare was refused (#119).
@@ -22,6 +23,19 @@ what makes the band's counts trustworthy. Lane health and the diagnostics charts
 **Counts headline at every volume**, because a count is true at any n; only the line under a
 count switches, from an all-time cumulative to a per-day mean at
 `PER_DAY_RATE_MIN_ROUNDS`.
+
+## Altitudes and the wall
+
+The Console has four altitudes, and this is a ruling (#185). **Fleet** (`/`, `/repos`, `/failures`,
+and `/findings` in fate-count mode) reads `GET /api/fleet/*`: aggregates that carry counts and
+identifiers and never a name, a title or a body. **Repo** (`/repos/$owner/$repo`, not yet built)
+and **Investigate** (`/prs/…`, `/rounds/…`, the `/findings` list) read the row routes. **Ops**
+(`/ops`, not yet built) reads what runs. The wall is in the API, not the UI: a fleet handler's SQL
+never names `pr_title`, `pr_author`, `verdict_text`, `header_raw` or `body_excerpt`, pinned by
+`tests/test-fleet-wall.py` and by the Worker test. A Fleet page's fetch set is pinned by
+`src/routes/routes.wall.test.tsx`. Crossed today: `/repos`, one request to `GET /api/fleet/repos`.
+Not yet: `/` (waits on a ruling for UTC or viewer-zone day buckets and on where its attention feed
+goes), `/failures` (waits on #194) and `/findings` fate counts; each still reads the row routes.
 
 `/repos` lists every repository that has ever posted, whether or not it posted inside the
 selected window. Its "active over total" figure counts repositories that have posted, and says
