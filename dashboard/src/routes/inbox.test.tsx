@@ -64,10 +64,12 @@ const prs = [
 ];
 const api = makeFixtureApi(rounds, [], [], [], prs);
 
+/** PR title links only; each row's "See the threads" action is also a link (#209). */
 function sectionTitles(section: HTMLElement): string[] {
   return within(section)
     .queryAllByRole("link")
-    .map((a) => a.textContent ?? "");
+    .map((a) => a.textContent ?? "")
+    .filter((text) => text.startsWith("#"));
 }
 
 describe("the nav (#185)", () => {
@@ -87,6 +89,7 @@ describe("/inbox (#185)", () => {
     renderRoute({ path: "/inbox", api });
     const failed = await screen.findByTestId("inbox-section-failed");
     const sections = screen.getAllByTestId(/^inbox-section-/);
+    // Findings-not-recorded asks nothing of anyone, so it folds below the three that do (#209).
     expect(sections.map((s) => s.dataset.testid)).toEqual([
       "inbox-section-failed",
       "inbox-section-did-not-run",
@@ -104,6 +107,7 @@ describe("/inbox (#185)", () => {
   it("never counts a reviewed PR with no open_findings on record as healthy", async () => {
     renderRoute({ path: "/inbox", api });
     const unknown = await screen.findByTestId("inbox-section-findings-not-recorded");
+    fireEvent.click(within(unknown).getByRole("button", { name: "1 with findings not recorded" }));
     expect(sectionTitles(unknown)).toEqual(["#8 Reviewed, never swept"]);
     expect(within(unknown).getByText("not recorded")).toHaveAttribute(
       "title",
@@ -144,20 +148,26 @@ describe("/inbox (#185)", () => {
 
   it("filters every bucket by repository, title or author", async () => {
     renderRoute({ path: "/inbox", api });
-    const box = await screen.findByRole("searchbox", { name: "Search the inbox" });
+    const box = await screen.findByRole("searchbox", { name: "Filter" });
+    const search = (value: string) => {
+      fireEvent.change(box, { target: { value } });
+      fireEvent.keyDown(box, { key: "Enter" });
+    };
 
-    fireEvent.change(box, { target: { value: "acme/payments" } });
+    search("acme/payments");
+    expect(await screen.findByRole("button", { name: "1 healthy" })).toBeInTheDocument();
     expect(sectionTitles(screen.getByTestId("inbox-section-failed"))).toHaveLength(1);
     expect(sectionTitles(screen.getByTestId("inbox-section-threads-open"))).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "1 healthy" })).toBeInTheDocument();
 
-    fireEvent.change(box, { target: { value: "AURORA" } });
+    search("AURORA");
+    await screen.findByRole("link", { name: "#4 Split ledger writer" });
     expect(sectionTitles(screen.getByTestId("inbox-section-threads-open"))).toEqual([
       "#4 Split ledger writer",
     ]);
     expect(sectionTitles(screen.getByTestId("inbox-section-failed"))).toHaveLength(0);
 
-    fireEvent.change(box, { target: { value: "offline" } });
+    search("offline");
+    await screen.findByRole("link", { name: "#2 Offline drafts" });
     expect(sectionTitles(screen.getByTestId("inbox-section-did-not-run"))).toEqual([
       "#2 Offline drafts",
     ]);
