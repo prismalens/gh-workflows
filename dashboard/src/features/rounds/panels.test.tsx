@@ -132,7 +132,10 @@ describe("the review verdict banner stops claiming ignorance of a column that ex
       verdict_text: "2 inline comments, no blocking findings",
     };
     render(<ResolutionPanel row={row} />);
-    expect(screen.queryByTestId("degraded")).not.toBeInTheDocument();
+    // The #179 facts on this pre-lane-5 fixture degrade on their own; the verdict does not.
+    expect(
+      screen.queryAllByTestId("degraded").some((el) => el.textContent?.includes("Review verdict")),
+    ).toBe(false);
     expect(screen.getByText("reviewed")).toBeInTheDocument();
     expect(screen.getByText("2 inline comments, no blocking findings")).toBeInTheDocument();
   });

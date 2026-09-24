@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/table";
 import { isLaneVersionAtLeast2 } from "@/features/failures/failures";
 import { Approximate, Degraded } from "@/honesty/Degraded";
+import { fieldEra } from "@/honesty/fieldEra";
 import {
   CACHE_CREATION_WEIGHT,
   CACHE_READ_WEIGHT,
@@ -54,11 +55,11 @@ export function Panel({
   );
 }
 
-function Facts({ children }: { children: ReactNode }) {
+export function Facts({ children }: { children: ReactNode }) {
   return <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">{children}</dl>;
 }
 
-function Fact({ label, children }: { label: string; children: ReactNode }) {
+export function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="min-w-0">
       <dt className="text-xs text-muted-foreground">{label}</dt>
@@ -77,8 +78,42 @@ function emptyFieldReason(row: RoundRow): "lane-did-not-send" | "lane-sent-nothi
   return isLaneVersionAtLeast2(row.lane_version) ? "lane-sent-nothing" : "lane-did-not-send";
 }
 
+/** The Keys screen's vocabulary (#77), so that screen can reuse these facts. */
+export const CREDENTIAL_COPY: Record<string, string> = {
+  oauth: "subscription OAuth",
+  api_key: "metered API key",
+};
+
+function isAbsent(value: unknown): value is null | undefined {
+  return value === null || value === undefined;
+}
+
+function describeContext(row: RoundRow): string | null {
+  const repos = row.context_repositories;
+  const lines = row.context_lines;
+  if (isAbsent(repos) && isAbsent(lines)) return null;
+  if (repos === 0 && lines === 0) return "none";
+  return `${orDash(repos)} repositories, ${orDash(lines)} lines`;
+}
+
+function describeIngest(row: RoundRow): string {
+  if (row.ingest_auth === "oidc") {
+    return isAbsent(row.repository_id) ? "OIDC" : `OIDC, repository id ${row.repository_id}`;
+  }
+  if (row.ingest_auth === "bearer") return "bearer";
+  if (isAbsent(row.ingest_auth)) return "recorded before identity, #177";
+  return row.ingest_auth;
+}
+
 export function ResolutionPanel({ row }: { row: RoundRow }) {
   const raw = parseRawResult(row);
+  const era = fieldEra(row);
+  const context = describeContext(row);
+  const gaps = [
+    isAbsent(row.credential_type) ? "Credential" : null,
+    isAbsent(row.patch_fingerprint) ? "Patch fingerprint" : null,
+    context === null ? "Context" : null,
+  ].filter((what): what is string => what !== null);
   return (
     <Panel
       title="Resolution"
@@ -113,7 +148,41 @@ export function ResolutionPanel({ row }: { row: RoundRow }) {
             : `${orDash(row.changed_files)} files, ${orDash(row.diff_lines)} lines`}
         </Fact>
         <Fact label="Result subtype">{orDash(raw?.subtype ?? null)}</Fact>
+        <Fact label="Credential">
+          {isAbsent(row.credential_type)
+            ? era.label
+            : (CREDENTIAL_COPY[row.credential_type] ?? row.credential_type)}
+        </Fact>
+        <Fact label="Stacked on">
+          {isAbsent(row.base_pr_number) ? (
+            "none"
+          ) : (
+            <a
+              href={`https://github.com/${row.repository}/pull/${row.base_pr_number}`}
+              target="_blank"
+              rel="noreferrer"
+              className="underline-offset-4 hover:underline"
+            >
+              #{row.base_pr_number}
+            </a>
+          )}
+        </Fact>
+        <Fact label="Patch fingerprint">
+          {isAbsent(row.patch_fingerprint) ? (
+            era.label
+          ) : (
+            <span className="font-mono" title={row.patch_fingerprint}>
+              {row.patch_fingerprint.slice(0, 12)}
+            </span>
+          )}
+        </Fact>
+        <Fact label="Context">{context ?? era.label}</Fact>
+        <Fact label="Ingest">{describeIngest(row)}</Fact>
       </Facts>
+
+      {gaps.length > 0 && (
+        <Degraded what={gaps.join(", ")} reason={era.reason} detail={era.detail} />
+      )}
 
       <div className="flex flex-wrap gap-3 text-sm">
         {row.pr_url && (

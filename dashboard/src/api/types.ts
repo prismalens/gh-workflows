@@ -46,6 +46,23 @@ export interface RoundRow {
   action_version?: string | null;
   config_hash?: string | null;
   variant?: string | null;
+  /**
+   * #173 fields (migrations 0012, 0013). They shipped under lane 4 with no version bump, so a
+   * null on a lane-4 row cannot say whether the lane knew the field; see honesty/fieldEra.
+   */
+  context_repositories?: number | null;
+  context_lines?: number | null;
+  failure_class?: string | null;
+  failure_retryable?: number | null;
+  failure_reset_at?: string | null;
+  api_error_status?: number | null;
+  /** 'oauth' or 'api_key'. */
+  credential_type?: string | null;
+  base_pr_number?: number | null;
+  patch_fingerprint?: string | null;
+  /** Written by the Worker, not the lane (migration 0014, #177): 'oidc' or 'bearer'. */
+  ingest_auth?: string | null;
+  repository_id?: number | null;
   /** Only present when the request passed include=blobs. */
   per_model_usage?: string | null;
   subagent_stats?: string | null;
