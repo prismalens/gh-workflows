@@ -35,6 +35,8 @@ jobs:
         with:
           url: ${{ secrets.REVIEW_TELEMETRY_URL || vars.PR_STATE_URL || 'https://assayer.sfun.cloud/pr-state' }}
           bearer: ${{ secrets.REVIEW_TELEMETRY_TOKEN }}
+          # The base ref's config, as the lane reads it, not the default branch's (#183).
+          config_ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Post PR state
         env:

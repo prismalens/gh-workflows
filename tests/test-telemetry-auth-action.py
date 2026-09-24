@@ -10,7 +10,8 @@ stubs for curl and gh, verifying:
   5. An empty url mints nothing and resolves method=none
   6. Resolution of telemetry.share: override, repository file over the
      shared layer its extends names (#182), no shared layer without extends,
-     a local working-tree file ignored, and default full
+     a local working-tree file ignored, default full, and the repository
+     file read at config_ref
 
 Run: python3 tests/test-telemetry-auth-action.py
 """
@@ -56,6 +57,7 @@ def run_action_step(
     repo_bad_base64=None,
     wrap_repo_base64=False,
     org_fetches_out=None,
+    base_ref_configs=None,
 ):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
@@ -91,10 +93,19 @@ exit 0
         if wrap_repo_base64 and repo_b64:
             repo_b64 = wrap_base64(repo_b64)
         org_b64 = base64.b64encode(org_config.encode()).decode() if org_config is not None else ""
+        # The repository file at a named ref, e.g. a PR's base sha (#183).
+        ref_arms = "".join(
+            f"""  repos/acme/widgets/contents/.github/claude-review.yml?ref={ref})
+    echo "{base64.b64encode(text.encode()).decode()}"
+    exit 0
+    ;;
+"""
+            for ref, text in (base_ref_configs or {}).items()
+        )
         gh_script = f"""#!/usr/bin/env bash
 path="$2"
 case "$path" in
-  repos/acme/widgets/contents/.github/claude-review.yml)
+{ref_arms}  repos/acme/widgets/contents/.github/claude-review.yml)
     if [ "{1 if repo_fetch_fail else 0}" = "1" ]; then
       echo "HTTP 500: Internal Server Error" >&2
       exit 1
@@ -553,6 +564,34 @@ def main():
         print("  FAIL  Case 24: wrapped base64 (as the contents API returns it) resolves full")
     else:
         print("  ok    Case 24: wrapped base64 (as the contents API returns it) resolves full")
+
+    # Case 25: config_ref reads the repository file at that ref, not the default
+    # branch. pr-state passes the PR's base sha, so a PR into a branch that shares at
+    # rounds is labelled rounds while the default branch says full (#183, CWE-359).
+    proc, outputs = run_action_step(
+        script,
+        env_vars={"CONFIG_REF": "basesha183"},
+        repo_config="telemetry:\n  share: full\n",
+        base_ref_configs={"basesha183": "telemetry:\n  share: rounds\n"},
+    )
+    if outputs.get("share") != "rounds":
+        fails.append(f"Case 25 expected share=rounds from the base ref, got {outputs.get('share')}")
+        print("  FAIL  Case 25: config_ref reads the base ref's config")
+    else:
+        print("  ok    Case 25: config_ref reads the base ref's config, not the default branch's")
+
+    # Case 26: pr-state hands the action the PR's base sha as config_ref (#183)
+    pr_state = yaml.safe_load((ROOT / ".github" / "workflows" / "pr-state.yml").read_text())
+    auth_steps = [
+        st for job in pr_state["jobs"].values() for st in job.get("steps", [])
+        if "telemetry-auth" in str(st.get("uses", ""))
+    ]
+    refs = [st.get("with", {}).get("config_ref") for st in auth_steps]
+    if not auth_steps or refs != ["${{ github.event.pull_request.base.sha }}"] * len(auth_steps):
+        fails.append(f"Case 26: pr-state must pass config_ref: the PR base sha, got {refs}")
+        print("  FAIL  Case 26: pr-state passes the base sha")
+    else:
+        print("  ok    Case 26: pr-state passes the PR base sha as config_ref")
 
     # Case 11: the action's url input is required, with no invented default host
     action = yaml.safe_load(ACTION_FILE.read_text())

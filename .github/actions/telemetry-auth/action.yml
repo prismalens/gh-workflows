@@ -15,6 +15,10 @@ inputs:
     description: Optional telemetry.share override ('full' | 'rounds' | 'off')
     required: false
     default: ''
+  config_ref:
+    description: Ref to read the repository's .github/claude-review.yml at (defaults to the default branch)
+    required: false
+    default: ''
   token:
     description: GitHub token for API queries (defaults to github.token)
     required: false
@@ -41,6 +45,7 @@ runs:
         TARGET_URL: ${{ inputs.url }}
         BEARER_TOKEN: ${{ inputs.bearer }}
         SHARE_OVERRIDE: ${{ inputs.share }}
+        CONFIG_REF: ${{ inputs.config_ref }}
         GH_TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
@@ -199,10 +204,12 @@ runs:
           repo_name = os.environ.get('GITHUB_REPOSITORY') or ''
           repo_share, repo_warn, repo_data = (None, None, None)
           if repo_name:
-              repo_share, repo_warn, repo_data = fetch_layer(repo_name, None, '.github/claude-review.yml')
+              repo_share, repo_warn, repo_data = fetch_layer(repo_name, os.environ.get('CONFIG_REF') or None, '.github/claude-review.yml')
 
-          # The shared layer is whatever the repository's own file names in
-          # extends (#182); without it there is no second layer.
+          # The shared layer is whatever the repository's own file, read at
+          # config_ref, names in extends (#182); without it there is no second
+          # layer. config_ref is a ref of this repository, so the shared file is
+          # read at the extends ref or the named repository's default branch.
           org_share, org_warn = (None, None)
           extends = parse_extends(repo_data.get('extends')) if isinstance(repo_data, dict) else None
           if repo_share is None and extends:
