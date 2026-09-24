@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { RoundAgentRow, RoundRow } from "@/api/types";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
-import { fieldEra, LANE_4_STRADDLES } from "@/honesty/fieldEra";
+import { fieldEra, LANE_4_STRADDLES, LANE_VERSION_UNKNOWN } from "@/honesty/fieldEra";
 import { renderRoute } from "@/test/renderRoute";
 
 const now = new Date();
@@ -52,7 +52,15 @@ describe("fieldEra (#179)", () => {
     expect(four.detail).toBe(LANE_4_STRADDLES);
     expect(four.label).toBe("not recorded by this lane version");
     expect(fieldEra({ lane_version: "v2.0.0" }).detail).toMatch(/Lane 2 predates/);
-    expect(fieldEra({ lane_version: null }).reason).toBe("lane-did-not-send");
+  });
+
+  it("claims no era for a round with no readable lane version", () => {
+    for (const lane_version of [null, "", "nightly"]) {
+      const era = fieldEra({ lane_version });
+      expect(era.reason).toBe("not-recorded");
+      expect(era.detail).toBe(LANE_VERSION_UNKNOWN);
+      expect(era.detail).not.toMatch(/predates/);
+    }
   });
 });
 
@@ -115,6 +123,15 @@ describe("/rounds/$sessionId resolution facts (#179)", () => {
     const gap = degraded("Credential, Patch fingerprint, Context");
     expect(gap).toHaveAttribute("data-reason", "lane-did-not-send");
     expect(gap).toHaveTextContent(LANE_4_STRADDLES);
+  });
+  it("names the gap without a cause when the round has no lane version", async () => {
+    render({ ...base, lane_version: null });
+    await screen.findByText("Resolution");
+    expect(fact("Credential")).toHaveTextContent(/^Credentialnot recorded$/);
+    const gap = degraded("Credential, Patch fingerprint, Context");
+    expect(gap).toHaveAttribute("data-reason", "not-recorded");
+    expect(gap).toHaveTextContent(LANE_VERSION_UNKNOWN);
+    expect(gap).not.toHaveTextContent(/predates/);
   });
 });
 

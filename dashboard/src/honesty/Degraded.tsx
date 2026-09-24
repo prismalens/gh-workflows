@@ -12,6 +12,7 @@ export type DegradedReason =
   | "unbuilt"
   | "lane-did-not-send"
   | "lane-sent-nothing"
+  | "not-recorded"
   | "unreadable"
   | "unobservable";
 
@@ -30,6 +31,11 @@ export const REASON_COPY: Record<DegradedReason, { badge: string; explain: strin
     badge: "not recorded for this round",
     explain:
       "The store has the column and this round left it empty. The lane that recorded it was new enough to send the field and did not, so the gap is a fact about this round rather than about the lane version.",
+  },
+  "not-recorded": {
+    badge: "not recorded",
+    explain:
+      "The store has the column and this round left it empty. Nothing stored says why, so no cause is claimed.",
   },
   unreadable: {
     badge: "not readable",
