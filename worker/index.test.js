@@ -1,7 +1,11 @@
-import { describe, it, before } from "node:test";
+import { describe, it, before, mock } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from "jose";
 import worker, { computeVariantKey } from "./index.js";
+
+// Ingest lowers a row past the text cutoff to rounds (#183), so fixtures dated in 2026
+// need a clock that does not move past them.
+mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-24T00:00:00Z") });
 
 const { publicKey, privateKey } = await generateKeyPair("RS256");
 const jwk = await exportJWK(publicKey);
@@ -6622,11 +6626,11 @@ describe("share levels (#183)", () => {
   it("purges text older than TEXT_RETENTION_DAYS, lowers the level, and leaves newer rows alone", async () => {
     const { purgeExpired } = await import("./index.js");
     const db = await sqliteDb();
-    await post("/ingest", round({ session_id: "old", recorded_at: "2026-07-01T00:00:00Z" }), db);
-    await post("/ingest", round({ session_id: "new", recorded_at: "2026-09-20T00:00:00Z" }), db);
-    await post("/ingest/findings", { findings: [finding({ thread_created_at: "2026-07-01T00:00:00Z" })] }, db);
-    const result = await purgeExpired({ DB: db, TEXT_RETENTION_DAYS: "30" }, new Date("2026-09-22T00:00:00Z"));
-    assert.equal(result.text_cutoff, "2026-08-23T00:00:00.000Z");
+    await post("/ingest", round({ session_id: "old", recorded_at: "2026-09-20T00:00:00Z" }), db);
+    await post("/ingest", round({ session_id: "new", recorded_at: "2026-09-23T00:00:00Z" }), db);
+    await post("/ingest/findings", { findings: [finding({ thread_created_at: "2026-09-20T00:00:00Z" })] }, db);
+    const result = await purgeExpired({ DB: db, TEXT_RETENTION_DAYS: "30" }, new Date("2026-10-21T00:00:00Z"));
+    assert.equal(result.text_cutoff, "2026-09-21T00:00:00.000Z");
     assert.equal(result.text_purged.usage_records, 1);
     assert.equal(result.text_purged.review_findings, 1);
 
@@ -6646,11 +6650,27 @@ describe("share levels (#183)", () => {
     assert.equal(again.text_purged.usage_records, 0);
   });
 
+  it("writes a row whose clock is already past the text cutoff at rounds, so a re-sweep cannot put purged text back", async () => {
+    const db = await sqliteDb();
+    const old = finding({ thread_created_at: "2026-07-01T00:00:00Z" });
+    assert.equal((await post("/ingest/findings", { findings: [old] }, db)).status, 204);
+    const f = db.sqlite.prepare("SELECT header_raw, body_excerpt, diff_hunk, resolved_by_login, verify_verdict, share_level FROM review_findings").get();
+    assert.deepEqual({ ...f }, {
+      header_raw: null, body_excerpt: null, diff_hunk: null, resolved_by_login: null,
+      verify_verdict: "fixed", share_level: "rounds",
+    });
+
+    await post("/ingest", round({ recorded_at: "2026-07-01T00:00:00Z" }), db);
+    const r = db.sqlite.prepare("SELECT pr_title, raw_result, total_cost_usd, share_level FROM usage_records").get();
+    assert.deepEqual({ ...r }, { pr_title: null, raw_result: null, total_cost_usd: 0.5, share_level: "rounds" });
+  });
+
   it("runs the purge from the scheduled handler at the event's time", async () => {
     const db = await sqliteDb();
-    await post("/ingest", round({ recorded_at: "2026-07-01T00:00:00Z" }), db);
+    await post("/ingest", round({ recorded_at: "2026-09-20T00:00:00Z" }), db);
+    assert.equal(db.sqlite.prepare("SELECT share_level FROM usage_records").get().share_level, "full");
     const waits = [];
-    await worker.scheduled({ scheduledTime: Date.parse("2026-09-22T04:23:00Z") }, { DB: db }, { waitUntil: (p) => waits.push(p) });
+    await worker.scheduled({ scheduledTime: Date.parse("2026-10-22T04:23:00Z") }, { DB: db }, { waitUntil: (p) => waits.push(p) });
     await Promise.all(waits);
     assert.equal(db.sqlite.prepare("SELECT share_level FROM usage_records").get().share_level, "rounds");
   });

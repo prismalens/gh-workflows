@@ -89,7 +89,8 @@ A daily cron (`23 4 * * *`) runs `purgeExpired`. Text-tier fields on rows older 
 `TEXT_RETENTION_DAYS` (default 30) are set to `NULL`, and the row's `share_level` drops from
 `full` to `rounds`. The clock is `recorded_at` for `usage_records` and `lane_events`,
 `thread_created_at` for `review_findings`, and `updated_at` for `prs`. The purge is
-idempotent. The 180-day rounds-tier purge lowers rows to `counts`, so it waits on the same
+idempotent. Ingest applies the same cutoff: a row whose clock is already past it is written
+at `rounds` at most, so a sweep of an old thread cannot put purged text back. The 180-day rounds-tier purge lowers rows to `counts`, so it waits on the same
 ruling.
 
 `scripts/audit-telemetry-text.py --remote` reports what `raw_result` and `verdict_text` hold

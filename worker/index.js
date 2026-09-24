@@ -1865,6 +1865,7 @@ async function handleIngest(request, env, { getKey } = {}) {
         headers: { "content-type": "application/json" },
       });
     }
+    share.level = levelAtClock(env, share.level, payload.recorded_at);
     payload = stripToLevel("usage_records", share.level, payload);
 
     // Computed here, not in the workflow, so it cannot drift between callers pinned at
@@ -2134,6 +2135,7 @@ async function handleIngest(request, env, { getKey } = {}) {
         headers: { "content-type": "application/json" },
       });
     }
+    share.level = levelAtClock(env, share.level, payload.recorded_at);
 
     if (!VALID_LANE_EVENT_REASONS.has(payload.reason)) {
       return new Response(JSON.stringify({ error: "invalid reason" }), {
@@ -2311,7 +2313,6 @@ async function handlePrState(request, env, { getKey } = {}) {
       headers: { "content-type": "application/json" },
     });
   }
-  const pr = stripToLevel("prs", share.level, payload);
 
   // Stale-write protection keys on when event occurred, not Worker receipt time (#136, finding 3944010389).
   let updatedAt;
@@ -2326,6 +2327,8 @@ async function handlePrState(request, env, { getKey } = {}) {
   } else {
     updatedAt = new Date().toISOString();
   }
+  share.level = levelAtClock(env, share.level, updatedAt);
+  const pr = stripToLevel("prs", share.level, payload);
 
   try {
     const existing = await env.DB.prepare(
@@ -2589,8 +2592,11 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
   );
 
   const stmts = payload.findings
-    .map((finding) => stripToLevel("review_findings", share.level, finding))
-    .map((finding) =>
+    .map((finding) => {
+      const level = levelAtClock(env, share.level, finding.thread_created_at);
+      return { level, finding: stripToLevel("review_findings", level, finding) };
+    })
+    .map(({ level, finding }) =>
     stmt.bind(
       finding.thread_node_id,
       truncateString(finding.repository, 512),
@@ -2615,7 +2621,7 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
       finding.row_set_incomplete,
       auth.method,
       auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null,
-      share.level
+      level
     )
   );
 
@@ -4064,9 +4070,19 @@ function retentionDays(value, fallback) {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
-export async function purgeExpired(env, now = new Date()) {
+function textCutoff(env, now = new Date()) {
   const days = retentionDays(env?.TEXT_RETENTION_DAYS, 30);
-  const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+  return new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+// A row whose purge clock is already past the cutoff is written at rounds at most, or
+// a re-sweep of an old thread would put back the text the purge took.
+function levelAtClock(env, level, clock) {
+  return level === "full" && typeof clock === "string" && clock < textCutoff(env) ? "rounds" : level;
+}
+
+export async function purgeExpired(env, now = new Date()) {
+  const cutoff = textCutoff(env, now);
   const statements = Object.entries(PURGE_CLOCKS).map(([table, clock]) => {
     const nulls = TIERS[table].text.map((column) => `${column} = NULL`).join(", ");
     return env.DB.prepare(
