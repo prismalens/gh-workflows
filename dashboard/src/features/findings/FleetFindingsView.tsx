@@ -37,6 +37,8 @@ export interface FleetFindingsViewProps {
   data: FleetFindingsResponse;
   /** Narrows to one repository's counts; the response already carries each (#185). */
   repository: string | undefined;
+  /** The PR state the response was filtered to; undefined when every state was read. */
+  prState?: string;
 }
 
 /**
@@ -44,7 +46,7 @@ export interface FleetFindingsViewProps {
  * rows view, read as counts from /api/fleet/findings, so no header, body or
  * path reaches this view (#185 F3).
  */
-export function FleetFindingsView({ data, repository }: FleetFindingsViewProps) {
+export function FleetFindingsView({ data, repository, prState }: FleetFindingsViewProps) {
   const repo = repository ? data.repositories.find((r) => r.repository === repository) : undefined;
   const counts = repository ? (repo ?? null) : data.totals;
   const hours = repository ? (repo?.review_to_merge_hours ?? []) : data.review_to_merge_hours;
@@ -52,8 +54,11 @@ export function FleetFindingsView({ data, repository }: FleetFindingsViewProps) 
   if (!counts) {
     return (
       <p className="text-sm text-muted-foreground">
-        No findings recorded for {repository}. This is an absence of findings, not proof that
-        every reviewed pull request there was clean.
+        {prState
+          ? `No findings on ${prState} pull requests for ${repository}.`
+          : `No findings recorded for ${repository}.`}{" "}
+        This is an absence of findings, not proof that every reviewed pull request there was
+        clean.
       </p>
     );
   }

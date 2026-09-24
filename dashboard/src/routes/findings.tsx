@@ -134,7 +134,7 @@ function FindingsCounts() {
       ) : fleet.isError ? (
         <QueryError error={fleet.error} title="Could not load finding counts" />
       ) : (
-        <FleetFindingsView data={fleet.data} repository={search.repository} />
+        <FleetFindingsView data={fleet.data} repository={search.repository} prState={prState} />
       )}
     </div>
   );

@@ -321,5 +321,16 @@ describe("the counts view (#185 F3)", () => {
     expect(countFor("never answered")).toBe("1");
     expect(countFor("self-graded")).toBe("0");
   });
+
+  it("names the PR-state filter when the repository has no findings under it", async () => {
+    renderRoute({
+      path: "/findings?view=counts&repository=o%2Fother&pr_state=merged",
+      api: makeFixtureApi([], [], [], [], [pr({ repository: "o/other", pr_number: 7 })], rows),
+    });
+    expect(
+      await screen.findByText(/No findings on merged pull requests for o\/other\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No findings recorded for o\/other/)).toBeNull();
+  });
 });
 
