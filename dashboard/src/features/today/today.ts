@@ -72,10 +72,13 @@ function latestPrState(pr: PRSummary): string {
   return pr.stateIsFallback ? (pr.latestRound.pr_state ?? pr.state) : pr.state;
 }
 
+/** Unknown is not open: Needs you lists only what a person can still act on. */
 function isOpen(pr: PRSummary | undefined): boolean {
-  if (!pr) return true;
-  return latestPrState(pr) === "open";
+  return pr !== undefined && latestPrState(pr) === "open";
 }
+
+/** A head last touched two weeks ago is more likely abandoned than waiting on anyone. */
+const HEAD_NEED_MAX_DAYS = 14;
 
 function p95(values: number[]): number | null {
   if (values.length < 5) return null;
@@ -115,6 +118,7 @@ export function buildToday(input: {
   for (const pr of summaries) {
     if (!isOpen(pr)) continue;
     const since = pr.lastRoundAt;
+    if ((ageInDays(since, now) ?? 0) > HEAD_NEED_MAX_DAYS) continue;
     const base = { repository: pr.repository, prNumber: pr.number, since, ageDays: ageInDays(since, now) };
     switch (pr.headStatus.state) {
       case "failed":

@@ -264,7 +264,13 @@ function FindingsRows() {
   const pageSize: PageSize = search.size ?? DEFAULT_PAGE_SIZE;
   const pageCount = Math.max(1, Math.ceil(matchingRows.length / pageSize));
   const page = Math.min(Math.max(search.page ?? 1, 1), pageCount);
-  const pageRows = matchingRows.slice((page - 1) * pageSize, page * pageSize);
+  const orderedRows = useMemo(() => {
+    if (!groupByPr) return matchingRows;
+    const byPr = new Map<string, FindingRow[]>();
+    for (const row of matchingRows) byPr.set(prKey(row), [...(byPr.get(prKey(row)) ?? []), row]);
+    return [...byPr.values()].flat();
+  }, [matchingRows, groupByPr]);
+  const pageRows = orderedRows.slice((page - 1) * pageSize, page * pageSize);
 
   const incomplete = useMemo(() => incompletePrKeys(fetched), [fetched]);
   const selectedRow = search.sel ? fetched.find((r) => r.thread_node_id === search.sel) : undefined;
@@ -279,7 +285,7 @@ function FindingsRows() {
 
   const repoOptions = Object.keys(counts.repository).sort();
   if (search.repository && !repoOptions.includes(search.repository)) repoOptions.push(search.repository);
-  const facets: Facet[] = [
+  const allFacets: Facet[] = [
     {
       key: "fate",
       title: "Fate",
@@ -316,6 +322,8 @@ function FindingsRows() {
       options: ["open", "merged", "closed"].map((s) => ({ value: s, label: s, count: counts.prState[s] ?? 0 })),
     },
   ];
+  // PR state comes from prs rows, which consumer repositories lack until #211 lands.
+  const facets = allFacets.filter((f) => f.key !== "prState" || f.options.some((o) => o.count > 0) || Boolean(search.pr_state));
 
   const activeView = VIEWS.find((v) => v.fate === search.fate)?.key;
 

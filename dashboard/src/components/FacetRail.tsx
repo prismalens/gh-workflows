@@ -31,7 +31,6 @@ export function FacetRail({ facets, onClear }: { facets: Facet[]; onClear?: () =
         )}
       </div>
       {facets.map((facet) => {
-        const max = Math.max(1, ...facet.options.map((o) => o.count));
         return (
           <div key={facet.key} role="group" aria-label={facet.title} className="flex flex-col gap-0.5">
             <div className="px-1.5 pb-1 text-[10.5px] font-semibold tracking-wide text-muted-foreground/80 uppercase">
@@ -47,7 +46,7 @@ export function FacetRail({ facets, onClear }: { facets: Facet[]; onClear?: () =
                   data-testid={`facet-${facet.key}-${opt.value}`}
                   onClick={() => facet.onSelect(on ? undefined : opt.value)}
                   className={cn(
-                    "relative flex items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-accent",
+                    "flex items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-accent",
                     opt.count === 0 && !on && "opacity-45",
                   )}
                 >
@@ -62,11 +61,6 @@ export function FacetRail({ facets, onClear }: { facets: Facet[]; onClear?: () =
                     {opt.label}
                   </span>
                   <span className="tabular text-muted-foreground">{opt.count}</span>
-                  <span
-                    aria-hidden
-                    className="absolute bottom-0 left-6 h-px bg-[var(--chart-1)] opacity-60"
-                    style={{ width: `${(opt.count / max) * 60}%` }}
-                  />
                 </button>
               );
             })}

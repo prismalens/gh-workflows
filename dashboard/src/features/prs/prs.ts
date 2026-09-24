@@ -149,3 +149,12 @@ export function enrichPRs(prs: PRSummary[], prsRows: PrRow[]): PRSummary[] {
     };
   });
 }
+
+/**
+ * A verify round re-checks the round before it and shares its ordinal, so it is
+ * labelled against that round rather than repeating the number (#211).
+ */
+export function roundLabel(round: RoundRow, fallbackOrdinal: number): string {
+  const n = round.round_ordinal ?? fallbackOrdinal;
+  return round.round_type === "verify" ? `verify of R${n}` : `R${n}`;
+}

@@ -206,7 +206,7 @@ function GroupRows({
             <td className="max-w-[360px] truncate px-2 py-1.5" title={body ?? undefined}>
               {label.category && <span className="font-medium">{label.category}</span>}
               {label.category && body && <span className="text-muted-foreground"> · </span>}
-              <span className="text-muted-foreground">{body ?? (label.category ? "" : "text not shared")}</span>
+              <span className="text-muted-foreground">{body ?? (label.category ? "" : "no text stored")}</span>
             </td>
             <td className="max-w-[300px] truncate px-2 py-1.5 font-mono" title={row.path ?? undefined}>
               {!showHeader && (

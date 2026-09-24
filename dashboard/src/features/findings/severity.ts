@@ -43,9 +43,13 @@ export function findingBodyText(row: Pick<FindingRow, "header_raw" | "body_excer
   if (!body) return null;
   const lines = body.split("\n");
   const rest = row.header_raw || !lines[0]?.includes("|") ? lines : lines.slice(1);
-  const text = rest
-    .join(" ")
+  const joined = rest.join("\n");
+  // A reviewer's <details> block is supporting evidence; the finding is what sits outside it.
+  const outside = joined.replace(/<details>[\s\S]*?(<\/details>|$)/g, " ");
+  const source = outside.replace(/<[^>]+>/g, " ").trim() ? outside : joined;
+  const text = source
     .replace(/<[^>]+>/g, " ")
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}]/gu, "")
     .replace(/[_*`#]/g, "")
     .replace(/\s+/g, " ")
     .trim();

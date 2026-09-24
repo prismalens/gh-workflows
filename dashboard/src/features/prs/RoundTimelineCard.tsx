@@ -73,7 +73,7 @@ export function RoundTimelineCard({
         <div className="flex flex-wrap items-center gap-2 justify-between border-b border-border/40 pb-2.5">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold">
-              Round {ordinal} · {round.round_type ?? "review"}
+              {round.round_type === "verify" ? `Verify of round ${ordinal}` : `Round ${ordinal} · ${round.round_type ?? "review"}`}
             </span>
 
             {round.fallback_reason && (
