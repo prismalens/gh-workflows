@@ -54,9 +54,12 @@ const rounds = [
   round(5, { pr_title: "Clean one" }),
   round(6, { pr_title: "Clean two", repository: "acme/payments" }),
   round(7, { pr_title: "Closed and failed", verdict_kind: "silent" }),
+  round(8, { pr_title: "Reviewed, never swept" }),
 ];
 const prs = [
   prRow(rounds[3], { total_findings: 3, open_findings: 2 }),
+  prRow(rounds[4], {}),
+  prRow(rounds[5], { total_findings: 1, open_findings: 0 }),
   prRow(rounds[6], { state: "closed", closed_at: now.toISOString() }),
 ];
 const api = makeFixtureApi(rounds, [], [], [], prs);
@@ -88,6 +91,7 @@ describe("/ inbox (#185)", () => {
       "inbox-section-failed",
       "inbox-section-did-not-run",
       "inbox-section-threads-open",
+      "inbox-section-findings-not-recorded",
     ]);
 
     expect(sectionTitles(failed)).toEqual(["#1 Retry webhook replay"]);
@@ -95,6 +99,32 @@ describe("/ inbox (#185)", () => {
     // A reviewed head with findings still open is not healthy.
     expect(sectionTitles(sections[2])).toEqual(["#3 Rotate signing keys", "#4 Split ledger writer"]);
     expect(screen.queryByText(/Closed and failed/)).not.toBeInTheDocument();
+  });
+
+  it("never counts a reviewed PR with no open_findings on record as healthy", async () => {
+    renderRoute({ path: "/", api });
+    const unknown = await screen.findByTestId("inbox-section-findings-not-recorded");
+    expect(sectionTitles(unknown)).toEqual(["#8 Reviewed, never swept"]);
+    expect(within(unknown).getByText("not recorded")).toHaveAttribute(
+      "title",
+      "open_findings not recorded for this pull request",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "2 healthy" }));
+    expect(sectionTitles(screen.getByTestId("inbox-healthy"))).not.toContain(
+      "#8 Reviewed, never swept",
+    );
+  });
+
+  it("says so when the prs read fails, rather than bucketing on guesses", async () => {
+    const broken = {
+      ...api,
+      fetchPRs: () => Promise.reject(new Error("prs down")),
+    };
+    renderRoute({ path: "/", api: broken });
+    expect(
+      await screen.findByText("Could not load pull request state and findings"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("inbox-section-failed")).not.toBeInTheDocument();
   });
 
   it("links each row to the PR detail page", async () => {

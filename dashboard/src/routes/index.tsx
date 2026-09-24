@@ -44,6 +44,11 @@ const SECTIONS: { key: InboxBucketKey; title: string; blurb: string }[] = [
     blurb: "No review happened on the latest head, and the reason says why.",
   },
   { key: "threads-open", title: "Threads open", blurb: "Findings nobody has closed yet." },
+  {
+    key: "findings-not-recorded",
+    title: "Findings not recorded",
+    blurb: "Reviewed, but open_findings is not recorded for these, so they are not counted healthy.",
+  },
 ];
 
 /**
@@ -102,10 +107,12 @@ function InboxPage() {
         className="h-8 w-full max-w-[360px] rounded-md border border-border bg-transparent px-3 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
       />
 
-      {rounds.isPending ? (
+      {rounds.isPending || prs.isPending ? (
         <LoadingRows rows={6} label="Loading the inbox" />
       ) : rounds.isError ? (
         <QueryError error={rounds.error} title="Could not load pull requests" />
+      ) : prs.isError ? (
+        <QueryError error={prs.error} title="Could not load pull request state and findings" />
       ) : (
         <>
           {SECTIONS.map((section) => (
@@ -209,7 +216,14 @@ function InboxTable({ prs }: { prs: PRSummary[] }) {
               {pr.headStatus.rawVerdict ?? pr.headStatus.explain}
             </TableCell>
             <TableCell className="tabular text-right text-xs">
-              {pr.openFindings ?? "—"}
+              {pr.openFindings ?? (
+                <span
+                  className="text-muted-foreground"
+                  title="open_findings not recorded for this pull request"
+                >
+                  not recorded
+                </span>
+              )}
             </TableCell>
             <TableCell className="text-right text-xs text-muted-foreground">
               <Timestamp iso={pr.lastRoundAt} compact />
