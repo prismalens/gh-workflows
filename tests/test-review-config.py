@@ -1093,6 +1093,25 @@ def main():
     check("telemetry share counts: resolves off until ruled", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
     check("telemetry share counts: fails validation", "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
 
+    # The share levels hold in the shared layer extends names (#182, #183).
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=REPO_CONFIG_TELEMETRY_SHARE_ROUNDS, extends=ORG_EXT)
+    check("telemetry shared rounds: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry shared rounds: resolves rounds", out.get("telemetry_share") == "rounds", f"got {out.get('telemetry_share')}")
+    check("telemetry shared rounds: logs org defaults source", "telemetry.share: rounds (source: org defaults)" in stdout, f"stdout: {stdout}")
+    check("telemetry shared rounds: no validation error", "Invalid value for 'telemetry.share'" not in stdout, f"stdout: {stdout}")
+
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=REPO_CONFIG_TELEMETRY_SHARE_COUNTS, extends=ORG_EXT)
+    check("telemetry shared counts: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+    check("telemetry shared counts: fails validation", "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
+
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=REPO_CONFIG_TELEMETRY_SHARE_ROUNDS,
+                                              config_yaml=REPO_CONFIG_TELEMETRY_SHARE_FULL, extends=ORG_EXT)
+    check("telemetry repo full over shared rounds: resolves full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=REPO_CONFIG_TELEMETRY_SHARE_COUNTS,
+                                              config_yaml=REPO_CONFIG_TELEMETRY_SHARE_ROUNDS, extends=ORG_EXT)
+    check("telemetry repo rounds over shared counts: resolves rounds", out.get("telemetry_share") == "rounds", f"got {out.get('telemetry_share')}")
+
     # 'share: maybe' is not full/off/true/false: fails validation and still
     # fails closed to off (#176).
     rc, out, stdout, stderr = run_config_case(config_script, config_yaml=MALFORMED_TELEMETRY_SHARE_MAYBE)

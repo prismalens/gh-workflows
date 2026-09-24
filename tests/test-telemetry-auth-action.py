@@ -334,6 +334,25 @@ def main():
     else:
         print("  ok    Case 9b: rounds resolves as rounds; counts fails closed to off")
 
+    # Case 9c: the share levels hold in the shared layer extends names (#182, #183):
+    # `rounds` resolves as itself, `counts` fails closed to off, and the repository's
+    # own share overrides the shared one.
+    cases_9c = [
+        ("shared rounds", "extends: acme/policy\n", "telemetry:\n  share: rounds\n", "rounds"),
+        ("shared counts", "extends: acme/policy\n", "telemetry:\n  share: counts\n", "off"),
+        ("repo full over shared rounds", "extends: acme/policy\ntelemetry:\n  share: full\n",
+         "telemetry:\n  share: rounds\n", "full"),
+        ("repo rounds over shared counts", "extends: acme/policy\ntelemetry:\n  share: rounds\n",
+         "telemetry:\n  share: counts\n", "rounds"),
+    ]
+    for label, repo_cfg, org_cfg, want in cases_9c:
+        proc, outputs = run_action_step(script, repo_config=repo_cfg, org_config=org_cfg)
+        if outputs.get("share") != want:
+            fails.append(f"Case 9c ({label}) expected share={want}, got {outputs.get('share')}")
+            print(f"  FAIL  Case 9c: {label} resolves {want}")
+        else:
+            print(f"  ok    Case 9c: {label} resolves {want}")
+
     # Case 10: share defaults to full when nothing is configured anywhere
     proc, outputs = run_action_step(script)
     if outputs.get("share") != "full":
@@ -579,6 +598,24 @@ def main():
         print("  FAIL  Case 25: config_ref reads the base ref's config")
     else:
         print("  ok    Case 25: config_ref reads the base ref's config, not the default branch's")
+
+    # Case 25b: the extends that names the shared layer is read at config_ref too, so
+    # a base branch that extends a rounds policy is labelled rounds while the default
+    # branch has no extends (#182, #183).
+    org_fetches = []
+    proc, outputs = run_action_step(
+        script,
+        env_vars={"CONFIG_REF": "basesha183"},
+        repo_config="version: 1\n",
+        base_ref_configs={"basesha183": "extends: acme/policy@v3\n"},
+        org_config="telemetry:\n  share: rounds\n",
+        org_fetches_out=org_fetches,
+    )
+    if outputs.get("share") != "rounds" or org_fetches != ["repos/acme/policy/contents/.github/claude-review.yml?ref=v3"]:
+        fails.append(f"Case 25b expected share=rounds via the base ref's extends, got {outputs.get('share')}, fetches {org_fetches}")
+        print("  FAIL  Case 25b: extends is read at config_ref")
+    else:
+        print("  ok    Case 25b: extends is read at config_ref, and the shared file at the extends ref")
 
     # Case 26: pr-state hands the action the PR's base sha as config_ref (#183)
     pr_state = yaml.safe_load((ROOT / ".github" / "workflows" / "pr-state.yml").read_text())
