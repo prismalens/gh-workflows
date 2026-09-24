@@ -1,5 +1,5 @@
 import { parseToolDetail, type ToolDetail, type ToolGroup } from "@/api/blobs";
-import type { RoundAgentRow } from "@/api/types";
+import type { RoundAgentRow, RoundRow } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -10,11 +10,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Degraded } from "@/honesty/Degraded";
+import { fieldEra } from "@/honesty/fieldEra";
 import { formatCount, orDash } from "@/lib/format";
 import { Panel } from "./panels";
-
-export const TOOL_DETAIL_UNKNOWN_CAUSE =
-  "An agent row carries no lane version, and a runner round (#196) never sends tool detail, so the row does not say why it is missing.";
 
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
 
@@ -60,7 +58,8 @@ function ToolPaths({ agent, detail }: { agent: RoundAgentRow; detail: ToolDetail
   );
 }
 
-export function AgentToolsPanel({ agents }: { agents: RoundAgentRow[] }) {
+export function AgentToolsPanel({ row, agents }: { row: RoundRow; agents: RoundAgentRow[] }) {
+  const era = fieldEra(row);
   const parsed = agents.map((agent) => ({
     agent,
     detail: parseToolDetail(agent),
@@ -130,8 +129,8 @@ export function AgentToolsPanel({ agents }: { agents: RoundAgentRow[] }) {
       {missing > 0 && (
         <Degraded
           what={`Tool detail for ${missing} of ${agents.length} agents`}
-          reason="not-recorded"
-          detail={TOOL_DETAIL_UNKNOWN_CAUSE}
+          reason={era.reason}
+          detail={era.detail}
         />
       )}
       {unreadable > 0 && (

@@ -10,8 +10,7 @@ export const FIELD_ERA_LANE_VERSION = 5;
 export const LANE_4_STRADDLES =
   "Lane 4 straddles this field: added 2026-09-14 (#173) with no version bump.";
 
-export const LANE_VERSION_UNKNOWN =
-  "This round carries no readable lane version, so whether its lane knew the field is unknown.";
+export const RUNNER_DOES_NOT_SEND = "A runner round (#196) does not send this field yet.";
 
 /** "4", "v2.0.0" and "5.1" all read as their major; anything unparseable is null. */
 export function laneMajor(version: string | null | undefined): number | null {
@@ -21,20 +20,27 @@ export function laneMajor(version: string | null | undefined): number | null {
 }
 
 export interface FieldEra {
-  reason: Extract<DegradedReason, "lane-did-not-send" | "lane-sent-nothing" | "not-recorded">;
+  reason: Extract<DegradedReason, "lane-did-not-send" | "lane-sent-nothing">;
   /** Short enough for a fact cell. */
   label: string;
   detail: string;
 }
 
 /** #100's rule for a null #173 field: which fact the empty column states about this round. */
-export function fieldEra(row: { lane_version: string | null }): FieldEra {
-  const major = laneMajor(row.lane_version);
-  if (major === null) {
-    // A runner round (#196) sends no lane version unless told one, so null is not "old".
-    return { reason: "not-recorded", label: "not recorded", detail: LANE_VERSION_UNKNOWN };
+export function fieldEra(row: {
+  lane_version: string | null;
+  ingest_auth?: string | null;
+}): FieldEra {
+  // The Worker stamps runner rounds (#196), whose lane_version is null unless one is passed.
+  if (row.ingest_auth === "runner") {
+    return {
+      reason: "lane-did-not-send",
+      label: "not sent by the runner",
+      detail: RUNNER_DOES_NOT_SEND,
+    };
   }
-  if (major >= FIELD_ERA_LANE_VERSION) {
+  const major = laneMajor(row.lane_version);
+  if (major !== null && major >= FIELD_ERA_LANE_VERSION) {
     return {
       reason: "lane-sent-nothing",
       label: "not recorded for this round",
@@ -45,6 +51,10 @@ export function fieldEra(row: { lane_version: string | null }): FieldEra {
     reason: "lane-did-not-send",
     label: "not recorded by this lane version",
     detail:
-      major === 4 ? LANE_4_STRADDLES : `Lane ${major} predates this field, added 2026-09-14 (#173).`,
+      major === 4
+        ? LANE_4_STRADDLES
+        : major === null
+          ? "This round carries no lane version, so its lane predates versioning and this field (#173)."
+          : `Lane ${major} predates this field, added 2026-09-14 (#173).`,
   };
 }

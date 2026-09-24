@@ -85,7 +85,7 @@ function RoundDetailPage() {
           ) : (
             <>
               <TimingPanel row={round.data.row} agents={agents.data.rows} />
-              <AgentToolsPanel agents={agents.data.rows} />
+              <AgentToolsPanel row={round.data.row} agents={agents.data.rows} />
             </>
           )}
           <WindowComparisonPanel row={round.data.row} windowRounds={windowRounds.data?.rows} />

@@ -2,10 +2,9 @@ import { screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { RoundAgentRow, RoundRow } from "@/api/types";
-import { TOOL_DETAIL_UNKNOWN_CAUSE } from "@/features/rounds/AgentToolsPanel";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
-import { fieldEra, LANE_4_STRADDLES, LANE_VERSION_UNKNOWN } from "@/honesty/fieldEra";
+import { fieldEra, LANE_4_STRADDLES, RUNNER_DOES_NOT_SEND } from "@/honesty/fieldEra";
 import { renderRoute } from "@/test/renderRoute";
 
 const now = new Date();
@@ -55,12 +54,20 @@ describe("fieldEra (#179)", () => {
     expect(fieldEra({ lane_version: "v2.0.0" }).detail).toMatch(/Lane 2 predates/);
   });
 
-  it("claims no era for a round with no readable lane version", () => {
+  it("reads a null or unparseable lane version as a pre-versioning lane", () => {
     for (const lane_version of [null, "", "nightly"]) {
       const era = fieldEra({ lane_version });
-      expect(era.reason).toBe("not-recorded");
-      expect(era.detail).toBe(LANE_VERSION_UNKNOWN);
-      expect(era.detail).not.toMatch(/predates/);
+      expect(era.reason).toBe("lane-did-not-send");
+      expect(era.detail).toMatch(/no lane version/);
+    }
+  });
+
+  it("names a runner round's gap by the runner, whatever its lane version", () => {
+    for (const lane_version of [null, "5"]) {
+      const era = fieldEra({ lane_version, ingest_auth: "runner" });
+      expect(era.reason).toBe("lane-did-not-send");
+      expect(era.label).toBe("not sent by the runner");
+      expect(era.detail).toBe(RUNNER_DOES_NOT_SEND);
     }
   });
 });
@@ -126,14 +133,20 @@ describe("/rounds/$sessionId resolution facts (#179)", () => {
     expect(gap).toHaveAttribute("data-reason", "lane-did-not-send");
     expect(gap).toHaveTextContent(LANE_4_STRADDLES);
   });
-  it("names the gap without a cause when the round has no lane version", async () => {
-    render({ ...base, lane_version: null });
+  it("says a runner round's gaps were not sent by the runner", async () => {
+    const runner: RoundRow = { ...base, lane_version: null, ingest_auth: "runner" };
+    renderRoute({
+      path: detailPath(runner),
+      api: makeFixtureApi([runner], [], [], [agent({ session_id: runner.session_id })]),
+    });
     await screen.findByText("Resolution");
-    expect(fact("Credential")).toHaveTextContent(/^Credentialnot recorded$/);
+    expect(fact("Credential")).toHaveTextContent(/^Credentialnot sent by the runner$/);
+    expect(fact("Stacked on")).toHaveTextContent(/^Stacked onnot sent by the runner$/);
     const gap = degraded("Credential, Stacked on, Patch fingerprint, Context");
-    expect(gap).toHaveAttribute("data-reason", "not-recorded");
-    expect(gap).toHaveTextContent(LANE_VERSION_UNKNOWN);
-    expect(gap).not.toHaveTextContent(/predates/);
+    expect(gap).toHaveAttribute("data-reason", "lane-did-not-send");
+    expect(gap).toHaveTextContent(RUNNER_DOES_NOT_SEND);
+    const tools = degraded("Tool detail for 1 of 1 agents");
+    expect(tools).toHaveTextContent(RUNNER_DOES_NOT_SEND);
   });
 });
 
@@ -269,21 +282,24 @@ describe("/rounds/$sessionId agent tools panel (#179)", () => {
     expect(within(row).getByText("truncated")).toBeInTheDocument();
   });
 
-  it("names missing tool detail without blaming the round's lane version", async () => {
-    for (const lane_version of ["4", "5"]) {
-      const row = { ...lane5, lane_version };
-      const view = renderRoute({
-        path: detailPath(row),
-        api: makeFixtureApi([row], [], [], [agent({ tool_detail: null })]),
-      });
-      const agentRow = await screen.findByTestId("agent-tools-row");
-      expect(within(agentRow).getAllByRole("cell")[1]).toHaveTextContent("—");
-      const gap = degraded("Tool detail for 1 of 1 agents");
-      expect(gap).toHaveAttribute("data-reason", "not-recorded");
-      expect(gap).toHaveTextContent(TOOL_DETAIL_UNKNOWN_CAUSE);
-      expect(gap).not.toHaveTextContent(LANE_4_STRADDLES);
-      view.unmount();
-    }
+  it("degrades an agent with no tool detail by the parent round's lane era", async () => {
+    render({ ...base, lane_version: "4" }, [
+      agent({ session_id: base.session_id, tool_detail: null }),
+    ]);
+    const row = await screen.findByTestId("agent-tools-row");
+    expect(within(row).getAllByRole("cell")[1]).toHaveTextContent("—");
+    const gap = degraded("Tool detail for 1 of 1 agents");
+    expect(gap).toHaveAttribute("data-reason", "lane-did-not-send");
+    expect(gap).toHaveTextContent(LANE_4_STRADDLES);
+  });
+
+  it("says a lane-5 agent with no tool detail sent nothing", async () => {
+    render(lane5, [agent({ tool_detail: null })]);
+    await screen.findByTestId("agent-tools-row");
+    expect(degraded("Tool detail for 1 of 1 agents")).toHaveAttribute(
+      "data-reason",
+      "lane-sent-nothing",
+    );
   });
 
   it("marks a malformed breakdown unreadable instead of rendering part of it", async () => {
