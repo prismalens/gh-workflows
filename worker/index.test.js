@@ -3,9 +3,13 @@ import assert from "node:assert/strict";
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from "jose";
 import worker, { computeVariantKey } from "./index.js";
 
-// Ingest lowers a row past the text cutoff to rounds (#183), so fixtures dated in 2026
-// need a clock that does not move past them.
-mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-24T00:00:00Z") });
+// Ingest lowers a row past the text cutoff to rounds (#183), so a describe whose
+// fixtures are dated in 2026 pins a clock that does not move past them. The control
+// plane blocks wait on real time, so they keep the real clock.
+function pinClock() {
+  before(() => mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-24T00:00:00Z") }));
+  after(() => mock.timers.reset());
+}
 
 const { publicKey, privateKey } = await generateKeyPair("RS256");
 const jwk = await exportJWK(publicKey);
@@ -113,6 +117,7 @@ function makeRequest(path, { method = "POST", headers = {}, body } = {}) {
 const VALID_TOKEN = "secret-token-123";
 
 describe("Worker telemetry ingest", () => {
+  pinClock();
   describe("Authentication", () => {
     it("returns 401 when authorization header is missing", async () => {
       const db = createFakeDb();
@@ -1995,6 +2000,7 @@ describe("computeVariantKey (#47)", () => {
 });
 
 describe("Worker telemetry read API", () => {
+  pinClock();
   let accessHelper;
   let validJwt;
 
@@ -6451,6 +6457,7 @@ describe("Revocation ruling (#184)", () => {
 });
 
 describe("share levels (#183)", () => {
+  pinClock();
   // Real SQLite behind a D1-shaped shim, so what a share level stores is read back, not matched.
   async function sqliteDb() {
     const { DatabaseSync } = await import("node:sqlite");
