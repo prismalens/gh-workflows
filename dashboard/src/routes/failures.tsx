@@ -11,7 +11,6 @@ import { FallbacksSection } from "@/features/failures/FallbacksSection";
 import { LaneEventsSection } from "@/features/failures/LaneEventsSection";
 import { ModelResolutionSection } from "@/features/failures/ModelResolutionSection";
 import { VerdictSection } from "@/features/failures/VerdictSection";
-import { RangeControl } from "@/honesty/RangeControl";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
 import { rootRoute } from "./root";
 
@@ -60,10 +59,6 @@ function FailuresPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-base font-semibold tracking-tight">Failure surface</h1>
-        <RangeControl
-          value={search.range}
-          onChange={(range) => void navigate({ search: (prev) => ({ ...prev, range }) })}
-        />
         <FilterChips
           label="Repository"
           options={summary.data?.repositories ?? []}

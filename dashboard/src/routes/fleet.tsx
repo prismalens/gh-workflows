@@ -34,7 +34,6 @@ import { RoundsTable } from "@/features/rounds/RoundsTable";
 import { aggregateRounds, tokenSums } from "@/honesty/aggregate";
 import { Degraded } from "@/honesty/Degraded";
 import { meanMetric } from "@/honesty/metrics";
-import { RangeControl } from "@/honesty/RangeControl";
 import { applyRange, linkableRange, rangeSchema, type RangeKey } from "@/honesty/range";
 import { CountTile, Tile } from "@/honesty/Tile";
 import { aggregateMode, TileStrip } from "@/honesty/TileStrip";
@@ -167,13 +166,6 @@ function OverviewPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-base font-semibold tracking-tight">Fleet</h1>
-        <RangeControl
-          value={search.range}
-          onChange={(range) => {
-            setSelectedMarkerId(null);
-            void navigate({ search: (prev) => ({ ...prev, range }) });
-          }}
-        />
         <FilterChips
           label="Repository"
           options={summary.data?.repositories ?? []}

@@ -18,7 +18,6 @@ import {
 import { malformedConfigs, quietRepos, repoParams, summariseRepos } from "@/features/repos/repos";
 import { WatchOut } from "@/features/repos/WatchOut";
 import { Degraded } from "@/honesty/Degraded";
-import { RangeControl } from "@/honesty/RangeControl";
 import { linkableRange, standardRangeSchema } from "@/honesty/range";
 import { CountTile } from "@/honesty/Tile";
 import { VERDICT_COPY } from "@/honesty/verdict";
@@ -40,7 +39,6 @@ const EMPTY_ROWS = Object.freeze([]) as never[];
 
 function ReposPage() {
   const search = reposRoute.useSearch();
-  const navigate = reposRoute.useNavigate();
 
   // One request, and a Fleet one (#185): the window, the all-time denominator,
   // each repository's last round and the malformed-config verdicts all arrive
@@ -65,10 +63,6 @@ function ReposPage() {
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-base font-semibold tracking-tight">Repos</h1>
-        <RangeControl
-          value={search.range}
-          onChange={(range) => void navigate({ search: () => ({ range }) })}
-        />
       </div>
 
       {fleet.isPending ? (

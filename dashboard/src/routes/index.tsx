@@ -35,7 +35,6 @@ import {
 import { bucketInbox, matchesInboxSearch, type InboxBucketKey } from "@/features/inbox/inbox";
 import { HeadStatusChip } from "@/features/prs/HeadStatusChip";
 import { enrichPRs, filterPRsByState, groupRoundsByPR, type PRSummary } from "@/features/prs/prs";
-import { RangeControl } from "@/honesty/RangeControl";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
 import { FilterBar } from "@/components/FilterBar";
 import type { FilterKey, FilterToken } from "@/features/filters/grammar";
@@ -140,10 +139,6 @@ function InboxPage() {
             ranked by what each needs next.
           </p>
         </div>
-        <RangeControl
-          value={search.range}
-          onChange={(range) => void navigate({ search: (prev) => ({ ...prev, range }) })}
-        />
       </div>
 
       <FilterBar

@@ -15,7 +15,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { decodeHeadStatus } from "@/features/prs/headStatus";
 import { RoundsTable } from "@/features/rounds/RoundsTable";
-import { RangeControl } from "@/honesty/RangeControl";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
 import { rootRoute } from "./root";
 
@@ -150,12 +149,6 @@ function RoundsPage() {
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-base font-semibold tracking-tight">Rounds</h1>
-        <RangeControl
-          value={search.range}
-          onChange={(range) =>
-            void navigate({ search: (prev) => ({ ...prev, range, page: undefined }) })
-          }
-        />
         <Button
           size="sm"
           variant="outline"
