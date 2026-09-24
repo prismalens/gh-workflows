@@ -1,12 +1,11 @@
-# gh-workflows is the one repo the Claude review lane cannot review: it hosts the
-# callee, and claude-code-action self-skips on any PR editing claude-code-review.yml.
-# So auto_review stays ON here, unlike the consumer repos where the Claude lane
-# covers every PR and CodeRabbit is the escalation. Story: gh-workflows#14.
+# Auto review is off in every repo; the hourly review queue
+# (.github/workflows/review-queue.yml, Sumit1993/rig#150) summons each PR,
+# which also covers PRs editing claude-code-review.yml where Claude self-skips.
 language: en-US
 reviews:
   profile: chill
   auto_review:
-    enabled: true
+    enabled: false
     auto_pause_after_reviewed_commits: 1
     ignore_title_keywords:
       - "WIP"
