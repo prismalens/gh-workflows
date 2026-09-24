@@ -34,3 +34,20 @@ test('--head-sha defaults to empty, never null: a null reaches manifest.py as th
   assert.equal(o.headSha, '');
   assert.notEqual(o.headSha, null);
 });
+
+test('parseArgs takes the daemon\'s credential flags (#184)', () => {
+  const base = ['--cwd', '/c', '--prompt', '/p', '--out', '/o'];
+  const o = parseArgs([...base, '--credential-env', 'ANTHROPIC_API_KEY', '--credential-fingerprint', 'abcdef012345']);
+  assert.equal(o.credentialEnv, 'ANTHROPIC_API_KEY');
+  assert.equal(o.credentialFingerprint, 'abcdef012345');
+  assert.equal(parseArgs(base).credentialEnv, null);
+  assert.throws(() => parseArgs([...base, '--credential-fingerprint', 'ABC']), /12 lowercase hex/);
+  assert.throws(() => parseArgs([...base, '--credential-env', 'bad-name']), /environment variable name/);
+});
+
+test('engineEnv passes one extra credential variable and nothing else (#184)', async () => {
+  const { ENGINES, engineEnv } = await import('../src/engines.js');
+  const env = engineEnv(ENGINES.opencode, { PATH: '/bin', MY_KEY: 'k', OTHER: 'x' }, ['MY_KEY']);
+  assert.deepEqual(env, { PATH: '/bin', MY_KEY: 'k' });
+  assert.deepEqual(engineEnv(ENGINES.opencode, { PATH: '/bin', MY_KEY: 'k' }), { PATH: '/bin' });
+});

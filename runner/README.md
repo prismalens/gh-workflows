@@ -6,7 +6,8 @@ sends the lane's prompt, answers every permission request from the lane's tool a
 writes the round as assayer/v1 events. The design is `docs/design/self-hosted-review.md`; this
 is its section 3.2 and 3.3, day one.
 
-Nothing here posts to GitHub, leases jobs or holds a credential of its own. The engine's
+`run.js` posts nothing to GitHub. The daemon ("Run the daemon" below) leases jobs from the
+control plane and holds each job's installation token only for that job. The engine's
 credential is an API key in the environment, or on a laptop the engine's own sign-in. Which
 placements may run which credential is section 6 of the design.
 
@@ -53,6 +54,56 @@ The output directory holds:
 | `engine-stderr.log`, `engine-config/`, `engine-xdg/` | the engine's own noise and the per-run config the runner wrote for it |
 
 Exit code 0 is `completed`, 3 an engine error, 4 a timeout, 2 bad usage.
+
+## Run the daemon
+
+`src/daemon.js` (bin `assayer-runner`) registers with the control plane (#196's `/runner/*`
+routes), leases jobs for its credential, checks each pull request out with the job's
+installation token, runs one round through `run.js`, posts the round's events, revokes the token
+and posts `finished`. Check a config with `--check`; it prints each credential's fingerprint and
+exits 2 naming the field on a bad file.
+
+```bash
+export ASSAYER_RUNNER_TOKEN=asr_...        # from POST /api/runners
+node src/daemon.js --config assayer-runner.json --check
+node src/daemon.js --config assayer-runner.json
+```
+
+```json
+{
+  "control_plane": "https://assayer.sfun.cloud",
+  "runner_token": "${ASSAYER_RUNNER_TOKEN}",
+  "placement": "laptop",
+  "credentials": [{ "name": "zen", "engine": "opencode", "kind": "keyless", "concurrency": 1 }]
+}
+```
+
+- Secrets never sit in the file. `runner_token` is a `${VAR}` reference, and an `api-key`
+  credential names its variable in `env`. The fingerprint the runner registers is the first 12 hex
+  of the key's SHA-256, so the key never leaves the process. A `keyless` one is stable per host and
+  engine.
+- **Only `laptop` placement exists so far.** It spawns `run.js` directly as the user, one job at a
+  time, with no container. `box` is refused until the container slice lands, so a runner
+  registered `box` always means isolated. `user-login`, `bedrock`, `vertex` and `foundry` are
+  refused as deferred.
+- The checkout is a shallow fetch of the head and the base into a fresh temp dir, deleted on every
+  path. The token goes to git in `GIT_CONFIG_VALUE_0` as an extraheader, never in argv or a URL.
+- **The heartbeat** is an empty events post every `min(60, heartbeat_timeout_s / 5)` seconds.
+  Events post after the round in batches of at most 100, each event cut to 16 KiB.
+
+| Exit path | Posted before revoke | Last call |
+|---|---|---|
+| Success | the round's events | `finished{completed}` |
+| Engine failure or crash | the round's events, or a synthesized `started` + `error` | `finished{failed \| timed-out}` |
+| SIGTERM | whatever the round wrote | `finished{cancelled}` |
+| Checkout failure | `started` + `error` | `finished{failed}` |
+| Lease lost (409 or 403) | stops at the first 409 | none; the revoke still runs |
+
+`finished._meta` carries `token_revoked` and `exit`. `test/daemon.test.js` pins revoke before the
+last events call on every path.
+
+Deferred: box isolation, `user-login`, streaming events mid-round, a lease-release route (so a
+restart requeues instead of finishing `cancelled`), and incremental jobs.
 
 ## What the pieces are
 
