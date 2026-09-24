@@ -862,6 +862,8 @@ async function handleRuns(url, env) {
     "credential_type",
     "base_pr_number",
     "patch_fingerprint",
+    "ingest_auth",
+    "repository_id",
   ];
   if (includeBlobs) {
     columns.push(
