@@ -7,6 +7,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # The merge queue waits for every required check on its merge commit (Sumit1993/rig#150).
+  merge_group:
 
 permissions:
   contents: read
@@ -359,7 +361,7 @@ jobs:
   # checkout depth.
   migration-guard:
     name: Migration guard
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -371,7 +373,7 @@ jobs:
       - name: Forward-only migration guard
         run: |
           set -euo pipefail
-          base="${GITHUB_BASE_REF}"
+          base="${GITHUB_BASE_REF:-main}"
           # Explicit fetch: the checkout action fetches all history (depth 0)
           # but the base ref may not be a local branch, so we fetch it by name.
           git fetch origin "${base}" --quiet
