@@ -27,10 +27,11 @@ function config(concurrency = 1) {
 }
 
 // One fetch for the control plane and GitHub, so call order across hosts is one list.
-function world({ jobs = [JOB], eventsStatus = () => 204, revokeStatus = 204, leaseError = null } = {}) {
+function world({ jobs = [JOB], eventsStatus = () => 204, revokeStatus = 204, leaseError = null, leaseErrorAt = () => false } = {}) {
   const calls = [];
   const queue = [...jobs];
   let leaseErrorsLeft = leaseError ? 1 : 0;
+  let leases = 0;
   const fetch = async (url, init = {}) => {
     const u = new URL(url);
     const body = init.body ? JSON.parse(init.body) : undefined;
@@ -40,6 +41,8 @@ function world({ jobs = [JOB], eventsStatus = () => 204, revokeStatus = 204, lea
       return new Response(JSON.stringify({ runner_id: 'r1', credentials: [], heartbeat_timeout_s: 300, lease_wait_max_s: 0 }), { status: 200 });
     }
     if (u.pathname === '/runner/lease') {
+      leases += 1;
+      if (leaseErrorAt(leases)) return new Response(JSON.stringify({ error: 'unregistered-credential' }), { status: 409 });
       if (leaseErrorsLeft > 0) { leaseErrorsLeft -= 1; return new Response(JSON.stringify({ error: leaseError }), { status: 409 }); }
       const job = queue.shift();
       if (!job) { await new Promise((r) => setTimeout(r, 5)); return new Response(null, { status: 204 }); }
@@ -185,6 +188,49 @@ describe('daemon exit paths: revoke comes before the last events call', () => {
     await runOne(w);
     assert.equal(w.calls.filter((c) => c.path === '/runner/register').length, 2);
     assert.deepEqual(sequence(w.calls), ['started+summary', 'revoke', 'finished']);
+  });
+
+  it('a second re-registration after a successful lease does not stop the daemon', async () => {
+    const w = world({ jobs: [JOB, { ...JOB, id: '22222222-2222-4222-8222-222222222222' }], leaseErrorAt: (n) => n === 1 || n === 3 });
+    const d = await startDaemon(config(), { fetch: w.fetch, heartbeatMs: 20, backoffUnitMs: 1, log: () => {}, checkout: async () => {}, runRound: async () => ({ code: 0, events: roundEvents() }) });
+    let failed = null;
+    d.done.catch((e) => { failed = e; });
+    const until = Date.now() + 3000;
+    while (w.calls.filter((c) => c.body?.events?.some?.((e) => e.type === 'finished')).length < 2 && !failed && Date.now() < until) await new Promise((r) => setTimeout(r, 5));
+    await d.stop('test');
+    assert.equal(failed, null);
+    assert.equal(w.calls.filter((c) => c.path === '/runner/register').length, 3);
+    assert.deepEqual(sequence(w.calls), ['started+summary', 'revoke', 'finished', 'started+summary', 'revoke', 'finished']);
+  });
+
+  it('back-to-back unregistered-credential with no lease between is fatal', async () => {
+    const w = world({ jobs: [], leaseErrorAt: () => true });
+    const d = await startDaemon(config(), { fetch: w.fetch, backoffUnitMs: 1, log: () => {} });
+    await assert.rejects(d.done, /credential unregistered twice/);
+  });
+
+  it('an unexpected throw still posts started+error, revokes, posts finished and removes the temp dir', async () => {
+    const w = world();
+    const { dirs, logs } = await runOne(w, { runRound: async () => { throw new Error(`boom ${INSTALL_TOKEN}`); } });
+    assert.deepEqual(sequence(w.calls), ['started+error', 'revoke', 'finished']);
+    const fin = w.calls.findLast((c) => c.body?.events?.[0]?.type === 'finished').body.events[0];
+    assert.equal(fin.conclusion, 'failed');
+    assert.deepEqual(fin._meta, { token_revoked: true, exit: 'runner-error' });
+    assert.equal(existsSync(dirs[0]), false);
+    assert.doesNotMatch(JSON.stringify(w.calls.map((c) => c.body ?? null)), new RegExp(INSTALL_TOKEN));
+    assert.doesNotMatch(logs.join('\n'), new RegExp(INSTALL_TOKEN));
+  });
+
+  it('redacts the installation token and the credential from round events before posting them', async () => {
+    const w = world();
+    await runOne(w, { runRound: async () => ({ code: 3, events: [
+      event('started', { engine: 'opencode' }),
+      event('error', { failure_class: 'api-error', message: `401 for ${KEY} via ${INSTALL_TOKEN}`, detail: { argv: [`GH_TOKEN=${INSTALL_TOKEN}`] } }),
+      event('finished', { conclusion: 'failed' }),
+    ] }) });
+    const posted = w.calls.find((c) => c.body?.events?.some?.((e) => e.type === 'error')).body.events.find((e) => e.type === 'error');
+    assert.equal(posted.message, '401 for [redacted] via [redacted]');
+    assert.doesNotMatch(JSON.stringify(w.calls.map((c) => c.body ?? null)), new RegExp(`${INSTALL_TOKEN}|${KEY}`));
   });
 
   it('never sends the installation token or the key to the control plane', async () => {

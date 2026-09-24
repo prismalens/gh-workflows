@@ -70,7 +70,19 @@ function exitLabel(conclusion) {
   return 'engine-failure';
 }
 
-// One job, every exit path. Order: [batches of round events] → revoke → [finished].
+// Every string in an event, with the installation token and the configured credentials cut
+// out: run.js records raw engine and API error text, and the engine saw both.
+export function redactEvent(value, secrets) {
+  if (typeof value === 'string') return redact(value, secrets);
+  if (Array.isArray(value)) return value.map((v) => redactEvent(v, secrets));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactEvent(v, secrets)]));
+  }
+  return value;
+}
+
+// One job, every exit path, an unexpected throw included. Order: [batches of round events] →
+// revoke → [finished].
 export async function runJob(ctx, lease) {
   const { cp, log, credential } = ctx;
   const job = lease.job;
@@ -78,17 +90,10 @@ export async function runJob(ctx, lease) {
   ctx.secrets.add(token);
   ctx.secrets.add(Buffer.from(`x-access-token:${token}`).toString('base64'));
   const started = Date.now();
-  const dir = ctx.mkTemp('assayer-job-');
-  const out = path.join(dir, 'round');
-  const cwd = path.join(dir, 'checkout');
   const run = new AbortController();
   let leaseLost = false;
   let cancelled = false;
   const onStop = () => { cancelled = true; run.abort('sigterm'); };
-  if (ctx.stopSignal.aborted) onStop();
-  else ctx.stopSignal.addEventListener('abort', onStop, { once: true });
-  log(`job ${job.id} ${job.repository}#${job.pr_number} ${job.engine}/${job.credential_kind} attempt ${job.attempt ?? 1}`);
-
   const loseLease = (e) => {
     if (e instanceof ControlPlaneError && (e.status === 409 || e.status === 403)) {
       leaseLost = true;
@@ -97,16 +102,23 @@ export async function runJob(ctx, lease) {
     }
     return false;
   };
-  const beatMs = ctx.heartbeatMs ?? Math.min(60, Math.floor((lease.heartbeat_timeout_s ?? 300) / 5)) * 1000;
-  const heartbeat = setInterval(() => {
-    cp.postEvents(job.id, []).catch((e) => { if (!loseLease(e)) log(`heartbeat: ${e.message}`); });
-  }, beatMs);
-
   const startedEvent = () => event('started', { engine: job.engine, model: job.model ?? null, credential_fingerprint: credential.fingerprint });
+  let dir = null;
+  let heartbeat = null;
   let events = [];
   let conclusion = 'failed';
   let exit = 'engine-failure';
   try {
+    if (ctx.stopSignal.aborted) onStop();
+    else ctx.stopSignal.addEventListener('abort', onStop, { once: true });
+    log(`job ${job.id} ${job.repository}#${job.pr_number} ${job.engine}/${job.credential_kind} attempt ${job.attempt ?? 1}`);
+    const beatMs = ctx.heartbeatMs ?? Math.min(60, Math.floor((lease.heartbeat_timeout_s ?? 300) / 5)) * 1000;
+    heartbeat = setInterval(() => {
+      cp.postEvents(job.id, []).catch((e) => { if (!loseLease(e)) log(`heartbeat: ${e.message}`); });
+    }, beatMs);
+    dir = ctx.mkTemp('assayer-job-');
+    const out = path.join(dir, 'round');
+    const cwd = path.join(dir, 'checkout');
     if (cancelled) {
       conclusion = 'cancelled'; exit = 'sigterm';
     } else if (job.mode === 'incremental') {
@@ -146,23 +158,35 @@ export async function runJob(ctx, lease) {
         }
       }
     }
+  } catch (e) {
+    log(`job ${job.id}: ${e.message}`);
+    events = [startedEvent(), event('error', { failure_class: 'api-error', message: `runner: ${e.message}` })];
+    conclusion = 'failed'; exit = 'runner-error';
   } finally {
     clearInterval(heartbeat);
     ctx.stopSignal.removeEventListener('abort', onStop);
   }
 
+  try {
+    if (!leaseLost) {
+      for (const batch of batches(events.map((e) => fitEvent(redactEvent(e, ctx.secrets))))) {
+        const ok = await postWithRetry(ctx, job.id, batch);
+        if (ok === 'lease-lost') { leaseLost = true; break; }
+      }
+    }
+  } catch (e) {
+    log(`job ${job.id}: events: ${e.message}`);
+  }
+  let revoked = false;
+  try { revoked = await ctx.revoke(token); } catch (e) { log(`job ${job.id}: revoke: ${e.message}`); }
   if (!leaseLost) {
-    for (const batch of batches(events.map(fitEvent))) {
-      const ok = await postWithRetry(ctx, job.id, batch);
-      if (ok === 'lease-lost') { leaseLost = true; break; }
+    try {
+      await postWithRetry(ctx, job.id, [event('finished', { conclusion }, { token_revoked: revoked, exit })]);
+    } catch (e) {
+      log(`job ${job.id}: finished: ${e.message}`);
     }
   }
-  const revoked = await ctx.revoke(token);
-  if (!leaseLost) {
-    const last = event('finished', { conclusion }, { token_revoked: revoked, exit });
-    await postWithRetry(ctx, job.id, [last]);
-  }
-  try { ctx.rmDir(dir); } catch { /* best effort */ }
+  try { if (dir) ctx.rmDir(dir); } catch { /* best effort */ }
   ctx.secrets.delete(token);
   log(`job ${job.id} ${leaseLost ? 'lease-lost' : conclusion} in ${Math.round((Date.now() - started) / 1000)}s, token_revoked=${revoked}`);
   return { conclusion, leaseLost, revoked, exit };
@@ -230,6 +254,7 @@ export async function startDaemon(config, deps = {}) {
       try {
         lease = await cp.lease({ engine: credential.engine, kind: credential.kind, wait: registration.lease_wait_max_s ?? 20, signal: stop.signal });
         delay = 1;
+        reregistered = false;
       } catch (e) {
         if (stop.signal.aborted) break;
         if (e instanceof ControlPlaneError && e.status === 401) throw new Error('lease: runner token refused (401)');
