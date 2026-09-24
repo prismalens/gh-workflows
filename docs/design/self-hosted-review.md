@@ -106,8 +106,9 @@ The telemetry Worker grows a job queue and a poster. It keeps every existing rou
   subscription's five-hour window survivable: jobs wait, they do not die.
 - Config: the resolver that is Python inside YAML today (lines 430 to 1130 and 1422 to 1560)
   becomes a package the Worker imports. Base-ref invariant kept: repo config is fetched at
-  `base_sha`, never head, per #33. `org_defaults_repo` becomes a control-plane setting, empty
-  by default, which is the #59 item. The summon layer resolves here too, so all four layers
+  `base_sha`, never head, per #33. The shared layer is named by the repository itself, an
+  optional `extends: owner/repo[@ref]` in that base-ref config, so neither the caller stub nor
+  the control plane carries an org setting; without `extends` there is no shared layer (#182). The summon layer resolves here too, so all four layers
   land in `config_effective` (the migration 0010 comment already names `summon`).
 - Telemetry provenance (#176) is solved structurally: the control plane is the only writer to
   D1 from GitHub events, and the runner authenticates with a runner token bound to its
@@ -362,7 +363,7 @@ each parked issue is re-scoped against what then exists.
 
 | Issue | State | What the architecture does to it |
 |---|---|---|
-| #59 extraction | parked, hosts rulings | Trigger unchanged. One comment: the runner API becomes the extraction contract, and the `org_defaults_repo` "Done when" bullet becomes a control-plane setting rather than a workflow input. |
+| #59 extraction | parked, hosts rulings | Trigger unchanged. One comment: the runner API becomes the extraction contract, and the `org_defaults_repo` "Done when" bullet is done as `extends:` in the repository's own config (#182), neither a control-plane setting nor a workflow input. |
 | #176 telemetry provenance | open, in progress | Its OIDC path stays for GitHub-hosted runners. The service adds a per-runner token, which satisfies its "no shared secret" principle. Its did-not-run bucket map and `test-verdict-kind-drift.py` gain `no-runner` and `credential-cooldown`. Sequence #176's bearer-token deletion after the runner token exists. |
 | #12 lane roadmap | open | Unchanged. #90's cross-repo sparse checkout and #162's stack semantics must land once in the shared package, so the Actions lane and the runner do not diverge. |
 | #47 variant identity | closed | The variant key gains `engine`. Recorded in the umbrella, not reopened. |
@@ -373,7 +374,7 @@ each parked issue is re-scoped against what then exists.
 | #80 GitHub App | parked | Untouched. The App itself is created by the umbrella because the service needs webhooks and tokens; roles and fleet discovery stay here. |
 | #78, #92, #106 | parked | Untouched. #78 gains a prerequisite in the resolver package; #106's `telemetry.share` reading moves to the control plane. |
 | prismalens | | Nothing. The harness seam is ACP and Codex stays inadmissible there (#639). |
-| agent-rig | `skills/claude-review-lane` and its `references/verdicts.md`, `data/repo-meta.json`, `hooks/pr-created.sh` | Nothing carries the subscription or subprocess premise; the skill states the callee's OAuth-or-key rule as it is. When #184 lands: the skill's verdict table is hand-pinned to a gh-workflows commit and must be re-pinned for `no-runner`, `credential-cooldown` and the `engine` field on the liveness line; rounds from the runner post under the App's login, not `claude[bot]`, so the liveness parsing and the sweep filter both match two logins; `repo-meta.json` gains which placement reviews a repo. At the #59 cut: the product ships its own plugin (the lane skill, a verdicts reference generated from the vocabulary and pinned by a drift test in the product repo, the liveness parser) and agent-rig imports it from that marketplace the way it already vendors CodeRabbit's `autofix` and the pstack skills. `coderabbit-lane`, `autofix`, `cr-reply.sh` and the hooks stay in agent-rig; they are the operator's working style, not the product. |
+| rig (formerly agent-rig) | `skills/claude-review-lane` and its `references/verdicts.md`, `data/repo-meta.json`, `hooks/pr-created.sh` | Nothing carries the subscription or subprocess premise; the skill states the callee's OAuth-or-key rule as it is. When #184 lands: the skill's verdict table is hand-pinned to a gh-workflows commit and must be re-pinned for `no-runner`, `credential-cooldown` and the `engine` field on the liveness line; rounds from the runner post under the App's login, not `claude[bot]`, so the liveness parsing and the sweep filter both match two logins; `repo-meta.json` gains which placement reviews a repo. At the #59 cut: the product ships its own plugin (the lane skill, a verdicts reference generated from the vocabulary and pinned by a drift test in the product repo, the liveness parser) and rig imports it from that marketplace the way it already vendors CodeRabbit's `autofix` and the pstack skills. `coderabbit-lane`, `autofix`, `cr-reply.sh` and the hooks stay in rig; they are the operator's working style, not the product. |
 
 **New issues, filed only when the operator says so.**
 
