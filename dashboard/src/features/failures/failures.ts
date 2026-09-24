@@ -206,7 +206,7 @@ export const CONFIG_LAYERS = [
   {
     layer: "org_defaults",
     layerTitle: "Org defaults",
-    definition: "Organization default policy (.github/claude-review-defaults.yml)",
+    definition: "Shared defaults named by extends: in the repo config (another repository's .github/claude-review.yml)",
   },
   {
     layer: "workflow_inputs",

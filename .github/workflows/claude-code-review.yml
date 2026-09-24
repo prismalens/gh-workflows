@@ -536,7 +536,10 @@ jobs:
           # Schema lives here and only here (#33).
           # The callee runs inside the consumer's checkout where this repository's
           # tools/ directory does not exist at runtime.
-          ALLOWED_TOP_LEVEL_KEYS = {"version", "review", "findings", "telemetry"}
+          ALLOWED_TOP_LEVEL_KEYS = {"version", "extends", "review", "findings", "telemetry"}
+          # extends (#182): owner/repo[@ref]. The ref lands in a contents-API query
+          # string, so it is held to characters a branch, tag or SHA can use.
+          EXTENDS_RE = re.compile(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(?:@([A-Za-z0-9_./-]+))?")
           ALLOWED_TELEMETRY_KEYS = {"share"}
           ALLOWED_TELEMETRY_SHARE = {"full", "off"}
           ALLOWED_REVIEW_KEYS = {
@@ -607,7 +610,20 @@ jobs:
                   return "off", False
               return "off", True
 
-          def validate_config(data, filename=".github/claude-review.yml"):
+          def parse_extends(value):
+              # (repo, ref) for a well-formed value, else None. ref is "" when omitted,
+              # which reads the named repository's default branch.
+              if not isinstance(value, str):
+                  return None
+              m = EXTENDS_RE.fullmatch(value)
+              if not m or any(part in {".", ".."} or part.startswith(".") for part in m.group(1, 2)):
+                  return None
+              ref = m.group(3) or ""
+              if ".." in ref or ref.startswith("/") or ref.endswith("/"):
+                  return None
+              return f"{m.group(1)}/{m.group(2)}", ref
+
+          def validate_config(data, filename=".github/claude-review.yml", allow_extends=True):
               errors = []
               if data is None:
                   return errors
@@ -620,6 +636,16 @@ jobs:
 
               if errors:
                   return errors
+
+              if "extends" in data:
+                  if not allow_extends:
+                      errors.append(
+                          f"'extends' in {filename} is not followed: a shared config cannot extend another, one level only"
+                      )
+                  elif parse_extends(data["extends"]) is None:
+                      errors.append(
+                          f"Invalid value for 'extends' in {filename}: {data['extends']!r}. Expected owner/repo or owner/repo@ref"
+                      )
 
               if "version" not in data:
                   errors.append(f"Missing required key 'version' in {filename}")
@@ -893,14 +919,16 @@ jobs:
 
               return errors
 
-          # Org defaults are read from prismalens/gh-workflows at main (#54).
-          # No github.* context exposes the callee's own ref from inside a called workflow,
-          # so a version-matched read is not available. The schema's required version key
-          # guards compatibility. If a consumer ever pins a SHA, add a workflows_ref input
-          # to that stub and thread it here.
-          org_repo = "prismalens/gh-workflows"
-          org_ref = "main"
-
+          # Shared defaults (#182) are named by the repository, never the caller: an
+          # optional `extends: owner/repo[@ref]` in its own .github/claude-review.yml, read at
+          # base like every other key (#33), so a pull request cannot repoint its own review.
+          # The named repository's .github/claude-review.yml, at that ref or its default
+          # branch, is the base layer, and this repository's keys override it key by key.
+          # One level only: an `extends` inside the shared file schema-rejects that layer.
+          # Without `extends` there is no shared layer, recorded as not-configured. A named
+          # file that can't be read (404 included) warns and fails consent closed, the same
+          # as a broken layer anywhere else here. The layer keeps its `org_defaults` key and
+          # "org defaults" source label, which later steps, the runner and the dashboard read.
           layers = {
               "workflow_inputs": {
                   "outcome": "ok",
@@ -909,6 +937,7 @@ jobs:
               "org_defaults": {
                   "outcome": "absent",
                   "unconsumed": [],
+                  "extends": "",
               },
               "repo_config": {
                   "outcome": "absent",
@@ -916,14 +945,84 @@ jobs:
               },
           }
 
-          org_unconsumed = []
-          org_outcome = "absent"
+          unconsumed = []
+          repo_outcome = "absent"
           # Consent fails closed on a fetch or parse failure for this layer; only a
           # true 404 falls through to the next layer (#177, thread 4006669598).
+          repo_telemetry_forced_off = False
+          repo_telemetry_forced_off_reason = ""
+          config_content = None
+          data = None
+          errors = []
+          repo_share = None
+          if yaml is not None:
+              # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
+              # Reading from head would let a pull request modify its own review policy
+              # (e.g. raise auto_pause_rounds, change model, skip authors) in the commit under review.
+              ref_name = base_sha[:8] if base_sha else "unknown"
+              repo_fetch_cmd = ["gh", "api", f"repos/{repo}/contents/.github/claude-review.yml?ref={base_sha}", "--jq", ".content"]
+              repo_res = subprocess.run(repo_fetch_cmd, capture_output=True, text=True)
+
+              config_content = None
+              if repo_res.returncode == 0:
+                  if repo_res.stdout.strip():
+                      try:
+                          config_content = base64.b64decode(repo_res.stdout.strip()).decode("utf-8")
+                      except Exception as e:
+                          repo_outcome = "unparseable"
+                          repo_telemetry_forced_off = True
+                          repo_telemetry_forced_off_reason = f"failed to decode .github/claude-review.yml at base ref {ref_name} as base64: {e}"
+                          print(f"::warning::.github/claude-review.yml at base ref {ref_name} failed to decode base64: {e}; applying workflow defaults.")
+                  else:
+                      config_content = ""
+                      repo_telemetry_forced_off = True
+                      repo_telemetry_forced_off_reason = f".github/claude-review.yml at base ref {ref_name} returned empty content"
+              elif "404" in repo_res.stderr:
+                  print(f"No .github/claude-review.yml found at base ref {ref_name}; applying workflow defaults.")
+              else:
+                  err = repo_res.stderr.strip() if repo_res.stderr else f"exit code {repo_res.returncode}"
+                  repo_telemetry_forced_off = True
+                  repo_telemetry_forced_off_reason = f"failed to fetch .github/claude-review.yml at base ref {ref_name}: {err}"
+                  print(f"::warning::Failed to fetch .github/claude-review.yml at base ref {ref_name}: {err}; applying workflow defaults.")
+
+              if config_content is not None:
+                  try:
+                      data = yaml.safe_load(config_content)
+                  except Exception as exc:
+                      data = "MALFORMED"
+                      errors = [f"Malformed YAML in .github/claude-review.yml: {exc}"]
+                      repo_telemetry_forced_off = True
+                      repo_telemetry_forced_off_reason = f"malformed YAML in .github/claude-review.yml at base ref {ref_name}: {exc}"
+
+                  if data != "MALFORMED":
+                      errors = validate_config(data, filename=".github/claude-review.yml")
+
+                      # Independent of the rest of the schema: consent still fails
+                      # closed even when some other repo key is rejected (#176).
+                      repo_share, _repo_share_invalid = resolve_telemetry_share(data)
+
+          # Followed whenever the value parses, even if another repo key is
+          # schema-rejected, so a shared telemetry.share: off still applies (#176).
+          org_repo, org_ref = "", ""
+          if isinstance(data, dict) and parse_extends(data.get("extends")) is not None:
+              org_repo, org_ref = parse_extends(data["extends"])
+          extends_spec = f"{org_repo}@{org_ref}" if org_ref else org_repo
+          org_file = f".github/claude-review.yml in {org_repo} at {org_ref or 'its default branch'}"
+
+          org_unconsumed = []
+          org_outcome = "absent" if yaml is None else "not-configured"
+          # Consent fails closed on any fetch or parse failure for this layer (#177,
+          # thread 4006669598). A 404 is a failure here too: the file was named.
           org_telemetry_forced_off = False
           org_telemetry_forced_off_reason = ""
-          if yaml is not None:
-              org_fetch_cmd = ["gh", "api", f"repos/{org_repo}/contents/.github/claude-review-defaults.yml?ref={org_ref}", "--jq", ".content"]
+          if yaml is not None and not org_repo:
+              print("No extends in .github/claude-review.yml; no shared defaults layer.")
+          if yaml is not None and org_repo:
+              org_outcome = "absent"
+              org_url = f"repos/{org_repo}/contents/.github/claude-review.yml"
+              if org_ref:
+                  org_url += f"?ref={org_ref}"
+              org_fetch_cmd = ["gh", "api", org_url, "--jq", ".content"]
               org_res = subprocess.run(org_fetch_cmd, capture_output=True, text=True)
 
               org_config_content = None
@@ -934,31 +1033,30 @@ jobs:
                       except Exception as e:
                           org_outcome = "unparseable"
                           org_telemetry_forced_off = True
-                          org_telemetry_forced_off_reason = f"failed to decode .github/claude-review-defaults.yml at ref {org_ref} as base64: {e}"
-                          print(f"::warning::.github/claude-review-defaults.yml at ref {org_ref} failed to decode base64: {e}; ignoring org defaults.")
+                          org_telemetry_forced_off_reason = f"failed to decode {org_file} as base64: {e}"
+                          print(f"::warning::extends {extends_spec}: {org_file} failed to decode base64: {e}; ignoring shared defaults.")
                   else:
                       org_config_content = ""
                       org_telemetry_forced_off = True
-                      org_telemetry_forced_off_reason = f".github/claude-review-defaults.yml at ref {org_ref} returned empty content"
-              elif "404" in org_res.stderr:
-                  print(f"No .github/claude-review-defaults.yml found at ref {org_ref}; applying workflow defaults.")
+                      org_telemetry_forced_off_reason = f"{org_file} returned empty content"
               else:
                   err = org_res.stderr.strip() if org_res.stderr else f"exit code {org_res.returncode}"
+                  org_outcome = "unreadable"
                   org_telemetry_forced_off = True
-                  org_telemetry_forced_off_reason = f"failed to fetch .github/claude-review-defaults.yml at ref {org_ref}: {err}"
-                  print(f"::warning::Failed to fetch .github/claude-review-defaults.yml at ref {org_ref}: {err}; applying workflow defaults.")
+                  org_telemetry_forced_off_reason = f"failed to fetch {org_file}: {err}"
+                  print(f"::warning::extends {extends_spec}: failed to fetch {org_file}: {err}; ignoring shared defaults.")
 
               if org_config_content is not None:
                   try:
                       org_data = yaml.safe_load(org_config_content)
                   except Exception as exc:
                       org_data = "MALFORMED"
-                      org_errors = [f"Malformed YAML in .github/claude-review-defaults.yml: {exc}"]
+                      org_errors = [f"Malformed YAML in {org_file}: {exc}"]
                       org_telemetry_forced_off = True
-                      org_telemetry_forced_off_reason = f"malformed YAML in .github/claude-review-defaults.yml at ref {org_ref}: {exc}"
+                      org_telemetry_forced_off_reason = f"malformed YAML in {org_file}: {exc}"
 
                   if org_data != "MALFORMED":
-                      org_errors = validate_config(org_data, filename=".github/claude-review-defaults.yml")
+                      org_errors = validate_config(org_data, filename=org_file, allow_extends=False)
 
                       # Independent of the rest of the schema: consent still fails
                       # closed even when some other org default is rejected (#176).
@@ -970,7 +1068,7 @@ jobs:
                   if org_errors:
                       org_outcome = "unparseable" if org_data == "MALFORMED" else "schema-rejected"
                       err_msg = "; ".join(org_errors)
-                      print(f"::warning::.github/claude-review-defaults.yml at ref {org_ref} is malformed; ignoring org defaults: {err_msg}")
+                      print(f"::warning::extends {extends_spec}: {org_file} is malformed; ignoring shared defaults: {err_msg}")
                   else:
                       org_outcome = "ok"
                       if org_data is not None and isinstance(org_data, dict):
@@ -1057,9 +1155,9 @@ jobs:
                           if org_share is not None:
                               org_consumed.append(f"telemetry.share={telemetry_share}")
 
-                          print(f"Consumed configuration from .github/claude-review-defaults.yml (ref {org_ref}): {', '.join(org_consumed) if org_consumed else 'none'}")
+                          print(f"Consumed configuration from {org_file}: {', '.join(org_consumed) if org_consumed else 'none'}")
                           if org_unconsumed:
-                              print(f"::warning::Configuration key(s) in .github/claude-review-defaults.yml accepted by schema but not yet wired in this workflow: {', '.join(sorted(org_unconsumed))}")
+                              print(f"::warning::Configuration key(s) in {org_file} accepted by schema but not yet wired in this workflow: {', '.join(sorted(org_unconsumed))}")
 
           if org_telemetry_forced_off:
               telemetry_share = "off"
@@ -1069,160 +1167,113 @@ jobs:
           layers["org_defaults"] = {
               "outcome": org_outcome,
               "unconsumed": sorted(org_unconsumed),
+              "extends": extends_spec,
           }
 
-          unconsumed = []
-          repo_outcome = "absent"
-          # Consent fails closed on a fetch or parse failure for this layer; only a
-          # true 404 falls through to the next layer (#177, thread 4006669598).
-          repo_telemetry_forced_off = False
-          repo_telemetry_forced_off_reason = ""
-          if yaml is not None:
-              # SECURITY INVARIANT (#33): Read the config from the base branch, never the head.
-              # Reading from head would let a pull request modify its own review policy
-              # (e.g. raise auto_pause_rounds, change model, skip authors) in the commit under review.
-              ref_name = base_sha[:8] if base_sha else "unknown"
-              repo_fetch_cmd = ["gh", "api", f"repos/{repo}/contents/.github/claude-review.yml?ref={base_sha}", "--jq", ".content"]
-              repo_res = subprocess.run(repo_fetch_cmd, capture_output=True, text=True)
+          if config_content is not None:
+              if data != "MALFORMED" and repo_share is not None:
+                  telemetry_share = repo_share
+                  sources["telemetry_share"] = "repo config"
 
-              config_content = None
-              if repo_res.returncode == 0:
-                  if repo_res.stdout.strip():
-                      try:
-                          config_content = base64.b64decode(repo_res.stdout.strip()).decode("utf-8")
-                      except Exception as e:
-                          repo_outcome = "unparseable"
-                          repo_telemetry_forced_off = True
-                          repo_telemetry_forced_off_reason = f"failed to decode .github/claude-review.yml at base ref {ref_name} as base64: {e}"
-                          print(f"::warning::.github/claude-review.yml at base ref {ref_name} failed to decode base64: {e}; applying workflow defaults.")
-                  else:
-                      config_content = ""
-                      repo_telemetry_forced_off = True
-                      repo_telemetry_forced_off_reason = f".github/claude-review.yml at base ref {ref_name} returned empty content"
-              elif "404" in repo_res.stderr:
-                  print(f"No .github/claude-review.yml found at base ref {ref_name}; applying workflow defaults.")
+              if errors:
+                  repo_outcome = "unparseable" if data == "MALFORMED" else "schema-rejected"
+                  err_msg = "; ".join(errors)
+                  print(f"::warning::.github/claude-review.yml at base ref {ref_name} is malformed; applying workflow defaults: {err_msg}")
               else:
-                  err = repo_res.stderr.strip() if repo_res.stderr else f"exit code {repo_res.returncode}"
-                  repo_telemetry_forced_off = True
-                  repo_telemetry_forced_off_reason = f"failed to fetch .github/claude-review.yml at base ref {ref_name}: {err}"
-                  print(f"::warning::Failed to fetch .github/claude-review.yml at base ref {ref_name}: {err}; applying workflow defaults.")
+                  repo_outcome = "ok"
+                  if data is not None and isinstance(data, dict):
+                      consumed = []
+                      if extends_spec:
+                          consumed.append(f"extends={extends_spec}")
 
-              if config_content is not None:
-                  try:
-                      data = yaml.safe_load(config_content)
-                  except Exception as exc:
-                      data = "MALFORMED"
-                      errors = [f"Malformed YAML in .github/claude-review.yml: {exc}"]
-                      repo_telemetry_forced_off = True
-                      repo_telemetry_forced_off_reason = f"malformed YAML in .github/claude-review.yml at base ref {ref_name}: {exc}"
+                      review = data.get("review", {})
+                      if isinstance(review, dict):
+                          if "default_model" in review:
+                              default_model = review["default_model"]
+                              sources["default_model"] = "repo config"
+                              consumed.append(f"review.default_model={default_model}")
+                          if "level" in review:
+                              level = review["level"]
+                              sources["level"] = "repo config"
+                              consumed.append(f"review.level={level}")
+                          if "admission" in review:
+                              admission = "off" if review["admission"] is False else review["admission"]
+                              sources["admission"] = "repo config"
+                              consumed.append(f"review.admission={admission}")
+                          if "auto_pause_rounds" in review:
+                              auto_pause_rounds = review["auto_pause_rounds"]
+                              sources["auto_pause_rounds"] = "repo config"
+                              consumed.append(f"review.auto_pause_rounds={auto_pause_rounds}")
+                          if "skip_authors" in review:
+                              skip_authors = ",".join(x.strip() for x in review["skip_authors"] if isinstance(x, str) and x.strip())
+                              sources["skip_authors"] = "repo config"
+                              consumed.append(f"review.skip_authors={skip_authors}")
+                          if "max_reviewable_lines" in review:
+                              max_reviewable_lines = review["max_reviewable_lines"]
+                              sources["max_reviewable_lines"] = "repo config"
+                              consumed.append(f"review.max_reviewable_lines={max_reviewable_lines}")
+                          if "max_file_lines" in review:
+                              max_file_lines = review["max_file_lines"]
+                              sources["max_file_lines"] = "repo config"
+                              consumed.append(f"review.max_file_lines={max_file_lines}")
+                          if "language_map" in review:
+                              language_map = review["language_map"]
+                              sources["language_map"] = "repo config"
+                              consumed.append(f"review.language_map={len(language_map)} entries")
+                          if "tool_findings" in review:
+                              tool_findings_tools = review["tool_findings"]
+                              sources["tool_findings"] = "repo config"
+                              consumed.append(f"review.tool_findings={tool_findings_tools}")
+                          if "issue_context_byte_budget" in review:
+                              issue_context_byte_budget = review["issue_context_byte_budget"]
+                              sources["issue_context_byte_budget"] = "repo config"
+                              consumed.append(f"review.issue_context_byte_budget={issue_context_byte_budget}")
+                          if "issue_context_total_byte_budget" in review:
+                              issue_context_total_byte_budget = review["issue_context_total_byte_budget"]
+                              sources["issue_context_total_byte_budget"] = "repo config"
+                              consumed.append(f"review.issue_context_total_byte_budget={issue_context_total_byte_budget}")
+                          if "path_filters" in review:
+                              path_filters = review["path_filters"]
+                              sources["path_filters"] = "repo config"
+                              consumed.append(f"review.path_filters={path_filters}")
+                          if "escalation_paths" in review:
+                              escalation_paths = review["escalation_paths"]
+                              sources["escalation_paths"] = "repo config"
+                              consumed.append(f"review.escalation_paths={escalation_paths}")
+                          if "variant" in review:
+                              variant = review["variant"]
+                              sources["variant"] = "repo config"
+                              consumed.append(f"review.variant={variant}")
+                          if "path_instructions" in review:
+                              repo_instructions = [
+                                  {"path": item["path"], "instructions": item["instructions"], "source": "repo config"}
+                                  for item in review["path_instructions"]
+                              ]
+                              path_instructions.extend(repo_instructions)
+                              sources["path_instructions"] = (
+                                  "org defaults + repo config"
+                                  if sources["path_instructions"] == "org defaults"
+                                  else "repo config"
+                              )
+                              consumed.append(f"review.path_instructions={len(repo_instructions)} entries")
+                          if "context" in review:
+                              context_config = review["context"]
+                              sources["context"] = "repo config"
+                              consumed.append(f"review.context={len(context_config)} entries")
 
-                  if data != "MALFORMED":
-                      errors = validate_config(data, filename=".github/claude-review.yml")
+                      findings = data.get("findings", {})
+                      if isinstance(findings, dict):
+                          for k in findings:
+                              unconsumed.append(f"findings.{k}")
 
-                      # Independent of the rest of the schema: consent still fails
-                      # closed even when some other repo key is rejected (#176).
-                      repo_share, _repo_share_invalid = resolve_telemetry_share(data)
+                      # Resolved above, ahead of the schema gate (#176); only the
+                      # consumed-keys summary is left to build here.
                       if repo_share is not None:
-                          telemetry_share = repo_share
-                          sources["telemetry_share"] = "repo config"
+                          consumed.append(f"telemetry.share={telemetry_share}")
 
-                  if errors:
-                      repo_outcome = "unparseable" if data == "MALFORMED" else "schema-rejected"
-                      err_msg = "; ".join(errors)
-                      print(f"::warning::.github/claude-review.yml at base ref {ref_name} is malformed; applying workflow defaults: {err_msg}")
-                  else:
-                      repo_outcome = "ok"
-                      if data is not None and isinstance(data, dict):
-                          consumed = []
-
-                          review = data.get("review", {})
-                          if isinstance(review, dict):
-                              if "default_model" in review:
-                                  default_model = review["default_model"]
-                                  sources["default_model"] = "repo config"
-                                  consumed.append(f"review.default_model={default_model}")
-                              if "level" in review:
-                                  level = review["level"]
-                                  sources["level"] = "repo config"
-                                  consumed.append(f"review.level={level}")
-                              if "admission" in review:
-                                  admission = "off" if review["admission"] is False else review["admission"]
-                                  sources["admission"] = "repo config"
-                                  consumed.append(f"review.admission={admission}")
-                              if "auto_pause_rounds" in review:
-                                  auto_pause_rounds = review["auto_pause_rounds"]
-                                  sources["auto_pause_rounds"] = "repo config"
-                                  consumed.append(f"review.auto_pause_rounds={auto_pause_rounds}")
-                              if "skip_authors" in review:
-                                  skip_authors = ",".join(x.strip() for x in review["skip_authors"] if isinstance(x, str) and x.strip())
-                                  sources["skip_authors"] = "repo config"
-                                  consumed.append(f"review.skip_authors={skip_authors}")
-                              if "max_reviewable_lines" in review:
-                                  max_reviewable_lines = review["max_reviewable_lines"]
-                                  sources["max_reviewable_lines"] = "repo config"
-                                  consumed.append(f"review.max_reviewable_lines={max_reviewable_lines}")
-                              if "max_file_lines" in review:
-                                  max_file_lines = review["max_file_lines"]
-                                  sources["max_file_lines"] = "repo config"
-                                  consumed.append(f"review.max_file_lines={max_file_lines}")
-                              if "language_map" in review:
-                                  language_map = review["language_map"]
-                                  sources["language_map"] = "repo config"
-                                  consumed.append(f"review.language_map={len(language_map)} entries")
-                              if "tool_findings" in review:
-                                  tool_findings_tools = review["tool_findings"]
-                                  sources["tool_findings"] = "repo config"
-                                  consumed.append(f"review.tool_findings={tool_findings_tools}")
-                              if "issue_context_byte_budget" in review:
-                                  issue_context_byte_budget = review["issue_context_byte_budget"]
-                                  sources["issue_context_byte_budget"] = "repo config"
-                                  consumed.append(f"review.issue_context_byte_budget={issue_context_byte_budget}")
-                              if "issue_context_total_byte_budget" in review:
-                                  issue_context_total_byte_budget = review["issue_context_total_byte_budget"]
-                                  sources["issue_context_total_byte_budget"] = "repo config"
-                                  consumed.append(f"review.issue_context_total_byte_budget={issue_context_total_byte_budget}")
-                              if "path_filters" in review:
-                                  path_filters = review["path_filters"]
-                                  sources["path_filters"] = "repo config"
-                                  consumed.append(f"review.path_filters={path_filters}")
-                              if "escalation_paths" in review:
-                                  escalation_paths = review["escalation_paths"]
-                                  sources["escalation_paths"] = "repo config"
-                                  consumed.append(f"review.escalation_paths={escalation_paths}")
-                              if "variant" in review:
-                                  variant = review["variant"]
-                                  sources["variant"] = "repo config"
-                                  consumed.append(f"review.variant={variant}")
-                              if "path_instructions" in review:
-                                  repo_instructions = [
-                                      {"path": item["path"], "instructions": item["instructions"], "source": "repo config"}
-                                      for item in review["path_instructions"]
-                                  ]
-                                  path_instructions.extend(repo_instructions)
-                                  sources["path_instructions"] = (
-                                      "org defaults + repo config"
-                                      if sources["path_instructions"] == "org defaults"
-                                      else "repo config"
-                                  )
-                                  consumed.append(f"review.path_instructions={len(repo_instructions)} entries")
-                              if "context" in review:
-                                  context_config = review["context"]
-                                  sources["context"] = "repo config"
-                                  consumed.append(f"review.context={len(context_config)} entries")
-
-                          findings = data.get("findings", {})
-                          if isinstance(findings, dict):
-                              for k in findings:
-                                  unconsumed.append(f"findings.{k}")
-
-                          # Resolved above, ahead of the schema gate (#176); only the
-                          # consumed-keys summary is left to build here.
-                          if repo_share is not None:
-                              consumed.append(f"telemetry.share={telemetry_share}")
-
-                          print(f"Consumed configuration from .github/claude-review.yml (base ref {ref_name}): {', '.join(consumed) if consumed else 'none (defaults applied)'}")
-                          if unconsumed:
-                              print(f"::warning::Configuration key(s) accepted by schema but not yet wired in this workflow: {', '.join(sorted(unconsumed))}")
+                      print(f"Consumed configuration from .github/claude-review.yml (base ref {ref_name}): {', '.join(consumed) if consumed else 'none (defaults applied)'}")
+                      if unconsumed:
+                          print(f"::warning::Configuration key(s) accepted by schema but not yet wired in this workflow: {', '.join(sorted(unconsumed))}")
 
           if repo_telemetry_forced_off:
               telemetry_share = "off"
@@ -1276,6 +1327,7 @@ jobs:
           config_effective_json = json.dumps(config_effective, separators=(',', ':'))
 
           print("Effective review configuration:")
+          print(f"  extends: {extends_spec or '(none)'} (shared defaults: {org_outcome})")
           print(f"  review.default_model: {default_model} (source: {sources['default_model']})")
           print(f"  review.auto_pause_rounds: {auto_pause_rounds} (source: {sources['auto_pause_rounds']})")
           print(f"  review.skip_authors: {skip_authors} (source: {sources['skip_authors']})")
