@@ -69,3 +69,14 @@ export function quietRepos(rows: FleetRepoRow[]): QuietRepoWatch[] {
     .filter((row) => row.rounds === 0)
     .map((row) => ({ repository: row.repository, lastRoundAt: row.last_recorded_at }));
 }
+
+/**
+ * `owner/name` split into the params of /repos/$owner/$repo. Null for a name
+ * that does not split into a non-empty owner and repo: a bearer-authenticated
+ * ingest accepts any non-empty `repository` string, so this can reach here.
+ */
+export function repoParams(repository: string): { owner: string; repo: string } | null {
+  const slash = repository.indexOf("/");
+  if (slash <= 0 || slash === repository.length - 1) return null;
+  return { owner: repository.slice(0, slash), repo: repository.slice(slash + 1) };
+}

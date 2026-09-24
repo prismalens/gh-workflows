@@ -112,7 +112,7 @@ on:
 # Bumped whenever the ingest payload shape gains or changes a field (#70 amendment).
 # The Worker uses this version to distinguish an older workflow lane from a broken one.
 env:
-  LANE_VERSION: '4'
+  LANE_VERSION: '5'
   # The claude-code-action pin, duplicated at the two `uses:` lines below because `uses:`
   # cannot take a `${{ }}` expression. tests/test-action-version-drift.py fails the build
   # if this value and either `uses:` pin ever disagree. Story: #47 amendment.
