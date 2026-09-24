@@ -675,8 +675,8 @@ curl -X POST https://assayer.sfun.cloud/api/runners \
 ```
 
 Registration refuses a fingerprint a different, unrevoked runner holds (design §7). The same
-runner re-registering after a restart replaces its own set. There is no subscription credential
-kind and no laptop placement: a subscription runs only in the author's own harness (#184).
+runner re-registering after a restart replaces its own set. The credential kinds are `api-key`,
+`bedrock`, `vertex`, `foundry` and `keyless`, and the placement is `box` (#184).
 
 ### Jobs
 

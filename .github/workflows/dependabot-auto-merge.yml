@@ -1,7 +1,7 @@
 # Auto-merge Dependabot PRs once all required status checks pass.
 #
 # Uses only the built-in GITHUB_TOKEN — no secret, no API key, nothing that
-# depends on a laptop being on. Runs entirely on GitHub's hosted runners.
+# depends on someone's machine being on. Runs entirely on GitHub's hosted runners.
 #
 # Policy:
 #   * npm (npm_and_yarn) production deps -> auto-merge PATCH only. A minor can

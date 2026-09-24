@@ -5,8 +5,9 @@ Written 2026-09-19 in the gh-workflows session. Inputs: the lane invariants and 
 contract (verified against main), a survey of Kodus, Qodo PR-Agent, CodeRabbit self-hosted,
 Bito and OpenHands (their own docs), the vendor terms and competitor survey of 2026-09-19
 (`docs/design/review-engine-credentials.md`), prismalens ADR 0003 and
-prismalens#639, and the #59 / #80 / #81 / #77 rulings. Proposal, not a decision. Nothing here
-is built.
+prismalens#639, and the #59 / #80 / #81 / #77 rulings. Placement and credentials follow the
+#184 ruling of 2026-09-23: trigger and credential decide policy, and the runner has one
+placement, `box`.
 
 ## 1. What this is for
 
@@ -16,12 +17,9 @@ Three pressures point the same way:
   second engine ends that. Nothing else in the lane wants Claude: the prompt, the envelope,
   the verdicts and the sweep are engine-agnostic already.
 - The lane runs on one person's subscription token, which lapses around 2026-09-23. A service
-  that takes an API key with a spend cap, or a free local model, does not depend on any one
-  plan. The one place a subscription still runs is a laptop the user signs into themselves,
-  the placement prismalens ADR 0003 already names ("subscription logins are a laptop
-  feature"), and it is opt-in.
+  that takes an API key with a spend cap, or a free model, does not depend on any one plan.
 - #59 wants an open-source product with a named adopter. The hosted-app path in #80 was parked
-  behind it. A self-hosted runner a solo engineer runs on a box, or on a laptop at no cost, is
+  behind it. A self-hosted runner a solo engineer runs on a box, at no cost on a free model, is
   a better open-source story than a reusable workflow that only runs inside GitHub Actions.
 
 The design keeps everything #59 says is worth publishing, and only moves where it runs.
@@ -43,8 +41,8 @@ on: its value is AST and RAG plumbing, and its gaps (no base-ref trust rule whil
 `AGENTS.md` and `CLAUDE.md`, no sandboxing, no cost tracking) are the lane's strengths.
 
 This design differs from the standard shape in one deliberate way: the box has no inbound port.
-The control plane already exists on Cloudflare, so the runner pulls. That is what lets a laptop
-be a runner, and a laptop is the one place a subscription is.
+The control plane already exists on Cloudflare, so the runner pulls, and the box needs no
+public address.
 
 ## 3. Components
 
@@ -61,7 +59,7 @@ GitHub ──webhook──▶ Control plane (Cloudflare Worker + D1, exists toda
                             ▲                     │
                  events, findings,                │ lease (long-poll)
                  usage, heartbeat                 ▼
-                   Runner (one container on the VPS, a laptop, or a GitHub-hosted job)
+                   Runner (a daemon on the adopter's box, one container per job)
                       • registers its credentials: engine, kind, fingerprint, concurrency
                       • leases one job per credential slot
                       • checks out base..head into a per-job engine container
@@ -102,8 +100,8 @@ The telemetry Worker grows a job queue and a poster. It keeps every existing rou
 - Liveness: the 18 verdicts today stay. Two are added: `no-runner` when no runner leases the
   job within `runner_timeout` (default 15 minutes), and `credential-cooldown` when
   `classify-failure` returned `rate-limited` or `account-limit` with a `reset_at`, in which
-  case the job requeues for that time instead of failing. The cooldown is what makes a
-  subscription's five-hour window survivable: jobs wait, they do not die.
+  case the job requeues for that time instead of failing. The cooldown is what makes a rate
+  limit survivable: jobs wait, they do not die.
 - Config: the resolver that is Python inside YAML today (lines 430 to 1130 and 1422 to 1560)
   becomes a package the Worker imports. Base-ref invariant kept: repo config is fetched at
   `base_sha`, never head, per #33. The shared layer is named by the repository itself, an
@@ -122,7 +120,7 @@ onto assayer/v1 and streams it back. Config in a file:
 ```yaml
 control_plane: https://assayer.example.workers.dev
 runner_token: ${RUNNER_TOKEN}
-placement: box                   # box | laptop
+placement: box                   # the only placement
 credentials:
   - name: anthropic-capped
     engine: claude-code
@@ -137,23 +135,19 @@ credentials:
 - On start it fingerprints each credential (SHA-256 of the material, first 12 hex) and
   registers `{engine, kind, fingerprint, concurrency, placement}`. The control plane stores
   metadata only. This is #77 built the cheap way: the registry is what runners declare.
-- **Box placement.** Each job runs in a fresh engine container: the checkout at `head_sha`
-  mounted read-only, the key in env, egress allowed only to `api.github.com` and the model
-  endpoint, no Docker socket, non-root. The permission policy is the lane's tool allowlist,
-  answered by the ACP client, with no unrestricted shell.
-- **Laptop placement, opt-in.** No container. The runner spawns the engine adapter directly,
-  as the user, with the user's own config directory untouched, one job at a time, and only
-  for repositories the user installed the App on. Credential kind `user-login`: the runner
-  never reads, copies or redirects the sign-in; the adapter reports what the binary is signed
-  into and the runner registers that as the fingerprint. This is the one placement where a
-  vendor subscription runs, and section 6 says why. It is also the free path: the same
-  placement with Ollama behind `ANTHROPIC_BASE_URL`, or OpenCode on a free provider, proves
-  every part of the product at no cost.
-- **GitHub-hosted placement.** The existing Actions lane, reduced over time to "lease, run,
-  stream". That keeps the zero-infrastructure path for adopters who bring an API key and will
-  not run a box. Inside Anthropic's own action a `claude setup-token` credential is the
-  documented form, and the lane accepts it there and nowhere else.
-- A `user-login` credential is `concurrency: 1` by construction.
+- **Every job runs in a fresh engine container:** the checkout at `head_sha` mounted
+  read-only, egress allowed only to `api.github.com` and the model endpoint, no Docker socket,
+  non-root. The permission policy is the lane's tool allowlist, answered by the ACP client, with
+  no unrestricted shell. The policy is a guardrail; the container is the boundary.
+- **No job runs without the container.** Until the container runtime is built, the daemon's
+  `containerReady()` gate is closed and the daemon exits at startup, before it registers or
+  leases (`runner/README.md`).
+- **The free path** is the same container with OpenCode on a free provider, or Claude Code
+  behind an Anthropic-compatible local endpoint such as Ollama. It proves every part of the
+  product at no cost.
+- **The Actions lane** stays the zero-infrastructure path for adopters who bring an API key and
+  will not run a box, reduced over time to "lease, run, stream". Inside Anthropic's own action
+  it also accepts a `claude setup-token` credential, the form Anthropic documents there.
 
 
 ### 3.3 Engines
@@ -168,7 +162,7 @@ row, the rule prismalens ADR 0003 §8 already applies.
 | Engine | ACP adapter | Credential kinds | State |
 |---|---|---|---|
 | `opencode` | `opencode acp` | `api-key` for 75+ providers, free tiers and Ollama | verified green in prismalens#561; the day-one engine |
-| `claude-code` | `claude-agent-acp` over the user's installed `claude` (`CLAUDE_CODE_EXECUTABLE`) | `api-key`, `bedrock`, `vertex`, `foundry`, an Anthropic-compatible base URL; `user-login` on a laptop | passes the prismalens#639 gate |
+| `claude-code` | `claude-agent-acp` over the user's installed `claude` (`CLAUDE_CODE_EXECUTABLE`) | `api-key`, `bedrock`, `vertex`, `foundry`, an Anthropic-compatible base URL | passes the prismalens#639 gate |
 | `codex` | `codex-acp` | `api-key` | deferred: permission gating fails on both transports in prismalens#639 |
 | `diff-only` | none, one request to any OpenAI-compatible endpoint | `api-key`, keyless local | the PR-Agent shape; the zero-vendor floor |
 
@@ -218,31 +212,24 @@ login as well. The fate taxonomy on `/findings` is untouched.
 | Telemetry provenance (#176) | Runner token bound to registration; `repository` from the job |
 | Adopter isolation | Each adopter creates their own GitHub App through the manifest flow; there is no shared app and no tenancy, per the 2026-08-31 self-host ruling |
 
-What is weaker than today: a subscription session on the box is readable by the engine
-process, because the CLI needs it. The Actions lane has the same exposure with the OAuth token
-in env. The mitigations above bound it; they do not remove it. An API key with a spend cap is
-the safer default for anyone who has one, and the docs should say so.
+What the table does not cover: the key sits in the engine's environment, so a steered engine
+can read it (#184, F1). The Actions lane has the same exposure with its token in env. The fix
+is a loopback proxy in the container that holds the key and injects it, so nothing the engine
+can read carries it. Until then a spend cap on the key bounds the loss.
 
-## 6. Subscriptions and keys, per vendor
+## 6. Credentials the runner takes
 
-The runner's default is an API key. A subscription runs in exactly the places each vendor
-names, and the product's docs lead with the key and the free local model.
+The runner takes an API key, a cloud identity or no credential at all. It takes no
+subscription credential: there is no `user-login` kind in the runner or the control plane.
+The vendor terms behind that are in `docs/design/review-engine-credentials.md`.
 
-- **Anthropic.** The legal page (code.claude.com/docs/en/legal-and-compliance) says OAuth is
-  "designed to support ordinary use of Claude Code and other native Anthropic applications",
-  bars third parties from routing requests "through Free, Pro, or Max plan credentials" on
-  users' behalf, and bars tools that "collect, store, or intermediate" the credential. The
-  same page allows "an end user signing in to the unmodified Claude Code binary with their
-  own Claude subscription, including where a platform hosts Claude Code". The 2026-04-04
-  cutoff hit harnesses that took the token and called the API themselves; Zed's ACP adapter,
-  which spawns the unmodified binary, was untouched. The laptop placement is the Zed shape.
-  An unattended box on a personal plan is the workload Anthropic said it cut off, so the box
-  placement takes a key only. `claude setup-token` is accepted inside Anthropic's own action,
-  the one automated form the docs name.
-- **OpenAI.** "The right way to authenticate automation is with an API key." ChatGPT login
-  is for "trusted private infrastructure" and "Do not use this workflow for public or
-  open-source repositories" (learn.chatgpt.com/docs/auth/ci-cd-auth). Every prismalens repo
-  is public, so no placement here runs a ChatGPT login. `codex-acp` takes a key.
+- **Anthropic.** The legal page (code.claude.com/docs/en/legal-and-compliance) bars third
+  parties from routing requests "through Free, Pro, or Max plan credentials" on users' behalf,
+  and bars tools that "collect, store, or intermediate" the credential. `claude-code` rows take
+  an API key, a cloud identity or an Anthropic-compatible base URL. The Actions lane accepts
+  `claude setup-token` inside Anthropic's own action, the automated form the docs name.
+- **OpenAI.** "The right way to authenticate automation is with an API key"
+  (learn.chatgpt.com/docs/auth/ci-cd-auth). `codex-acp` takes a key.
 - **Keys and cloud identity** are the portable layer and the OSS default. Bedrock, Vertex and
   Foundry through the Claude CLI's env vars; OpenAI-compatible base URLs through Codex and
   OpenCode; keyless local models through `diff-only`, OpenCode, and Claude Code behind an
@@ -257,12 +244,12 @@ names, and the product's docs lead with the key and the free local model.
 
 | Failure | Who notices | What is posted |
 |---|---|---|
-| Runner down or laptop asleep | Control plane, `runner_timeout` | `no-runner` verdict; job stays queued |
-| Sub window exhausted | `classify-failure` on the runner | `credential-cooldown` with `reset_at`; requeue |
+| Runner down | Control plane, `runner_timeout` | `no-runner` verdict; job stays queued |
+| Rate limit or account limit hit | `classify-failure` on the runner | `credential-cooldown` with `reset_at`; requeue |
 | Credential rejected | Same | `api-error` with the existing "replace the credential" text |
 | Control plane down | Nobody, automatically: GitHub never redelivers a failed delivery, and manual redelivery reaches only the past 3 days | Nothing until it returns. Boot-time reconciliation is the recovery path for any outage past that window: list open PRs, which `pr-state.yml` already does |
 | Engine crashes mid-round | Missing `finished` before heartbeat timeout | `api-error`, job retried once on another slot |
-| Two runners, same credential | Registration refuses a duplicate fingerprint with `concurrency: 1` | Startup error |
+| Two runners, same credential | Registration refuses a fingerprint another live runner holds | Startup error |
 | D1 write limits (100k rows/day free) | Weekly health report (#176) | Well above current volume of about 250 rounds a month |
 
 ## 8. Is it really open source someone can rely on
@@ -273,15 +260,14 @@ Yes, with three conditions stated plainly:
    (100k requests a day, 10k queue ops a day, 5 GB D1). It is still a dependency Kodus and
    PR-Agent do not impose. Define the runner API as the contract so a SQLite control plane can
    follow; do not build it for v1.
-2. **The docs lead with the API key and the free local model.** The laptop placement is
-   described as your own sign-in under your own agreement, unsupported; no doc mentions a
-   subscription on a box.
+2. **The docs lead with the API key and the free model.** Those are the credentials the runner
+   takes; section 6 lists them.
 3. **The #59 checklist still applies.** Name, `@v1` tags, changelog, quickstart against a
    fixture repo, SECURITY.md. None of that is engineering; all of it is what makes "reliable"
    true for a stranger.
 
 What a stranger does: `wrangler deploy` the control plane, click through the GitHub App
-manifest flow, `docker compose up` the runner with one key, or start it on a laptop with none. Three
+manifest flow, `docker compose up` the runner with one key or with none on a free model. Three
 steps, no public IP.
 
 What they get that nothing surveyed offers: a reviewer that says when it did not run, a cost
@@ -293,6 +279,9 @@ including a free local one. Those are the product.
 - The Actions lane stays, and becomes a thin runner over time. Two runners for one contract is
   the honest offer: run a box, or do not.
 - The telemetry Worker is the control plane; nothing moves off Cloudflare.
+- An author-side plugin (#184) runs the lane's prompt as a skill in the author's own harness
+  and submits its events to the control plane as an advisory round. It never posts through the
+  App, never gates and never changes admission.
 - Assayer gains an `engine` filter on existing views. Compare stays refused (#119); per-engine
   columns on `/findings` fates is the most #81 asked for, and its wording already forbids
   winner banners.
@@ -317,7 +306,7 @@ Nothing on the runner has a deadline. The one dated item is the Actions lane's s
    end to end with the Actions lane still on, so the PR carries both rounds and the sweep
    records both. Fix whatever the sweep cannot attribute.
 4. **Telemetry and config.** `engine` column, usage record from `usage_update`,
-   `credential_type` filled from registration, `user-login` added to the vocabulary. Extract
+   `credential_type` filled from registration. Extract
    the config resolver into a package with its tests, used by the control plane; the Actions
    lane keeps its inline copy until the next release.
 5. **Second engine and docs.** The other ACP row on a key. Codex only once prismalens#639's
@@ -333,11 +322,11 @@ Nothing on the runner has a deadline. The one dated item is the Actions lane's s
 
 1. Name. It is public-facing; "claude-review" cannot survive the second engine.
 2. Whether the box earns its keep at API rates. Today's volume is $150 to $370 a month at list
-   price on either placement, so the box's case is sandboxing, engine choice and the product
+   price wherever it runs, so the box's case is sandboxing, engine choice and the product
    shape, not price.
 3. Whether the runner image bundles the vendor CLIs or expects them installed. Bundling pins
-   versions; expecting them keeps the image small. The Claude adapter reuses an installed
-   `claude` through `CLAUDE_CODE_EXECUTABLE`, so bundling costs nothing on a laptop.
+   versions; expecting them keeps the image small. The Claude adapter finds `claude` through
+   `CLAUDE_CODE_EXECUTABLE`, so either works for it.
 4. What "level" means for `diff-only`, which has no subagents to spend.
 5. Whether GitHub-hosted runners remain a supported runner in v1 or only in the current lane.
 6. Whether prismalens's canonical stream adapter is imported as a package or copied; #182's
@@ -374,7 +363,7 @@ each parked issue is re-scoped against what then exists.
 | #80 GitHub App | parked | Untouched. The App itself is created by the umbrella because the service needs webhooks and tokens; roles and fleet discovery stay here. |
 | #78, #92, #106 | parked | Untouched. #78 gains a prerequisite in the resolver package; #106's `telemetry.share` reading moves to the control plane. |
 | prismalens | | Nothing. The harness seam is ACP and Codex stays inadmissible there (#639). |
-| rig (formerly agent-rig) | `skills/claude-review-lane` and its `references/verdicts.md`, `data/repo-meta.json`, `hooks/pr-created.sh` | Nothing carries the subscription or subprocess premise; the skill states the callee's OAuth-or-key rule as it is. When #184 lands: the skill's verdict table is hand-pinned to a gh-workflows commit and must be re-pinned for `no-runner`, `credential-cooldown` and the `engine` field on the liveness line; rounds from the runner post under the App's login, not `claude[bot]`, so the liveness parsing and the sweep filter both match two logins; `repo-meta.json` gains which placement reviews a repo. At the #59 cut: the product ships its own plugin (the lane skill, a verdicts reference generated from the vocabulary and pinned by a drift test in the product repo, the liveness parser) and rig imports it from that marketplace the way it already vendors CodeRabbit's `autofix` and the pstack skills. `coderabbit-lane`, `autofix`, `cr-reply.sh` and the hooks stay in rig; they are the operator's working style, not the product. |
+| rig (formerly agent-rig) | `skills/claude-review-lane` and its `references/verdicts.md`, `data/repo-meta.json`, `hooks/pr-created.sh` | Nothing carries the subscription or subprocess premise; the skill states the callee's OAuth-or-key rule as it is. When #184 lands: the skill's verdict table is hand-pinned to a gh-workflows commit and must be re-pinned for `no-runner`, `credential-cooldown` and the `engine` field on the liveness line; rounds from the runner post under the App's login, not `claude[bot]`, so the liveness parsing and the sweep filter both match two logins; `repo-meta.json` gains which lane reviews a repo. At the #59 cut: the product ships its own plugin (the lane skill, a verdicts reference generated from the vocabulary and pinned by a drift test in the product repo, the liveness parser) and rig imports it from that marketplace the way it already vendors CodeRabbit's `autofix` and the pstack skills. `coderabbit-lane`, `autofix`, `cr-reply.sh` and the hooks stay in rig; they are the operator's working style, not the product. |
 
 **New issues, filed only when the operator says so.**
 

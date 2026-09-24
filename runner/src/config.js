@@ -1,5 +1,5 @@
 // The daemon's config file (#184): where the control plane is, which runner token to present,
-// where the runner sits, and which credentials it offers. Secrets never sit in the file: the
+// its placement (always `box`), and which credentials it offers. Secrets never sit in the file: the
 // runner token and every key are named by environment variable and read at load.
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -10,8 +10,6 @@ import { ENGINES } from './engines.js';
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const ENV_REF = /^\$\{([A-Z_][A-Z0-9_]*)\}$/;
 const RUNNER_TOKEN = /^asr_[A-Za-z0-9_-]{43}$/;
-// Box isolation (a fresh container per job) is a later slice; until then a runner registered
-// `box` would claim isolation it does not have, so the value is refused.
 const DEFERRED_KINDS = new Set(['user-login', 'bedrock', 'vertex', 'foundry']);
 
 const credentialSchema = z.object({
@@ -69,8 +67,7 @@ export function parseConfig(raw, env = process.env, { hostname = os.hostname() }
   if (!token) fail('runner_token', `${ref[1]} is not set`);
   if (!RUNNER_TOKEN.test(token)) fail('runner_token', `${ref[1]} is not a runner token`);
 
-  if (cfg.placement === 'box') fail('placement', 'placement box needs the container slice; use laptop');
-  if (cfg.placement !== 'laptop') fail('placement', `unknown placement ${cfg.placement}`);
+  if (cfg.placement !== 'box') fail('placement', `unknown placement ${cfg.placement}`);
 
   const seenNames = new Set();
   const seenPairs = new Set();
@@ -100,11 +97,6 @@ export function parseConfig(raw, env = process.env, { hostname = os.hostname() }
       fingerprint: fingerprint(c.kind, c.engine, material, hostname),
     };
   });
-
-  // One job at a time on a laptop (design §3.2).
-  if (credentials.length !== 1 || credentials[0].concurrency !== 1) {
-    fail('credentials', 'a laptop runner offers exactly one credential at concurrency 1');
-  }
 
   const config = {
     control_plane: checkControlPlane(cfg.control_plane),
