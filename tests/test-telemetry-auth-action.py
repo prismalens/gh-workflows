@@ -35,6 +35,14 @@ def extract_script():
     sys.exit(f"step 'auth' not found in {ACTION_FILE}")
 
 
+def wrap_base64(data, width=60):
+    """Wrap a base64 string with a newline every `width` characters plus a
+    trailing newline, matching the shape of the GitHub contents API's
+    `.content` field (#177 follow-up: the wrap was mistaken for garbage)."""
+    lines = [data[i : i + width] for i in range(0, len(data), width)]
+    return "\n".join(lines) + "\n"
+
+
 def run_action_step(
     script,
     *,
@@ -46,6 +54,7 @@ def run_action_step(
     stub_curl_fail=False,
     repo_fetch_fail=False,
     repo_bad_base64=None,
+    wrap_repo_base64=False,
 ):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
@@ -78,6 +87,8 @@ exit 0
         # claude-review.yml (default branch, no ref) and for the org defaults
         # file at prismalens/gh-workflows@main. Anything else 404s.
         repo_b64 = base64.b64encode(repo_config.encode()).decode() if repo_config is not None else ""
+        if wrap_repo_base64 and repo_b64:
+            repo_b64 = wrap_base64(repo_b64)
         org_b64 = base64.b64encode(org_config.encode()).decode() if org_config is not None else ""
         gh_script = f"""#!/usr/bin/env bash
 path="$2"
@@ -465,6 +476,27 @@ def main():
         print("  FAIL  Case 23: missing invalid-UTF-8 warning")
     else:
         print("  ok    Case 23: invalid UTF-8 decodes strictly and resolves off with a warning")
+
+    # Case 24: the contents API wraps .content with a newline every 60
+    # characters plus a trailing newline; that wrap must not be mistaken for
+    # the non-alphabet garbage validate=True exists to catch (#177 follow-up,
+    # live evidence: prismalens/sreforge run 35942791242).
+    proc, outputs = run_action_step(
+        script,
+        # Padded so the base64 form is long enough to actually wrap at 60
+        # characters (a short config's base64 fits on one line and would
+        # not exercise the wrap at all).
+        repo_config=(
+            "# padding so the base64 form wraps across multiple lines like the real contents API\n"
+            "telemetry:\n  share: full\n"
+        ),
+        wrap_repo_base64=True,
+    )
+    if outputs.get("share") != "full":
+        fails.append(f"Case 24 expected share=full, got {outputs.get('share')}")
+        print("  FAIL  Case 24: wrapped base64 (as the contents API returns it) resolves full")
+    else:
+        print("  ok    Case 24: wrapped base64 (as the contents API returns it) resolves full")
 
     # Case 11: the action's url input is required, with no invented default host
     action = yaml.safe_load(ACTION_FILE.read_text())
