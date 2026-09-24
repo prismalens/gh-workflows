@@ -4,17 +4,23 @@
 # depends on a laptop being on. Runs entirely on GitHub's hosted runners.
 #
 # Policy:
-#   * npm (npm_and_yarn)   -> auto-merge PATCH only. A minor on a production
-#     dependency can ship real behaviour changes, so minors wait for a human.
-#     These arrive as the grouped dev-minor-patch / prod-minor-patch PRs; for a
-#     grouped PR fetch-metadata reports the HIGHEST semver change in the group,
-#     so any group containing a minor reports semver-minor and is NOT matched.
+#   * npm (npm_and_yarn) production deps -> auto-merge PATCH only. A minor can
+#     ship real behaviour changes, so it waits for a human.
+#   * npm (npm_and_yarn) dev deps -> auto-merge PATCH + MINOR too. A dev-only
+#     minor doesn't touch runtime behaviour. Matched by fetch-metadata's
+#     dependency-type (direct:development) or by landing in the dev-minor-patch
+#     group a caller's dependabot.yml defines (that group excludes majors).
 #   * github-actions bumps -> auto-merge MINOR + PATCH (low risk, usually a
 #     pinned-tag or pinned-SHA move).
 #   * Majors, in any ecosystem, are NEVER auto-merged — they always wait for a
 #     human. Majors are excluded from the groups in dependabot.yml and open as
 #     individual PRs.
 #   * Any other ecosystem is not matched and waits for a human.
+#
+# Dependabot force-pushes a grouped PR as its membership changes, and every
+# push re-runs this workflow. The disarm step turns auto-merge back off when
+# the gate no longer holds, so a group that grew past what's allowed can't
+# still merge on an earlier, narrower push.
 #
 # `gh pr merge --auto` only QUEUES the merge; GitHub completes it after every
 # required check on the base branch is green. Prerequisites (one-time, per repo):
@@ -41,14 +47,50 @@ jobs:
         # Dependabot bumps the pin via the github-actions ecosystem.
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
+      - name: Decide eligibility
+        id: gate
+        # Single source of truth for the policy above, so the queue step and
+        # the disarm step below can't drift out of sync with each other.
+        env:
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEPENDENCY_TYPE: ${{ steps.meta.outputs.dependency-type }}
+          DEPENDENCY_GROUP: ${{ steps.meta.outputs.dependency-group }}
+        run: |
+          eligible=false
+          if [[ "$ECOSYSTEM" == "npm_and_yarn" ]]; then
+            if [[ "$UPDATE_TYPE" == "version-update:semver-patch" ]]; then
+              eligible=true
+            elif [[ "$UPDATE_TYPE" == "version-update:semver-minor" \
+              && ( "$DEPENDENCY_TYPE" == "direct:development" || "$DEPENDENCY_GROUP" == "dev-minor-patch" ) ]]; then
+              eligible=true
+            fi
+          elif [[ "$ECOSYSTEM" == "github_actions" \
+            && ( "$UPDATE_TYPE" == "version-update:semver-patch" || "$UPDATE_TYPE" == "version-update:semver-minor" ) ]]; then
+            eligible=true
+          fi
+          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
+
       - name: Queue auto-merge for safe updates
-        if: >-
-          (steps.meta.outputs.package-ecosystem == 'npm_and_yarn' &&
-          steps.meta.outputs.update-type == 'version-update:semver-patch') ||
-          (steps.meta.outputs.package-ecosystem == 'github_actions' &&
-          (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
-          steps.meta.outputs.update-type == 'version-update:semver-minor'))
+        if: steps.gate.outputs.eligible == 'true'
         run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Disarm auto-merge for ineligible updates
+        if: steps.gate.outputs.eligible == 'false'
+        # Dependabot force-pushes a grouped PR in place as membership changes,
+        # re-running this workflow on the same PR. If an earlier push queued
+        # auto-merge and this push no longer qualifies, take the queue back
+        # off. `--disable-auto` errors when auto-merge isn't enabled, the
+        # common case, so look first; any other failure must fail the job,
+        # or an ineligible PR stays armed.
+        run: |
+          armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [[ "$armed" == "true" ]]; then
+            gh pr merge --disable-auto "$PR_URL"
+          fi
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
