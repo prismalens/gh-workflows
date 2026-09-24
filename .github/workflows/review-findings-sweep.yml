@@ -125,6 +125,17 @@ jobs:
               ;;
           esac
 
+          # REVIEW_TELEMETRY_URL may be the Worker's bare origin or already end in
+          # /ingest (the Worker accepts POST /ingest or /); normalise to a base URL
+          # before appending a route, the same way telemetry-health.yml does.
+          INGEST_URL="${INGEST_URL%/}"
+          case "$INGEST_URL" in
+            */ingest|*/ingest/) BASE_URL="${INGEST_URL%/ingest}" ;;
+            *) BASE_URL="$INGEST_URL" ;;
+          esac
+          BASE_URL="${BASE_URL%/}"
+          FINDINGS_URL="${BASE_URL}/ingest/findings"
+
           OWNER="${REPOSITORY%%/*}"
           NAME="${REPOSITORY##*/}"
           FULL_HISTORY="${FULL_HISTORY:-false}"
@@ -591,7 +602,7 @@ jobs:
             code=$(printf '%s' "$findings_json" | curl -sS -m 15 \
               --proto '=https' \
               -o /dev/null -w '%{http_code}' \
-              -X POST "${INGEST_URL%/}/ingest/findings" \
+              -X POST "$FINDINGS_URL" \
               -H "@$hdr" \
               --data-binary @-) || {
                 echo "::warning::review-findings-sweep: PR #${pr} ingest POST did not complete; ${count} finding(s) unconfirmed."
