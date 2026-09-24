@@ -6,16 +6,16 @@ true of this repository.
 ## CodeRabbit is the only reviewer
 
 `claude-code-action` self-skips on any pull request that edits
-`.github/workflows/claude-code-review.yml`, and this repository hosts that file. So
-`auto_review` is on in `.coderabbit.yaml` here, and off in the consumer repos, where the Claude
-lane covers every pull request.
+`.github/workflows/claude-code-review.yml`, and this repository hosts that file, so the Claude
+lane does not review here. `auto_review` is off: the hourly review queue
+(`.github/workflows/review-queue.yml`, Sumit1993/rig#150) summons CodeRabbit on one pull request
+per hour across every repo and merges pull requests whose review came back clean.
 
 Never run a model pass in place of that review. Opus, a subagent and `/code-review` cannot read
 the `path_instructions` in `.coderabbit.yaml`, which carry this repository's invariants.
 
-Opening a non-draft pull request spends a review slot, and so does marking a draft ready.
-Measured on #142, #155, #158 (bot comment within 93 seconds, no summon) and #161 (draft skipped).
-So open a draft, push to it freely, and mark it ready once.
+A draft is never summoned. Open a draft, push to it freely, and mark it ready once; the queue
+picks it up after its head commit is 20 minutes old.
 
 ## Pins that move together
 
@@ -42,7 +42,8 @@ gh api repos/prismalens/gh-workflows/rulesets/22383257 --jq '[.rules[].type], [.
 `branches/main/protection` returns 404 here because the protection is a ruleset, so that
 endpoint alone proves nothing. A 403 from either endpoint means the token cannot look.
 
-Never merge or enable auto-merge unless the operator says so on that pull request.
+Never merge or enable auto-merge unless the operator says so on that pull request. The review
+queue's merge of a clean pull request is the one standing exception.
 
 ## A callee permission is a caller change
 
