@@ -4375,14 +4375,13 @@ describe("Worker telemetry read API", () => {
       "window_end",
       "runs_seen",
       "runs_accounted",
-      "unaccounted_runs",
       "startup_failures",
-      "lane_events_by_reason",
       "findings_swept",
       "share",
       "ingest_auth",
       "received_at",
     ];
+    const HEALTH_BLOB_COLUMNS = ["unaccounted_runs", "lane_events_by_reason"];
 
     function healthRow(overrides = {}) {
       return {
@@ -4445,10 +4444,64 @@ describe("Worker telemetry read API", () => {
       for (const column of HEALTH_COLUMNS) {
         assert.match(query.sql, new RegExp(`\\b${column}\\b`), `expected ${column} in the SELECT`);
       }
+      for (const column of HEALTH_BLOB_COLUMNS) {
+        assert.ok(
+          !new RegExp(`\\b${column}\\b`).test(query.sql),
+          `expected ${column} not in the default SELECT`
+        );
+      }
       assert.ok(query.sql.includes("repository = ?"));
       assert.ok(query.sql.includes("ORDER BY window_start DESC, id DESC"));
       assert.ok(!/GROUP BY|DISTINCT|ROW_NUMBER/.test(query.sql), "rows are never merged");
       assert.deepEqual(query.args, ["prismalens/gh-workflows", 52]);
+    });
+
+    it("adds unaccounted_runs and lane_events_by_reason only under include=blobs, without lowering limit", async () => {
+      const helper = await getAccessHelper();
+      const dbNoBlobs = createFakeDb({
+        handler: (sql) => (sql.includes("FROM health_reports") ? { results: [healthRow()] } : null),
+      });
+      const resNoBlobs = await worker.fetch(
+        makeAuthenticatedRequest("/api/health-reports?limit=200", helper.jwt),
+        { ...helper.env, DB: dbNoBlobs }
+      );
+      assert.equal(resNoBlobs.status, 200);
+      const queryNoBlobs = dbNoBlobs.queries[0];
+      for (const column of HEALTH_BLOB_COLUMNS) {
+        assert.ok(!new RegExp(`\\b${column}\\b`).test(queryNoBlobs.sql), column);
+      }
+      // Limit stays at 200 without include=blobs: no reason to cap it lower here.
+      assert.equal(queryNoBlobs.args[queryNoBlobs.args.length - 1], 200);
+
+      const dbBlobs = createFakeDb({
+        handler: (sql) => (sql.includes("FROM health_reports") ? { results: [healthRow()] } : null),
+      });
+      const resBlobs = await worker.fetch(
+        makeAuthenticatedRequest("/api/health-reports?include=blobs&limit=200", helper.jwt),
+        { ...helper.env, DB: dbBlobs }
+      );
+      assert.equal(resBlobs.status, 200);
+      const queryBlobs = dbBlobs.queries[0];
+      for (const column of HEALTH_BLOB_COLUMNS) {
+        assert.match(queryBlobs.sql, new RegExp(`\\b${column}\\b`), column);
+      }
+      // include=blobs does not cap health-reports' limit the way it does for /api/runs:
+      // these two columns are bounded by a report's own run count, and the Weekly
+      // health tab is the one caller and always wants every row it can get (#179).
+      assert.equal(queryBlobs.args[queryBlobs.args.length - 1], 200);
+    });
+
+    it("rejects an invalid include with 400", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb();
+      const res = await worker.fetch(
+        makeAuthenticatedRequest("/api/health-reports?include=everything", helper.jwt),
+        { ...helper.env, DB: db }
+      );
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.equal(body.error, "invalid include");
+      assert.equal(db.queries.length, 0);
     });
 
     it("pages with a window_start|id cursor and hands one back on a full page", async () => {

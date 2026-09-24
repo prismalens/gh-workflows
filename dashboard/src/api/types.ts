@@ -290,11 +290,17 @@ export interface HealthReportRow {
   window_end: string;
   runs_seen: number;
   runs_accounted: number;
-  /** JSON array of `{ id, conclusion, created_at }`; parse with parseUnaccountedRuns. */
-  unaccounted_runs: string;
+  /**
+   * JSON array of `{ id, conclusion, created_at }`; parse with parseUnaccountedRuns.
+   * Only present when the request passed include=blobs.
+   */
+  unaccounted_runs?: string | null;
   startup_failures: number;
-  /** JSON object of lane event reason to count; parse with parseLaneEventsByReason. */
-  lane_events_by_reason: string;
+  /**
+   * JSON object of lane event reason to count; parse with parseLaneEventsByReason.
+   * Only present when the request passed include=blobs.
+   */
+  lane_events_by_reason?: string | null;
   findings_swept: number;
   share: string;
   ingest_auth: string;

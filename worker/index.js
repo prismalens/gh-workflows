@@ -1025,6 +1025,25 @@ async function handleHealthReports(url, env) {
     limit = Number(limitParam);
   }
 
+  // unaccounted_runs and lane_events_by_reason are JSON blob columns (up to
+  // 1000 runs' worth per row); gated behind include=blobs like handleRuns's
+  // blob columns, so a plain list fetch stays small. Unlike handleRuns, the
+  // limit is not lowered under include=blobs: these two columns are bounded
+  // by a report's own run count, not by an arbitrary result payload, and the
+  // Weekly health tab is the one caller and always requests every row it can
+  // (#179) rather than one row's detail.
+  const includeParam = searchParams.get("include");
+  let includeBlobs = false;
+  if (includeParam !== null) {
+    if (includeParam !== "blobs") {
+      return new Response(JSON.stringify({ error: "invalid include" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    includeBlobs = true;
+  }
+
   const conditions = [];
   const bindings = [];
 
@@ -1057,14 +1076,15 @@ async function handleHealthReports(url, env) {
     "window_end",
     "runs_seen",
     "runs_accounted",
-    "unaccounted_runs",
     "startup_failures",
-    "lane_events_by_reason",
     "findings_swept",
     "share",
     "ingest_auth",
     "received_at",
   ];
+  if (includeBlobs) {
+    columns.push("unaccounted_runs", "lane_events_by_reason");
+  }
 
   let query = `SELECT
     ${columns.join(",\n    ")}

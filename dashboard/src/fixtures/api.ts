@@ -43,6 +43,8 @@ const BLOB_COLUMNS = [
   "config_effective",
 ] as const;
 
+const HEALTH_BLOB_COLUMNS = ["unaccounted_runs", "lane_events_by_reason"] as const;
+
 /**
  * Reimplements handleRuns, handleSummary, handleLaneEvents and handleChanges from
  * worker/index.js against an in-memory table, so the routes can be exercised without Access.
@@ -395,7 +397,13 @@ export function makeFixtureApi(
         );
       }
       const limit = query.limit ?? 52;
-      const page = filtered.slice(0, limit);
+      const includeBlobs = query.include === "blobs";
+      const page = filtered.slice(0, limit).map((row) => {
+        if (includeBlobs) return { ...row };
+        const stripped = { ...row };
+        for (const column of HEALTH_BLOB_COLUMNS) delete stripped[column];
+        return stripped;
+      });
       const last = page[page.length - 1];
       return {
         rows: page,

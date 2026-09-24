@@ -83,6 +83,8 @@ export interface HealthReportsQuery {
   limit?: number;
   repository?: string;
   cursor?: string;
+  /** "blobs" adds unaccounted_runs and lane_events_by_reason; the Worker does not lower limit for it. */
+  include?: "blobs";
 }
 
 /** The Worker caps limit at 1000, and at 50 once include=blobs is set. */
@@ -565,9 +567,13 @@ export function isHealthReportRow(row: unknown): row is HealthReportRow {
     typeof r.window_end === "string" &&
     typeof r.runs_seen === "number" &&
     typeof r.runs_accounted === "number" &&
-    typeof r.unaccounted_runs === "string" &&
+    (r.unaccounted_runs === undefined ||
+      r.unaccounted_runs === null ||
+      typeof r.unaccounted_runs === "string") &&
     typeof r.startup_failures === "number" &&
-    typeof r.lane_events_by_reason === "string" &&
+    (r.lane_events_by_reason === undefined ||
+      r.lane_events_by_reason === null ||
+      typeof r.lane_events_by_reason === "string") &&
     typeof r.findings_swept === "number" &&
     typeof r.share === "string" &&
     typeof r.ingest_auth === "string" &&

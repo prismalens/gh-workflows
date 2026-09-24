@@ -32,11 +32,12 @@ count switches, from an all-time cumulative to a per-day mean at
 
 The Console has four altitudes, and this is a ruling (#185). **Fleet** (`/`, `/repos`, `/failures`,
 and `/findings` in fate-count mode) reads `GET /api/fleet/*`: aggregates that carry counts and
-identifiers and never a name, a title or a body. **Repo** (`/repos/$owner/$repo`, not yet built)
-and **Investigate** (`/prs/…`, `/rounds/…`, the `/findings` list) read the row routes. **Ops**
-(`/ops`, not yet built) reads what runs. The wall is in the API, not the UI: a fleet handler's SQL
-never names `pr_title`, `pr_author`, `verdict_text`, `header_raw` or `body_excerpt`, pinned by
-`tests/test-fleet-wall.py` and by the Worker test. A Fleet page's fetch set is pinned by
+identifiers and never a name, a title or a body. **Repo** (`/repos/$owner/$repo`, reads
+`GET /api/health-reports`) and **Investigate** (`/prs/…`, `/rounds/…`, the `/findings` list) read
+the row routes. **Ops** (`/ops`, not yet built) reads what runs. The wall is in the API, not the
+UI: a fleet handler's SQL never names `pr_title`, `pr_author`, `verdict_text`, `header_raw` or
+`body_excerpt`, pinned by `tests/test-fleet-wall.py` and by the Worker test. A Fleet page's
+fetch set is pinned by
 `src/routes/routes.wall.test.tsx`. Crossed today: `/repos`, one request to `GET /api/fleet/repos`.
 Not yet: `/` (waits on a ruling for UTC or viewer-zone day buckets and on where its attention feed
 goes), `/failures` (waits on #194) and `/findings` fate counts; each still reads the row routes.

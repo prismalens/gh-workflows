@@ -117,16 +117,22 @@ function ReposPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {repos.map((repo) => (
+                  {repos.map((repo) => {
+                    const params = repoParams(repo.repository);
+                    return (
                     <TableRow key={repo.repository}>
                       <TableCell className="whitespace-nowrap">
-                        <Link
-                          to="/repos/$owner/$repo"
-                          params={repoParams(repo.repository)}
-                          className="underline-offset-4 hover:underline"
-                        >
-                          {repo.repository}
-                        </Link>
+                        {params ? (
+                          <Link
+                            to="/repos/$owner/$repo"
+                            params={params}
+                            className="underline-offset-4 hover:underline"
+                          >
+                            {repo.repository}
+                          </Link>
+                        ) : (
+                          repo.repository
+                        )}
                       </TableCell>
                       <TableCell className="tabular">{formatCount(repo.rounds)}</TableCell>
                       <TableCell className="tabular whitespace-nowrap">
@@ -165,7 +171,8 @@ function ReposPage() {
                       </TableCell>
                       <TableCell className="tabular">{formatCount(repo.denials)}</TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </CardContent>

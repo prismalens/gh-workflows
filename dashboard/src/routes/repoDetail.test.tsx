@@ -108,7 +108,7 @@ describe("/repos/$owner/$repo: the weekly health tab (#179)", () => {
     expect(runsSeen).toEqual(["29", "11", "40"]);
     expect(within(panel).queryByText("999")).toBeNull();
 
-    expect(spy).toHaveBeenCalledWith({ repository: REPO, limit: 200 });
+    expect(spy).toHaveBeenCalledWith({ repository: REPO, limit: 200, include: "blobs" });
   });
 
   it("expands unaccounted runs into links to their Actions runs, and shows lane events and ingest", async () => {

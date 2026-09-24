@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { FleetRepoRow } from "@/api/types";
-import { malformedConfigs, quietRepos, summariseRepos } from "./repos";
+import { malformedConfigs, quietRepos, repoParams, summariseRepos } from "./repos";
 
 function repo(overrides: Partial<FleetRepoRow> & { repository: string }): FleetRepoRow {
   return { rounds: 0, denials: 0, last_round: null, last_recorded_at: null, ...overrides };
@@ -67,5 +67,27 @@ describe("quietRepos", () => {
       repo({ repository: "o/one", rounds: 1, last_recorded_at: "2026-08-30T01:00:00.000Z" }),
     ];
     expect(quietRepos(rows)).toEqual([]);
+  });
+});
+
+describe("repoParams", () => {
+  it("splits owner/name on the first slash", () => {
+    expect(repoParams("prismalens/gh-workflows")).toEqual({
+      owner: "prismalens",
+      repo: "gh-workflows",
+    });
+  });
+
+  // A bearer-authenticated ingest accepts any non-empty repository string, so a
+  // name with no slash (or an empty owner/repo either side of it) can reach here.
+  // Before this fix, indexOf's -1 made owner = "ab" and repo = "abc" for "abc",
+  // a wrong link that looked like a normal one.
+  it("returns null for a name with no slash", () => {
+    expect(repoParams("abc")).toBeNull();
+  });
+
+  it("returns null for a name with an empty owner or repo segment", () => {
+    expect(repoParams("/abc")).toBeNull();
+    expect(repoParams("abc/")).toBeNull();
   });
 });

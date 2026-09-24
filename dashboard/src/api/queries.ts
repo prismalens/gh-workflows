@@ -261,7 +261,14 @@ export const MAX_HEALTH_REPORTS = 200;
  */
 export function useHealthReportsQuery(repository: string) {
   const api = useApi();
-  const query: HealthReportsQuery = { repository, limit: MAX_HEALTH_REPORTS };
+  // WeeklyHealth renders unaccounted_runs and lane_events_by_reason for every
+  // row unconditionally, so this, unlike the round detail's include=blobs, is
+  // not an on-demand expansion: the one caller always needs both columns.
+  const query: HealthReportsQuery = {
+    repository,
+    limit: MAX_HEALTH_REPORTS,
+    include: "blobs",
+  };
   return useQuery({
     queryKey: ["health-reports", query],
     queryFn: () => api.fetchHealthReports(query),
