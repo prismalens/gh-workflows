@@ -59,6 +59,45 @@ export function formatTimestampCompact(iso: string | null | undefined): string {
   return `${month} ${day} ${hours}:${minutes}`;
 }
 
+const RELATIVE_LIMIT_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * `12m`, `3h`, `2d` under a week, so a quiet lane reads as quiet at a glance;
+ * older instants fall back to the compact date (#209).
+ */
+export function formatRelative(iso: string | null | undefined, now: Date = new Date()): string {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const ms = now.getTime() - date.getTime();
+  if (ms < 0 || ms >= RELATIVE_LIMIT_MS) return formatTimestampCompact(iso);
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** Whole days between an instant and now, for age columns that drive highlighting. */
+export function ageInDays(iso: string | null | undefined, now: Date = new Date()): number | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, Math.floor((now.getTime() - t) / 86_400_000));
+}
+
+/** `17h`, `18d`, `6w`: the age chip, short enough for a narrow column. */
+export function formatAge(iso: string | null | undefined, now: Date = new Date()): string {
+  if (!iso) return "—";
+  const ms = now.getTime() - new Date(iso).getTime();
+  if (Number.isNaN(ms)) return "—";
+  const hours = Math.max(0, Math.floor(ms / 3_600_000));
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return days < 60 ? `${days}d` : `${Math.floor(days / 7)}w`;
+}
+
 /** The viewer's zone name, for a chart note that says which calendar days it means. */
 export function localZoneName(date: Date = new Date()): string {
   return (

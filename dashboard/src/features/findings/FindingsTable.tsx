@@ -13,6 +13,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { decodeFate, fixCitation } from "./findings";
 import { FateChip, FixCitedBadge } from "./FateChip";
+import { SeverityChip } from "./FindingsExplorer";
+import { findingBodyText, parseFindingLabel } from "./severity";
 
 /**
  * GitHub does not hand back a REST comment id for a GraphQL review thread node,
@@ -58,8 +60,8 @@ export function FindingsTable({
             <TableHead>Fate</TableHead>
             <TableHead>Pull request</TableHead>
             <TableHead>Path</TableHead>
-            <TableHead>Header</TableHead>
-            <TableHead>Body</TableHead>
+            <TableHead>Finding</TableHead>
+            <TableHead>Detail</TableHead>
             <TableHead>Fix</TableHead>
             <TableHead>Created</TableHead>
             <TableHead />
@@ -68,6 +70,8 @@ export function FindingsTable({
         <TableBody>
           {rows.map((row) => {
             const fate = decodeFate(row);
+            const label = parseFindingLabel(row);
+            const body = findingBodyText(row);
             const citation = fixCitation(row);
             const incomplete = incompletePrKeys.has(`${row.repository}#${row.pr_number}`);
             return (
@@ -94,10 +98,13 @@ export function FindingsTable({
                   {row.original_line !== null ? `:${row.original_line}` : ""}
                 </TableCell>
                 <TableCell className="max-w-[240px] truncate" title={row.header_raw ?? undefined}>
-                  {row.header_raw ?? "—"}
+                  <span className="inline-flex items-center gap-1.5">
+                    <SeverityChip severity={label.severity} />
+                    {label.category ?? row.header_raw ?? ""}
+                  </span>
                 </TableCell>
-                <TableCell className="max-w-[280px] truncate text-muted-foreground" title={row.body_excerpt ?? undefined}>
-                  {row.body_excerpt ?? "—"}
+                <TableCell className="max-w-[280px] truncate text-muted-foreground" title={body ?? undefined}>
+                  {body ?? "—"}
                 </TableCell>
                 <TableCell>{citation ? <FixCitedBadge citation={citation} /> : "—"}</TableCell>
                 <TableCell className="whitespace-nowrap">
