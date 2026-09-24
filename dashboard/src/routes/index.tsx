@@ -31,7 +31,7 @@ const inboxSearchSchema = z.object({
 
 export const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/",
+  path: "/inbox",
   validateSearch: inboxSearchSchema,
   component: InboxPage,
 });
