@@ -129,7 +129,8 @@ exit 1
 # `curl` stubs the ingest POST: reads the request body from stdin (the `--data-binary @-`
 # body), appends it as one line to $CAPTURE, and reports success unless $FAKE_HTTP_CODE
 # says otherwise. Every POST call appends, so the capture file's line count is the number
-# of PRs that actually got an incremental write.
+# of PRs that actually got an incremental write. It also records the URL curl was invoked
+# with to $CAPTURE_URL, so a test can assert the sweep posted to the right route.
 CURL_STUB = r"""#!/usr/bin/env bash
 body="$(cat)"
 printf '%s\n' "$body" >> "$CAPTURE"
@@ -139,6 +140,11 @@ for arg in "$@"; do
       f="${arg#@}"
       if [ -f "$f" ] && [ -n "${CAPTURE_HDR:-}" ]; then
         cat "$f" >> "$CAPTURE_HDR"
+      fi
+      ;;
+    http://*|https://*)
+      if [ -n "${CAPTURE_URL:-}" ]; then
+        printf '%s\n' "$arg" >> "$CAPTURE_URL"
       fi
       ;;
   esac
@@ -222,20 +228,21 @@ def overflow_page(*, comments, has_next=False, end_cursor=None):
 
 
 class SweepResult(tuple):
-    def __new__(cls, proc, rows, auth_headers="", gh_calls="", summary=""):
+    def __new__(cls, proc, rows, auth_headers="", gh_calls="", summary="", posted_urls=None):
         obj = super().__new__(cls, (proc, rows))
         obj.proc = proc
         obj.rows = rows
         obj.auth_headers = auth_headers
         obj.gh_calls = gh_calls
         obj.summary = summary
+        obj.posted_urls = posted_urls or []
         return obj
 
 
 def run_sweep(script, *, pr_list=None, main_fixtures, overflow_fixtures=None, http_code="200",
               max_attempts=2, backoff=0, full_history="false", window_days="3",
               pr_number=None, event_pr_number=None, event_action=None, auth_header=None,
-              telemetry_share=None, ingest_token="tok"):
+              telemetry_share=None, ingest_token="tok", ingest_url="https://example.com"):
     """
     main_fixtures: {pr_number: [page1_json, page2_json, ...]}. A PR whose list runs out
     before pagination is done (or an empty list) leaves later calls with no fixture, which
@@ -251,6 +258,8 @@ def run_sweep(script, *, pr_list=None, main_fixtures, overflow_fixtures=None, ht
         capture.write_text("")
         capture_hdr = td / "capture_hdr.txt"
         capture_hdr.write_text("")
+        capture_url = td / "capture_url.txt"
+        capture_url.write_text("")
         gh_calls = td / "gh_calls.txt"
         gh_calls.write_text("")
         summary_file = td / "summary.md"
@@ -264,6 +273,7 @@ def run_sweep(script, *, pr_list=None, main_fixtures, overflow_fixtures=None, ht
             PATH=f"{binp}:{env['PATH']}",
             CAPTURE=str(capture),
             CAPTURE_HDR=str(capture_hdr),
+            CAPTURE_URL=str(capture_url),
             GH_CALL_LOG=str(gh_calls),
             GITHUB_STEP_SUMMARY=str(summary_file),
             CALL_COUNTERS_DIR=str(call_dir),
@@ -276,7 +286,7 @@ def run_sweep(script, *, pr_list=None, main_fixtures, overflow_fixtures=None, ht
             EVENT_ACTION=str(event_action) if event_action is not None else "",
             AUTH_HEADER=str(auth_header) if auth_header is not None else "",
             TELEMETRY_SHARE=str(telemetry_share) if telemetry_share is not None else "",
-            INGEST_URL="https://example.com",
+            INGEST_URL=ingest_url,
             INGEST_TOKEN=ingest_token,
             FAKE_PR_LIST=json.dumps([{"number": n} for n in pr_list]),
             FAKE_HTTP_CODE=http_code,
@@ -300,7 +310,9 @@ def run_sweep(script, *, pr_list=None, main_fixtures, overflow_fixtures=None, ht
             if not line.strip():
                 continue
             rows.extend(json.loads(line)["findings"])
-        return SweepResult(p, rows, capture_hdr.read_text(), gh_calls.read_text(), summary_file.read_text())
+        posted_urls = [u for u in capture_url.read_text().splitlines() if u.strip()]
+        return SweepResult(p, rows, capture_hdr.read_text(), gh_calls.read_text(), summary_file.read_text(),
+                            posted_urls)
 
 
 
@@ -604,6 +616,28 @@ def main():
     )
     check("OIDC auth header: exits 0", res.proc.returncode == 0)
     check("OIDC auth header: header delivered to curl", "authorization: Bearer oidc-token-xyz-176" in res.auth_headers)
+
+    # ── 16. REVIEW_TELEMETRY_URL normalisation: both secret shapes reach /ingest/findings
+    # (bug: PR #193 on prismalens/sreforge posted to /ingest/ingest/findings and got HTTP
+    # 404, because the sweep appended the route to the URL verbatim instead of stripping a
+    # trailing /ingest the way telemetry-health.yml already does) ──
+    expected_findings_url = "https://example.com/ingest/findings"
+    for shape in (
+        "https://example.com",
+        "https://example.com/",
+        "https://example.com/ingest",
+        "https://example.com/ingest/",
+    ):
+        res = run_sweep(
+            script,
+            pr_number=42,
+            main_fixtures={42: [fx_pr42]},
+            max_attempts=1,
+            ingest_url=shape,
+        )
+        check(f"URL normalisation ({shape!r}): exits 0", res.proc.returncode == 0)
+        check(f"URL normalisation ({shape!r}): posts to {expected_findings_url}",
+              res.posted_urls == [expected_findings_url], res.posted_urls)
 
 
     print()
