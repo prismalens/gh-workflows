@@ -109,8 +109,11 @@ export function ResolutionPanel({ row }: { row: RoundRow }) {
   const raw = parseRawResult(row);
   const era = fieldEra(row);
   const context = describeContext(row);
+  // A null base is "not stacked" only from a lane that always knows the field (#179).
+  const baseUnknown = isAbsent(row.base_pr_number) && era.reason !== "lane-sent-nothing";
   const gaps = [
     isAbsent(row.credential_type) ? "Credential" : null,
+    baseUnknown ? "Stacked on" : null,
     isAbsent(row.patch_fingerprint) ? "Patch fingerprint" : null,
     context === null ? "Context" : null,
   ].filter((what): what is string => what !== null);
@@ -155,7 +158,7 @@ export function ResolutionPanel({ row }: { row: RoundRow }) {
         </Fact>
         <Fact label="Stacked on">
           {isAbsent(row.base_pr_number) ? (
-            "none"
+            baseUnknown ? era.label : "none"
           ) : (
             <a
               href={`https://github.com/${row.repository}/pull/${row.base_pr_number}`}

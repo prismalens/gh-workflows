@@ -121,7 +121,8 @@ describe("/rounds/$sessionId resolution facts (#179)", () => {
     expect(fact("Context")).toHaveTextContent("not recorded by this lane version");
     expect(fact("Context")).not.toHaveTextContent("0");
     expect(fact("Ingest")).toHaveTextContent("recorded before identity, #177");
-    const gap = degraded("Credential, Patch fingerprint, Context");
+    expect(fact("Stacked on")).toHaveTextContent(/^Stacked onnot recorded by this lane version$/);
+    const gap = degraded("Credential, Stacked on, Patch fingerprint, Context");
     expect(gap).toHaveAttribute("data-reason", "lane-did-not-send");
     expect(gap).toHaveTextContent(LANE_4_STRADDLES);
   });
@@ -129,7 +130,7 @@ describe("/rounds/$sessionId resolution facts (#179)", () => {
     render({ ...base, lane_version: null });
     await screen.findByText("Resolution");
     expect(fact("Credential")).toHaveTextContent(/^Credentialnot recorded$/);
-    const gap = degraded("Credential, Patch fingerprint, Context");
+    const gap = degraded("Credential, Stacked on, Patch fingerprint, Context");
     expect(gap).toHaveAttribute("data-reason", "not-recorded");
     expect(gap).toHaveTextContent(LANE_VERSION_UNKNOWN);
     expect(gap).not.toHaveTextContent(/predates/);
