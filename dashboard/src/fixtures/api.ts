@@ -1,6 +1,7 @@
 import type {
   ChangesQuery,
   FindingsQuery,
+  FleetFindingsQuery,
   FleetReposQuery,
   HealthReportsQuery,
   LaneEventsQuery,
@@ -14,6 +15,9 @@ import type {
   ChangesResponse,
   FindingRow,
   FindingsResponse,
+  FleetFindingsCounts,
+  FleetFindingsRepo,
+  FleetFindingsResponse,
   FleetRepoRow,
   FleetReposResponse,
   HealthReportRow,
@@ -29,6 +33,8 @@ import type {
   SummaryResponse,
 } from "@/api/types";
 import { summariseConfigs } from "@/features/failures/failures";
+import { decodeDivergence, decodeFate, fixCitation } from "@/features/findings/findings";
+import { reviewToMergeHours } from "@/features/findings/latency";
 import { applyRange } from "@/honesty/range";
 import { FIXTURE_PRS } from "./prs";
 import { FIXTURE_ROUNDS } from "./rounds";
@@ -408,6 +414,74 @@ export function makeFixtureApi(
       return {
         rows: page,
         next_cursor: page.length === limit && last ? `${last.window_start}|${last.id}` : null,
+      };
+    },
+
+    // Decoded with the rows page's own functions, so the fixture cannot drift
+    // from what the rows view shows; the Worker's SQL is pinned separately (#185 F3).
+    async fetchFleetFindings({ pr_state }: FleetFindingsQuery): Promise<FleetFindingsResponse> {
+      const stateOf = new Map(sortedPrs.map((p) => [`${p.repository}#${p.pr_number}`, p]));
+      const inFilter = sortedFindings.filter(
+        (f) => !pr_state || stateOf.get(`${f.repository}#${f.pr_number}`)?.state === pr_state,
+      );
+      const zero = (): FleetFindingsCounts => ({
+        findings: 0,
+        never_answered: 0,
+        pushback_open: 0,
+        resolved_by_human: 0,
+        self_graded: 0,
+        fix_cited: 0,
+        still_applies: 0,
+        verified_fixed_but_open: 0,
+        not_addressed_but_resolved: 0,
+        incomplete_prs: 0,
+      });
+      const byRepo = new Map<string, FleetFindingsRepo>();
+      const incomplete = new Set<string>();
+      for (const f of inFilter) {
+        let entry = byRepo.get(f.repository);
+        if (!entry) {
+          entry = { repository: f.repository, ...zero(), review_to_merge_hours: [] };
+          byRepo.set(f.repository, entry);
+        }
+        entry.findings += 1;
+        const fate = decodeFate(f);
+        if (fate === "never-answered") entry.never_answered += 1;
+        else if (fate === "pushback-open") entry.pushback_open += 1;
+        else if (fate === "resolved-by-human") entry.resolved_by_human += 1;
+        else entry.self_graded += 1;
+        if (fixCitation(f)) entry.fix_cited += 1;
+        if (f.verify_verdict === "still_applies") entry.still_applies += 1;
+        const divergence = decodeDivergence(f);
+        if (divergence === "verified-fixed-but-open") entry.verified_fixed_but_open += 1;
+        if (divergence === "not-addressed-but-resolved") entry.not_addressed_but_resolved += 1;
+        const key = `${f.repository}#${f.pr_number}`;
+        if (f.row_set_incomplete === 1 && !incomplete.has(key)) {
+          incomplete.add(key);
+          entry.incomplete_prs += 1;
+        }
+      }
+      for (const pr of sortedPrs) {
+        const entry = byRepo.get(pr.repository);
+        if (!entry) continue;
+        const hours = reviewToMergeHours(inFilter, pr);
+        if (hours !== null) entry.review_to_merge_hours.push(hours);
+      }
+      const repositories = [...byRepo.values()].sort((a, b) =>
+        a.repository < b.repository ? -1 : a.repository > b.repository ? 1 : 0,
+      );
+      for (const r of repositories) r.review_to_merge_hours.sort((a, b) => a - b);
+      const totals = zero();
+      for (const r of repositories) {
+        for (const key of Object.keys(totals) as (keyof FleetFindingsCounts)[]) totals[key] += r[key];
+      }
+      return {
+        filter: { repository: null, pr_state: pr_state ?? null },
+        totals,
+        repositories,
+        review_to_merge_hours: repositories
+          .flatMap((r) => r.review_to_merge_hours)
+          .sort((a, b) => a - b),
       };
     },
   };

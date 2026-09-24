@@ -328,3 +328,32 @@ export interface HealthReportsResponse {
   rows: HealthReportRow[];
   next_cursor: string | null;
 }
+
+/** Per-fate counts over review_findings, decoded as decodeFate and decodeDivergence do (#185 F3). */
+export interface FleetFindingsCounts {
+  findings: number;
+  never_answered: number;
+  pushback_open: number;
+  resolved_by_human: number;
+  self_graded: number;
+  fix_cited: number;
+  still_applies: number;
+  verified_fixed_but_open: number;
+  not_addressed_but_resolved: number;
+  /** Pull requests whose sweep was cut short by a throttle. */
+  incomplete_prs: number;
+}
+
+export interface FleetFindingsRepo extends FleetFindingsCounts {
+  repository: string;
+  /** One entry per merged pull request with a finding, ascending. */
+  review_to_merge_hours: number[];
+}
+
+/** GET /api/fleet/findings: counts only, never a finding row (#185 F3). */
+export interface FleetFindingsResponse {
+  filter: { repository: string | null; pr_state: string | null };
+  totals: FleetFindingsCounts;
+  repositories: FleetFindingsRepo[];
+  review_to_merge_hours: number[];
+}

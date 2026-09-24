@@ -14,6 +14,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WORKER_INDEX = ROOT / "worker/index.js"
+FINDINGS_TS = ROOT / "dashboard/src/features/findings/findings.ts"
 
 TEXT_COLUMNS = (
     "pr_title",
@@ -31,6 +32,14 @@ DISPATCH = re.compile(r"\breturn\s+(handle\w+)\(")
 DISPATCH_WINDOW = 8
 TOP_LEVEL = re.compile(r"^(async function |function |export )")
 HANDLER = re.compile(r"^async function (handleFleet\w+)\(")
+WORKER_ACTORS = re.compile(r"FLEET_WORKFLOW_ACTOR_LOGINS = Object\.freeze\(\[(.*?)\]\)", re.S)
+DASHBOARD_ACTORS = re.compile(r"WORKFLOW_ACTOR_LOGINS: ReadonlySet<string> = new Set<string>\(\[(.*?)\]\)", re.S)
+QUOTED = re.compile(r'"([^"]+)"')
+
+
+def actor_logins(pattern: re.Pattern, text: str) -> set[str] | None:
+    match = pattern.search(text)
+    return set(QUOTED.findall(match.group(1))) if match else None
 
 
 def fleet_handlers(lines: list[str]) -> dict[str, str]:
@@ -78,11 +87,25 @@ def main() -> int:
             if re.search(rf"\b{column}\b", body):
                 errors.append(f"worker/index.js: {name} names the text column {column}")
 
+    # The fate counts on /api/fleet/findings and the fate chips on the rows page
+    # decode one actor list, or the two altitudes disagree about what self-graded is.
+    worker_actors = actor_logins(WORKER_ACTORS, "\n".join(lines))
+    dashboard_actors = actor_logins(DASHBOARD_ACTORS, FINDINGS_TS.read_text(encoding="utf-8"))
+    if not worker_actors or not dashboard_actors:
+        errors.append("workflow actor list not found in worker/index.js or findings.ts")
+    elif worker_actors != dashboard_actors:
+        errors.append(
+            f"workflow actor lists drift: worker {sorted(worker_actors)} vs dashboard {sorted(dashboard_actors)}"
+        )
+
     for error in errors:
         print(f"::error::{error}")
     if errors:
         return 1
-    print(f"ok: {len(routes)} fleet route(s), {len(handlers)} fleet handler(s), no text column named")
+    print(
+        f"ok: {len(routes)} fleet route(s), {len(handlers)} fleet handler(s), no text column named, "
+        f"{len(worker_actors)} workflow actor(s) in step"
+    )
     return 0
 
 

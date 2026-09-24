@@ -6,6 +6,7 @@ import {
   MAX_LIMIT,
   MAX_LIMIT_WITH_BLOBS,
   type FindingsQuery,
+  type FleetFindingsQuery,
   type HealthReportsQuery,
   type LaneEventsQuery,
   type PrsQuery,
@@ -273,5 +274,15 @@ export function useHealthReportsQuery(repository: string) {
     queryKey: ["health-reports", query],
     queryFn: () => api.fetchHealthReports(query),
     staleTime: 60_000,
+  });
+}
+
+/** The findings page's counts view: one Fleet request, no finding row (#185 F3). */
+export function useFleetFindingsQuery(query: FleetFindingsQuery) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["fleet-findings", query.pr_state ?? "all"],
+    queryFn: () => api.fetchFleetFindings(query),
+    staleTime: 30_000,
   });
 }
