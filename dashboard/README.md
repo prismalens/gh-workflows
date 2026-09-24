@@ -3,8 +3,8 @@
 The review telemetry viewing layer for `prismalens/gh-workflows`. A Vite + React SPA served by
 the telemetry Worker in `../worker` through its `[assets]` binding, reading the Worker's
 `GET /api/summary`, `GET /api/runs`, `GET /api/lane-events`, `GET /api/changes`,
-`GET /api/round-agents`, `GET /api/prs`, `GET /api/findings`, `GET /api/fleet/repos` and
-`GET /api/health-reports` routes behind Cloudflare Access.
+`GET /api/round-agents`, `GET /api/prs`, `GET /api/findings`, `GET /api/fleet/repos`,
+`GET /api/fleet/findings` and `GET /api/health-reports` routes behind Cloudflare Access.
 
 Ten routes ship: `/` inbox, `/fleet` (the former overview), `/rounds`, `/rounds/$sessionId`,
 `/repos`, `/repos/$owner/$repo`, `/failures`, `/prs`, `/prs/$owner/$repo/$number` and `/findings`.
@@ -30,17 +30,17 @@ count switches, from an all-time cumulative to a per-day mean at
 
 ## Altitudes and the wall
 
-The Console has four altitudes, and this is a ruling (#185). **Fleet** (`/`, `/repos`, `/failures`,
-and `/findings` in fate-count mode) reads `GET /api/fleet/*`: aggregates that carry counts and
 identifiers and never a name, a title or a body. **Repo** (`/repos/$owner/$repo`, reads
 `GET /api/health-reports`) and **Investigate** (`/prs/…`, `/rounds/…`, the `/findings` list) read
 the row routes. **Ops** (`/ops`, not yet built) reads what runs. The wall is in the API, not the
 UI: a fleet handler's SQL never names `pr_title`, `pr_author`, `verdict_text`, `header_raw` or
 `body_excerpt`, pinned by `tests/test-fleet-wall.py` and by the Worker test. A Fleet page's
 fetch set is pinned by
-`src/routes/routes.wall.test.tsx`. Crossed today: `/repos`, one request to `GET /api/fleet/repos`.
-Not yet: `/` (waits on a ruling for UTC or viewer-zone day buckets and on where its attention feed
-goes), `/failures` (waits on #194) and `/findings` fate counts; each still reads the row routes.
+`src/routes/routes.wall.test.tsx`. Crossed today: `/repos`, one request to `GET /api/fleet/repos`,
+and `/findings?view=counts`, one request to `GET /api/fleet/findings`. The counts view filters by
+repository on the page, from the per-repository counts in that one response. Not yet: `/` (waits on
+a ruling for UTC or viewer-zone day buckets and on where its attention feed goes) and `/failures`
+(waits on #194); each still reads the row routes.
 
 `/repos` lists every repository that has ever posted, whether or not it posted inside the
 selected window. Its "active over total" figure counts repositories that have posted, and says

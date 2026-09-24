@@ -566,6 +566,43 @@ The Worker computes the window, so the label always agrees with the rows counted
   `workflow_inputs`.
 - A D1 error is **500** (`{"error": "query failed"}`).
 
+### `GET /api/fleet/findings`
+
+Serves the dashboard's `/findings?view=counts` from counts alone (#185 F3). It decodes the fates
+that `decodeFate` and `decodeDivergence` in `dashboard/src/features/findings/findings.ts` decode,
+as SQL sums over `review_findings`, and never selects a header, body, hunk or path. The
+workflow-actor logins behind `self-graded` are one list in both places, pinned by
+`tests/test-fleet-wall.py`.
+
+#### Query Parameters
+
+- `pr_state` (optional): `open`, `merged`, `closed` or `all`. Matched against `prs.state`; a
+  finding whose pull request has no `prs` row counts only when `pr_state` is absent or `all`.
+- `repository` (optional): one repository. The dashboard does not send it.
+
+Anything else is **400** (`{"error": "invalid pr_state"}` or `{"error": "invalid repository"}`).
+
+#### Response Shape
+
+```json
+{
+  "filter": { "repository": null, "pr_state": "merged" },
+  "totals": {
+    "findings": 8, "never_answered": 3, "pushback_open": 1, "resolved_by_human": 1, "self_graded": 3,
+    "fix_cited": 1, "still_applies": 1, "verified_fixed_but_open": 1, "not_addressed_but_resolved": 1,
+    "incomplete_prs": 1
+  },
+  "repositories": [{ "repository": "o/a", "findings": 7, "...": "the same counts", "review_to_merge_hours": [12] }],
+  "review_to_merge_hours": [12]
+}
+```
+
+- The four fates partition `findings`. `fix_cited` counts a non-empty `fix_sha` whatever the fate.
+- `incomplete_prs` counts pull requests with any `row_set_incomplete = 1` row.
+- `review_to_merge_hours` has one entry per merged pull request that has a finding: hours from its
+  earliest `thread_created_at` to `merged_at`, floored at zero, ascending.
+- A D1 error is **500** (`{"error": "query failed"}`).
+
 ---
 
 ## Control plane (#184)

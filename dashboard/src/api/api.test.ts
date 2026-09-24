@@ -7,7 +7,12 @@ import { parsePerModelUsage, parseRawResult, parseSubagentStats } from "./blobs"
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
 import type { LaneEventRow, RoundAgentRow } from "./types";
-import { fleetReposUrl, isFleetReposResponse } from "./client";
+import {
+  fleetFindingsUrl,
+  fleetReposUrl,
+  isFleetFindingsResponse,
+  isFleetReposResponse,
+} from "./client";
 
 const rows = makeRounds({ count: 64 });
 const api = makeFixtureApi(rows);
@@ -752,3 +757,39 @@ describe("the fleet fixture and the Worker agree on a thin rolling window (#185)
     expect(isFleetReposResponse(fixture)).toBe(true);
   });
 });
+
+describe("GET /api/fleet/findings is read in the shape the Worker serves (#185 F3)", () => {
+  const counts = {
+    findings: 2,
+    never_answered: 1,
+    pushback_open: 0,
+    resolved_by_human: 1,
+    self_graded: 0,
+    fix_cited: 1,
+    still_applies: 0,
+    verified_fixed_but_open: 0,
+    not_addressed_but_resolved: 0,
+    incomplete_prs: 0,
+  };
+  const body = {
+    filter: { repository: null, pr_state: "merged" },
+    totals: counts,
+    repositories: [{ repository: "o/a", ...counts, review_to_merge_hours: [3] }],
+    review_to_merge_hours: [3],
+  };
+
+  it("sends pr_state only when one is chosen, and never a repository", () => {
+    expect(fleetFindingsUrl({})).toBe("/api/fleet/findings");
+    expect(fleetFindingsUrl({ pr_state: "merged" })).toBe("/api/fleet/findings?pr_state=merged");
+  });
+
+  it("accepts the documented shape and rejects a missing count", () => {
+    expect(isFleetFindingsResponse(body)).toBe(true);
+    const { never_answered: _dropped, ...partial } = counts;
+    expect(isFleetFindingsResponse({ ...body, totals: partial })).toBe(false);
+    expect(
+      isFleetFindingsResponse({ ...body, repositories: [{ repository: "o/a", ...counts }] }),
+    ).toBe(false);
+  });
+});
+

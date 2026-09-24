@@ -286,3 +286,51 @@ describe("/findings: the inbox", () => {
     expect(within(strip).getByText("Review-to-merge latency")).toBeInTheDocument();
   });
 });
+
+describe("the counts view (#185 F3)", () => {
+  const rows = [
+    finding({ thread_node_id: "a1" }),
+    finding({ thread_node_id: "a2", human_reply_count: 1 }),
+    finding({ thread_node_id: "a3", is_resolved: 1, resolved_by_login: "alice", fix_sha: "abc1234" }),
+    finding({ thread_node_id: "a4", is_resolved: 1, resolved_by_login: "github-actions[bot]" }),
+    finding({ thread_node_id: "b1", repository: "o/other", pr_number: 7 }),
+  ];
+
+  function countFor(label: string): string | null {
+    const cell = screen.getAllByTestId("fate-chip").find((chip) => chip.textContent === label);
+    return cell?.closest("tr")?.querySelectorAll("td")[1]?.textContent ?? null;
+  }
+
+  it("shows the rows view's fates as counts and never a finding's text", async () => {
+    renderRoute({ path: "/findings?view=counts", api: makeFixtureApi([], [], [], [], [], rows) });
+    await screen.findByRole("heading", { name: "Fates" });
+    expect(countFor("never answered")).toBe("2");
+    expect(countFor("pushback, open")).toBe("1");
+    expect(countFor("resolved by human")).toBe("1");
+    expect(countFor("self-graded")).toBe("1");
+    expect(screen.queryByText("Off-by-one")).toBeNull();
+    expect(screen.queryByText("worker/index.js")).toBeNull();
+  });
+
+  it("narrows to one repository from the same response", async () => {
+    renderRoute({
+      path: "/findings?view=counts&repository=o%2Fother",
+      api: makeFixtureApi([], [], [], [], [], rows),
+    });
+    await screen.findByRole("heading", { name: "Fates" });
+    expect(countFor("never answered")).toBe("1");
+    expect(countFor("self-graded")).toBe("0");
+  });
+
+  it("names the PR-state filter when the repository has no findings under it", async () => {
+    renderRoute({
+      path: "/findings?view=counts&repository=o%2Fother&pr_state=merged",
+      api: makeFixtureApi([], [], [], [], [pr({ repository: "o/other", pr_number: 7 })], rows),
+    });
+    expect(
+      await screen.findByText(/No findings on merged pull requests for o\/other\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No findings recorded for o\/other/)).toBeNull();
+  });
+});
+

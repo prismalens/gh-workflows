@@ -24,4 +24,11 @@ describe("the API wall (#185)", () => {
     expect(new Set(calls)).toEqual(new Set(["fetchFleetRepos"]));
     expect(calls).toHaveLength(1);
   });
+
+  it("/findings?view=counts reads the fleet findings route and nothing else", async () => {
+    const { api, calls } = recordingApi(fullApi);
+    renderRoute({ path: "/findings?view=counts", api });
+    await screen.findByRole("heading", { name: "Fates" });
+    expect(new Set(calls)).toEqual(new Set(["fetchFleetFindings"]));
+  });
 });

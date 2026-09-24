@@ -5464,6 +5464,136 @@ describe("Worker telemetry read API", () => {
       assert.equal(db.queries.length, 0);
     });
   });
+
+  describe("GET /api/fleet/findings (#185 F3)", () => {
+    // Real SQLite behind a D1-shaped shim, so the fate SQL is executed, not matched.
+    async function sqliteDb() {
+      const { DatabaseSync } = await import("node:sqlite");
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const dir = path.join(path.dirname(new URL(import.meta.url).pathname), "migrations");
+      const sqlite = new DatabaseSync(":memory:");
+      for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
+        sqlite.exec(fs.readFileSync(path.join(dir, file), "utf8"));
+      }
+      const queries = [];
+      return {
+        sqlite,
+        queries,
+        prepare(sql) {
+          const bound = (args) => ({
+            async all() {
+              queries.push({ sql, args });
+              return { results: sqlite.prepare(sql).all(...args) };
+            },
+            async first() {
+              queries.push({ sql, args });
+              return sqlite.prepare(sql).get(...args) ?? null;
+            },
+          });
+          return { bind: (...args) => bound(args), ...bound([]) };
+        },
+      };
+    }
+
+    function seed(sqlite) {
+      const pr = sqlite.prepare(
+        "INSERT INTO prs (repository, pr_number, state, merged_at, updated_at, source) VALUES (?, ?, ?, ?, '2026-09-20T00:00:00Z', 'sweep')"
+      );
+      pr.run("o/a", 1, "merged", "2026-09-10T12:00:00Z");
+      pr.run("o/a", 2, "open", null);
+      pr.run("o/b", 5, "open", null);
+      const f = sqlite.prepare(
+        `INSERT INTO review_findings (thread_node_id, repository, pr_number, is_resolved, resolved_by_login,
+          thread_created_at, human_reply_count, fix_sha, verify_verdict, row_set_incomplete)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      f.run("f1", "o/a", 1, 0, null, "2026-09-10T00:00:00Z", 0, null, null, 0);
+      f.run("f2", "o/a", 1, 0, null, "2026-09-10T01:00:00Z", 2, null, null, 0);
+      f.run("f3", "o/a", 1, 1, "alice", "2026-09-10T02:00:00Z", 1, "abc1234", null, 0);
+      f.run("f4", "o/a", 1, 1, "github-actions[bot]", "2026-09-10T03:00:00Z", 0, "", null, 0);
+      f.run("f5", "o/a", 1, 1, "alice", "2026-09-10T04:00:00Z", 0, null, "fixed", 0);
+      f.run("f6", "o/a", 1, 1, null, "2026-09-10T05:00:00Z", 0, null, "still_applies", 0);
+      f.run("f7", "o/a", 2, null, null, "2026-09-11T00:00:00Z", 0, null, "fixed", 1);
+      f.run("g1", "o/b", 5, 0, null, "2026-09-12T00:00:00Z", 0, null, null, 0);
+    }
+
+    async function getFleetFindings(path, db) {
+      const helper = await getAccessHelper();
+      return worker.fetch(makeAuthenticatedRequest(path, helper.jwt), { ...helper.env, DB: db });
+    }
+
+    it("counts every fate the rows page decodes, per repository and in total", async () => {
+      const db = await sqliteDb();
+      seed(db.sqlite);
+      const res = await getFleetFindings("/api/fleet/findings", db);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.deepEqual(data.filter, { repository: null, pr_state: null });
+      assert.deepEqual(data.totals, {
+        findings: 8,
+        never_answered: 3,
+        pushback_open: 1,
+        resolved_by_human: 1,
+        self_graded: 3,
+        fix_cited: 1,
+        still_applies: 1,
+        verified_fixed_but_open: 1,
+        not_addressed_but_resolved: 1,
+        incomplete_prs: 1,
+      });
+      assert.deepEqual(
+        data.repositories.map((r) => [r.repository, r.findings, r.review_to_merge_hours]),
+        [["o/a", 7, [12]], ["o/b", 1, []]]
+      );
+      // o/a#1: first finding 00:00, merged 12:00.
+      assert.deepEqual(data.review_to_merge_hours, [12]);
+      for (const query of db.queries) {
+        assert.doesNotMatch(query.sql, /header_raw|body_excerpt|diff_hunk|pr_title|pr_author|\btitle\b|\bauthor\b/);
+      }
+    });
+
+    it("narrows by repository and by pull request state", async () => {
+      const db = await sqliteDb();
+      seed(db.sqlite);
+      const merged = await (await getFleetFindings("/api/fleet/findings?pr_state=merged", db)).json();
+      assert.equal(merged.totals.findings, 6);
+      assert.equal(merged.totals.verified_fixed_but_open, 0);
+      assert.deepEqual(merged.review_to_merge_hours, [12]);
+
+      const open = await (await getFleetFindings("/api/fleet/findings?pr_state=open", db)).json();
+      assert.equal(open.totals.findings, 2);
+      assert.deepEqual(open.review_to_merge_hours, []);
+
+      const b = await (await getFleetFindings("/api/fleet/findings?repository=o%2Fb&pr_state=all", db)).json();
+      assert.deepEqual(b.filter, { repository: "o/b", pr_state: "all" });
+      assert.equal(b.totals.findings, 1);
+      assert.equal(b.totals.never_answered, 1);
+    });
+
+    it("rejects an unknown pr_state or an empty repository with 400", async () => {
+      for (const path of ["/api/fleet/findings?pr_state=draft", "/api/fleet/findings?repository="]) {
+        const db = createFakeDb();
+        const res = await getFleetFindings(path, db);
+        assert.equal(res.status, 400);
+        assert.equal(db.queries.length, 0);
+      }
+    });
+
+    it("answers a D1 failure with 500 query failed", async () => {
+      const res = await getFleetFindings("/api/fleet/findings", createFakeDb({ shouldThrow: true }));
+      assert.equal(res.status, 500);
+      assert.deepEqual(await res.json(), { error: "query failed" });
+    });
+
+    it("is closed without an Access header", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb();
+      const res = await worker.fetch(makeRequest("/api/fleet/findings", { method: "GET" }), { ...helper.env, DB: db });
+      assert.equal(res.status, 403);
+      assert.equal(db.queries.length, 0);
+    });
+  });
 });
 
 // ── Control plane (#184) ─────────────────────────────────────

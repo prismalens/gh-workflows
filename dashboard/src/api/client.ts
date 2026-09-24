@@ -3,6 +3,7 @@ import type {
   ChangesResponse,
   FindingRow,
   FindingsResponse,
+  FleetFindingsResponse,
   FleetReposResponse,
   HealthReportRow,
   HealthReportsResponse,
@@ -601,6 +602,7 @@ export interface TelemetryApi {
   fetchFindings(query?: FindingsQuery): Promise<FindingsResponse>;
   fetchFleetRepos(query: FleetReposQuery): Promise<FleetReposResponse>;
   fetchHealthReports(query?: HealthReportsQuery): Promise<HealthReportsResponse>;
+  fetchFleetFindings(query: FleetFindingsQuery): Promise<FleetFindingsResponse>;
   /** Set only by the fixture table, so the UI can say the rounds are invented. */
   readonly fixtures?: boolean;
 }
@@ -616,6 +618,7 @@ export const httpApi: TelemetryApi = {
   fetchFindings: (query = {}) => getJson(findingsUrl(query), isFindingsResponse),
   fetchFleetRepos: (query) => getJson(fleetReposUrl(query), isFleetReposResponse),
   fetchHealthReports: (query = {}) => getJson(healthReportsUrl(query), isHealthReportsResponse),
+  fetchFleetFindings: (query) => getJson(fleetFindingsUrl(query), isFleetFindingsResponse),
 };
 
 /**
@@ -724,5 +727,61 @@ export function isFleetReposResponse(value: unknown): value is FleetReposRespons
     val.repositories.every(isFleetRepoRow) &&
     Array.isArray(val.malformed_configs) &&
     val.malformed_configs.every(isMalformedConfig)
+  );
+}
+
+export interface FleetFindingsQuery {
+  /** Absent reads every pull request state. */
+  pr_state?: "open" | "merged" | "closed";
+}
+
+/** No repository is sent: the response carries every repository's counts, filtered on the page (#185). */
+export function fleetFindingsUrl(query: FleetFindingsQuery): string {
+  return query.pr_state
+    ? `/api/fleet/findings?${new URLSearchParams({ pr_state: query.pr_state }).toString()}`
+    : "/api/fleet/findings";
+}
+
+const FLEET_FINDINGS_COUNT_KEYS = [
+  "findings",
+  "never_answered",
+  "pushback_open",
+  "resolved_by_human",
+  "self_graded",
+  "fix_cited",
+  "still_applies",
+  "verified_fixed_but_open",
+  "not_addressed_but_resolved",
+  "incomplete_prs",
+] as const;
+
+function isFleetFindingsCounts(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const r = value as Record<string, unknown>;
+  return FLEET_FINDINGS_COUNT_KEYS.every((key) => typeof r[key] === "number");
+}
+
+function isHoursList(value: unknown): boolean {
+  return Array.isArray(value) && value.every((h) => typeof h === "number");
+}
+
+export function isFleetFindingsResponse(value: unknown): value is FleetFindingsResponse {
+  if (!value || typeof value !== "object") return false;
+  const val = value as Record<string, unknown>;
+  const filter = val.filter as Record<string, unknown> | null | undefined;
+  return (
+    !!filter &&
+    typeof filter === "object" &&
+    isNullableString(filter.repository) &&
+    isNullableString(filter.pr_state) &&
+    isFleetFindingsCounts(val.totals) &&
+    isHoursList(val.review_to_merge_hours) &&
+    Array.isArray(val.repositories) &&
+    val.repositories.every(
+      (r) =>
+        isFleetFindingsCounts(r) &&
+        typeof (r as Record<string, unknown>).repository === "string" &&
+        isHoursList((r as Record<string, unknown>).review_to_merge_hours),
+    )
   );
 }
