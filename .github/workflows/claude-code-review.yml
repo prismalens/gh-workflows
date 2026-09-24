@@ -1001,8 +1001,10 @@ jobs:
                       # closed even when some other repo key is rejected (#176).
                       repo_share, _repo_share_invalid = resolve_telemetry_share(data)
 
+          # Followed whenever the value parses, even if another repo key is
+          # schema-rejected, so a shared telemetry.share: off still applies (#176).
           org_repo, org_ref = "", ""
-          if config_content is not None and not errors and isinstance(data, dict) and "extends" in data:
+          if isinstance(data, dict) and parse_extends(data.get("extends")) is not None:
               org_repo, org_ref = parse_extends(data["extends"])
           extends_spec = f"{org_repo}@{org_ref}" if org_ref else org_repo
           org_file = f".github/claude-review.yml in {org_repo} at {org_ref or 'its default branch'}"

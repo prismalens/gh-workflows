@@ -484,6 +484,17 @@ def main():
     else:
         print("  ok    Case 21c: unreadable extends resolves off with a warning")
 
+    # Case 21d: a well-formed extends is followed even when another repository
+    # key is schema-invalid, matching the review lane's config step (#182)
+    org_fetches = []
+    proc, outputs = run_action_step(script, repo_config="extends: acme/policy\nbogus: 1\nreview:\n  auto_pause_rounds: many\n",
+                                    org_config="telemetry:\n  share: off\n", org_fetches_out=org_fetches)
+    if outputs.get("share") != "off" or not org_fetches:
+        fails.append(f"Case 21d expected share=off from the shared file, got {outputs.get('share')} {org_fetches}")
+        print("  FAIL  Case 21d: extends followed despite an unrelated schema error")
+    else:
+        print("  ok    Case 21d: extends followed despite an unrelated schema error")
+
     # Case 22: an invalid share override on the action resolves off, with a
     # warning (#177, thread 4006669598)
     proc, outputs = run_action_step(script, env_vars={"SHARE_OVERRIDE": "maybe"})

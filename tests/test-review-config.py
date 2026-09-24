@@ -12,7 +12,7 @@ stubbed `gh`, verifying:
 7. A summon `--model` override beats a path match (precedence rule).
 8. config_effective (#75) carries a {value, layer} entry per resolved key, layer matching
    whichever of workflow/org/repo actually supplied it, with no hardcoded key list.
-9. extends (#182): absent, present, with a ref, malformed, nested, and unreadable.
+9. extends (#182): absent, present, with a ref, malformed, nested, unreadable, and beside a repo schema error.
 
 Run: python3 tests/test-review-config.py
 """
@@ -986,6 +986,23 @@ def main():
     check("nested extends: no shared value applies, repo keys still do",
           out.get("skip_authors") == "dependabot[bot]" and out.get("auto_pause_rounds") == "3",
           f"got {out.get('skip_authors')} {out.get('auto_pause_rounds')}")
+
+    # A well-formed extends is followed even when another repo key is schema-rejected,
+    # so a shared telemetry.share: off is not dropped with the rest of the repo layer.
+    for label, repo_yaml in [
+        ("unknown top-level key", "version: 1\nbogus: 1\n"),
+        ("bad review value", "version: 1\nreview:\n  auto_pause_rounds: \"many\"\n"),
+    ]:
+        calls = []
+        rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_TELEMETRY_SHARE_OFF,
+                                                  config_yaml=repo_yaml, extends=ORG_EXT, calls_out=calls)
+        check(f"extends with repo schema error ({label}): exits 0", rc == 0, f"rc={rc}")
+        check(f"extends with repo schema error ({label}): the shared file is fetched",
+              any("repos/acme/review-policy/" in c for c in contents_calls(calls)), f"calls={calls!r}")
+        check(f"extends with repo schema error ({label}): shared telemetry.share off applies",
+              out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+        check(f"extends with repo schema error ({label}): layer records the value",
+              (org_layer(out) or {}).get("extends") == ORG_EXT, f"got {org_layer(out)!r}")
 
     # A named file that can't be read (404) is not silent: warn, workflow defaults, consent off.
     rc, out, stdout, stderr = run_config_case(config_script, org_is_404=True, config_yaml=REPO_CONFIG_PARTIAL, extends=ORG_EXT)
