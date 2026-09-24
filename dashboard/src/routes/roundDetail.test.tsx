@@ -2,6 +2,7 @@ import { screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { RoundAgentRow, RoundRow } from "@/api/types";
+import { TOOL_DETAIL_UNKNOWN_CAUSE } from "@/features/rounds/AgentToolsPanel";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
 import { fieldEra, LANE_4_STRADDLES, LANE_VERSION_UNKNOWN } from "@/honesty/fieldEra";
@@ -267,24 +268,21 @@ describe("/rounds/$sessionId agent tools panel (#179)", () => {
     expect(within(row).getByText("truncated")).toBeInTheDocument();
   });
 
-  it("degrades an agent with no tool detail by the parent round's lane era", async () => {
-    render({ ...base, lane_version: "4" }, [
-      agent({ session_id: base.session_id, tool_detail: null }),
-    ]);
-    const row = await screen.findByTestId("agent-tools-row");
-    expect(within(row).getAllByRole("cell")[1]).toHaveTextContent("—");
-    const gap = degraded("Tool detail for 1 of 1 agents");
-    expect(gap).toHaveAttribute("data-reason", "lane-did-not-send");
-    expect(gap).toHaveTextContent(LANE_4_STRADDLES);
-  });
-
-  it("says a lane-5 agent with no tool detail sent nothing", async () => {
-    render(lane5, [agent({ tool_detail: null })]);
-    await screen.findByTestId("agent-tools-row");
-    expect(degraded("Tool detail for 1 of 1 agents")).toHaveAttribute(
-      "data-reason",
-      "lane-sent-nothing",
-    );
+  it("names missing tool detail without blaming the round's lane version", async () => {
+    for (const lane_version of ["4", "5"]) {
+      const row = { ...lane5, lane_version };
+      const view = renderRoute({
+        path: detailPath(row),
+        api: makeFixtureApi([row], [], [], [agent({ tool_detail: null })]),
+      });
+      const agentRow = await screen.findByTestId("agent-tools-row");
+      expect(within(agentRow).getAllByRole("cell")[1]).toHaveTextContent("—");
+      const gap = degraded("Tool detail for 1 of 1 agents");
+      expect(gap).toHaveAttribute("data-reason", "not-recorded");
+      expect(gap).toHaveTextContent(TOOL_DETAIL_UNKNOWN_CAUSE);
+      expect(gap).not.toHaveTextContent(LANE_4_STRADDLES);
+      view.unmount();
+    }
   });
 
   it("marks a malformed breakdown unreadable instead of rendering part of it", async () => {
