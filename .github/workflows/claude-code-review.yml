@@ -4600,7 +4600,7 @@ jobs:
           ' 2>/dev/null || true)
 
           if [ -z "$merged" ]; then
-            echo "::warning::telemetry: failed to merge wave 2 fields into telemetry record; posting base record."
+            echo "::warning::telemetry: failed to merge wave 2 fields into telemetry record; falling back to the record without them."
             # The base record still carries the share level, or the Worker would read it as
             # full and store text the repository did not allow (#183).
             merged=$(printf '%s' "$RECORD" | jq -c --arg s "${TELEMETRY_SHARE:-full}" '. + {share_level: $s}' 2>/dev/null || true)
