@@ -391,7 +391,7 @@ export const LANE_EVENT_DEFINITIONS: Record<LaneEventReasonKey, string> = {
   "no-token": "Run skipped because no CLAUDE_CODE_OAUTH_TOKEN secret was available",
   "auto-paused": "Run skipped because PR exceeded auto_pause_rounds limit",
   "fork-head":
-    "Run skipped on fork head (summon only; automatic fork PRs cannot authenticate to post lane events)",
+    "Run skipped on a fork head: a summon, or an automatic pull request seen by the App webhook",
   "skip-author": "Run skipped because PR author matches skip_authors configuration",
   draft: "Summon on a draft pull request; nothing reviews a draft, so the run reviewed nothing",
   "skip-trivial": "Run skipped because the diff is below the repository's min_diff_lines floor",
@@ -413,7 +413,7 @@ export const LANE_EVENT_DEFINITIONS: Record<LaneEventReasonKey, string> = {
 };
 
 export const FORK_HEAD_FOOTNOTE =
-  "GitHub withholds secrets from a fork's pull_request run, so the ingest token is empty and an automatic fork pull request cannot post a lane event. The only reachable fork-head case is a summon on a fork head. So a zero here does not mean no forks were skipped.";
+  "GitHub withholds secrets from a fork's pull_request run, so on the Actions lane an automatic fork pull request cannot post a lane event and only a summon on a fork head is counted. The App webhook counts automatic fork pull requests on the repositories it serves. So a zero here does not mean no forks were skipped.";
 
 export interface LaneEventRowSummary {
   reason: LaneEventReasonKey;

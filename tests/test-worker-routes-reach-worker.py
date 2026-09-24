@@ -16,7 +16,7 @@ INDEX_JS = ROOT / "worker" / "index.js"
 # Routes the Worker must own before their handlers exist: the webhook is #184 bullet 4.
 REQUIRED_PATTERNS = ["/webhook/github", "/runner/*"]
 # A parser regression that finds nothing would pass the coverage check vacuously.
-MUST_FIND = [("GET", "/api/summary"), ("GET", "/runner/lease")]
+MUST_FIND = [("GET", "/api/summary"), ("GET", "/runner/lease"), ("POST", "/webhook/github")]
 
 
 def run_worker_first():
