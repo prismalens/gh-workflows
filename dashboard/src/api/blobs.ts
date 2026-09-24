@@ -135,7 +135,6 @@ export interface ToolDetail {
 }
 
 function toolGroups(value: unknown): ToolGroup[] | null {
-  if (value === undefined) return [];
   if (!Array.isArray(value)) return null;
   const groups: ToolGroup[] = [];
   for (const entry of value) {
@@ -152,7 +151,6 @@ function toolGroups(value: unknown): ToolGroup[] | null {
 }
 
 function countMap(value: unknown): CountEntry[] | null {
-  if (value === undefined) return [];
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const entries: CountEntry[] = [];
   for (const [key, count] of Object.entries(value as Record<string, unknown>)) {
@@ -165,7 +163,8 @@ function countMap(value: unknown): CountEntry[] | null {
 /**
  * `round_agents.tool_detail`, shaped by the agent rollup in claude-code-review.yml (#174).
  * Null when the agent row carries none; "unreadable" when any part of it is not that shape,
- * since a partial breakdown would read as the whole of the agent's calls.
+ * since a partial breakdown would read as the whole of the agent's calls. The rollup always
+ * sends all five keys, so a missing one is unreadable, never a zero.
  */
 export function parseToolDetail(agent: RoundAgentRow): ToolDetail | "unreadable" | null {
   if (agent.tool_detail === null || agent.tool_detail === undefined || agent.tool_detail === "") {

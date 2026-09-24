@@ -276,6 +276,15 @@ describe("/rounds/$sessionId agent tools panel (#179)", () => {
     expect(degraded("Tool detail for 1 of 1 agents")).toHaveAttribute("data-reason", "unreadable");
   });
 
+  it("marks a breakdown missing a key unreadable, never a zero count", async () => {
+    const withoutGlob = JSON.parse(TOOL_DETAIL);
+    delete withoutGlob.glob;
+    render(lane5, [agent({ tool_detail: JSON.stringify(withoutGlob) })]);
+    const row = await screen.findByTestId("agent-tools-row");
+    expect(within(row).getAllByRole("cell")[3]).toHaveTextContent("—");
+    expect(degraded("Tool detail for 1 of 1 agents")).toHaveAttribute("data-reason", "unreadable");
+  });
+
   it("has nothing to break down on a round with no agent rows", async () => {
     render(lane5);
     expect(await screen.findByText(/no per-agent rows/)).toBeInTheDocument();
