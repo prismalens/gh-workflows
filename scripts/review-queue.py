@@ -34,6 +34,8 @@ TOKEN_ENV = {
 QUIET_MINUTES = 20          # head commit must be this old before a summon
 SUMMON_SPACING_MINUTES = 57 # no summon if the operator's last summon anywhere is younger
 HOLD_LABELS = {"blocked", "needs-operator"}
+# The Claude lane's verify job resolves claude threads with GITHUB_TOKEN, so github-actions counts as that reviewer.
+REVIEWER_RESOLVERS = {"claude": {"claude", "github-actions"}}
 
 
 @dataclass
@@ -432,7 +434,7 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
                     first_comments = t.get("comments", {}).get("nodes", [])
                     first_author = normalize_login(first_comments[0].get("author", {}).get("login")) if first_comments else ""
                     resolved_by = normalize_login(t.get("resolvedBy", {}).get("login")) if t.get("resolvedBy") else ""
-                    if resolved_by != first_author:
+                    if resolved_by not in REVIEWER_RESOLVERS.get(first_author, {first_author}):
                         if not thread_not_reviewer_reason:
                             thread_not_reviewer_reason = f"thread resolved by {resolved_by}, not its reviewer"
 
@@ -461,7 +463,8 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
 
             # docs_only
             docs_only = (
-                changed_files <= 100
+                bool(files)
+                and changed_files <= 100
                 and changed_files == len(files)
                 and all(p.endswith(".md") or p.endswith(".mdx") or p.startswith("docs/") for p in files)
             )
@@ -669,7 +672,7 @@ def format_markdown_table(actions: list[Action]) -> str:
     return "\n".join(lines)
 
 
-def apply(actions: list[Action], tokens: dict[str, str], dry_run: bool = False, http_client: Any = None) -> None:
+def apply(actions: list[Action], tokens: dict[str, str], dry_run: bool = False, http_client: Any = None) -> int:
     if dry_run:
         for a in actions:
             if a.kind == "merge":
@@ -678,9 +681,10 @@ def apply(actions: list[Action], tokens: dict[str, str], dry_run: bool = False, 
                 print(f"[dry-run] Would enqueue {a.repo}#{a.pr_number} (expectedHeadOid: {a.head_oid[:7]})")
             elif a.kind == "summon":
                 print(f"[dry-run] Would post comment to {a.repo}#{a.pr_number}: {a.summon_body}")
-        return
+        return 0
 
     # Real mutation calls happen strictly below this point.
+    failures = 0
     for a in actions:
         owner = a.repo.split("/", 1)[0]
         token = tokens.get(owner)
@@ -688,39 +692,44 @@ def apply(actions: list[Action], tokens: dict[str, str], dry_run: bool = False, 
             print(f"Skipping {a.repo}#{a.pr_number}: missing token for owner {owner}", file=sys.stderr)
             continue
 
-        if a.kind == "merge":
-            mutation = """
-            mutation($input: MergePullRequestInput!) {
-              mergePullRequest(input: $input) { clientMutationId }
-            }
-            """
-            _graphql_query(token, mutation, {
-                "input": {
-                    "pullRequestId": a.pr_id,
-                    "mergeMethod": "SQUASH",
-                    "expectedHeadOid": a.head_oid,
+        try:
+            if a.kind == "merge":
+                mutation = """
+                mutation($input: MergePullRequestInput!) {
+                  mergePullRequest(input: $input) { clientMutationId }
                 }
-            })
-            print(f"Merged {a.repo}#{a.pr_number}")
-        elif a.kind == "enqueue":
-            mutation = """
-            mutation($input: EnqueuePullRequestInput!) {
-              enqueuePullRequest(input: $input) { clientMutationId }
-            }
-            """
-            _graphql_query(token, mutation, {
-                "input": {
-                    "pullRequestId": a.pr_id,
-                    "expectedHeadOid": a.head_oid,
+                """
+                _graphql_query(token, mutation, {
+                    "input": {
+                        "pullRequestId": a.pr_id,
+                        "mergeMethod": "SQUASH",
+                        "expectedHeadOid": a.head_oid,
+                    }
+                })
+                print(f"Merged {a.repo}#{a.pr_number}")
+            elif a.kind == "enqueue":
+                mutation = """
+                mutation($input: EnqueuePullRequestInput!) {
+                  enqueuePullRequest(input: $input) { clientMutationId }
                 }
-            })
-            print(f"Enqueued {a.repo}#{a.pr_number}")
-        elif a.kind == "summon":
-            owner, name = a.repo.split("/", 1)
-            url = f"https://api.github.com/repos/{owner}/{name}/issues/{a.pr_number}/comments"
-            payload = json.dumps({"body": a.summon_body}).encode("utf-8")
-            _http_request(url, token, data=payload)
-            print(f"Summoned on {a.repo}#{a.pr_number}: {a.summon_body}")
+                """
+                _graphql_query(token, mutation, {
+                    "input": {
+                        "pullRequestId": a.pr_id,
+                        "expectedHeadOid": a.head_oid,
+                    }
+                })
+                print(f"Enqueued {a.repo}#{a.pr_number}")
+            elif a.kind == "summon":
+                owner, name = a.repo.split("/", 1)
+                url = f"https://api.github.com/repos/{owner}/{name}/issues/{a.pr_number}/comments"
+                payload = json.dumps({"body": a.summon_body}).encode("utf-8")
+                _http_request(url, token, data=payload)
+                print(f"Summoned on {a.repo}#{a.pr_number}: {a.summon_body}")
+        except (urllib.error.URLError, RuntimeError) as e:
+            failures += 1
+            print(f"Failed {a.kind} on {a.repo}#{a.pr_number}: {e}", file=sys.stderr)
+    return failures
 
 
 def main() -> int:
@@ -762,7 +771,10 @@ def main() -> int:
             owner = r.split("/", 1)[0]
             token = tokens.get(owner)
             num = pr_filter_num if r == pr_filter_repo else None
-            snapshots[r] = collect(r, token, pr_number=num)
+            try:
+                snapshots[r] = collect(r, token, pr_number=num)
+            except (urllib.error.URLError, RuntimeError, ValueError) as e:
+                snapshots[r] = {"repo": r, "error": f"collect failed: {e}", "pull_requests": []}
 
     if args.dump_snapshots:
         dump_path = pathlib.Path(args.dump_snapshots)
@@ -781,8 +793,8 @@ def main() -> int:
         with open(summary_file, "a", encoding="utf-8") as f:
             f.write(table + "\n")
 
-    apply(actions, tokens, dry_run=args.dry_run)
-    return 0
+    failures = apply(actions, tokens, dry_run=args.dry_run)
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

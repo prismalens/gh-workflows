@@ -382,52 +382,54 @@ def main():
     assert act15_r.kind == "merge"
     print("✓ Case 15: Missing token skips owner's repos while deciding others")
 
-    # 16. The two captured real fixtures (V3) classify as stated there.
-    f194_path = ROOT / "tests/fixtures/review-queue/gh-workflows-194.json"
-    f704_path = ROOT / "tests/fixtures/review-queue/prismalens-704.json"
-    assert f194_path.exists(), f"Fixture missing: {f194_path}"
-    assert f704_path.exists(), f"Fixture missing: {f704_path}"
+    # 16. The two captured real fixtures (V3) go through decide() and classify as reviewed on head.
+    def decide_fixture(name, repo):
+        with open(ROOT / "tests/fixtures/review-queue" / name, "r", encoding="utf-8") as f:
+            snap = json.load(f)
+        pr = snap[repo]["pull_requests"][0]
+        pr["mergeable"], pr["mergeStateStatus"] = "MERGEABLE", "CLEAN"
+        pr["isDraft"] = False
+        for t in pr["reviewThreads"]["nodes"]:
+            t["isResolved"], t["resolvedBy"] = True, t["comments"]["nodes"][0]["author"]
+        return decide(snap, now)[0]
 
-    with open(f194_path, "r", encoding="utf-8") as f:
-        snap194 = json.load(f)
-    pr194 = snap194["prismalens/gh-workflows"]["pull_requests"][0]
-    head194 = pr194["headRefOid"]
-    cr_reviewed_head_194 = False
-    for c in pr194.get("comments", {}).get("nodes", []):
-        c_author = normalize_login(c.get("author", {}).get("login"))
-        c_body = c.get("body") or ""
-        if c_author == "coderabbitai" and f"between ccd51efd0ad4ad9e6522e11461ac4f69394cee30 and {head194}" in c_body:
-            cr_reviewed_head_194 = True
-            break
-    assert cr_reviewed_head_194, f"Case 16: PR 194 failed cr_reviewed_head check: head={head194}"
+    a194 = decide_fixture("gh-workflows-194.json", "prismalens/gh-workflows")
+    assert a194.kind == "merge", f"Case 16: PR 194 (clean CodeRabbit summary on head) should merge: {a194.reason}"
+    a704 = decide_fixture("prismalens-704.json", "prismalens/prismalens")
+    assert "has not reviewed" not in a704.reason, f"Case 16: PR 704 (actionable review on head) not seen as reviewed: {a704.reason}"
+    print("✓ Case 16: Real fixtures (PR 194 and PR 704) classify as reviewed on head through decide()")
 
-    with open(f704_path, "r", encoding="utf-8") as f:
-        snap704 = json.load(f)
-    pr704 = snap704["prismalens/prismalens"]["pull_requests"][0]
-    head704 = pr704["headRefOid"]
-    cr_reviewed_head_704 = False
-    for r in pr704.get("reviews", {}).get("nodes", []):
-        r_author = normalize_login(r.get("author", {}).get("login"))
-        r_oid = r.get("commit", {}).get("oid")
-        r_body = r.get("body") or ""
-        if r_author == "coderabbitai" and r_oid == head704 and "Actionable comments posted: 2" in r_body:
-            cr_reviewed_head_704 = True
-            break
-    assert cr_reviewed_head_704, f"Case 16: PR 704 failed cr_reviewed_head check: head={head704}"
-    print("✓ Case 16: Real fixtures (PR 194 and PR 704) classify cr_reviewed_head true")
+    # 17. Dry run never reaches the HTTP layer; a live run does.
+    calls = []
+    real_http = rq._http_request
+    rq._http_request = lambda *args, **kwargs: calls.append(args) or b'{"data": {}}'
+    try:
+        test_actions = [
+            rq.Action(kind="merge", repo="o/r", pr_number=1, title="T", cls="-", reason="merged", pr_id="p1", head_oid="a" * 40),
+            rq.Action(kind="enqueue", repo="o/r", pr_number=2, title="T", cls="-", reason="enqueued", pr_id="p2", head_oid="a" * 40),
+            rq.Action(kind="summon", repo="o/r", pr_number=3, title="T", cls="new", reason="summon", summon_body="@coderabbitai review"),
+        ]
+        apply(test_actions, {"o": "token"}, dry_run=True)
+        assert calls == [], f"Case 17: dry run made HTTP calls: {calls}"
+        apply(test_actions, {"o": "token"}, dry_run=False)
+        assert len(calls) == 3, f"Case 17: live run should make 3 calls, made {len(calls)}"
+    finally:
+        rq._http_request = real_http
+    print("✓ Case 17: dry run makes no HTTP call; live run makes one per action")
 
-    # 17. Dry run isolation test: apply with dry_run=True must never touch HTTP layer
-    class FailingHttpClient:
-        def request(self, *args, **kwargs):
-            raise AssertionError("HTTP request attempted during dry run!")
+    # 18. A claude thread resolved by the verify job (github-actions) is resolved by its reviewer.
+    t_claude = {"isResolved": True, "resolvedBy": {"login": "github-actions"},
+                "comments": {"nodes": [{"author": {"login": "claude"}}]}, "lastComment": {"nodes": []}}
+    cr_clean = {"author": {"login": "coderabbitai"}, "body": f"between {'b' * 40} and {'a' * 40}",
+                "createdAt": "2026-09-24T12:30:00Z", "updatedAt": "2026-09-24T12:30:00Z"}
+    res18 = decide(make_snapshot(prs=[make_pr(review_threads=[t_claude], comments=[cr_clean])]), now)
+    assert res18[0].kind == "merge", f"Case 18 failed: {res18[0].reason}"
+    print("✓ Case 18: claude thread resolved by github-actions counts as its reviewer")
 
-    test_actions = [
-        rq.Action(kind="merge", repo="o/r", pr_number=1, title="T", cls="-", reason="merged", pr_id="p1", head_oid="a" * 40),
-        rq.Action(kind="enqueue", repo="o/r", pr_number=2, title="T", cls="-", reason="enqueued", pr_id="p2", head_oid="a" * 40),
-        rq.Action(kind="summon", repo="o/r", pr_number=3, title="T", cls="new", reason="summon", summon_body="@coderabbitai review"),
-    ]
-    apply(test_actions, {"o": "token"}, dry_run=True, http_client=FailingHttpClient())
-    print("✓ Case 17: dry-run mode strictly isolates network mutations")
+    # 19. A PR with no changed files is not docs-only.
+    res19 = decide(make_snapshot(prs=[make_pr(files=[], changed_files=0)]), now)
+    assert res19[0].kind != "merge", f"Case 19 failed: {res19[0].reason}"
+    print("✓ Case 19: empty PR is not docs-only")
 
     print("\nAll review queue tests passed!")
     return 0
