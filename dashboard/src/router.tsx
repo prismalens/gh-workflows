@@ -2,6 +2,7 @@ import { createRouter } from "@tanstack/react-router";
 
 import { failuresRoute } from "./routes/failures";
 import { findingsRoute } from "./routes/findings";
+import { fleetRoute } from "./routes/fleet";
 import { indexRoute } from "./routes/index";
 import { prDetailRoute } from "./routes/prDetail";
 import { prsRoute } from "./routes/prs";
@@ -12,6 +13,7 @@ import { rootRoute } from "./routes/root";
 
 export const routeTree = rootRoute.addChildren([
   indexRoute,
+  fleetRoute,
   prsRoute,
   prDetailRoute,
   roundsRoute,
