@@ -6,10 +6,27 @@ the telemetry Worker in `../worker` through its `[assets]` binding, reading the 
 `GET /api/round-agents`, `GET /api/prs`, `GET /api/findings`, `GET /api/fleet/repos`,
 `GET /api/fleet/findings` and `GET /api/health-reports` routes behind Cloudflare Access.
 
-Ten routes ship: `/` inbox, `/fleet` (the former overview), `/rounds`, `/rounds/$sessionId`,
-`/repos`, `/repos/$owner/$repo`, `/failures`, `/prs`, `/prs/$owner/$repo/$number` and `/findings`.
-The nav lists Review (Inbox, Findings, Repos) and Operate (Fleet); the rest keep their routes for
-deep links (#185). Compare was refused (#119).
+Eleven routes ship: `/` Today, `/inbox`, `/fleet` (the former overview), `/rounds`,
+`/rounds/$sessionId`, `/repos`, `/repos/$owner/$repo`, `/failures`, `/prs`,
+`/prs/$owner/$repo/$number` and `/findings`. The nav lists Today, Review (Inbox, Findings, Repos)
+and Operate (Fleet); the rest keep their routes for deep links (#185). Compare was refused (#119).
+
+## Today, search and filters (#209)
+
+`/` answers three questions in order: is anything broken (the status strip), what needs a person
+(Needs you, ranked by severity then age, one action per row), and what changed (anomaly cards and
+this week against the week before). It reads the same rows as the Inbox, over 30 days so two weeks
+can be compared. Needs you lists only pull requests known to be open; an unknown state is left out.
+
+`/` or Ctrl/Cmd+K opens the search palette from any page. It matches repositories, pull requests,
+findings and rounds already loaded, and takes `owner/repo#12`, `#12`, a sha prefix or a session id.
+The range control lives in the header and appears wherever the address carries `range`.
+
+Lists share one filter grammar: `repo:` `author:` `path:` `fate:` `age:>7d` `sev:` `state:` `pr:`
+plus free text. A token is a view of one URL search param, so a copied link, reload and back all
+restore the view; nothing about a view is stored anywhere else. Findings adds a facet rail whose
+counts are what each option would return with the other filters held, preset views as tabs, group
+by PR, and a peek panel (`j` `k` `Enter` `Esc`).
 The repository page has one tab so far, Weekly health, which lists every `health_reports` row
 as it arrived (#179); the PR, lane event, config and failure tabs land with F4.
 

@@ -1,4 +1,14 @@
-import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+
+/** A pill that reads as a control when idle, never as bare bold text (#209). */
+function chip(on: boolean): string {
+  return cn(
+    "inline-flex h-7 items-center rounded-full border px-3 text-xs transition-colors",
+    on
+      ? "border-foreground bg-foreground font-semibold text-background"
+      : "border-border bg-muted/60 text-muted-foreground hover:border-muted-foreground hover:text-foreground",
+  );
+}
 
 export interface FilterChipsProps {
   label: string;
@@ -17,24 +27,19 @@ export function FilterChips({ label, options, value, onChange }: FilterChipsProp
   return (
     <div role="group" aria-label={label} className="flex flex-wrap items-center gap-1">
       <span className="text-xs text-muted-foreground">{label}</span>
-      <Button
-        size="sm"
-        variant={value === undefined ? "secondary" : "ghost"}
-        aria-pressed={value === undefined}
-        onClick={() => onChange(undefined)}
-      >
+      <button type="button" className={chip(value === undefined)} aria-pressed={value === undefined} onClick={() => onChange(undefined)}>
         All
-      </Button>
+      </button>
       {options.map((option) => (
-        <Button
+        <button
           key={option}
-          size="sm"
-          variant={value === option ? "secondary" : "ghost"}
+          type="button"
+          className={chip(value === option)}
           aria-pressed={value === option}
           onClick={() => onChange(value === option ? undefined : option)}
         >
           {option}
-        </Button>
+        </button>
       ))}
     </div>
   );
