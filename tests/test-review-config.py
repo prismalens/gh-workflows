@@ -12,6 +12,7 @@ stubbed `gh`, verifying:
 7. A summon `--model` override beats a path match (precedence rule).
 8. config_effective (#75) carries a {value, layer} entry per resolved key, layer matching
    whichever of workflow/org/repo actually supplied it, with no hardcoded key list.
+9. extends (#182): absent, present, with a ref, malformed, nested, and unreadable.
 
 Run: python3 tests/test-review-config.py
 """
@@ -48,7 +49,7 @@ if [ -n "${GH_CALL_LOG:-}" ]; then
   echo "$args" >> "$GH_CALL_LOG"
 fi
 case "$args" in
-  *"repos/${EXPECTED_ORG_REPO}/contents/.github/claude-review-defaults.yml?ref=${EXPECTED_ORG_REF}"*)
+  *"repos/${EXPECTED_ORG_REPO}/contents/.github/claude-review.yml${EXPECTED_ORG_QUERY}"*)
     if [ "${FAKE_ORG_CONFIG_404:-0}" = "1" ]; then
       echo "gh stub: 404 Not Found" >&2
       exit 1
@@ -106,7 +107,9 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
                     no_pyyaml=False,
                     expected_base_sha=None,
                     expected_org_repo=None,
-                    expected_org_ref=None):
+                    expected_org_ref=None,
+                    extends=None,
+                    calls_out=None):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
@@ -115,6 +118,18 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
         (binp / "gh").chmod(0o755)
         out_file = tdp / "output.txt"
         out_file.touch()
+
+        # extends lives in the repository's own file, so a case that names a shared
+        # layer always has one: the value is prepended to config_yaml.
+        if extends is not None:
+            config_yaml = f"extends: {extends}\n" + (config_yaml if config_yaml is not None else "version: 1\n")
+            is_404 = False
+            if isinstance(extends, str) and "/" in extends:
+                ext_repo, _, ext_ref = extends.partition("@")
+                if expected_org_repo is None:
+                    expected_org_repo = ext_repo
+                if expected_org_ref is None:
+                    expected_org_ref = ext_ref
 
         fake_b64 = ""
         if config_yaml is not None:
@@ -143,6 +158,8 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
         if expected_org_ref is None:
             expected_org_ref = "main"
 
+        call_log = tdp / "gh-calls.log"
+
         env = dict(os.environ)
         pythonpath = env.get("PYTHONPATH", "")
         if no_pyyaml:
@@ -161,7 +178,8 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
             WORKFLOW_REF=workflow_ref,
             EXPECTED_BASE_SHA=expected_base_sha,
             EXPECTED_ORG_REPO=expected_org_repo,
-            EXPECTED_ORG_REF=expected_org_ref,
+            EXPECTED_ORG_QUERY=f"?ref={expected_org_ref}" if expected_org_ref else "",
+            GH_CALL_LOG=str(call_log),
             INPUT_DEFAULT_MODEL=str(input_default_model),
             INPUT_AUTO_PAUSE_ROUNDS=str(input_auto_pause_rounds),
             INPUT_SKIP_AUTHORS=str(input_skip_authors),
@@ -181,6 +199,8 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
             if "=" in line:
                 k, v = line.split("=", 1)
                 outputs[k] = v
+        if calls_out is not None and call_log.exists():
+            calls_out.extend(call_log.read_text().splitlines())
 
         return p.returncode, outputs, p.stdout, p.stderr
 
@@ -420,6 +440,10 @@ review:
         - "x"
 """
 
+# The shared layer every org-layer case extends (#182). Neutral on purpose: the
+# resolver must not know any particular organization's repository.
+ORG_EXT = "acme/review-policy@main"
+
 ORG_CONFIG_FULL = """
 version: 1
 
@@ -605,8 +629,8 @@ def main():
     check("org absent and repo absent: applies level default of medium (#101)", out.get("level") == "medium", f"got {out.get('level')}")
     check("org absent and repo absent: logs level workflow default source", "review.level: medium (source: workflow default)" in stdout, f"stdout: {stdout}")
 
-    # 2. Org defaults present, repo config absent: org values apply
-    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, is_404=True)
+    # 2. Shared defaults present, repo config carries only extends: shared values apply
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, extends=ORG_EXT)
     check("org present and repo absent: exits 0", rc == 0, f"rc={rc}")
     check("org present and repo absent: applies org default_model", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
     check("org present and repo absent: applies org auto_pause_rounds", out.get("auto_pause_rounds") == "8", f"got {out.get('auto_pause_rounds')}")
@@ -616,13 +640,13 @@ def main():
     check("org present and repo absent: produces no warning", "::warning::" not in stdout, f"stdout: {stdout}")
 
     # 2b. review.level (#101): org layer accepts 'high' the same way as any other key.
-    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_LEVEL_HIGH, is_404=True)
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_LEVEL_HIGH, extends=ORG_EXT)
     check("level: org defaults exits 0", rc == 0, f"rc={rc}")
     check("level: org defaults sets level to high", out.get("level") == "high", f"got {out.get('level')}")
     check("level: org defaults logs its source", "review.level: high (source: org defaults)" in stdout, f"stdout: {stdout}")
 
     # 3. Both present: repo wins key by key, and a key set only in org defaults still applies
-    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, config_yaml=REPO_CONFIG_PARTIAL)
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, config_yaml=REPO_CONFIG_PARTIAL, extends=ORG_EXT)
     check("both present: exits 0", rc == 0, f"rc={rc}")
     check("both present: repo overrides default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
     check("both present: repo overrides auto_pause_rounds", out.get("auto_pause_rounds") == "3", f"got {out.get('auto_pause_rounds')}")
@@ -675,14 +699,14 @@ def main():
         ("level low, schema-rejected this release (#101)", MALFORMED_LEVEL_LOW, "Invalid value for 'review.level'"),
         ("yaml syntax error", MALFORMED_YAML_SYNTAX, "Malformed YAML"),
     ]:
-        rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=malformed_yaml, is_404=True)
+        rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=malformed_yaml, extends=ORG_EXT)
         check(f"malformed org config ({label}) exits 0", rc == 0, f"rc={rc}")
         check(f"malformed org config ({label}) applies default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
         check(f"malformed org config ({label}) applies auto_pause_rounds", out.get("auto_pause_rounds") == "5", f"got {out.get('auto_pause_rounds')}")
         check(f"malformed org config ({label}) applies skip_authors", out.get("skip_authors") == "dependabot[bot]", f"got {out.get('skip_authors')}")
         has_warning = "::warning::" in stdout
-        names_file = ".github/claude-review-defaults.yml" in stdout
-        names_ref = "main" in stdout
+        names_file = ".github/claude-review.yml in acme/review-policy" in stdout
+        names_ref = "at main" in stdout
         has_err = expected_err_sub in stdout
         check(f"malformed org config ({label}) emits warning naming file, ref, and validator error",
               has_warning and names_file and names_ref and has_err,
@@ -787,21 +811,15 @@ def main():
     check("base-ref invariant: repo config fetched at supplied BASE_SHA applies config", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
     check("base-ref invariant: repo config produces no warning", "::warning::" not in stdout, f"stdout={stdout}")
 
-    # 4d. Org defaults target invariant: fetched strictly from prismalens/gh-workflows at main unconditionally
-    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL, is_404=True,
-                                              expected_org_repo="prismalens/gh-workflows", expected_org_ref="main")
-    check("org defaults target invariant: fetched from prismalens/gh-workflows@main exits 0", rc == 0, f"rc={rc}")
-    check("org defaults target invariant: applies org config", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
-    check("org defaults target invariant: produces no warning", "::warning::" not in stdout, f"stdout={stdout}")
+    # 4d. extends (#182) is covered in its own section below.
 
-    # 4e. Org defaults fetch failure (non-404): emits warning, applies defaults, does not report file absent
-    rc, out, stdout, stderr = run_config_case(config_script, org_fail=True, is_404=False)
+    # 4e. Shared defaults fetch failure (non-404): emits warning, applies defaults
+    rc, out, stdout, stderr = run_config_case(config_script, org_fail=True, extends=ORG_EXT)
     check("org config fetch failure (non-404) exits 0", rc == 0, f"rc={rc}")
     check("org config fetch failure (non-404) applies default_model", out.get("default_model") == "claude-sonnet-5", f"got {out.get('default_model')}")
     check("org config fetch failure (non-404) emits warning naming file, ref, and failure",
-          "::warning::" in stdout and ".github/claude-review-defaults.yml" in stdout and "main" in stdout and "500 Internal Server Error" in stdout,
+          "::warning::" in stdout and ".github/claude-review.yml in acme/review-policy at main" in stdout and "500 Internal Server Error" in stdout,
           f"stdout={stdout!r}")
-    check("org config fetch failure (non-404) does not report absence", "No .github/claude-review-defaults.yml found" not in stdout, f"stdout={stdout!r}")
 
     # 4f. Repo config fetch failure (non-404): emits warning, applies defaults, does not report file absent
     rc, out, stdout, stderr = run_config_case(config_script, config_fail=True, is_404=False)
@@ -842,14 +860,14 @@ def main():
         check(f"admission repo off ({label}): not schema-rejected",
               "Invalid value for 'review.admission'" not in stdout, f"stdout: {stdout}")
 
-    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_ADMISSION_LABEL, is_404=True)
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_ADMISSION_LABEL, extends=ORG_EXT)
     check("admission org label, repo absent: resolves label", out.get("admission") == "label", f"got {out.get('admission')}")
     check("admission org label, repo absent: config_effective layer=org",
           json.loads(out.get("config_effective", "{}")).get("admission") == {"value": "label", "layer": "org"},
           f"got {out.get('config_effective')}")
 
     rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_ADMISSION_LABEL,
-                                              config_yaml=REPO_CONFIG_ADMISSION_AUTO)
+                                              config_yaml=REPO_CONFIG_ADMISSION_AUTO, extends=ORG_EXT)
     check("admission org label, repo auto: resolves auto", out.get("admission") == "auto", f"got {out.get('admission')}")
     check("admission org label, repo auto: config_effective layer=repo",
           json.loads(out.get("config_effective", "{}")).get("admission") == {"value": "auto", "layer": "repo"},
@@ -863,6 +881,122 @@ def main():
         check(f"admission malformed ({label}): warns naming review.admission",
               "::warning::" in stdout and "Invalid value for 'review.admission'" in stdout, f"stdout: {stdout}")
 
+    print("\n=== Testing extends: shared defaults named by the repository (#182) ===")
+
+    def contents_calls(calls):
+        return [c for c in calls if "/contents/" in c]
+
+    def org_layer(out):
+        return json.loads(out.get("config_resolution", "{}")).get("layers", {}).get("org_defaults")
+
+    # Absent: no shared layer, recorded as not-configured, and no other repository is read.
+    calls = []
+    rc, out, stdout, stderr = run_config_case(config_script, config_yaml=REPO_CONFIG_PARTIAL, calls_out=calls)
+    check("extends absent: exits 0", rc == 0, f"rc={rc}")
+    check("extends absent: org layer recorded as not-configured",
+          org_layer(out) == {"outcome": "not-configured", "unconsumed": [], "extends": ""},
+          f"got {org_layer(out)!r}")
+    check("extends absent: only the repository's own file is fetched",
+          contents_calls(calls) == [f"api repos/prismalens/test-repo/contents/.github/claude-review.yml?ref={BASE_SHA} --jq .content"],
+          f"calls={calls!r}")
+    check("extends absent: no warning", "::warning::" not in stdout, f"stdout={stdout!r}")
+    check("extends absent: telemetry stays full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+
+    # Present without a ref: the named repository's default branch, so no ?ref= at all.
+    calls = []
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL,
+                                              config_yaml=REPO_CONFIG_PARTIAL, extends="acme/policy",
+                                              calls_out=calls)
+    check("extends without ref: exits 0", rc == 0, f"rc={rc}")
+    check("extends without ref: reads the named repository's .github/claude-review.yml with no ref",
+          "api repos/acme/policy/contents/.github/claude-review.yml --jq .content" in calls,
+          f"calls={calls!r}")
+    check("extends without ref: the repository's own file is read at the base SHA, never head",
+          f"api repos/prismalens/test-repo/contents/.github/claude-review.yml?ref={BASE_SHA} --jq .content" in calls,
+          f"calls={calls!r}")
+    check("extends without ref: repo keys override the shared layer",
+          out.get("default_model") == "claude-sonnet-5" and out.get("auto_pause_rounds") == "3",
+          f"got {out.get('default_model')} {out.get('auto_pause_rounds')}")
+    check("extends without ref: shared keys the repo leaves unset apply",
+          out.get("skip_authors") == "org-bot" and json.loads(out.get("path_filters", "[]")) == ["org-core/**"],
+          f"got {out.get('skip_authors')} {out.get('path_filters')}")
+    check("extends without ref: layer records the value and ok",
+          org_layer(out) == {"outcome": "ok", "unconsumed": [], "extends": "acme/policy"},
+          f"got {org_layer(out)!r}")
+    check("extends without ref: logged among the repo's consumed keys and in the effective config",
+          "extends=acme/policy" in stdout and "extends: acme/policy (shared defaults: ok)" in stdout,
+          f"stdout={stdout!r}")
+    check("extends without ref: no warning", "::warning::" not in stdout, f"stdout={stdout!r}")
+
+    # Present with a ref: fetched at exactly that ref, and provenance names it.
+    calls = []
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL,
+                                              extends="acme/policy@v2", calls_out=calls)
+    check("extends with ref: exits 0", rc == 0, f"rc={rc}")
+    check("extends with ref: fetched at that ref",
+          "api repos/acme/policy/contents/.github/claude-review.yml?ref=v2 --jq .content" in calls,
+          f"calls={calls!r}")
+    check("extends with ref: applies the shared layer", out.get("default_model") == "claude-opus-5", f"got {out.get('default_model')}")
+    check("extends with ref: layer records owner/repo@ref",
+          (org_layer(out) or {}).get("extends") == "acme/policy@v2" and (org_layer(out) or {}).get("outcome") == "ok",
+          f"got {org_layer(out)!r}")
+    check("extends with ref: config_effective attributes shared keys to the org layer",
+          json.loads(out.get("config_effective", "{}")).get("default_model") == {"value": "claude-opus-5", "layer": "org"},
+          f"got {out.get('config_effective')}")
+
+    # Malformed values: a schema error in the repository's own file, handled like any
+    # other (warn, workflow defaults), and nothing outside the repository is fetched.
+    for label, value in [
+        ("no slash", "acme"),
+        ("empty ref", "acme/policy@"),
+        ("dot-dot owner", "../policy"),
+        ("query injection in ref", "acme/policy@main&x=1"),
+        ("space in ref", "'acme/policy@a b'"),
+        ("dot-dot ref", "acme/policy@a/../b"),
+        ("not a string", "42"),
+        ("a list", "[acme/policy]"),
+    ]:
+        calls = []
+        rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_FULL,
+                                                  config_yaml=REPO_CONFIG_PARTIAL, extends=value,
+                                                  expected_org_repo="acme/policy", expected_org_ref="",
+                                                  calls_out=calls)
+        check(f"malformed extends ({label}): exits 0", rc == 0, f"rc={rc}")
+        check(f"malformed extends ({label}): warns with the validator error",
+              "::warning::" in stdout and "Invalid value for 'extends'" in stdout, f"stdout={stdout!r}")
+        check(f"malformed extends ({label}): fetches no other repository",
+              all("repos/prismalens/test-repo/" in c for c in contents_calls(calls)), f"calls={calls!r}")
+        check(f"malformed extends ({label}): workflow defaults apply",
+              out.get("default_model") == "claude-sonnet-5" and out.get("auto_pause_rounds") == "5",
+              f"got {out.get('default_model')} {out.get('auto_pause_rounds')}")
+        check(f"malformed extends ({label}): org layer not configured",
+              (org_layer(out) or {}).get("outcome") == "not-configured", f"got {org_layer(out)!r}")
+
+    # One level only: an extends inside the shared file rejects that layer, and is never followed.
+    calls = []
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml="extends: acme/grandparent\n" + ORG_CONFIG_FULL,
+                                              config_yaml=REPO_CONFIG_PARTIAL, extends=ORG_EXT, calls_out=calls)
+    check("nested extends: exits 0", rc == 0, f"rc={rc}")
+    check("nested extends: the grandparent is never fetched",
+          not any("acme/grandparent" in c for c in calls), f"calls={calls!r}")
+    check("nested extends: warns that extends is one level only",
+          "::warning::" in stdout and "one level only" in stdout, f"stdout={stdout!r}")
+    check("nested extends: shared layer schema-rejected",
+          (org_layer(out) or {}).get("outcome") == "schema-rejected", f"got {org_layer(out)!r}")
+    check("nested extends: no shared value applies, repo keys still do",
+          out.get("skip_authors") == "dependabot[bot]" and out.get("auto_pause_rounds") == "3",
+          f"got {out.get('skip_authors')} {out.get('auto_pause_rounds')}")
+
+    # A named file that can't be read (404) is not silent: warn, workflow defaults, consent off.
+    rc, out, stdout, stderr = run_config_case(config_script, org_is_404=True, config_yaml=REPO_CONFIG_PARTIAL, extends=ORG_EXT)
+    check("extends 404: exits 0", rc == 0, f"rc={rc}")
+    check("extends 404: warns naming the extends value, file and error",
+          "::warning::extends acme/review-policy@main" in stdout and "404" in stdout, f"stdout={stdout!r}")
+    check("extends 404: layer recorded as unreadable",
+          org_layer(out) == {"outcome": "unreadable", "unconsumed": [], "extends": ORG_EXT}, f"got {org_layer(out)!r}")
+    check("extends 404: repo keys still apply", out.get("auto_pause_rounds") == "3", f"got {out.get('auto_pause_rounds')}")
+    check("extends 404: telemetry fails closed to off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
+
     print("\n=== Testing Telemetry Configuration (#176) ===")
 
     # Default: telemetry_share is "full", source is workflow default
@@ -871,8 +1005,8 @@ def main():
     check("telemetry default: share is full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
     check("telemetry default: logs workflow default source", "telemetry.share: full (source: workflow default)" in stdout, f"stdout: {stdout}")
 
-    # Org defaults set share to off
-    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_TELEMETRY_SHARE_OFF, is_404=True)
+    # Shared defaults set share to off
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_TELEMETRY_SHARE_OFF, extends=ORG_EXT)
     check("telemetry org defaults: exits 0", rc == 0, f"rc={rc}")
     check("telemetry org defaults: share is off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
     check("telemetry org defaults: logs org defaults source", "telemetry.share: off (source: org defaults)" in stdout, f"stdout: {stdout}")
@@ -888,6 +1022,7 @@ def main():
         config_script,
         org_config_yaml=ORG_CONFIG_TELEMETRY_SHARE_OFF,
         config_yaml=REPO_CONFIG_TELEMETRY_SHARE_FULL,
+        extends=ORG_EXT,
     )
     check("telemetry repo overrides org: exits 0", rc == 0, f"rc={rc}")
     check("telemetry repo overrides org: share is full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
@@ -943,7 +1078,7 @@ def main():
               f"got {out.get('telemetry_share')}")
 
     # Malformed telemetry in org config: also fails closed to off (#176)
-    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=MALFORMED_TELEMETRY_INVALID_SHARE, is_404=True)
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=MALFORMED_TELEMETRY_INVALID_SHARE, extends=ORG_EXT)
     check("telemetry malformed org: exits 0", rc == 0, f"rc={rc}")
     check("telemetry malformed org: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
     check("telemetry malformed org: emits warning", "::warning::" in stdout and "Invalid value for 'telemetry.share'" in stdout, f"stdout: {stdout}")
@@ -957,8 +1092,8 @@ def main():
           "::warning::telemetry.share:" in stdout and "resolving off" in stdout,
           f"stdout: {stdout}")
 
-    # A 500 on the org defaults fetch (non-404) fails closed to off too.
-    rc, out, stdout, stderr = run_config_case(config_script, org_fail=True, is_404=True)
+    # A 500 on the shared defaults fetch (non-404) fails closed to off too.
+    rc, out, stdout, stderr = run_config_case(config_script, org_fail=True, extends=ORG_EXT)
     check("telemetry org fetch 500: exits 0", rc == 0, f"rc={rc}")
     check("telemetry org fetch 500: resolves off", out.get("telemetry_share") == "off", f"got {out.get('telemetry_share')}")
     check("telemetry org fetch 500: emits a telemetry-specific warning",
@@ -982,13 +1117,12 @@ def main():
           "::warning::telemetry.share:" in stdout and "resolving off" in stdout,
           f"stdout: {stdout}")
 
-    # A 404 on the repository file plus an org default of full resolves full
-    # (#177, thread 4006669598): absence is the one thing that still falls
-    # through.
-    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_TELEMETRY_SHARE_FULL, is_404=True)
-    check("telemetry 404 repo + org full: exits 0", rc == 0, f"rc={rc}")
-    check("telemetry 404 repo + org full: resolves full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
-    check("telemetry 404 repo + org full: no telemetry warning", "::warning::telemetry.share:" not in stdout, f"stdout: {stdout}")
+    # A repository file silent on consent plus a shared default of full resolves
+    # full (#177, thread 4006669598): an unset key falls through to the next layer.
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_CONFIG_TELEMETRY_SHARE_FULL, extends=ORG_EXT)
+    check("telemetry repo silent + shared full: exits 0", rc == 0, f"rc={rc}")
+    check("telemetry repo silent + shared full: resolves full", out.get("telemetry_share") == "full", f"got {out.get('telemetry_share')}")
+    check("telemetry repo silent + shared full: no telemetry warning", "::warning::telemetry.share:" not in stdout, f"stdout: {stdout}")
 
     # Without PyYAML, neither config layer can be read, so consent fails
     # closed to off rather than the workflow default (#177, thread 4006669598).
@@ -1133,7 +1267,7 @@ def main():
     print("\n=== Testing Path Instructions Configuration (#120) ===")
 
     # 9. Org-then-repo ordering: org entries concatenate first, repo entries second, tagged with source
-    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_WITH_PATH_INSTRUCTIONS, config_yaml=REPO_WITH_PATH_INSTRUCTIONS)
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_WITH_PATH_INSTRUCTIONS, config_yaml=REPO_WITH_PATH_INSTRUCTIONS, extends=ORG_EXT)
     check("org-then-repo ordering exits 0", rc == 0, f"rc={rc}")
     instructions = json.loads(out.get("path_instructions", "[]"))
     check("org-then-repo ordering has 2 entries", len(instructions) == 2, f"got {instructions}")
@@ -1142,7 +1276,7 @@ def main():
 
     # 10. Each layer alone
     # 10a. Org layer alone
-    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_WITH_PATH_INSTRUCTIONS, is_404=True)
+    rc, out, stdout, stderr = run_config_case(config_script, org_config_yaml=ORG_WITH_PATH_INSTRUCTIONS, extends=ORG_EXT)
     org_alone = json.loads(out.get("path_instructions", "[]"))
     check("org layer alone exits 0", rc == 0, f"rc={rc}")
     check("org layer alone carries org entries with org source", len(org_alone) == 1 and org_alone[0]["path"] == "org-src/**" and org_alone[0]["source"] == "org defaults", f"got {org_alone}")

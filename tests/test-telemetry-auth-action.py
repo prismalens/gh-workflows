@@ -8,9 +8,9 @@ stubs for curl and gh, verifying:
   3. Fallback to bearer when ACTIONS_ID_TOKEN_REQUEST_URL is unset
   4. Output method=none when neither is available
   5. An empty url mints nothing and resolves method=none
-  6. Resolution of telemetry.share: override, repository file over org
-     defaults, org defaults with no repository file, a local working-tree
-     file ignored, and default full
+  6. Resolution of telemetry.share: override, repository file over the
+     shared layer its extends names (#182), no shared layer without extends,
+     a local working-tree file ignored, and default full
 
 Run: python3 tests/test-telemetry-auth-action.py
 """
@@ -55,6 +55,7 @@ def run_action_step(
     repo_fetch_fail=False,
     repo_bad_base64=None,
     wrap_repo_base64=False,
+    org_fetches_out=None,
 ):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
@@ -84,8 +85,8 @@ exit 0
         curl_bin.chmod(0o755)
 
         # Stub gh: answers repository-contents lookups for the repository's own
-        # claude-review.yml (default branch, no ref) and for the org defaults
-        # file at prismalens/gh-workflows@main. Anything else 404s.
+        # claude-review.yml (default branch, no ref) and for the shared file in
+        # acme/policy, at any ref, which the extends cases name. Anything else 404s.
         repo_b64 = base64.b64encode(repo_config.encode()).decode() if repo_config is not None else ""
         if wrap_repo_base64 and repo_b64:
             repo_b64 = wrap_base64(repo_b64)
@@ -93,7 +94,7 @@ exit 0
         gh_script = f"""#!/usr/bin/env bash
 path="$2"
 case "$path" in
-  repos/*/contents/.github/claude-review.yml)
+  repos/acme/widgets/contents/.github/claude-review.yml)
     if [ "{1 if repo_fetch_fail else 0}" = "1" ]; then
       echo "HTTP 500: Internal Server Error" >&2
       exit 1
@@ -109,7 +110,8 @@ case "$path" in
     echo "404: Not Found" >&2
     exit 1
     ;;
-  repos/prismalens/gh-workflows/contents/.github/claude-review-defaults.yml?ref=main)
+  repos/acme/policy/contents/.github/claude-review.yml|repos/acme/policy/contents/.github/claude-review.yml?ref=*)
+    echo "$path" >> "{tdp}/org-fetches.log"
     if [ -n "{org_b64}" ]; then
       echo "{org_b64}"
       exit 0
@@ -157,6 +159,9 @@ esac
                 if "=" in line:
                     k, v = line.split("=", 1)
                     outputs[k] = v
+        org_log = tdp / "org-fetches.log"
+        if org_fetches_out is not None and org_log.exists():
+            org_fetches_out.extend(org_log.read_text().splitlines())
 
         return proc, outputs
 
@@ -283,7 +288,7 @@ def main():
     # Case 8: the repository file's share wins over an org default of 'full'
     proc, outputs = run_action_step(
         script,
-        repo_config="telemetry:\n  share: 'off'\n",
+        repo_config="extends: acme/policy\ntelemetry:\n  share: 'off'\n",
         org_config="telemetry:\n  share: full\n",
     )
     if outputs.get("share") != "off":
@@ -292,16 +297,18 @@ def main():
     else:
         print("  ok    Case 8: repository share overrides org default")
 
-    # Case 9: org default of 'off' applies with no repository file
+    # Case 9: a shared default of 'off' applies when the repository file names it
+    # in extends and says nothing about telemetry itself (#182)
     proc, outputs = run_action_step(
         script,
+        repo_config="extends: acme/policy\n",
         org_config="telemetry:\n  share: 'off'\n",
     )
     if outputs.get("share") != "off":
         fails.append(f"Case 9 expected share=off, got {outputs.get('share')}")
-        print("  FAIL  Case 9: org default applies with no repository file")
+        print("  FAIL  Case 9: shared default named by extends applies")
     else:
-        print("  ok    Case 9: org default applies with no repository file")
+        print("  ok    Case 9: shared default named by extends applies")
 
     # Case 10: share defaults to full when nothing is configured anywhere
     proc, outputs = run_action_step(script)
@@ -362,7 +369,7 @@ def main():
     # default of off (#176)
     proc, outputs = run_action_step(
         script,
-        repo_config="review:\n  level: medium\n",
+        repo_config="extends: acme/policy\nreview:\n  level: medium\n",
         org_config="telemetry:\n  share: off\n",
     )
     if outputs.get("share") != "off":
@@ -443,14 +450,39 @@ def main():
     else:
         print("  ok    Case 20: telemetry present but not a mapping resolves off with a warning")
 
-    # Case 21: a 404 on the repository file plus an org default of full resolves
-    # full (#177, thread 4006669598)
-    proc, outputs = run_action_step(script, org_config="telemetry:\n  share: full\n")
-    if outputs.get("share") != "full":
-        fails.append(f"Case 21 expected share=full, got {outputs.get('share')}")
-        print("  FAIL  Case 21: 404 repo plus org full resolves full")
+    # Case 21: without extends there is no shared layer (#182): a shared file
+    # saying off is never read, with or without a repository file.
+    for label, repo_cfg in (("no repository file", None), ("repository file without extends", "review:\n  level: medium\n")):
+        org_fetches = []
+        proc, outputs = run_action_step(script, repo_config=repo_cfg,
+                                        org_config="telemetry:\n  share: off\n", org_fetches_out=org_fetches)
+        if outputs.get("share") != "full" or org_fetches:
+            fails.append(f"Case 21 ({label}) expected share=full and no shared fetch, got {outputs.get('share')} {org_fetches}")
+            print(f"  FAIL  Case 21: {label} reads no shared layer")
+        else:
+            print(f"  ok    Case 21: {label} reads no shared layer")
+
+    # Case 21b: extends with a ref reads the shared file at that ref (#182)
+    org_fetches = []
+    proc, outputs = run_action_step(script, repo_config="extends: acme/policy@v2\n",
+                                    org_config="telemetry:\n  share: off\n", org_fetches_out=org_fetches)
+    if outputs.get("share") != "off" or org_fetches != ["repos/acme/policy/contents/.github/claude-review.yml?ref=v2"]:
+        fails.append(f"Case 21b expected share=off from ref v2, got {outputs.get('share')} {org_fetches}")
+        print("  FAIL  Case 21b: extends ref is honoured")
     else:
-        print("  ok    Case 21: a 404 on the repository file plus an org default of full resolves full")
+        print("  ok    Case 21b: extends ref is honoured")
+
+    # Case 21c: a shared file named by extends that 404s fails closed to off with
+    # a warning, the same as the review lane's config step (#182)
+    proc, outputs = run_action_step(script, repo_config="extends: acme/policy\n")
+    if outputs.get("share") != "off":
+        fails.append(f"Case 21c expected share=off, got {outputs.get('share')}")
+        print("  FAIL  Case 21c: unreadable extends resolves off")
+    elif "::warning::failed to fetch .github/claude-review.yml in acme/policy" not in proc.stderr:
+        fails.append(f"Case 21c: expected a fetch-failure warning, stderr={proc.stderr!r}")
+        print("  FAIL  Case 21c: missing fetch-failure warning")
+    else:
+        print("  ok    Case 21c: unreadable extends resolves off with a warning")
 
     # Case 22: an invalid share override on the action resolves off, with a
     # warning (#177, thread 4006669598)
