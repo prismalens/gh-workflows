@@ -726,7 +726,7 @@ the lease at 20 s and batches events at 10 s or more, which stays inside it.
 | `GITHUB_WEBHOOK_SECRET` | secret | Verifies `X-Hub-Signature-256` on `POST /webhook/github`; unset answers 503 |
 | `WEBHOOK_REPOSITORIES` | var | Comma-separated repositories the webhook admits, case-insensitive; default `prismalens/sreforge` |
 | `WEBHOOK_JOB_ENGINE` | var | Engine of a job the webhook enqueues; default `opencode` |
-| `WEBHOOK_JOB_CREDENTIAL_KIND` | var | Credential kind of a job the webhook enqueues; default `api-key` |
+| `WEBHOOK_JOB_CREDENTIAL_KIND` | var | Credential kind of a job the webhook enqueues; default `keyless`, so a runner with no API key (opencode's free Zen models) can take it |
 | `RUNNER_HEARTBEAT_TIMEOUT_S` | var | Seconds without a heartbeat before a lease expires; default 300 |
 | `LEASE_POLL_MS` | var | Interval between claim attempts inside one long-poll; default 2000 |
 
