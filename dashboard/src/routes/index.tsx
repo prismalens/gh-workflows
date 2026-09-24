@@ -1,4 +1,21 @@
 import { useMemo, useState } from "react";
+
+function CopyHint({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      title={`Copies ${text}; paste it as a PR comment`}
+      onClick={() => {
+        void navigator.clipboard?.writeText(text);
+        setCopied(true);
+      }}
+      className="inline-flex items-center rounded-md border border-border bg-muted px-2 py-0.5 font-semibold whitespace-nowrap hover:border-muted-foreground"
+    >
+      {copied ? "Copied" : label}
+    </button>
+  );
+}
 import { createRoute, Link } from "@tanstack/react-router";
 import { z } from "zod";
 
@@ -20,6 +37,8 @@ import { HeadStatusChip } from "@/features/prs/HeadStatusChip";
 import { enrichPRs, filterPRsByState, groupRoundsByPR, type PRSummary } from "@/features/prs/prs";
 import { RangeControl } from "@/honesty/RangeControl";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
+import { FilterBar } from "@/components/FilterBar";
+import type { FilterKey, FilterToken } from "@/features/filters/grammar";
 import { formatCount } from "@/lib/format";
 import { rootRoute } from "./root";
 
@@ -27,7 +46,19 @@ const EMPTY_ROWS: RoundRow[] = [];
 
 const inboxSearchSchema = z.object({
   range: standardRangeSchema,
+  q: z.string().min(1).optional().catch(undefined),
+  repo: z.string().min(1).optional().catch(undefined),
+  author: z.string().min(1).optional().catch(undefined),
 });
+
+const INBOX_KEYS: FilterKey[] = ["repo", "author"];
+
+/** The one thing to do about a PR in each bucket (#209); none where nothing is asked of anyone. */
+const NEXT_ACTION: Partial<Record<InboxBucketKey, string>> = {
+  failed: "Copy @claude review",
+  "did-not-run": "Copy @claude review",
+  "threads-open": "See the threads",
+};
 
 export const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -47,7 +78,7 @@ const SECTIONS: { key: InboxBucketKey; title: string; blurb: string }[] = [
   {
     key: "findings-not-recorded",
     title: "Findings not recorded",
-    blurb: "Reviewed, but open_findings is not recorded for these, so they are not counted healthy.",
+    blurb: "Reviewed, but no prs row carries their open findings yet (#211), so they are not counted healthy.",
   },
 ];
 
@@ -58,7 +89,6 @@ const SECTIONS: { key: InboxBucketKey; title: string; blurb: string }[] = [
 function InboxPage() {
   const search = indexRoute.useSearch();
   const navigate = indexRoute.useNavigate();
-  const [query, setQuery] = useState("");
   const [showHealthy, setShowHealthy] = useState(false);
 
   const now = useMemo(() => new Date(), []);
@@ -78,9 +108,25 @@ function InboxPage() {
   );
 
   const buckets = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return bucketInbox(needle ? openPrs.filter((pr) => matchesInboxSearch(pr, needle)) : openPrs);
-  }, [openPrs, query]);
+    const needle = search.q?.trim().toLowerCase();
+    const repo = search.repo?.toLowerCase();
+    const author = search.author?.toLowerCase();
+    return bucketInbox(
+      openPrs.filter(
+        (pr) =>
+          (!needle || matchesInboxSearch(pr, needle)) &&
+          (!repo || pr.repository.toLowerCase().includes(repo)) &&
+          (!author || pr.author.toLowerCase().includes(author)),
+      ),
+    );
+  }, [openPrs, search.q, search.repo, search.author]);
+
+  const tokens: FilterToken[] = [
+    ...(search.repo ? [{ key: "repo" as const, value: search.repo }] : []),
+    ...(search.author ? [{ key: "author" as const, value: search.author }] : []),
+  ];
+  const empty = SECTIONS.filter((section) => buckets[section.key].length === 0);
+  const filled = SECTIONS.filter((section) => buckets[section.key].length > 0);
 
   return (
     <div className="flex flex-col gap-5">
@@ -98,13 +144,21 @@ function InboxPage() {
         />
       </div>
 
-      <input
-        type="search"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search repository, title, author"
-        aria-label="Search the inbox"
-        className="h-8 w-full max-w-[360px] rounded-md border border-border bg-transparent px-3 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      <FilterBar
+        keys={INBOX_KEYS}
+        tokens={tokens}
+        text={search.q ?? ""}
+        placeholder="Search repository, title, author, or repo:  author:"
+        onChange={({ tokens: next, text }) =>
+          void navigate({
+            search: (prev) => ({
+              ...prev,
+              repo: next.find((t) => t.key === "repo")?.value,
+              author: next.find((t) => t.key === "author")?.value,
+              q: text.trim() || undefined,
+            }),
+          })
+        }
       />
 
       {rounds.isPending || prs.isPending ? (
@@ -115,7 +169,21 @@ function InboxPage() {
         <QueryError error={prs.error} title="Could not load pull request state and findings" />
       ) : (
         <>
-          {SECTIONS.map((section) => (
+          {empty.length > 0 && (
+            <div
+              data-testid="inbox-empty-sections"
+              className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-4 py-2 text-xs"
+            >
+              {empty.map((section) => (
+                <span key={section.key} data-testid={`inbox-section-${section.key}`}>
+                  <span className="font-semibold">{section.title}</span>{" "}
+                  <span className="tabular">0</span>
+                </span>
+              ))}
+              <span className="text-muted-foreground">Nothing here needs you.</span>
+            </div>
+          )}
+          {filled.map((section) => (
             <InboxSection
               key={section.key}
               id={section.key}
@@ -173,13 +241,13 @@ function InboxSection({
       {prs.length === 0 ? (
         <div className="px-4 py-3 text-xs text-muted-foreground">Nothing here.</div>
       ) : (
-        <InboxTable prs={prs} />
+        <InboxTable prs={prs} action={NEXT_ACTION[id]} />
       )}
     </Card>
   );
 }
 
-function InboxTable({ prs }: { prs: PRSummary[] }) {
+function InboxTable({ prs, action }: { prs: PRSummary[]; action?: string }) {
   return (
     <Table>
       <TableHeader>
@@ -191,6 +259,7 @@ function InboxTable({ prs }: { prs: PRSummary[] }) {
           <TableHead>Why</TableHead>
           <TableHead className="text-right">Open findings</TableHead>
           <TableHead className="text-right">Last round</TableHead>
+          {action && <TableHead className="text-right">Next</TableHead>}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -228,6 +297,23 @@ function InboxTable({ prs }: { prs: PRSummary[] }) {
             <TableCell className="text-right text-xs text-muted-foreground">
               <Timestamp iso={pr.lastRoundAt} compact />
             </TableCell>
+            {action && (
+              <TableCell className="text-right text-xs">
+                {action === "See the threads" ? (
+                  <Link
+                    to="/findings"
+                    search={{ repository: pr.repository, pr: String(pr.number) }}
+                    className="inline-flex items-center rounded-md border border-border bg-muted px-2 py-0.5 font-semibold whitespace-nowrap hover:border-muted-foreground"
+                  >
+                    {action}
+                  </Link>
+                ) : pr.headStatus.copyableHint ? (
+                  <CopyHint text={pr.headStatus.copyableHint} label={action} />
+                ) : (
+                  <span className="text-muted-foreground">{pr.headStatus.explain}</span>
+                )}
+              </TableCell>
+            )}
           </TableRow>
         ))}
       </TableBody>
