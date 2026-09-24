@@ -184,7 +184,7 @@ export function ResolutionPanel({ row }: { row: RoundRow }) {
       </Facts>
 
       {gaps.length > 0 && (
-        <Degraded what={gaps.join(", ")} reason={era.reason} detail={era.detail} />
+        <Degraded what={gaps.join(", ")} reason={era.reason} cause={era.detail} />
       )}
 
       <div className="flex flex-wrap gap-3 text-sm">

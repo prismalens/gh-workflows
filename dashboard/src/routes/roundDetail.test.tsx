@@ -4,7 +4,12 @@ import { describe, expect, it } from "vitest";
 import type { RoundAgentRow, RoundRow } from "@/api/types";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
-import { fieldEra, LANE_4_STRADDLES, RUNNER_DOES_NOT_SEND } from "@/honesty/fieldEra";
+import {
+  fieldEra,
+  LANE_4_STRADDLES,
+  LANE_VERSION_UNKNOWN,
+  RUNNER_DOES_NOT_SEND,
+} from "@/honesty/fieldEra";
 import { renderRoute } from "@/test/renderRoute";
 
 const now = new Date();
@@ -54,11 +59,12 @@ describe("fieldEra (#179)", () => {
     expect(fieldEra({ lane_version: "v2.0.0" }).detail).toMatch(/Lane 2 predates/);
   });
 
-  it("reads a null or unparseable lane version as a pre-versioning lane", () => {
+  it("claims no era for a null or unparseable lane version", () => {
     for (const lane_version of [null, "", "nightly"]) {
       const era = fieldEra({ lane_version });
       expect(era.reason).toBe("lane-did-not-send");
-      expect(era.detail).toMatch(/no lane version/);
+      expect(era.detail).toBe(LANE_VERSION_UNKNOWN);
+      expect(era.detail).not.toMatch(/predates/);
     }
   });
 
@@ -145,8 +151,10 @@ describe("/rounds/$sessionId resolution facts (#179)", () => {
     const gap = degraded("Credential, Stacked on, Patch fingerprint, Context");
     expect(gap).toHaveAttribute("data-reason", "lane-did-not-send");
     expect(gap).toHaveTextContent(RUNNER_DOES_NOT_SEND);
+    expect(gap).not.toHaveTextContent(/predates/);
     const tools = degraded("Tool detail for 1 of 1 agents");
     expect(tools).toHaveTextContent(RUNNER_DOES_NOT_SEND);
+    expect(tools).not.toHaveTextContent(/predates/);
   });
 });
 

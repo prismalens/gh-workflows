@@ -60,7 +60,7 @@ export function FailurePanel({ row }: { row: RoundRow }) {
   return (
     <Panel title="Failure" aside={<Badge variant="destructive">round failed</Badge>}>
       {cls === null ? (
-        <Degraded what="Failure class" reason={era.reason} detail={era.detail} />
+        <Degraded what="Failure class" reason={era.reason} cause={era.detail} />
       ) : (
         <>
           <Facts>

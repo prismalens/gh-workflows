@@ -15,7 +15,15 @@ export type DegradedReason =
   | "unreadable"
   | "unobservable";
 
-export const REASON_COPY: Record<DegradedReason, { badge: string; explain: string }> = {
+export const REASON_COPY: Record<
+  DegradedReason,
+  {
+    badge: string;
+    explain: string;
+    /** The part of `explain` that says why the field is empty; a caller's `cause` replaces it. */
+    cause?: string;
+  }
+> = {
   unbuilt: {
     badge: "not collected yet",
     explain:
@@ -25,6 +33,8 @@ export const REASON_COPY: Record<DegradedReason, { badge: string; explain: strin
     badge: "not sent by this lane",
     explain:
       "The store has the column and this round left it empty. The review lane that produced it predates the field, so this round will never carry it. Newer rounds from an upgraded lane will.",
+    cause:
+      "The review lane that produced it predates the field, so this round will never carry it. Newer rounds from an upgraded lane will.",
   },
   "lane-sent-nothing": {
     badge: "not recorded for this round",
@@ -48,11 +58,18 @@ export interface DegradedProps {
   reason: DegradedReason;
   /** Where the field comes from, e.g. "issue 02 (verdict decoding)". */
   detail?: string;
+  /**
+   * What is known about why the field is empty. It replaces the reason's own `cause` sentence
+   * when it has one (a runner round is not an old lane, #179), and is appended otherwise.
+   */
+  cause?: string;
   className?: string;
 }
 
-export function Degraded({ what, reason, detail, className }: DegradedProps) {
+export function Degraded({ what, reason, detail, cause, className }: DegradedProps) {
   const copy = REASON_COPY[reason];
+  const explain = cause && copy.cause ? copy.explain.replace(copy.cause, cause) : copy.explain;
+  const extra = [cause && !copy.cause ? cause : null, detail].filter(Boolean).join(" ");
   return (
     <div
       className={cn("rounded-md border border-dashed border-border bg-muted/30 p-3", className)}
@@ -64,8 +81,8 @@ export function Degraded({ what, reason, detail, className }: DegradedProps) {
         <Badge variant="outline">{copy.badge}</Badge>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        {copy.explain}
-        {detail ? ` ${detail}` : ""}
+        {explain}
+        {extra ? ` ${extra}` : ""}
       </p>
     </div>
   );

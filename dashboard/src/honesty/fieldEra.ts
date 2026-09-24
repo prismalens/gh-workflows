@@ -10,6 +10,9 @@ export const FIELD_ERA_LANE_VERSION = 5;
 export const LANE_4_STRADDLES =
   "Lane 4 straddles this field: added 2026-09-14 (#173) with no version bump.";
 
+export const LANE_VERSION_UNKNOWN =
+  "This round carries no lane version, so when its sender added this field is unknown.";
+
 export const RUNNER_DOES_NOT_SEND = "A runner round (#196) does not send this field yet.";
 
 /** "4", "v2.0.0" and "5.1" all read as their major; anything unparseable is null. */
@@ -54,7 +57,7 @@ export function fieldEra(row: {
       major === 4
         ? LANE_4_STRADDLES
         : major === null
-          ? "This round carries no lane version, so its lane predates versioning and this field (#173)."
+          ? LANE_VERSION_UNKNOWN
           : `Lane ${major} predates this field, added 2026-09-14 (#173).`,
   };
 }

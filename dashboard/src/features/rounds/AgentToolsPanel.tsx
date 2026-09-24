@@ -130,7 +130,7 @@ export function AgentToolsPanel({ row, agents }: { row: RoundRow; agents: RoundA
         <Degraded
           what={`Tool detail for ${missing} of ${agents.length} agents`}
           reason={era.reason}
-          detail={era.detail}
+          cause={era.detail}
         />
       )}
       {unreadable > 0 && (
