@@ -2374,6 +2374,32 @@ describe("Worker telemetry read API", () => {
       assert.ok(query.sql.includes("api_error_status"));
     });
 
+    it("selects ingest_auth and repository_id in the default response (#179)", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql) => {
+          if (sql.includes("FROM usage_records")) {
+            return {
+              results: [{ session_id: "s-ingest-read-1", ingest_auth: "oidc", repository_id: 12345 }],
+            };
+          }
+          return null;
+        },
+      });
+      const env = { ...helper.env, DB: db };
+      const req = makeAuthenticatedRequest("/api/runs", helper.jwt);
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+
+      const data = await res.json();
+      assert.equal(data.rows[0].ingest_auth, "oidc");
+      assert.equal(data.rows[0].repository_id, 12345);
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("ingest_auth"));
+      assert.ok(query.sql.includes("repository_id"));
+    });
+
     it("returns config_effective only under include=blobs, preserving an unknown config key (#75)", async () => {
       const helper = await getAccessHelper();
       const configEffective = {

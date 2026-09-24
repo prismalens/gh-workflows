@@ -1,4 +1,4 @@
-import type { HealthReportRow, ModelUsage, RawResult, RoundRow } from "./types";
+import type { HealthReportRow, ModelUsage, RawResult, RoundAgentRow, RoundRow } from "./types";
 
 /** The three blob columns arrive as JSON strings, and any of them can be null. */
 function parseJson<T>(raw: string | null | undefined): T | null {
@@ -116,6 +116,76 @@ export function parseConfigEffective(row: RoundRow): Record<string, ConfigEffect
     result[key] = { value, layer };
   }
   return result;
+}
+
+export interface ToolGroup {
+  /** A Read path, or the path a Grep or Glob ran under; null when it ran at the checkout root. */
+  path: string | null;
+  pattern: string | null;
+  calls: number;
+}
+
+export interface ToolDetail {
+  read: ToolGroup[];
+  grep: ToolGroup[];
+  glob: ToolGroup[];
+  bash: CountEntry[];
+  other: CountEntry[];
+  truncated: boolean;
+}
+
+function toolGroups(value: unknown): ToolGroup[] | null {
+  if (!Array.isArray(value)) return null;
+  const groups: ToolGroup[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return null;
+    const { path, pattern, calls } = entry as Record<string, unknown>;
+    if (typeof calls !== "number" || !Number.isFinite(calls)) return null;
+    groups.push({
+      path: typeof path === "string" ? path : null,
+      pattern: typeof pattern === "string" ? pattern : null,
+      calls,
+    });
+  }
+  return groups;
+}
+
+function countMap(value: unknown): CountEntry[] | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries: CountEntry[] = [];
+  for (const [key, count] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof count !== "number" || !Number.isFinite(count)) return null;
+    entries.push({ key, value: count });
+  }
+  return entries;
+}
+
+/**
+ * `round_agents.tool_detail`, shaped by the agent rollup in claude-code-review.yml (#174).
+ * Null when the agent row carries none; "unreadable" when any part of it is not that shape,
+ * since a partial breakdown would read as the whole of the agent's calls. The rollup always
+ * sends all five keys, so a missing one is unreadable, never a zero.
+ */
+export function parseToolDetail(agent: RoundAgentRow): ToolDetail | "unreadable" | null {
+  if (agent.tool_detail === null || agent.tool_detail === undefined || agent.tool_detail === "") {
+    return null;
+  }
+  const parsed = parseJson<Record<string, unknown>>(agent.tool_detail);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "unreadable";
+  const read = toolGroups(parsed.read);
+  const grep = toolGroups(parsed.grep);
+  const glob = toolGroups(parsed.glob);
+  const bash = countMap(parsed.bash);
+  const other = countMap(parsed.other);
+  if (!read || !grep || !glob || !bash || !other) return "unreadable";
+  return {
+    read,
+    grep,
+    glob,
+    bash,
+    other,
+    truncated: parsed.tool_detail_truncated === true,
+  };
 }
 
 export function humanizeKey(key: string): string {
