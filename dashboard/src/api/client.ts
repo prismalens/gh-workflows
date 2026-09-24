@@ -290,7 +290,6 @@ export const REQUIRED_SUMMARY_KEYS = [
   "verdict_kinds",
   "fallback_reasons",
   "model_sources",
-  "canary_last_seen_at",
 ] as const;
 
 function isPerRepositorySummary(row: unknown): boolean {
@@ -320,8 +319,7 @@ export function isSummaryResponse(value: unknown): value is SummaryResponse {
     !Array.isArray(val.fallback_reasons) &&
     typeof val.model_sources === "object" &&
     val.model_sources !== null &&
-    !Array.isArray(val.model_sources) &&
-    (val.canary_last_seen_at === null || typeof val.canary_last_seen_at === "string")
+    !Array.isArray(val.model_sources)
   );
 }
 

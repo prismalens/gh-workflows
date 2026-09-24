@@ -155,8 +155,8 @@ jobs:
           set -euo pipefail
           ./node_modules/.bin/wrangler deploy
 
-      # Reuses the canary's reachability probe: invalid token → 401 proves the
-      # Worker handler answered rather than an edge rule. Story: #84.
+      # The deploy's own smoke test: invalid token → 401 proves the Worker
+      # handler answered rather than an edge rule. Story: #84.
       - name: Verify deployed Worker is reachable
         env:
           INGEST_URL: ${{ vars.TELEMETRY_CANARY_URL || 'https://assayer.sfun.cloud/ingest' }}

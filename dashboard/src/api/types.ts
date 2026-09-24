@@ -87,7 +87,6 @@ export interface SummaryResponse {
   verdict_kinds: Record<string, number>;
   fallback_reasons: Record<string, number>;
   model_sources: Record<string, number>;
-  canary_last_seen_at: string | null;
 }
 
 export interface LaneEventRow {

@@ -133,7 +133,6 @@ export function makeFixtureApi(
           verdict_kinds: {},
           fallback_reasons: {},
           model_sources: {},
-          canary_last_seen_at: null,
         };
       }
       const durations = sorted
@@ -187,7 +186,6 @@ export function makeFixtureApi(
         verdict_kinds,
         fallback_reasons,
         model_sources,
-        canary_last_seen_at: null,
       };
     },
 
