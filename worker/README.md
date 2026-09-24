@@ -318,6 +318,32 @@ Every `review_findings` column (`tests/test-schema-drift.py`'s `REVIEW_FINDINGS_
 
 ---
 
+### `GET /api/health-reports`
+
+Returns the weekly rows `telemetry-health.yml` posts to `POST /ingest/health`, from `health_reports` (#176, #179), newest `window_start` first. Every row comes back as it arrived: an oversize week lands as several tiling rows and a re-run inserts again, and the route merges none of them.
+
+#### Query Parameters
+
+- `limit` (optional): Integer `1`..`200` (default `52`, a year of weeks). Not capped lower under `include=blobs`: unlike `/api/runs`, this route's blob columns are bounded by a report's own run count, and the Weekly health tab is the one caller and always wants every row it can get.
+- `repository` (optional): Filter by exact repository string.
+- `cursor` (optional): Composite cursor `<window_start>|<id>` for pagination.
+- `include` (optional): Must be `"blobs"`. Adds the two JSON blob columns below.
+
+#### Columns
+
+Every `health_reports` column except the two blob columns: `id`, `repository`, `repository_id`, `window_start`, `window_end`, `runs_seen`, `runs_accounted`, `startup_failures`, `findings_swept`, `share`, `ingest_auth`, `received_at`. With `include=blobs`, also `unaccounted_runs` (an array of `{ id, conclusion, created_at }`) and `lane_events_by_reason` (reason to count), both JSON strings as stored.
+
+#### Response Shape
+
+```json
+{
+  "rows": [ ... ],
+  "next_cursor": "2026-09-14T00:00:00Z|7"
+}
+```
+
+---
+
 ### `GET /api/round-agents`
 
 Returns per-agent rows for one round from `round_agents`, ordered by `agent_id` ascending (#131, #89).

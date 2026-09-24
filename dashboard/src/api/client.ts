@@ -4,6 +4,8 @@ import type {
   FindingRow,
   FindingsResponse,
   FleetReposResponse,
+  HealthReportRow,
+  HealthReportsResponse,
   LaneEventRow,
   LaneEventsResponse,
   PrRow,
@@ -77,6 +79,14 @@ export interface FindingsQuery {
   cursor?: string;
 }
 
+export interface HealthReportsQuery {
+  limit?: number;
+  repository?: string;
+  cursor?: string;
+  /** "blobs" adds unaccounted_runs and lane_events_by_reason; the Worker does not lower limit for it. */
+  include?: "blobs";
+}
+
 /** The Worker caps limit at 1000, and at 50 once include=blobs is set. */
 export const MAX_LIMIT = 1000;
 export const MAX_LIMIT_WITH_BLOBS = 50;
@@ -134,6 +144,17 @@ export function findingsUrl(query: FindingsQuery = {}): string {
   }
   const qs = params.toString();
   return qs ? `/api/findings?${qs}` : "/api/findings";
+}
+
+export function healthReportsUrl(query: HealthReportsQuery = {}): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  const qs = params.toString();
+  return qs ? `/api/health-reports?${qs}` : "/api/health-reports";
 }
 
 export function roundAgentsUrl(sessionId: string): string {
@@ -535,6 +556,41 @@ export function isFindingsResponse(value: unknown): value is FindingsResponse {
   );
 }
 
+export function isHealthReportRow(row: unknown): row is HealthReportRow {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  return (
+    typeof r.id === "number" &&
+    typeof r.repository === "string" &&
+    (r.repository_id === null || typeof r.repository_id === "number") &&
+    typeof r.window_start === "string" &&
+    typeof r.window_end === "string" &&
+    typeof r.runs_seen === "number" &&
+    typeof r.runs_accounted === "number" &&
+    (r.unaccounted_runs === undefined ||
+      r.unaccounted_runs === null ||
+      typeof r.unaccounted_runs === "string") &&
+    typeof r.startup_failures === "number" &&
+    (r.lane_events_by_reason === undefined ||
+      r.lane_events_by_reason === null ||
+      typeof r.lane_events_by_reason === "string") &&
+    typeof r.findings_swept === "number" &&
+    typeof r.share === "string" &&
+    typeof r.ingest_auth === "string" &&
+    typeof r.received_at === "string"
+  );
+}
+
+export function isHealthReportsResponse(value: unknown): value is HealthReportsResponse {
+  if (!value || typeof value !== "object") return false;
+  const { rows, next_cursor } = value as { rows?: unknown; next_cursor?: unknown };
+  return (
+    Array.isArray(rows) &&
+    rows.every(isHealthReportRow) &&
+    (next_cursor === null || next_cursor === undefined || typeof next_cursor === "string")
+  );
+}
+
 export interface TelemetryApi {
   fetchRuns(query?: RunsQuery): Promise<RunsResponse>;
   fetchSummary(): Promise<SummaryResponse>;
@@ -544,6 +600,7 @@ export interface TelemetryApi {
   fetchPRs(query?: PrsQuery): Promise<PrsResponse>;
   fetchFindings(query?: FindingsQuery): Promise<FindingsResponse>;
   fetchFleetRepos(query: FleetReposQuery): Promise<FleetReposResponse>;
+  fetchHealthReports(query?: HealthReportsQuery): Promise<HealthReportsResponse>;
   /** Set only by the fixture table, so the UI can say the rounds are invented. */
   readonly fixtures?: boolean;
 }
@@ -558,6 +615,7 @@ export const httpApi: TelemetryApi = {
   fetchPRs: (query = {}) => getJson(prsUrl(query), isPrsResponse),
   fetchFindings: (query = {}) => getJson(findingsUrl(query), isFindingsResponse),
   fetchFleetRepos: (query) => getJson(fleetReposUrl(query), isFleetReposResponse),
+  fetchHealthReports: (query = {}) => getJson(healthReportsUrl(query), isHealthReportsResponse),
 };
 
 /**

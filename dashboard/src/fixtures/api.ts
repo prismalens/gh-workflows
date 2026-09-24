@@ -2,6 +2,7 @@ import type {
   ChangesQuery,
   FindingsQuery,
   FleetReposQuery,
+  HealthReportsQuery,
   LaneEventsQuery,
   PrsQuery,
   RunsQuery,
@@ -15,6 +16,8 @@ import type {
   FindingsResponse,
   FleetRepoRow,
   FleetReposResponse,
+  HealthReportRow,
+  HealthReportsResponse,
   LaneEventRow,
   LaneEventsResponse,
   PrRow,
@@ -40,6 +43,8 @@ const BLOB_COLUMNS = [
   "config_effective",
 ] as const;
 
+const HEALTH_BLOB_COLUMNS = ["unaccounted_runs", "lane_events_by_reason"] as const;
+
 /**
  * Reimplements handleRuns, handleSummary, handleLaneEvents and handleChanges from
  * worker/index.js against an in-memory table, so the routes can be exercised without Access.
@@ -56,6 +61,7 @@ export function makeFixtureApi(
   // fallback-only behaviour (#141).
   prs: PrRow[] = rows === FIXTURE_ROUNDS ? FIXTURE_PRS : [],
   findings: FindingRow[] = [],
+  healthReports: HealthReportRow[] = [],
 ): TelemetryApi {
   const sorted = [...rows].sort((a, b) => {
     const byTime = b.recorded_at.localeCompare(a.recorded_at);
@@ -82,6 +88,11 @@ export function makeFixtureApi(
   const sortedFindings = [...findings].sort((a, b) => {
     const byTime = (b.thread_created_at ?? "").localeCompare(a.thread_created_at ?? "");
     return byTime !== 0 ? byTime : b.thread_node_id.localeCompare(a.thread_node_id);
+  });
+
+  const sortedHealth = [...healthReports].sort((a, b) => {
+    const byWindow = b.window_start.localeCompare(a.window_start);
+    return byWindow !== 0 ? byWindow : b.id - a.id;
   });
 
   return {
@@ -371,6 +382,32 @@ export function makeFixtureApi(
             (item) => item.outcome === "unparseable" || item.outcome === "schema-rejected",
           )
           .map((item) => ({ repository: item.repository, layer: item.layer })),
+        };
+      },
+
+    async fetchHealthReports(query: HealthReportsQuery = {}): Promise<HealthReportsResponse> {
+      let filtered = sortedHealth;
+      if (query.repository) filtered = filtered.filter((r) => r.repository === query.repository);
+      if (query.cursor) {
+        const pipe = query.cursor.lastIndexOf("|");
+        const cursorAt = query.cursor.slice(0, pipe);
+        const cursorId = Number(query.cursor.slice(pipe + 1));
+        filtered = filtered.filter(
+          (r) => r.window_start < cursorAt || (r.window_start === cursorAt && r.id < cursorId),
+        );
+      }
+      const limit = query.limit ?? 52;
+      const includeBlobs = query.include === "blobs";
+      const page = filtered.slice(0, limit).map((row) => {
+        if (includeBlobs) return { ...row };
+        const stripped = { ...row };
+        for (const column of HEALTH_BLOB_COLUMNS) delete stripped[column];
+        return stripped;
+      });
+      const last = page[page.length - 1];
+      return {
+        rows: page,
+        next_cursor: page.length === limit && last ? `${last.window_start}|${last.id}` : null,
       };
     },
   };

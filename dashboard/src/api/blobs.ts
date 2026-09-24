@@ -1,4 +1,4 @@
-import type { ModelUsage, RawResult, RoundRow } from "./types";
+import type { HealthReportRow, ModelUsage, RawResult, RoundRow } from "./types";
 
 /** The three blob columns arrive as JSON strings, and any of them can be null. */
 function parseJson<T>(raw: string | null | undefined): T | null {
@@ -123,4 +123,34 @@ export function humanizeKey(key: string): string {
     .replace(/[_-]+/g, " ")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .toLowerCase();
+}
+
+export interface UnaccountedRun {
+  id: number;
+  conclusion: string;
+  created_at: string;
+}
+
+function isUnaccountedRun(entry: unknown): entry is UnaccountedRun {
+  if (!entry || typeof entry !== "object") return false;
+  const { id, conclusion, created_at } = entry as Record<string, unknown>;
+  return Number.isInteger(id) && typeof conclusion === "string" && typeof created_at === "string";
+}
+
+/** null when the column does not parse to a list of runs; the Worker always writes one. */
+export function parseUnaccountedRuns(row: HealthReportRow): UnaccountedRun[] | null {
+  const parsed = parseJson<unknown>(row.unaccounted_runs);
+  if (!Array.isArray(parsed) || !parsed.every(isUnaccountedRun)) return null;
+  return parsed;
+}
+
+/** Reason to count, largest first; null when the column does not parse to that shape. */
+export function parseLaneEventsByReason(row: HealthReportRow): CountEntry[] | null {
+  const parsed = parseJson<unknown>(row.lane_events_by_reason);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (!entries.every(([, value]) => typeof value === "number" && Number.isFinite(value))) return null;
+  return (entries as Array<[string, number]>)
+    .map(([key, value]) => ({ key, value }))
+    .sort((a, b) => b.value - a.value || a.key.localeCompare(b.key));
 }

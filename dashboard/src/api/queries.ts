@@ -6,6 +6,7 @@ import {
   MAX_LIMIT,
   MAX_LIMIT_WITH_BLOBS,
   type FindingsQuery,
+  type HealthReportsQuery,
   type LaneEventsQuery,
   type PrsQuery,
   type RunsQuery,
@@ -247,5 +248,30 @@ export function useFleetReposQuery(range: StandardRangeKey) {
     queryKey: ["fleet-repos", range],
     queryFn: () => api.fetchFleetRepos({ range }),
     staleTime: 30_000,
+  });
+}
+
+/** The Worker's cap on GET /api/health-reports: 200 weekly rows. */
+export const MAX_HEALTH_REPORTS = 200;
+
+/**
+ * One page of a repository's weekly health rows, newest window first, every row
+ * as it arrived (#179). No page walking: 200 rows is years of weeks, and the
+ * page says so when the cursor comes back anyway.
+ */
+export function useHealthReportsQuery(repository: string) {
+  const api = useApi();
+  // WeeklyHealth renders unaccounted_runs and lane_events_by_reason for every
+  // row unconditionally, so this, unlike the round detail's include=blobs, is
+  // not an on-demand expansion: the one caller always needs both columns.
+  const query: HealthReportsQuery = {
+    repository,
+    limit: MAX_HEALTH_REPORTS,
+    include: "blobs",
+  };
+  return useQuery({
+    queryKey: ["health-reports", query],
+    queryFn: () => api.fetchHealthReports(query),
+    staleTime: 60_000,
   });
 }

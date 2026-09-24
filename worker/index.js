@@ -1008,6 +1008,111 @@ async function handleLaneEvents(url, env) {
   );
 }
 
+// Weekly health rows from telemetry-health.yml (#176), newest window first (#179).
+// Every row is returned as it arrived: an oversize week lands as several tiling rows
+// and a re-run inserts again, so nothing here merges or dedupes.
+async function handleHealthReports(url, env) {
+  const searchParams = url.searchParams;
+  let limit = 52;
+  const limitParam = searchParams.get("limit");
+  if (limitParam !== null) {
+    if (!/^[1-9]\d*$/.test(limitParam) || Number(limitParam) > 200) {
+      return new Response(JSON.stringify({ error: "invalid limit" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    limit = Number(limitParam);
+  }
+
+  // unaccounted_runs and lane_events_by_reason are JSON blob columns (up to
+  // 1000 runs' worth per row); gated behind include=blobs like handleRuns's
+  // blob columns, so a plain list fetch stays small. Unlike handleRuns, the
+  // limit is not lowered under include=blobs: these two columns are bounded
+  // by a report's own run count, not by an arbitrary result payload, and the
+  // Weekly health tab is the one caller and always requests every row it can
+  // (#179) rather than one row's detail.
+  const includeParam = searchParams.get("include");
+  let includeBlobs = false;
+  if (includeParam !== null) {
+    if (includeParam !== "blobs") {
+      return new Response(JSON.stringify({ error: "invalid include" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    includeBlobs = true;
+  }
+
+  const conditions = [];
+  const bindings = [];
+
+  const repository = searchParams.get("repository");
+  if (repository !== null) {
+    conditions.push("repository = ?");
+    bindings.push(repository);
+  }
+
+  const cursor = searchParams.get("cursor");
+  if (cursor !== null) {
+    const pipeIndex = cursor.lastIndexOf("|");
+    const cursorWindowStart = pipeIndex === -1 ? "" : cursor.slice(0, pipeIndex);
+    const cursorId = pipeIndex === -1 ? "" : cursor.slice(pipeIndex + 1);
+    if (!cursorWindowStart || !/^\d+$/.test(cursorId)) {
+      return new Response(JSON.stringify({ error: "invalid cursor" }), {
+        status: 400,
+        headers: READ_HEADERS,
+      });
+    }
+    conditions.push("(window_start < ? OR (window_start = ? AND id < ?))");
+    bindings.push(cursorWindowStart, cursorWindowStart, Number(cursorId));
+  }
+
+  const columns = [
+    "id",
+    "repository",
+    "repository_id",
+    "window_start",
+    "window_end",
+    "runs_seen",
+    "runs_accounted",
+    "startup_failures",
+    "findings_swept",
+    "share",
+    "ingest_auth",
+    "received_at",
+  ];
+  if (includeBlobs) {
+    columns.push("unaccounted_runs", "lane_events_by_reason");
+  }
+
+  let query = `SELECT
+    ${columns.join(",\n    ")}
+  FROM health_reports`;
+
+  if (conditions.length > 0) {
+    query += ` WHERE ${conditions.join(" AND ")}`;
+  }
+
+  query += ` ORDER BY window_start DESC, id DESC LIMIT ?`;
+  bindings.push(limit);
+
+  const { results } = await env.DB.prepare(query).bind(...bindings).all();
+  const rows = results ?? [];
+  const nextCursor =
+    rows.length === limit && rows.length > 0
+      ? `${rows[rows.length - 1].window_start}|${rows[rows.length - 1].id}`
+      : null;
+
+  return new Response(
+    JSON.stringify({
+      rows,
+      next_cursor: nextCursor,
+    }),
+    { headers: READ_HEADERS }
+  );
+}
+
 async function handleRoundAgents(url, env) {
   const sessionId = url.searchParams.get("session_id");
   if (!sessionId) {
@@ -3821,7 +3926,8 @@ export default {
         pathname === "/api/lane-events" ||
         pathname === "/api/round-agents" ||
         pathname === "/api/prs" ||
-        pathname === "/api/findings")
+        pathname === "/api/findings" ||
+        pathname === "/api/health-reports")
     ) {
       const authError = await verifyAccess(request, env);
       if (authError) {
@@ -3844,6 +3950,9 @@ export default {
       }
       if (pathname === "/api/findings") {
         return handleFindings(url, env);
+      }
+      if (pathname === "/api/health-reports") {
+        return handleHealthReports(url, env);
       }
     }
 
