@@ -12,7 +12,11 @@ inputs:
     required: false
     default: ''
   share:
-    description: Optional telemetry.share override ('full' | 'off')
+    description: Optional telemetry.share override ('full' | 'rounds' | 'off')
+    required: false
+    default: ''
+  config_ref:
+    description: Ref to read the repository's .github/claude-review.yml at (defaults to the default branch)
     required: false
     default: ''
   token:
@@ -28,7 +32,7 @@ outputs:
     description: "Authentication method used: 'oidc', 'bearer', or 'none'"
     value: ${{ steps.auth.outputs.method }}
   share:
-    description: "Telemetry share consent: 'full' or 'off'"
+    description: "Telemetry share consent: 'full', 'rounds' or 'off'"
     value: ${{ steps.auth.outputs.share }}
 
 runs:
@@ -41,6 +45,7 @@ runs:
         TARGET_URL: ${{ inputs.url }}
         BEARER_TOKEN: ${{ inputs.bearer }}
         SHARE_OVERRIDE: ${{ inputs.share }}
+        CONFIG_REF: ${{ inputs.config_ref }}
         GH_TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
@@ -94,6 +99,9 @@ runs:
             full|true)
               RESOLVED_SHARE="full"
               ;;
+            rounds)
+              RESOLVED_SHARE="rounds"
+              ;;
             off|false)
               RESOLVED_SHARE="off"
               ;;
@@ -140,6 +148,8 @@ runs:
               s = tel.get('share')
               if s == 'full' or s is True:
                   return 'full', None, data
+              if s == 'rounds':
+                  return 'rounds', None, data
               if s == 'off' or s is False:
                   return 'off', None, data
               return 'off', f'telemetry.share has invalid value {s!r}; resolving telemetry.share as off', data
@@ -194,10 +204,12 @@ runs:
           repo_name = os.environ.get('GITHUB_REPOSITORY') or ''
           repo_share, repo_warn, repo_data = (None, None, None)
           if repo_name:
-              repo_share, repo_warn, repo_data = fetch_layer(repo_name, None, '.github/claude-review.yml')
+              repo_share, repo_warn, repo_data = fetch_layer(repo_name, os.environ.get('CONFIG_REF') or None, '.github/claude-review.yml')
 
-          # The shared layer is whatever the repository's own file names in
-          # extends (#182); without it there is no second layer.
+          # The shared layer is whatever the repository's own file, read at
+          # config_ref, names in extends (#182); without it there is no second
+          # layer. config_ref is a ref of this repository, so the shared file is
+          # read at the extends ref or the named repository's default branch.
           org_share, org_warn = (None, None)
           extends = parse_extends(repo_data.get('extends')) if isinstance(repo_data, dict) else None
           if repo_share is None and extends:
@@ -209,11 +221,11 @@ runs:
           if warn:
               print(f'::warning::{warn} (#177)', file=sys.stderr)
 
-          print(result if result in ('full', 'off') else 'full')
+          print(result if result in ('full', 'rounds', 'off') else 'full')
           '''))")"
         fi
 
-        if [ "$RESOLVED_SHARE" != "off" ] && [ "$RESOLVED_SHARE" != "full" ]; then
+        if [ "$RESOLVED_SHARE" != "off" ] && [ "$RESOLVED_SHARE" != "full" ] && [ "$RESOLVED_SHARE" != "rounds" ]; then
           echo "::warning::telemetry.share resolver returned an unexpected value; resolving off (#177)"
           RESOLVED_SHARE="off"
         fi

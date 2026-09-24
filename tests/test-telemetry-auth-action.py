@@ -10,7 +10,8 @@ stubs for curl and gh, verifying:
   5. An empty url mints nothing and resolves method=none
   6. Resolution of telemetry.share: override, repository file over the
      shared layer its extends names (#182), no shared layer without extends,
-     a local working-tree file ignored, and default full
+     a local working-tree file ignored, default full, and the repository
+     file read at config_ref
 
 Run: python3 tests/test-telemetry-auth-action.py
 """
@@ -56,6 +57,7 @@ def run_action_step(
     repo_bad_base64=None,
     wrap_repo_base64=False,
     org_fetches_out=None,
+    base_ref_configs=None,
 ):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
@@ -91,10 +93,19 @@ exit 0
         if wrap_repo_base64 and repo_b64:
             repo_b64 = wrap_base64(repo_b64)
         org_b64 = base64.b64encode(org_config.encode()).decode() if org_config is not None else ""
+        # The repository file at a named ref, e.g. a PR's base sha (#183).
+        ref_arms = "".join(
+            f"""  repos/acme/widgets/contents/.github/claude-review.yml?ref={ref})
+    echo "{base64.b64encode(text.encode()).decode()}"
+    exit 0
+    ;;
+"""
+            for ref, text in (base_ref_configs or {}).items()
+        )
         gh_script = f"""#!/usr/bin/env bash
 path="$2"
 case "$path" in
-  repos/acme/widgets/contents/.github/claude-review.yml)
+{ref_arms}  repos/acme/widgets/contents/.github/claude-review.yml)
     if [ "{1 if repo_fetch_fail else 0}" = "1" ]; then
       echo "HTTP 500: Internal Server Error" >&2
       exit 1
@@ -309,6 +320,38 @@ def main():
         print("  FAIL  Case 9: shared default named by extends applies")
     else:
         print("  ok    Case 9: shared default named by extends applies")
+
+    # Case 9b: `rounds` resolves as itself, from the override and from the repository file (#183)
+    proc, outputs = run_action_step(script, env_vars={"SHARE_OVERRIDE": "rounds"})
+    proc2, outputs2 = run_action_step(script, repo_config="telemetry:\n  share: rounds\n")
+    proc3, outputs3 = run_action_step(script, repo_config="telemetry:\n  share: counts\n")
+    if outputs.get("share") != "rounds" or outputs2.get("share") != "rounds":
+        fails.append(f"Case 9b expected share=rounds, got {outputs.get('share')} / {outputs2.get('share')}")
+        print("  FAIL  Case 9b: rounds resolves as rounds")
+    elif outputs3.get("share") != "off":
+        fails.append(f"Case 9b expected counts to fail closed to off until ruled, got {outputs3.get('share')}")
+        print("  FAIL  Case 9b: counts fails closed")
+    else:
+        print("  ok    Case 9b: rounds resolves as rounds; counts fails closed to off")
+
+    # Case 9c: the share levels hold in the shared layer extends names (#182, #183):
+    # `rounds` resolves as itself, `counts` fails closed to off, and the repository's
+    # own share overrides the shared one.
+    cases_9c = [
+        ("shared rounds", "extends: acme/policy\n", "telemetry:\n  share: rounds\n", "rounds"),
+        ("shared counts", "extends: acme/policy\n", "telemetry:\n  share: counts\n", "off"),
+        ("repo full over shared rounds", "extends: acme/policy\ntelemetry:\n  share: full\n",
+         "telemetry:\n  share: rounds\n", "full"),
+        ("repo rounds over shared counts", "extends: acme/policy\ntelemetry:\n  share: rounds\n",
+         "telemetry:\n  share: counts\n", "rounds"),
+    ]
+    for label, repo_cfg, org_cfg, want in cases_9c:
+        proc, outputs = run_action_step(script, repo_config=repo_cfg, org_config=org_cfg)
+        if outputs.get("share") != want:
+            fails.append(f"Case 9c ({label}) expected share={want}, got {outputs.get('share')}")
+            print(f"  FAIL  Case 9c: {label} resolves {want}")
+        else:
+            print(f"  ok    Case 9c: {label} resolves {want}")
 
     # Case 10: share defaults to full when nothing is configured anywhere
     proc, outputs = run_action_step(script)
@@ -540,6 +583,52 @@ def main():
         print("  FAIL  Case 24: wrapped base64 (as the contents API returns it) resolves full")
     else:
         print("  ok    Case 24: wrapped base64 (as the contents API returns it) resolves full")
+
+    # Case 25: config_ref reads the repository file at that ref, not the default
+    # branch. pr-state passes the PR's base sha, so a PR into a branch that shares at
+    # rounds is labelled rounds while the default branch says full (#183, CWE-359).
+    proc, outputs = run_action_step(
+        script,
+        env_vars={"CONFIG_REF": "basesha183"},
+        repo_config="telemetry:\n  share: full\n",
+        base_ref_configs={"basesha183": "telemetry:\n  share: rounds\n"},
+    )
+    if outputs.get("share") != "rounds":
+        fails.append(f"Case 25 expected share=rounds from the base ref, got {outputs.get('share')}")
+        print("  FAIL  Case 25: config_ref reads the base ref's config")
+    else:
+        print("  ok    Case 25: config_ref reads the base ref's config, not the default branch's")
+
+    # Case 25b: the extends that names the shared layer is read at config_ref too, so
+    # a base branch that extends a rounds policy is labelled rounds while the default
+    # branch has no extends (#182, #183).
+    org_fetches = []
+    proc, outputs = run_action_step(
+        script,
+        env_vars={"CONFIG_REF": "basesha183"},
+        repo_config="version: 1\n",
+        base_ref_configs={"basesha183": "extends: acme/policy@v3\n"},
+        org_config="telemetry:\n  share: rounds\n",
+        org_fetches_out=org_fetches,
+    )
+    if outputs.get("share") != "rounds" or org_fetches != ["repos/acme/policy/contents/.github/claude-review.yml?ref=v3"]:
+        fails.append(f"Case 25b expected share=rounds via the base ref's extends, got {outputs.get('share')}, fetches {org_fetches}")
+        print("  FAIL  Case 25b: extends is read at config_ref")
+    else:
+        print("  ok    Case 25b: extends is read at config_ref, and the shared file at the extends ref")
+
+    # Case 26: pr-state hands the action the PR's base sha as config_ref (#183)
+    pr_state = yaml.safe_load((ROOT / ".github" / "workflows" / "pr-state.yml").read_text())
+    auth_steps = [
+        st for job in pr_state["jobs"].values() for st in job.get("steps", [])
+        if "telemetry-auth" in str(st.get("uses", ""))
+    ]
+    refs = [st.get("with", {}).get("config_ref") for st in auth_steps]
+    if not auth_steps or refs != ["${{ github.event.pull_request.base.sha }}"] * len(auth_steps):
+        fails.append(f"Case 26: pr-state must pass config_ref: the PR base sha, got {refs}")
+        print("  FAIL  Case 26: pr-state passes the base sha")
+    else:
+        print("  ok    Case 26: pr-state passes the PR base sha as config_ref")
 
     # Case 11: the action's url input is required, with no invented default host
     action = yaml.safe_load(ACTION_FILE.read_text())

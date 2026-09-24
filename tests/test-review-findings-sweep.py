@@ -228,8 +228,9 @@ def overflow_page(*, comments, has_next=False, end_cursor=None):
 
 
 class SweepResult(tuple):
-    def __new__(cls, proc, rows, auth_headers="", gh_calls="", summary="", posted_urls=None):
+    def __new__(cls, proc, rows, auth_headers="", gh_calls="", summary="", posted_urls=None, batches=None):
         obj = super().__new__(cls, (proc, rows))
+        obj.batches = batches or []
         obj.proc = proc
         obj.rows = rows
         obj.auth_headers = auth_headers
@@ -306,13 +307,15 @@ def run_sweep(script, *, pr_list=None, main_fixtures, overflow_fixtures=None, ht
         p = subprocess.run(["bash", "-c", script], env=env,
                             capture_output=True, text=True, timeout=60)
         rows = []
+        batches = []
         for line in capture.read_text().splitlines():
             if not line.strip():
                 continue
-            rows.extend(json.loads(line)["findings"])
+            batches.append(json.loads(line))
+            rows.extend(batches[-1]["findings"])
         posted_urls = [u for u in capture_url.read_text().splitlines() if u.strip()]
         return SweepResult(p, rows, capture_hdr.read_text(), gh_calls.read_text(), summary_file.read_text(),
-                            posted_urls)
+                            posted_urls, batches)
 
 
 
@@ -638,6 +641,24 @@ def main():
         check(f"URL normalisation ({shape!r}): exits 0", res.proc.returncode == 0)
         check(f"URL normalisation ({shape!r}): posts to {expected_findings_url}",
               res.posted_urls == [expected_findings_url], res.posted_urls)
+
+    # ── 17. The share level rides every batch, and the summary names it (#183) ──
+    res = run_sweep(
+        script,
+        pr_number=42,
+        telemetry_share="rounds",
+        main_fixtures={42: [fx_pr42]},
+    )
+    check("share rounds: exits 0", res.proc.returncode == 0)
+    check("share rounds: a batch was posted", len(res.batches) == 1, f"batches={res.batches}")
+    check("share rounds: batch carries share_level",
+          all(b.get("share_level") == "rounds" for b in res.batches), f"batches={res.batches}")
+    check("share rounds: step summary names the level", "telemetry.share: rounds" in res.summary, f"summary={res.summary}")
+
+    # No level resolved means no field, which the Worker reads as full, as before #183.
+    res = run_sweep(script, pr_number=42, main_fixtures={42: [fx_pr42]})
+    check("share unset: batch carries no share_level",
+          len(res.batches) == 1 and "share_level" not in res.batches[0], f"batches={res.batches}")
 
 
     print()

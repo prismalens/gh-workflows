@@ -38,6 +38,11 @@ namespace_id = "1001"
 enabled = true
 head_sampling_rate = 1
 
+[triggers]
+# Daily retention purge (#183), off the hour.
+crons = ["23 4 * * *"]
+
 [vars]
+TEXT_RETENTION_DAYS = "30"
 OIDC_ALLOWED_REPOSITORY_IDS = "1124040129,1191857183,1331752084,1256451611"
 

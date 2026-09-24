@@ -381,7 +381,7 @@ jobs:
               done
             done < "$overflow_ids_file"
 
-            findings_json=$(REPOSITORY="$REPOSITORY" PR_NUMBER="$pr" SWEPT_AT="$SWEPT_AT" ROW_SET_COMPLETE="$complete" python3 - "$pr_dir" <<'PY'
+            findings_json=$(REPOSITORY="$REPOSITORY" PR_NUMBER="$pr" SWEPT_AT="$SWEPT_AT" ROW_SET_COMPLETE="$complete" SHARE_LEVEL="${TELEMETRY_SHARE:-}" python3 - "$pr_dir" <<'PY'
           import glob
           import json
           import os
@@ -582,7 +582,11 @@ jobs:
                   "row_set_incomplete": row_set_incomplete,
               })
 
-          print(json.dumps({"findings": findings}))
+          # The level rides the batch; the Worker drops what it does not allow (#183).
+          batch = {"findings": findings}
+          if os.environ.get("SHARE_LEVEL"):
+              batch["share_level"] = os.environ["SHARE_LEVEL"]
+          print(json.dumps(batch))
           PY
           )
 
@@ -623,3 +627,6 @@ jobs:
           truncation_note=""
           [ "$list_truncated" -eq 1 ] && truncation_note=" (pull request LIST WAS TRUNCATED at ${PR_LIST_LIMIT}; see warning above)"
           echo "Review findings sweep complete: ${swept} finding(s) written, ${skipped} pull request(s) skipped${truncation_note}."
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            echo "Findings swept at telemetry.share: ${TELEMETRY_SHARE:-full}: ${swept} written, ${skipped} skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
