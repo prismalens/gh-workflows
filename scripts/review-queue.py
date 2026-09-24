@@ -104,6 +104,12 @@ def is_rate_limit_comment(comment: dict) -> bool:
     return bool(re.search(r"rate\s*limit", body, re.IGNORECASE))
 
 
+def is_clean_summary(comment: dict) -> bool:
+    # A rate-limit notice carries the same "between X and Y" commit range as a finished review.
+    body = comment.get("body") or ""
+    return "No actionable comments were generated" in body and not is_rate_limit_comment(comment)
+
+
 PR_GRAPHQL_FIELDS = """
 id number title isDraft createdAt
 author { login }
@@ -404,7 +410,7 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
                 for c in pr.get("comments", {}).get("nodes", []):
                     c_author = login_of(c)
                     c_body = c.get("body") or ""
-                    if c_author == "coderabbitai":
+                    if c_author == "coderabbitai" and is_clean_summary(c):
                         if re.search(r"between\s+[0-9a-fA-F]{40}\s+and\s+" + re.escape(head), c_body):
                             cr_reviewed_head = True
                             break
@@ -423,7 +429,7 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
                 for c in pr.get("comments", {}).get("nodes", []):
                     c_author = login_of(c)
                     c_body = c.get("body") or ""
-                    if c_author == "coderabbitai":
+                    if c_author == "coderabbitai" and is_clean_summary(c):
                         m = re.search(r"between\s+[0-9a-fA-F]{40}\s+and\s+([0-9a-fA-F]{40})", c_body)
                         if m and m.group(1).lower() != head.lower():
                             cr_reviewed_before = True

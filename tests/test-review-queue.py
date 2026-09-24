@@ -420,7 +420,7 @@ def main():
     # 18. A claude thread resolved by the verify job (github-actions) is resolved by its reviewer.
     t_claude = {"isResolved": True, "resolvedBy": {"login": "github-actions"},
                 "comments": {"nodes": [{"author": {"login": "claude"}}]}, "lastComment": {"nodes": []}}
-    cr_clean = {"author": {"login": "coderabbitai"}, "body": f"between {'b' * 40} and {'a' * 40}",
+    cr_clean = {"author": {"login": "coderabbitai"}, "body": f"No actionable comments were generated in the recent review. between {'b' * 40} and {'a' * 40}",
                 "createdAt": "2026-09-24T12:30:00Z", "updatedAt": "2026-09-24T12:30:00Z"}
     res18 = decide(make_snapshot(prs=[make_pr(review_threads=[t_claude], comments=[cr_clean])]), now)
     assert res18[0].kind == "merge", f"Case 18 failed: {res18[0].reason}"
@@ -443,6 +443,16 @@ def main():
     res21 = decide(make_snapshot(prs=[pr21]), now)
     assert res21[0].kind != "merge" and "not all were read" in res21[0].reason, f"Case 21 failed: {res21[0].reason}"
     print("✓ Case 21: unread thread pages block the merge")
+
+    # 22. A real rate-limit notice carries the "between X and head" range; it is not a review.
+    with open(ROOT / "tests/fixtures/review-queue/gh-workflows-213-rate-limited.json", "r", encoding="utf-8") as f:
+        snap213 = json.load(f)
+    pr213 = snap213["prismalens/gh-workflows"]["pull_requests"][0]
+    pr213["mergeable"], pr213["mergeStateStatus"] = "MERGEABLE", "CLEAN"
+    a213 = decide(snap213, now)[0]
+    assert a213.kind not in ("merge", "enqueue"), f"Case 22: rate-limited PR 213 would merge: {a213.reason}"
+    assert "has not reviewed" in a213.merge_reason, f"Case 22: wrong reason: {a213.merge_reason}"
+    print("✓ Case 22: a rate-limit notice is not a review (real PR 213)")
 
     print("\nAll review queue tests passed!")
     return 0
