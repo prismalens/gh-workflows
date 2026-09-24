@@ -16,9 +16,9 @@ const fullApi = makeFixtureApi(makeRounds({ count: 64, now }));
 const sparseApi = makeFixtureApi(makeRounds({ count: 6, now, seed: 11 }));
 const emptyApi = makeFixtureApi([]);
 
-describe("/ overview: the altitude ruling", () => {
+describe("/fleet (the former overview): the altitude ruling", () => {
   it("puts throughput and adoption first, and the verdict strip directly under it", async () => {
-    renderRoute({ path: "/", api: fullApi });
+    renderRoute({ path: "/fleet", api: fullApi });
 
     const band = await screen.findByTestId("activity-band");
     const strip = screen.getByTestId("verdict-strip");
@@ -37,7 +37,7 @@ describe("/ overview: the altitude ruling", () => {
 
   it("headlines counts even at a volume that withholds every aggregate tile", async () => {
     const api = makeFixtureApi(makeRounds({ count: 4, now, seed: 3 }));
-    renderRoute({ path: "/", api });
+    renderRoute({ path: "/fleet", api });
 
     const band = await screen.findByTestId("activity-band");
     expect(within(band).getAllByTestId("count-tile")).toHaveLength(3);
@@ -51,12 +51,12 @@ describe("/ overview: the altitude ruling", () => {
 
   it("switches only the supporting line on volume, at the ruled threshold", async () => {
     const thin = makeFixtureApi(makeRounds({ count: 12, now, seed: 7 }));
-    renderRoute({ path: "/", api: thin });
+    renderRoute({ path: "/fleet", api: thin });
     expect(await screen.findByText(/12 rounds all time/)).toBeInTheDocument();
     expect(screen.queryByText(/\/day mean/)).not.toBeInTheDocument();
 
     cleanup();
-    renderRoute({ path: "/", api: fullApi });
+    renderRoute({ path: "/fleet", api: fullApi });
     expect((await screen.findAllByText(/\/day mean/)).length).toBeGreaterThan(0);
   });
 
@@ -101,7 +101,7 @@ describe("/ overview: the altitude ruling", () => {
       },
     ];
 
-    renderRoute({ path: "/", api: makeFixtureApi(sixBucketRounds) });
+    renderRoute({ path: "/fleet", api: makeFixtureApi(sixBucketRounds) });
     const strip = await screen.findByTestId("verdict-strip");
 
     const labels = [
@@ -125,7 +125,7 @@ describe("/ overview: the altitude ruling", () => {
   });
 
   it("carries only the attention cards the recorded columns support", async () => {
-    renderRoute({ path: "/", api: fullApi });
+    renderRoute({ path: "/fleet", api: fullApi });
     expect(await screen.findByText("Needs attention")).toBeInTheDocument();
     const reasons = screen
       .getAllByRole("row")
@@ -142,7 +142,7 @@ describe("/ overview: the altitude ruling", () => {
   });
 
   it("keeps money out of every headline on the overview", async () => {
-    renderRoute({ path: "/", api: fullApi });
+    renderRoute({ path: "/fleet", api: fullApi });
     await screen.findByTestId("activity-band");
     // No tile at any altitude, and at this volume no table either.
     expect(document.body.textContent).not.toMatch(/\$\d/);
@@ -151,7 +151,7 @@ describe("/ overview: the altitude ruling", () => {
     cleanup();
     // At thin volume the round table replaces the tiles, and there money is a
     // sortable column labelled list-rate equivalent. That is the ruling, not a leak.
-    renderRoute({ path: "/", api: makeFixtureApi(makeRounds({ count: 4, now, seed: 3 })) });
+    renderRoute({ path: "/fleet", api: makeFixtureApi(makeRounds({ count: 4, now, seed: 3 })) });
     const table = (await screen.findAllByRole("table"))[0];
     expect(within(table).getByText(LIST_RATE_EQUIVALENT)).toBeInTheDocument();
     for (const tile of screen.getAllByTestId("count-tile")) {
@@ -163,22 +163,23 @@ describe("/ overview: the altitude ruling", () => {
     // The alert says "for <repo>", so the remedy beside it must not quietly widen
     // the repository filter too. An object-form Link search would replace the whole
     // search state and drop it.
-    renderRoute({ path: "/?range=90d&repository=prismalens%2Fsreforge", api: emptyApi });
+    renderRoute({ path: "/fleet?range=90d&repository=prismalens%2Fsreforge", api: emptyApi });
     const widen = await screen.findByRole("link", { name: "Widen to all time" });
     const href = widen.getAttribute("href") ?? "";
+    expect(href.startsWith("/fleet?")).toBe(true);
     expect(href).toContain("range=all");
     expect(decodeURIComponent(href)).toContain("repository=prismalens/sreforge");
   });
 
   it("says no rounds in range rather than drawing empty charts", async () => {
-    renderRoute({ path: "/", api: emptyApi });
+    renderRoute({ path: "/fleet", api: emptyApi });
     expect(await screen.findByText("No rounds in range")).toBeInTheDocument();
     expect(screen.queryByTestId("activity-band")).not.toBeInTheDocument();
     expect(screen.queryByTestId("verdict-strip")).not.toBeInTheDocument();
   });
 
   it("offers a second remedy beside widen, to the failures page, current range and repo carried (#141)", async () => {
-    renderRoute({ path: "/?range=90d&repository=prismalens%2Fsreforge", api: emptyApi });
+    renderRoute({ path: "/fleet?range=90d&repository=prismalens%2Fsreforge", api: emptyApi });
     const skips = await screen.findByRole("link", { name: "Check skips on the failures page" });
     const href = decodeURIComponent(skips.getAttribute("href") ?? "");
     expect(href).toContain("/failures");
@@ -801,7 +802,7 @@ describe("/failures route integration", () => {
   });
 });
 
-describe("/ overview: change markers on the trend charts", () => {
+describe("/fleet (the former overview): change markers on the trend charts", () => {
   const dayMs = 24 * 60 * 60 * 1000;
   const t0 = now.getTime();
 
@@ -867,7 +868,7 @@ describe("/ overview: change markers on the trend charts", () => {
 
   it("with no changes registered, the charts render as before and nothing marker-related appears", async () => {
     const api = makeFixtureApi(makeRounds({ count: 20, now }), [], []);
-    renderRoute({ path: "/", api });
+    renderRoute({ path: "/fleet", api });
 
     await screen.findByTestId("activity-band");
     expect(screen.getByText("Rounds per day, by type")).toBeInTheDocument();
@@ -882,7 +883,7 @@ describe("/ overview: change markers on the trend charts", () => {
 
   it("a fleet change inside the window draws a labelled marker; one outside the window does not", async () => {
     const api = makeFixtureApi(makeRounds({ count: 20, now }), [], [changeFleetIn, changeFleetOut]);
-    renderRoute({ path: "/?range=30d", api });
+    renderRoute({ path: "/fleet?range=30d", api });
 
     await screen.findByTestId("activity-band");
     const markers = await screen.findAllByText("Upgrade reviewer to Claude 3.7 Sonnet");
@@ -898,7 +899,7 @@ describe("/ overview: change markers on the trend charts", () => {
     );
 
     // On all-repos overview chart, repo-scoped changes do not draw
-    renderRoute({ path: "/?range=30d", api });
+    renderRoute({ path: "/fleet?range=30d", api });
     await screen.findByTestId("activity-band");
     expect(screen.getAllByText("Upgrade reviewer to Claude 3.7 Sonnet").length).toBeGreaterThan(0);
     expect(screen.queryByText("Sreforge review rule update")).not.toBeInTheDocument();
@@ -907,7 +908,7 @@ describe("/ overview: change markers on the trend charts", () => {
     cleanup();
 
     // On sreforge chart, only sreforge and fleet changes draw
-    renderRoute({ path: "/?range=30d&repository=prismalens%2Fsreforge", api });
+    renderRoute({ path: "/fleet?range=30d&repository=prismalens%2Fsreforge", api });
     await screen.findByTestId("activity-band");
     expect(screen.getAllByText("Upgrade reviewer to Claude 3.7 Sonnet").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Sreforge review rule update").length).toBeGreaterThan(0);
@@ -935,7 +936,7 @@ describe("/ overview: change markers on the trend charts", () => {
     };
     const api = makeFixtureApi(olderRounds, [], [lateChange]);
 
-    renderRoute({ path: "/?range=30d", api });
+    renderRoute({ path: "/fleet?range=30d", api });
     await screen.findByTestId("activity-band");
     const markerLabels = await screen.findAllByText("Recent unmeasured change");
     expect(markerLabels.length).toBeGreaterThan(0);
@@ -943,7 +944,7 @@ describe("/ overview: change markers on the trend charts", () => {
 
   it("clicking one marker shows a visible selection; clicking a second sets marker:<a>..<b>; clicking the selected marker again clears it", async () => {
     const api = makeFixtureApi(makeRounds({ count: 20, now }), [], [changeAlpha, changeBeta]);
-    renderRoute({ path: "/", api });
+    renderRoute({ path: "/fleet", api });
 
     await screen.findByTestId("activity-band");
     expect(screen.queryByTestId("marker-selection-banner")).not.toBeInTheDocument();
@@ -985,7 +986,7 @@ describe("/ overview: change markers on the trend charts", () => {
 
   it("the range control still offers exactly four buttons and no date input", async () => {
     const api = makeFixtureApi(makeRounds({ count: 20, now }), [], [changeAlpha, changeBeta]);
-    const { container } = renderRoute({ path: "/?range=marker:c-alpha..c-beta", api });
+    const { container } = renderRoute({ path: "/fleet?range=marker:c-alpha..c-beta", api });
 
     await screen.findByTestId("activity-band");
     const group = screen.getByRole("group", { name: "Range" });

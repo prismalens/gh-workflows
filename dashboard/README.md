@@ -6,8 +6,10 @@ the telemetry Worker in `../worker` through its `[assets]` binding, reading the 
 `GET /api/round-agents`, `GET /api/prs`, `GET /api/findings` and `GET /api/fleet/repos` routes
 behind Cloudflare Access.
 
-Eight routes ship: `/` overview, `/rounds`, `/rounds/$sessionId`, `/repos`, `/failures`, `/prs`,
-`/prs/$owner/$repo/$number` and `/findings`. Compare was refused (#119).
+Nine routes ship: `/` inbox, `/fleet` (the former overview), `/rounds`, `/rounds/$sessionId`,
+`/repos`, `/failures`, `/prs`, `/prs/$owner/$repo/$number` and `/findings`. The nav lists Review
+(Inbox, Findings, Repos) and Operate (Fleet); the rest keep their routes for deep links (#185).
+Compare was refused (#119).
 
 `/findings` reads `GET /api/findings` (joined against `GET /api/prs` for PR state) and sorts each
 open review thread into one of four fates: `never-answered`, `pushback-open`,

@@ -28,13 +28,43 @@ function FixtureBanner() {
   );
 }
 
-const NAV = [
-  { to: "/", label: "Overview" },
-  { to: "/prs", label: "PRs" },
-  { to: "/rounds", label: "Rounds" },
-  { to: "/failures", label: "Failures" },
-  { to: "/repos", label: "Repos" },
-] as const;
+const NAV_LINK = "hover:text-foreground";
+const NAV_ACTIVE = { className: "text-foreground" };
+const NAV_GROUP = "text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/70";
+
+/**
+ * Two groups, per the Console IA ruling on #185. /prs, /rounds and /failures
+ * leave the nav but keep their routes, so deep links still land. Ops joins
+ * Operate once it has a page.
+ */
+function MainNav() {
+  return (
+    <nav aria-label="Main" className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+      <span className={NAV_GROUP}>Review</span>
+      <Link
+        to="/"
+        search={{ range: DEFAULT_RANGE }}
+        className={NAV_LINK}
+        activeProps={NAV_ACTIVE}
+        activeOptions={{ exact: true }}
+      >
+        Inbox
+      </Link>
+      {/* /findings has its own search schema, with no `range`. */}
+      <Link to="/findings" search={{}} className={NAV_LINK} activeProps={NAV_ACTIVE}>
+        Findings
+      </Link>
+      <Link to="/repos" search={{ range: DEFAULT_RANGE }} className={NAV_LINK} activeProps={NAV_ACTIVE}>
+        Repos
+      </Link>
+      <span aria-hidden className="mx-1 h-4 w-px bg-border" />
+      <span className={NAV_GROUP}>Operate</span>
+      <Link to="/fleet" search={{ range: DEFAULT_RANGE }} className={NAV_LINK} activeProps={NAV_ACTIVE}>
+        Fleet
+      </Link>
+    </nav>
+  );
+}
 
 function RootLayout() {
   return (
@@ -49,30 +79,7 @@ function RootLayout() {
           >
             Assayer
           </Link>
-          <nav className="flex items-center gap-3 text-sm text-muted-foreground">
-            {NAV.map((item) => (
-              <Link
-                key={item.to}
-                to={item.to}
-                search={{ range: DEFAULT_RANGE }}
-                className="hover:text-foreground"
-                activeProps={{ className: "text-foreground" }}
-                activeOptions={{ exact: item.to === "/" }}
-              >
-                {item.label}
-              </Link>
-            ))}
-            {/* /findings has its own search schema (no `range`), so it sits outside the
-                shared-search NAV map rather than forcing a range key it does not use. */}
-            <Link
-              to="/findings"
-              search={{}}
-              className="hover:text-foreground"
-              activeProps={{ className: "text-foreground" }}
-            >
-              Findings
-            </Link>
-          </nav>
+          <MainNav />
           <span className="ml-auto text-xs text-muted-foreground">
             Review round telemetry, prismalens/gh-workflows
           </span>
@@ -90,9 +97,9 @@ function NotFound() {
     <Alert variant="muted">
       <AlertTitle>No such page</AlertTitle>
       <AlertDescription>
-        This build ships the overview, the rounds table, the round detail, the failures page and the repos list. Every PR view lands with its own issue.{" "}
+        Nothing is routed at this address.{" "}
         <Link to="/" search={{ range: DEFAULT_RANGE }} className="underline underline-offset-4">
-          Go to the overview
+          Go to the inbox
         </Link>
         .
       </AlertDescription>
