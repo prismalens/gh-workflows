@@ -125,8 +125,10 @@ function InboxPage() {
     ...(search.repo ? [{ key: "repo" as const, value: search.repo }] : []),
     ...(search.author ? [{ key: "author" as const, value: search.author }] : []),
   ];
-  const empty = SECTIONS.filter((section) => buckets[section.key].length === 0);
-  const filled = SECTIONS.filter((section) => buckets[section.key].length > 0);
+  // Unknown open findings ask nothing of anyone, so that bucket folds like healthy (#209).
+  const ACTIVE = SECTIONS.filter((section) => section.key !== "findings-not-recorded");
+  const empty = ACTIVE.filter((section) => buckets[section.key].length === 0);
+  const filled = ACTIVE.filter((section) => buckets[section.key].length > 0);
 
   return (
     <div className="flex flex-col gap-5">
@@ -192,6 +194,12 @@ function InboxPage() {
               prs={buckets[section.key]}
             />
           ))}
+          <FoldedSection
+            testId="inbox-section-findings-not-recorded"
+            label={`${formatCount(buckets["findings-not-recorded"].length)} with findings not recorded`}
+            blurb={SECTIONS.find((x) => x.key === "findings-not-recorded")!.blurb}
+            prs={buckets["findings-not-recorded"]}
+          />
           <Card data-testid="inbox-healthy">
             <div className="flex flex-wrap items-center gap-3 px-4 py-3 text-xs">
               <button
@@ -217,6 +225,29 @@ function InboxPage() {
         </>
       )}
     </div>
+  );
+}
+
+function FoldedSection({ testId, label, blurb, prs }: { testId: string; label: string; blurb: string; prs: PRSummary[] }) {
+  const [open, setOpen] = useState(false);
+  if (prs.length === 0) return null;
+  return (
+    <Card data-testid={testId}>
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3 text-xs">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="font-medium underline-offset-4 hover:underline"
+        >
+          {label}
+        </button>
+        <span className="text-muted-foreground">
+          {blurb} {open ? "Shown below." : "Hidden."}
+        </span>
+      </div>
+      {open && <InboxTable prs={prs} />}
+    </Card>
   );
 }
 
@@ -274,7 +305,11 @@ function InboxTable({ prs, action }: { prs: PRSummary[]; action?: string }) {
                 title={pr.title}
               >
                 <span className="font-mono font-medium text-primary">#{pr.number}</span>{" "}
-                {pr.title}
+                {pr.title === `PR #${pr.number}` ? (
+                  <span className="text-muted-foreground">title not recorded</span>
+                ) : (
+                  pr.title
+                )}
               </Link>
             </TableCell>
             <TableCell className="text-xs text-muted-foreground">{pr.author}</TableCell>
