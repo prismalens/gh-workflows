@@ -61,6 +61,11 @@ def normalize_login(login: str | None) -> str:
     return login
 
 
+def login_of(node: dict | None) -> str:
+    # Deleted accounts come back as "author": null.
+    return normalize_login(((node or {}).get("author") or {}).get("login"))
+
+
 def parse_dt(dt_str: str | None) -> datetime | None:
     if not dt_str:
         return None
@@ -108,6 +113,7 @@ labels(first: 20) { nodes { name } }
 files(first: 100) { nodes { path } }
 commits(last: 1) { nodes { commit { oid committedDate } } }
 reviewThreads(first: 100) {
+  totalCount
   nodes {
     isResolved
     resolvedBy { login }
@@ -297,7 +303,7 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
             continue
         for pr in snap.get("pull_requests", []):
             for c in pr.get("comments", {}).get("nodes", []):
-                c_author = normalize_login(c.get("author", {}).get("login"))
+                c_author = login_of(c)
                 c_body = c.get("body") or ""
                 if c_author == "coderabbitai" and is_rate_limit_comment(c):
                     dt = parse_dt(c.get("updatedAt") or c.get("createdAt"))
@@ -352,7 +358,7 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
             pr_number = pr.get("number")
             title = pr.get("title") or ""
             is_draft = bool(pr.get("isDraft"))
-            author = normalize_login(pr.get("author", {}).get("login"))
+            author = login_of(pr)
             head_ref_name = pr.get("headRefName") or ""
             head_oid = pr.get("headRefOid") or ""
             mergeable = pr.get("mergeable") or ""
@@ -387,8 +393,8 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
             # cr_reviewed_head
             cr_reviewed_head = False
             for rev in pr.get("reviews", {}).get("nodes", []):
-                rev_author = normalize_login(rev.get("author", {}).get("login"))
-                rev_oid = rev.get("commit", {}).get("oid")
+                rev_author = login_of(rev)
+                rev_oid = (rev.get("commit") or {}).get("oid")
                 rev_body = rev.get("body") or ""
                 if rev_author == "coderabbitai" and rev_oid == head:
                     if re.search(r"Actionable comments posted:\s*\d+", rev_body):
@@ -396,7 +402,7 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
                         break
             if not cr_reviewed_head:
                 for c in pr.get("comments", {}).get("nodes", []):
-                    c_author = normalize_login(c.get("author", {}).get("login"))
+                    c_author = login_of(c)
                     c_body = c.get("body") or ""
                     if c_author == "coderabbitai":
                         if re.search(r"between\s+[0-9a-fA-F]{40}\s+and\s+" + re.escape(head), c_body):
@@ -406,8 +412,8 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
             # cr_reviewed_before
             cr_reviewed_before = False
             for rev in pr.get("reviews", {}).get("nodes", []):
-                rev_author = normalize_login(rev.get("author", {}).get("login"))
-                rev_oid = rev.get("commit", {}).get("oid")
+                rev_author = login_of(rev)
+                rev_oid = (rev.get("commit") or {}).get("oid")
                 rev_body = (rev.get("body") or "").strip()
                 if rev_author == "coderabbitai" and rev_body:
                     if rev_oid and rev_oid != head:
@@ -415,7 +421,7 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
                         break
             if not cr_reviewed_before:
                 for c in pr.get("comments", {}).get("nodes", []):
-                    c_author = normalize_login(c.get("author", {}).get("login"))
+                    c_author = login_of(c)
                     c_body = c.get("body") or ""
                     if c_author == "coderabbitai":
                         m = re.search(r"between\s+[0-9a-fA-F]{40}\s+and\s+([0-9a-fA-F]{40})", c_body)
@@ -425,6 +431,7 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
 
             # threads_clean
             threads = pr.get("reviewThreads", {}).get("nodes", [])
+            threads_unread = pr.get("reviewThreads", {}).get("totalCount", len(threads)) > len(threads)
             unresolved_threads_count = 0
             thread_not_reviewer_reason = ""
             for t in threads:
@@ -432,13 +439,16 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
                     unresolved_threads_count += 1
                 else:
                     first_comments = t.get("comments", {}).get("nodes", [])
-                    first_author = normalize_login(first_comments[0].get("author", {}).get("login")) if first_comments else ""
+                    first_author = login_of(first_comments[0]) if first_comments else ""
                     resolved_by = normalize_login(t.get("resolvedBy", {}).get("login")) if t.get("resolvedBy") else ""
                     if resolved_by not in REVIEWER_RESOLVERS.get(first_author, {first_author}):
                         if not thread_not_reviewer_reason:
                             thread_not_reviewer_reason = f"thread resolved by {resolved_by}, not its reviewer"
 
-            if unresolved_threads_count > 0:
+            if threads_unread:
+                threads_clean = False
+                threads_reason = "more review threads than one page; not all were read"
+            elif unresolved_threads_count > 0:
                 threads_clean = False
                 threads_reason = f"{unresolved_threads_count} unresolved review thread{'s' if unresolved_threads_count > 1 else ''}"
             elif thread_not_reviewer_reason:
@@ -453,10 +463,10 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
             for t in threads:
                 if not t.get("isResolved", False):
                     first_comments = t.get("comments", {}).get("nodes", [])
-                    first_author = normalize_login(first_comments[0].get("author", {}).get("login")) if first_comments else ""
+                    first_author = login_of(first_comments[0]) if first_comments else ""
                     if first_author == "coderabbitai":
                         last_comments = t.get("lastComment", {}).get("nodes", [])
-                        last_author = normalize_login(last_comments[0].get("author", {}).get("login")) if last_comments else ""
+                        last_author = login_of(last_comments[0]) if last_comments else ""
                         if last_author != operator:
                             unresolved_cr_threads_all_replied = False
                             break
@@ -479,7 +489,7 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
             # claude_reviewed_head
             claude_comments = []
             for c in pr.get("comments", {}).get("nodes", []):
-                c_author = normalize_login(c.get("author", {}).get("login"))
+                c_author = login_of(c)
                 c_body = c.get("body") or ""
                 if c_author == "github-actions" and "<!-- claude-review-liveness" in c_body:
                     claude_comments.append(c)
@@ -565,7 +575,7 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
                 # Check pending summon on this head
                 operator_summons = []
                 for c in pr.get("comments", {}).get("nodes", []):
-                    c_author = normalize_login(c.get("author", {}).get("login"))
+                    c_author = login_of(c)
                     c_body = (c.get("body") or "").lstrip()
                     c_dt = parse_dt(c.get("createdAt"))
                     if c_author == operator and c_dt and committed_date and c_dt > committed_date:
@@ -578,7 +588,7 @@ def decide(snapshots: Any, now: datetime, config: dict | None = None) -> list[Ac
                     latest_summon_dt, _ = operator_summons[-1]
                     cr_after = []
                     for c in pr.get("comments", {}).get("nodes", []):
-                        c_author = normalize_login(c.get("author", {}).get("login"))
+                        c_author = login_of(c)
                         c_dt = parse_dt(c.get("createdAt"))
                         if c_author == "coderabbitai" and c_dt and c_dt > latest_summon_dt:
                             cr_after.append((c_dt, c))

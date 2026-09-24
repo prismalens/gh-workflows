@@ -431,6 +431,19 @@ def main():
     assert res19[0].kind != "merge", f"Case 19 failed: {res19[0].reason}"
     print("✓ Case 19: empty PR is not docs-only")
 
+    # 20. A comment from a deleted account (author: null) does not crash decide().
+    ghost = {"author": None, "body": "hello", "createdAt": "2026-09-24T12:10:00Z", "updatedAt": "2026-09-24T12:10:00Z"}
+    res20 = decide(make_snapshot(prs=[make_pr(comments=[ghost, cr_clean])]), now)
+    assert res20[0].kind == "merge", f"Case 20 failed: {res20[0].reason}"
+    print("✓ Case 20: null author is tolerated")
+
+    # 21. More threads than one page: unread threads block the merge.
+    pr21 = make_pr(comments=[cr_clean])
+    pr21["reviewThreads"]["totalCount"] = 101
+    res21 = decide(make_snapshot(prs=[pr21]), now)
+    assert res21[0].kind != "merge" and "not all were read" in res21[0].reason, f"Case 21 failed: {res21[0].reason}"
+    print("✓ Case 21: unread thread pages block the merge")
+
     print("\nAll review queue tests passed!")
     return 0
 
