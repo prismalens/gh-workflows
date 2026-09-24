@@ -15,7 +15,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { malformedConfigs, quietRepos, summariseRepos } from "@/features/repos/repos";
+import { malformedConfigs, quietRepos, repoParams, summariseRepos } from "@/features/repos/repos";
 import { WatchOut } from "@/features/repos/WatchOut";
 import { Degraded } from "@/honesty/Degraded";
 import { RangeControl } from "@/honesty/RangeControl";
@@ -121,8 +121,8 @@ function ReposPage() {
                     <TableRow key={repo.repository}>
                       <TableCell className="whitespace-nowrap">
                         <Link
-                          to="/rounds"
-                          search={{ range: search.range, repository: repo.repository }}
+                          to="/repos/$owner/$repo"
+                          params={repoParams(repo.repository)}
                           className="underline-offset-4 hover:underline"
                         >
                           {repo.repository}

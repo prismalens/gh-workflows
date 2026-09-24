@@ -276,3 +276,32 @@ export interface FleetReposResponse {
   repositories: FleetRepoRow[];
   malformed_configs: { repository: string; layer: string }[];
 }
+
+/**
+ * One row of the `health_reports` table (worker/migrations/0014_ingest_identity_and_health.sql),
+ * from GET /api/health-reports (#176, #179). Every column is NOT NULL except
+ * `repository_id`, which a bearer-authenticated report never carries.
+ */
+export interface HealthReportRow {
+  id: number;
+  repository: string;
+  repository_id: number | null;
+  window_start: string;
+  window_end: string;
+  runs_seen: number;
+  runs_accounted: number;
+  /** JSON array of `{ id, conclusion, created_at }`; parse with parseUnaccountedRuns. */
+  unaccounted_runs: string;
+  startup_failures: number;
+  /** JSON object of lane event reason to count; parse with parseLaneEventsByReason. */
+  lane_events_by_reason: string;
+  findings_swept: number;
+  share: string;
+  ingest_auth: string;
+  received_at: string;
+}
+
+export interface HealthReportsResponse {
+  rows: HealthReportRow[];
+  next_cursor: string | null;
+}

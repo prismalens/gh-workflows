@@ -318,6 +318,31 @@ Every `review_findings` column (`tests/test-schema-drift.py`'s `REVIEW_FINDINGS_
 
 ---
 
+### `GET /api/health-reports`
+
+Returns the weekly rows `telemetry-health.yml` posts to `POST /ingest/health`, from `health_reports` (#176, #179), newest `window_start` first. Every row comes back as it arrived: an oversize week lands as several tiling rows and a re-run inserts again, and the route merges none of them.
+
+#### Query Parameters
+
+- `limit` (optional): Integer `1`..`200` (default `52`, a year of weeks).
+- `repository` (optional): Filter by exact repository string.
+- `cursor` (optional): Composite cursor `<window_start>|<id>` for pagination.
+
+#### Columns
+
+Every `health_reports` column: `id`, `repository`, `repository_id`, `window_start`, `window_end`, `runs_seen`, `runs_accounted`, `unaccounted_runs`, `startup_failures`, `lane_events_by_reason`, `findings_swept`, `share`, `ingest_auth`, `received_at`. `unaccounted_runs` (an array of `{ id, conclusion, created_at }`) and `lane_events_by_reason` (reason to count) stay JSON strings, as stored.
+
+#### Response Shape
+
+```json
+{
+  "rows": [ ... ],
+  "next_cursor": "2026-09-14T00:00:00Z|7"
+}
+```
+
+---
+
 ### `GET /api/round-agents`
 
 Returns per-agent rows for one round from `round_agents`, ordered by `agent_id` ascending (#131, #89).

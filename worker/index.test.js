@@ -4366,6 +4366,127 @@ describe("Worker telemetry read API", () => {
     });
   });
 
+  describe("GET /api/health-reports (#179)", () => {
+    const HEALTH_COLUMNS = [
+      "id",
+      "repository",
+      "repository_id",
+      "window_start",
+      "window_end",
+      "runs_seen",
+      "runs_accounted",
+      "unaccounted_runs",
+      "startup_failures",
+      "lane_events_by_reason",
+      "findings_swept",
+      "share",
+      "ingest_auth",
+      "received_at",
+    ];
+
+    function healthRow(overrides = {}) {
+      return {
+        id: 7,
+        repository: "prismalens/gh-workflows",
+        repository_id: 12345,
+        window_start: "2026-09-14T00:00:00Z",
+        window_end: "2026-09-21T00:00:00Z",
+        runs_seen: 40,
+        runs_accounted: 39,
+        unaccounted_runs: '[{"id":901,"conclusion":"startup_failure","created_at":"2026-09-15T10:00:00Z"}]',
+        startup_failures: 1,
+        lane_events_by_reason: '{"auto-paused":2}',
+        findings_swept: 5,
+        share: "full",
+        ingest_auth: "oidc",
+        received_at: "2026-09-21T06:00:00.000Z",
+        ...overrides,
+      };
+    }
+
+    it("returns 503 when Access is not configured, and 403 without a JWT", async () => {
+      const helper = await getAccessHelper();
+      const unconfigured = await worker.fetch(
+        makeRequest("/api/health-reports", { method: "GET" }),
+        { DB: createFakeDb() }
+      );
+      assert.equal(unconfigured.status, 503);
+      const noJwt = await worker.fetch(
+        makeRequest("/api/health-reports", { method: "GET" }),
+        { ...helper.env, DB: createFakeDb() }
+      );
+      assert.equal(noJwt.status, 403);
+    });
+
+    it("returns every row as it arrived, newest window first, filtered by repository", async () => {
+      const helper = await getAccessHelper();
+      // Two rows for the same window: an oversize week's tiling rows, or a re-run.
+      const rows = [
+        healthRow({ id: 9 }),
+        healthRow({ id: 8, runs_seen: 12, runs_accounted: 12, unaccounted_runs: "[]" }),
+        healthRow({ id: 3, window_start: "2026-09-07T00:00:00Z", window_end: "2026-09-14T00:00:00Z" }),
+      ];
+      const db = createFakeDb({
+        handler: (sql) => (sql.includes("FROM health_reports") ? { results: rows } : null),
+      });
+      const env = { ...helper.env, DB: db };
+      const res = await worker.fetch(
+        makeAuthenticatedRequest("/api/health-reports?repository=prismalens/gh-workflows", helper.jwt),
+        env
+      );
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("cache-control"), "no-store");
+
+      const data = await res.json();
+      assert.deepEqual(data.rows, rows);
+      assert.equal(data.next_cursor, null);
+
+      const query = db.queries[0];
+      for (const column of HEALTH_COLUMNS) {
+        assert.match(query.sql, new RegExp(`\\b${column}\\b`), `expected ${column} in the SELECT`);
+      }
+      assert.ok(query.sql.includes("repository = ?"));
+      assert.ok(query.sql.includes("ORDER BY window_start DESC, id DESC"));
+      assert.ok(!/GROUP BY|DISTINCT|ROW_NUMBER/.test(query.sql), "rows are never merged");
+      assert.deepEqual(query.args, ["prismalens/gh-workflows", 52]);
+    });
+
+    it("pages with a window_start|id cursor and hands one back on a full page", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb({
+        handler: (sql) =>
+          sql.includes("FROM health_reports") ? { results: [healthRow({ id: 9 }), healthRow({ id: 8 })] } : null,
+      });
+      const env = { ...helper.env, DB: db };
+      const res = await worker.fetch(
+        makeAuthenticatedRequest("/api/health-reports?limit=2&cursor=2026-09-21T00:00:00Z|12", helper.jwt),
+        env
+      );
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.next_cursor, "2026-09-14T00:00:00Z|8");
+
+      const query = db.queries[0];
+      assert.ok(query.sql.includes("(window_start < ? OR (window_start = ? AND id < ?))"));
+      assert.deepEqual(query.args, ["2026-09-21T00:00:00Z", "2026-09-21T00:00:00Z", 12, 2]);
+    });
+
+    it("rejects a bad limit or cursor with 400 before querying", async () => {
+      const helper = await getAccessHelper();
+      for (const qs of ["limit=0", "limit=201", "limit=abc", "cursor=no-pipe", "cursor=2026-09-21T00:00:00Z|x", "cursor=|5"]) {
+        const db = createFakeDb();
+        const res = await worker.fetch(
+          makeAuthenticatedRequest(`/api/health-reports?${qs}`, helper.jwt),
+          { ...helper.env, DB: db }
+        );
+        assert.equal(res.status, 400, qs);
+        const body = await res.json();
+        assert.match(body.error, /^invalid (limit|cursor)$/, qs);
+        assert.equal(db.queries.length, 0, qs);
+      }
+    });
+  });
+
   describe("GET /api/accounted-runs (#87)", () => {
     const validRepo = "prismalens/gh-workflows";
     const validSince = "2026-08-30T00:00:00Z";

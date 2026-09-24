@@ -3,13 +3,15 @@
 The review telemetry viewing layer for `prismalens/gh-workflows`. A Vite + React SPA served by
 the telemetry Worker in `../worker` through its `[assets]` binding, reading the Worker's
 `GET /api/summary`, `GET /api/runs`, `GET /api/lane-events`, `GET /api/changes`,
-`GET /api/round-agents`, `GET /api/prs`, `GET /api/findings` and `GET /api/fleet/repos` routes
-behind Cloudflare Access.
+`GET /api/round-agents`, `GET /api/prs`, `GET /api/findings`, `GET /api/fleet/repos` and
+`GET /api/health-reports` routes behind Cloudflare Access.
 
-Nine routes ship: `/` inbox, `/fleet` (the former overview), `/rounds`, `/rounds/$sessionId`,
-`/repos`, `/failures`, `/prs`, `/prs/$owner/$repo/$number` and `/findings`. The nav lists Review
-(Inbox, Findings, Repos) and Operate (Fleet); the rest keep their routes for deep links (#185).
-Compare was refused (#119).
+Ten routes ship: `/` inbox, `/fleet` (the former overview), `/rounds`, `/rounds/$sessionId`,
+`/repos`, `/repos/$owner/$repo`, `/failures`, `/prs`, `/prs/$owner/$repo/$number` and `/findings`.
+The nav lists Review (Inbox, Findings, Repos) and Operate (Fleet); the rest keep their routes for
+deep links (#185). Compare was refused (#119).
+The repository page has one tab so far, Weekly health, which lists every `health_reports` row
+as it arrived (#179); the PR, lane event, config and failure tabs land with F4.
 
 `/findings` reads `GET /api/findings` (joined against `GET /api/prs` for PR state) and sorts each
 open review thread into one of four fates: `never-answered`, `pushback-open`,

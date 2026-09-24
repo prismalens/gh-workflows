@@ -69,3 +69,9 @@ export function quietRepos(rows: FleetRepoRow[]): QuietRepoWatch[] {
     .filter((row) => row.rounds === 0)
     .map((row) => ({ repository: row.repository, lastRoundAt: row.last_recorded_at }));
 }
+
+/** `owner/name` split into the params of /repos/$owner/$repo. */
+export function repoParams(repository: string): { owner: string; repo: string } {
+  const slash = repository.indexOf("/");
+  return { owner: repository.slice(0, slash), repo: repository.slice(slash + 1) };
+}
