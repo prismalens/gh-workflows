@@ -8,6 +8,7 @@ import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Timestamp } from "@/components/Timestamp";
 import { Card } from "@/components/ui/card";
 import { AgeChip } from "@/features/findings/FindingsExplorer";
+import { REPO_STATE_TONE } from "@/features/repos/RepoStateLine";
 import { buildToday, type NeedItem, type RepoLine, type WeekStat } from "@/features/today/today";
 import { DEFAULT_RANGE } from "@/honesty/range";
 import { formatCount, formatDuration, formatPercent, formatRelative } from "@/lib/format";
@@ -336,14 +337,6 @@ function WeekCard({ week }: { week: WeekStat[] }) {
   );
 }
 
-const STATE_TONE: Record<RepoLine["state"], string> = {
-  failing: "text-[var(--destructive)]",
-  "config malformed": "text-[var(--warning)]",
-  "tool denials": "text-[var(--warning)]",
-  quiet: "text-muted-foreground",
-  reviewing: "text-emerald-400",
-};
-
 function ReposCard({ repos, threadsKnown }: { repos: RepoLine[]; threadsKnown: boolean }) {
   if (repos.length === 0) return null;
   return (
@@ -378,7 +371,7 @@ function ReposCard({ repos, threadsKnown }: { repos: RepoLine[]; threadsKnown: b
                     {r.repository}
                   </Link>
                 </td>
-                <td className={cn("px-2 py-2 font-semibold", STATE_TONE[r.state])}>{r.state}</td>
+                <td className={cn("px-2 py-2 font-semibold", REPO_STATE_TONE[r.state])}>{r.state}</td>
                 <td className="px-2 py-2">
                   <div className="flex h-5 items-end gap-0.5" aria-label={`rounds per day: ${r.perDay.join(", ")}`}>
                     {r.perDay.map((n, i) => (

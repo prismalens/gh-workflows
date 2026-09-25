@@ -53,7 +53,8 @@ export interface WeekStat {
 
 export interface RepoLine {
   repository: string;
-  state: "failing" | "config malformed" | "tool denials" | "quiet" | "healthy";
+  /** From rounds alone; the weekly health report is the repository page's, not this (#218). */
+  state: "failing" | "config malformed" | "tool denials" | "quiet" | "reviewing";
   rounds: number;
   /** Null when no round this week carries `permission_denials`. */
   denials: number | null;
@@ -339,10 +340,10 @@ export function buildToday(input: {
           ? "tool denials"
           : rows.length === 0
             ? "quiet"
-            : "healthy";
+            : "reviewing";
     return { repository, state, rounds: rows.length, denials, denialRounds: recorded.length, openThreads: openThreadsByRepo.get(repository) ?? 0, lastRoundAt: lastRoundAtRepo, perDay };
   });
-  const stateRank: Record<RepoLine["state"], number> = { failing: 0, "config malformed": 1, "tool denials": 2, quiet: 3, healthy: 4 };
+  const stateRank: Record<RepoLine["state"], number> = { failing: 0, "config malformed": 1, "tool denials": 2, quiet: 3, reviewing: 4 };
   repos.sort((a, b) => stateRank[a.state] - stateRank[b.state] || b.rounds - a.rounds);
 
   return { problems, lastRoundAt, repositoriesPosting: reposThisWeek.size, needs, anomalies, week, repos };

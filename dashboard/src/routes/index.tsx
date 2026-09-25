@@ -71,10 +71,10 @@ const SECTIONS: { key: InboxBucketKey; title: string; blurb: string }[] = [
   { key: "failed", title: "Failed", blurb: "The lane ran and could not post." },
   {
     key: "did-not-run",
-    title: "Did not run",
-    blurb: "No review happened on the latest head, and the reason says why.",
+    title: "Head not reviewed",
+    blurb: "No round read the latest head's code, and the reason says why.",
   },
-  { key: "threads-open", title: "Threads open", blurb: "Findings nobody has closed yet." },
+  { key: "threads-open", title: "Threads open", blurb: "Reviewed, with findings nobody has closed yet." },
   {
     key: "findings-not-recorded",
     title: "Findings not recorded",

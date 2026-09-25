@@ -11,8 +11,9 @@ export interface InboxBuckets {
 }
 
 /**
- * Sorts open PRs into the Inbox's sections (#185). A reviewed head with findings
- * still open joins threads-only under "Threads open". "Healthy" means reviewed
+ * Sorts open PRs into the Inbox's sections (#185). A verify-only head never read
+ * the code, so it sits with did-not-run; "Threads open" is a recorded count (#218).
+ * "Healthy" means reviewed
  * with open_findings recorded as zero; a PR no prs row enriched has no count, and
  * an unknown count is its own section rather than a clean result.
  */
@@ -27,11 +28,11 @@ export function bucketInbox(prs: PRSummary[]): InboxBuckets {
   for (const pr of [...prs].sort(comparePRsByAttention)) {
     switch (pr.headStatus.state) {
       case "failed":
-      case "did-not-run":
-        buckets[pr.headStatus.state].push(pr);
+        buckets.failed.push(pr);
         break;
+      case "did-not-run":
       case "threads-only":
-        buckets["threads-open"].push(pr);
+        buckets["did-not-run"].push(pr);
         break;
       case "reviewed":
         if (pr.openFindings === null) buckets["findings-not-recorded"].push(pr);

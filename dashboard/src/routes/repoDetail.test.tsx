@@ -158,6 +158,24 @@ describe("/repos/$owner/$repo: the weekly health tab (#179)", () => {
     expect(screen.queryByRole("table")).toBeNull();
   });
 
+  it("shows the state Home shows for the same repository (#218)", async () => {
+    const rounds = makeRounds({ count: 8, now: new Date() });
+    const repository = rounds[0]!.repository;
+    const api = makeFixtureApi(rounds, [], [], [], [], [], []);
+
+    const home = renderRoute({ path: "/", api });
+    const table = await screen.findByTestId("today-repos");
+    const row = within(table).getByRole("link", { name: repository }).closest("tr")!;
+    const homeState = row.querySelectorAll("td")[1]!.textContent;
+    home.unmount();
+
+    renderRoute({ path: `/repos/${repository}`, api });
+    const line = await screen.findByTestId("repo-state-line");
+    expect(homeState).toBeTruthy();
+    expect(line.textContent).toContain(`${homeState} ·`);
+    expect(await screen.findByText(`No health report has arrived for ${repository}`)).toBeInTheDocument();
+  });
+
   it("says so when the Worker has more rows than one page", async () => {
     const reports = Array.from({ length: 201 }, (_, i) =>
       healthRow({ id: i + 1, window_start: `2026-01-01T00:00:${String(i % 60).padStart(2, "0")}Z` }),

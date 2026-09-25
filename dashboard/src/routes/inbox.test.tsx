@@ -88,7 +88,7 @@ describe("the nav (#185)", () => {
 });
 
 describe("/inbox (#185)", () => {
-  it("buckets open PRs into Failed, Did not run and Threads open, in that order", async () => {
+  it("buckets open PRs into Failed, Head not reviewed and Threads open, in that order", async () => {
     renderRoute({ path: "/inbox", api });
     const failed = await screen.findByTestId("inbox-section-failed");
     const sections = screen.getAllByTestId(/^inbox-section-/);
@@ -101,9 +101,10 @@ describe("/inbox (#185)", () => {
     ]);
 
     expect(sectionTitles(failed)).toEqual(["#1 Retry webhook replay"]);
-    expect(sectionTitles(sections[1])).toEqual(["#2 Offline drafts"]);
+    // A verify-only head never read the code, so it sits with did-not-run, not Threads open (#218).
+    expect(sectionTitles(sections[1])).toEqual(["#2 Offline drafts", "#3 Rotate signing keys"]);
     // A reviewed head with findings still open is not healthy.
-    expect(sectionTitles(sections[2])).toEqual(["#3 Rotate signing keys", "#4 Split ledger writer"]);
+    expect(sectionTitles(sections[2])).toEqual(["#4 Split ledger writer"]);
     expect(screen.queryByText(/Closed and failed/)).not.toBeInTheDocument();
   });
 
