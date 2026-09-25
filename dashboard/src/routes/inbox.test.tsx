@@ -10,6 +10,7 @@ const now = new Date();
 const base = makeRounds({ count: 1, now })[0];
 
 function round(n: number, overrides: Partial<RoundRow>): RoundRow {
+  const repository = overrides.repository ?? "acme/web";
   return {
     ...base,
     session_id: `inbox-${n}`,
@@ -17,7 +18,9 @@ function round(n: number, overrides: Partial<RoundRow>): RoundRow {
     pr_title: `PR ${n}`,
     pr_author: "developer",
     pr_state: "open",
-    repository: "acme/web",
+    repository,
+    // Tracks repository/n, or base.pr_url (a different repo#number) leaks through (#218).
+    pr_url: `https://github.com/${repository}/pull/${n}`,
     round_type: "full",
     verdict_kind: "reviewed",
     job_conclusion: "success",
@@ -76,7 +79,7 @@ describe("the nav (#185)", () => {
   it("has a Review group and an Operate group, and no longer lists PRs, Rounds or Failures", async () => {
     renderRoute({ path: "/", api });
     const nav = await screen.findByRole("navigation", { name: "Main" });
-    expect(nav.textContent).toBe("TodayReviewInboxFindingsReposOperateFleet");
+    expect(nav.textContent).toBe("HomeReviewInboxFindingsReposOperateFleet");
     for (const gone of ["Overview", "PRs", "Rounds", "Failures"]) {
       expect(within(nav).queryByRole("link", { name: gone })).not.toBeInTheDocument();
     }
@@ -135,6 +138,12 @@ describe("/inbox (#185)", () => {
     renderRoute({ path: "/inbox", api });
     const link = await screen.findByRole("link", { name: "#1 Retry webhook replay" });
     expect(link.getAttribute("href")).toBe("/prs/acme/payments/1");
+  });
+
+  it("renders a GitHub link on each PR row", async () => {
+    renderRoute({ path: "/inbox", api });
+    const link = await screen.findByRole("link", { name: "Open acme/payments#1 on GitHub" });
+    expect(link).toHaveAttribute("href", "https://github.com/acme/payments/pull/1");
   });
 
   it("hides healthy PRs behind a count until asked", async () => {

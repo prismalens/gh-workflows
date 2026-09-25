@@ -1,5 +1,4 @@
-import { createRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft } from "lucide-react";
+import { createRoute } from "@tanstack/react-router";
 import { z } from "zod";
 
 import { ROUND_SCAN_PAGES } from "@/api/client";
@@ -7,7 +6,6 @@ import { MAX_LIMIT_WITH_BLOBS } from "@/api/client";
 import { useRoundAgentsQuery, useRoundQuery, useRoundsQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import {
   DenialsPanel,
   FanOutPanel,
@@ -52,11 +50,6 @@ function RoundDetailPage() {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-3">
-        <Button asChild size="sm" variant="ghost">
-          <Link to="/rounds">
-            <ArrowLeft className="size-4" /> Rounds
-          </Link>
-        </Button>
         <h1 className="font-mono text-sm">{sessionId}</h1>
       </div>
 

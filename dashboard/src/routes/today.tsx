@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { createRoute, Link } from "@tanstack/react-router";
+import { ExternalLink } from "lucide-react";
 
 import { useFindingsQuery, useFleetReposQuery, usePRsQuery, useRoundsQuery } from "@/api/queries";
 import type { FindingRow, PrRow, RoundRow } from "@/api/types";
@@ -21,7 +22,7 @@ const NEEDS_SHOWN = 7;
 export const todayRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: TodayPage,
+  component: HomePage,
 });
 
 const ACTION = "inline-flex items-center rounded-md border border-border bg-muted px-2.5 py-1 text-xs font-semibold whitespace-nowrap hover:border-muted-foreground";
@@ -30,7 +31,7 @@ const ACTION = "inline-flex items-center rounded-md border border-border bg-mute
  * The Console's home (#209): what broke, what needs a person, what changed.
  * Rounds cover 30 days so this week can be set against the week before.
  */
-function TodayPage() {
+function HomePage() {
   const now = useMemo(() => new Date(), []);
   const rounds = useRoundsQuery({ range: "30d" }, now);
   const prs = usePRsQuery();
@@ -49,7 +50,7 @@ function TodayPage() {
     [rounds.data, prs.data, findings.data, fleet.data, now],
   );
 
-  if (rounds.isPending) return <LoadingRows rows={8} label="Loading today" />;
+  if (rounds.isPending) return <LoadingRows rows={8} label="Loading home" />;
   if (rounds.isError) return <QueryError error={rounds.error} title="Could not load rounds" />;
 
   // An unloaded source is unknown, never clean: no "Nothing needs you" or "Nothing is broken" on a guess.
@@ -61,7 +62,7 @@ function TodayPage() {
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-base font-semibold tracking-tight">Today</h1>
+          <h1 className="text-base font-semibold tracking-tight">Home</h1>
           <p className="text-xs text-muted-foreground">
             What broke, what needs you, and what changed. Everything else is one click down.
           </p>
@@ -213,6 +214,7 @@ function NeedRow({ need, now }: { need: NeedItem; now: Date }) {
   const [copied, setCopied] = useState(false);
   const [owner, repo] = need.repository.split("/");
   const params = { owner: owner ?? "", repo: repo ?? "", number: String(need.prNumber) };
+  const url = `https://github.com/${need.repository}/pull/${need.prNumber}`;
   return (
     <tr data-testid="need-row" className="border-b border-border last:border-0">
       <td className="w-14 px-4 py-2 align-top">
@@ -223,9 +225,21 @@ function NeedRow({ need, now }: { need: NeedItem; now: Date }) {
         {need.detail && <div className="truncate font-mono text-[11px] text-muted-foreground" title={need.detail}>{need.detail}</div>}
       </td>
       <td className="w-52 px-2 py-2 align-top text-muted-foreground">
-        <Link to="/prs/$owner/$repo/$number" params={params} className="hover:underline">
-          {repo} <span className="font-mono">#{need.prNumber}</span>
-        </Link>
+        <span className="flex items-center gap-1.5">
+          <Link to="/prs/$owner/$repo/$number" params={params} className="hover:underline">
+            {repo} <span className="font-mono">#{need.prNumber}</span>
+          </Link>
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`Open ${need.repository}#${need.prNumber} on GitHub`}
+            title="Open on GitHub"
+            className="inline-flex text-muted-foreground hover:text-foreground"
+          >
+            <ExternalLink className="size-3.5" />
+          </a>
+        </span>
       </td>
       <td className="w-44 px-4 py-2 text-right align-top">
         {need.copyText ? (
@@ -327,7 +341,7 @@ const STATE_TONE: Record<RepoLine["state"], string> = {
   "config malformed": "text-[var(--warning)]",
   "tool denials": "text-[var(--warning)]",
   quiet: "text-muted-foreground",
-  healthy: "text-emerald-400",
+  reviewing: "text-emerald-400",
 };
 
 function ReposCard({ repos, threadsKnown }: { repos: RepoLine[]; threadsKnown: boolean }) {

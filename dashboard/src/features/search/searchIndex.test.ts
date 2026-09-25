@@ -115,7 +115,7 @@ describe("searchAll", () => {
     expect(results.every((r) => r.kind === "page")).toBe(true);
     const titles = results.map((r) => r.title);
     expect(titles).toEqual([
-      "Today",
+      "Home",
       "Inbox",
       "Fleet",
       "Repos",

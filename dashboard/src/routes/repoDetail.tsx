@@ -1,10 +1,8 @@
 import { createRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft } from "lucide-react";
 
 import { useHealthReportsQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { WeeklyHealth } from "@/features/repos/WeeklyHealth";
 import { DEFAULT_RANGE } from "@/honesty/range";
 import { rootRoute } from "./root";
@@ -26,11 +24,6 @@ function RepoDetailPage() {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-3">
-        <Button asChild size="sm" variant="ghost">
-          <Link to="/repos" search={{ range: DEFAULT_RANGE }}>
-            <ArrowLeft className="size-4" /> Repos
-          </Link>
-        </Button>
         <h1 className="font-mono text-base font-semibold tracking-tight">{repository}</h1>
         <Link
           to="/rounds"
