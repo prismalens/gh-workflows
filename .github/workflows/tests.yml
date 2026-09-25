@@ -183,10 +183,6 @@ jobs:
       - name: Text-tier audit prints no contents (#183)
         run: python3 tests/test-audit-telemetry-text.py
 
-      # Hourly review queue decision logic and snapshot behaviour (#150).
-      - name: Review queue behaviour (#150)
-        run: python3 tests/test-review-queue.py
-
       # A test file this job does not name is a test that never runs (#130).
       - name: Every test file is wired into this job
         run: |

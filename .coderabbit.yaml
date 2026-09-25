@@ -1,5 +1,4 @@
-# Auto review is off in every repo; the hourly review queue
-# (.github/workflows/review-queue.yml, Sumit1993/rig#150) summons each PR,
+# Auto review is off in every repo; the hourly CodeRabbit summoner routine summons each PR (#216),
 # which also covers PRs editing claude-code-review.yml where Claude self-skips.
 language: en-US
 reviews:

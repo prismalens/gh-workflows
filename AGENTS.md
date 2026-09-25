@@ -7,9 +7,8 @@ true of this repository.
 
 `claude-code-action` self-skips on any pull request that edits
 `.github/workflows/claude-code-review.yml`, and this repository hosts that file, so the Claude
-lane does not review here. `auto_review` is off: the hourly review queue
-(`.github/workflows/review-queue.yml`, Sumit1993/rig#150) summons CodeRabbit on one pull request
-per hour across every repo and merges pull requests whose review came back clean.
+lane does not review here. `auto_review` is off: the hourly `CodeRabbit summoner` routine
+summons CodeRabbit on one pull request per hour across every repo (#216).
 
 Never run a model pass in place of that review. Opus, a subagent and `/code-review` cannot read
 the `path_instructions` in `.coderabbit.yaml`, which carry this repository's invariants.
