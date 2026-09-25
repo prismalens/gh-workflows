@@ -17,6 +17,7 @@ Reusable workflow callees live in `.github/workflows/` and are invoked by consum
 - [`.github/workflows/claude-code-review.yml`](.github/workflows/claude-code-review.yml)
 - `.github/workflows/claude.yml`
 - [`.github/workflows/review-findings-sweep.yml`](.github/workflows/review-findings-sweep.yml) — the review-findings ingest sweep (`#47`)
+- [`.github/workflows/pr-state.yml`](.github/workflows/pr-state.yml) — records PR state for the Console's open-findings counts, via `pull_request_target`, and checks nothing out (`#211`)
 - `.github/workflows/dependabot-auto-merge.yml`
 - `.github/workflows/dependabot-auto-merge-caller.yml` — this repository's own caller stub for the auto-merge callee
 
