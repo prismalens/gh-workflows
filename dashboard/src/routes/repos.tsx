@@ -17,7 +17,6 @@ import {
 } from "@/components/ui/table";
 import { malformedConfigs, quietRepos, repoParams, summariseRepos } from "@/features/repos/repos";
 import { WatchOut } from "@/features/repos/WatchOut";
-import { Degraded } from "@/honesty/Degraded";
 import { linkableRange, standardRangeSchema } from "@/honesty/range";
 import { CountTile } from "@/honesty/Tile";
 import { VERDICT_COPY } from "@/honesty/verdict";
@@ -171,12 +170,6 @@ function ReposPage() {
               </Table>
             </CardContent>
           </Card>
-
-          <Degraded
-            what="Lane, key mode and config state per repository"
-            reason="unbuilt"
-            detail="Which lane a repository runs, how it authenticates and whether its config layer parsed are properties of the repository, not of a round, and no round carries them. They need the fleet registry, which does not exist (#46)."
-          />
 
           <p className="text-xs text-muted-foreground">
             A repository with no round in this window is still listed.

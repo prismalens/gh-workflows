@@ -11,7 +11,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Degraded } from "@/honesty/Degraded";
 import { formatDuration, orDash } from "@/lib/format";
 import { ATTENTION_KIND_COPY, type AttentionCard, type AttentionKind } from "./attention";
 
@@ -173,12 +172,6 @@ export function AttentionFeed({ cards, scanned, windowLabel, findingsRead }: Att
           </TableBody>
         </Table>
       )}
-
-      <Degraded
-        what="Silent rounds, fallback reasons and malformed config"
-        reason="unbuilt"
-        detail="These three card kinds the artboard draws need fields no column holds, and each arrives with its own issue (#46). Never-answered findings left this list when #111 landed review_findings, and are in the feed above."
-      />
     </div>
   );
 }

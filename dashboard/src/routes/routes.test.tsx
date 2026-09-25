@@ -135,10 +135,8 @@ describe("/fleet (the former overview): the altitude ruling", () => {
     for (const reason of reasons) {
       expect(reason).toMatch(/permission denial|attempt \d|reported an error/);
     }
-    const degraded = screen
-      .getAllByTestId("degraded")
-      .find((node) => node.textContent?.includes("Silent rounds"));
-    expect(degraded).toHaveAttribute("data-reason", "unbuilt");
+    // "Not collected yet" cards are gone (#209).
+    expect(screen.queryAllByTestId("degraded").filter((node) => node.getAttribute("data-reason") === "unbuilt")).toEqual([]);
   });
 
   it("keeps money out of every headline on the overview", async () => {
@@ -277,10 +275,8 @@ describe("/repos", () => {
     expect(
       await screen.findByText(/ever posted a round, which is not the same/),
     ).toBeInTheDocument();
-    const degraded = screen
-      .getAllByTestId("degraded")
-      .find((node) => node.textContent?.includes("Lane, key mode and config"));
-    expect(degraded).toHaveAttribute("data-reason", "unbuilt");
+    // "Not collected yet" cards are gone (#209).
+    expect(screen.queryAllByTestId("degraded").filter((node) => node.getAttribute("data-reason") === "unbuilt")).toEqual([]);
   });
 
   it("falls back to the default range on a marker range it cannot resolve (#104 finding 1)", async () => {
