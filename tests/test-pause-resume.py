@@ -23,7 +23,7 @@ Extracts REAL shell bodies out of claude-code-review.yml and runs them against f
     admission-off; announce posts nothing and the lane event records admission-off.
 14. The claude_review_skip label refuses everything as skip-label under any admission,
     and its verdict carries the pause marker forward unchanged.
-15. `admission: label` without claude_review refuses everything as awaiting-label, and
+15. `admission: label` without claude_review refuses all but a review summon as awaiting-label (#219), and
     with the label the round is admitted.
 16. `resolve` reads both labels as booleans only, gates label events to the two labels,
     and scripts/setup-repo.sh creates both.
@@ -865,9 +865,9 @@ def main():
         ("pull_request_review_comment", "reply", '[{"id":"T_1"}]'),
     ]
 
-    def refused_everywhere(case, extra, want):
+    def refused_everywhere(case, extra, want, matrix=None):
         wrong = []
-        for ev, verb, threads in summon_matrix:
+        for ev, verb, threads in (matrix or summon_matrix):
             rc, outs, err = run_mode_step(mode_script, event=ev, summon=verb,
                                           fake_threads=threads, extra_env=extra)
             if rc != 0 or outs.get("mode") != "skip" or outs.get("skip_reason") != want:
@@ -875,7 +875,7 @@ def main():
         if wrong:
             fails.append(f"case {case}: want skip {want} on every event, got " + "; ".join(wrong))
         else:
-            print(f"  ok    {want}: the automatic round, all four summons and a reply are refused (#189)")
+            print(f"  ok    {want}: " + ", ".join(f"{ev}/{verb}" for ev, verb, _ in (matrix or summon_matrix)) + " refused (#189)")
 
     def lane_event_records(case, reason):
         rc, payload, err = run_lane_event_step(lane_event_script, skip_reason=reason)
@@ -925,8 +925,23 @@ def main():
         print("  ok    skip-label verdict names the label and carries paused=1 paused_by=alice forward (#189)")
     lane_event_records("16", "skip-label")
 
-    # 17. admission: label without the opt-in label
-    refused_everywhere("17", {"ADMISSION": "label"}, "awaiting-label")
+    # 17. admission: label without the opt-in label. A review summon has passed the
+    # write-access check in `resolve`, so it admits and asks announce for the label (#219).
+    refused_everywhere("17", {"ADMISSION": "label"}, "awaiting-label",
+                       matrix=[m for m in summon_matrix if m[1] not in ("incremental", "full")])
+    for verb in ("incremental", "full"):
+        rc, outs, err = run_mode_step(mode_script, event="issue_comment", summon=verb,
+                                      fake_liveness="", extra_env={"ADMISSION": "label"})
+        if outs.get("skip_reason") == "awaiting-label" or outs.get("apply_label") != "true":
+            fails.append(f"case 17: a {verb} summon under admission: label was not admitted with apply_label: rc={rc} {outs}")
+        else:
+            print(f"  ok    admission: label admits a {verb} summon and asks for the label (#219)")
+    rc, outs, err = run_mode_step(mode_script, event="issue_comment", summon="incremental",
+                                  extra_env={"ADMISSION": "label", "HAS_SKIP_LABEL": "true"})
+    if outs.get("skip_reason") != "skip-label" or outs.get("apply_label"):
+        fails.append(f"case 17: the skip label must still beat a summon under admission: label: {outs}")
+    else:
+        print("  ok    skip-label still refuses a summon under admission: label (#219)")
     rc, outs, err = run_mode_step(
         mode_script, event="pull_request", fake_liveness="",
         extra_env={"ADMISSION": "label", "HAS_OPT_IN_LABEL": "true"},
@@ -951,7 +966,7 @@ def main():
         fails.append(f"case 17 announce: exited {rc}: {err}")
     elif outs.get("verdict_kind") != "awaiting-label":
         fails.append(f"case 17 announce: want verdict_kind=awaiting-label, got {outs.get('verdict_kind')!r}")
-    elif "`claude_review`" not in body or "admission: label" not in body:
+    elif "`claude_review`" not in body or "admission: label" not in body or "`@claude review` as a maintainer" not in body:
         fails.append(f"case 17 announce: verdict does not name the label and the admission mode: {body!r}")
     else:
         print("  ok    awaiting-label verdict names claude_review and admission: label (#189)")
