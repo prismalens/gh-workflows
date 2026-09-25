@@ -325,27 +325,6 @@ jobs:
 
 ---
 
-## Review Queue
-
-Runs hourly across six repos: merges clean PRs and summons CodeRabbit on at most one PR per hour (`.github/workflows/review-queue.yml`, Sumit1993/rig#150).
-
-**Kill switch**: runs live only when repo variable `REVIEW_QUEUE_LIVE == 'true'` and either scheduled or dispatched with `dry_run: false`. Otherwise defaults to `--dry-run`.
-
-### Secrets
-
-Each is a fine-grained PAT owned by the operator (`Sumit1993`):
-- `REVIEW_QUEUE_TOKEN_PRISMALENS`: Resource owner `prismalens`, queue repos only.
-- `REVIEW_QUEUE_TOKEN_SUMIT1993`: Resource owner `Sumit1993`, queue repos only.
-- Permissions: Contents read and write, Pull requests read and write, Issues read and write, Metadata read.
-
-### Manual Dry Run
-
-```bash
-REVIEW_QUEUE_TOKEN_PRISMALENS=$(gh auth token) REVIEW_QUEUE_TOKEN_SUMIT1993=$(gh auth token) python3 scripts/review-queue.py --dry-run
-```
-
----
-
 ## Action Pinning and Dependabot
 
 To guard against supply chain tampering from repointed tags, every third-party GitHub Action used across workflows and composite actions is pinned to a full commit SHA:
