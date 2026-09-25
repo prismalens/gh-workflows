@@ -361,4 +361,22 @@ describe("buildToday", () => {
     expect(model.repos[0]!.state).toBe("tool denials");
     expect(model.anomalies.find((a) => a.id === "denials:acme/web")?.detail).toContain("3.0 denials a round");
   });
+  it("withholds the denial rate below LOW_N_THRESHOLD recorded rounds but keeps the count", () => {
+    const model = buildToday({ rounds: [makeRound({ permission_denials: 20 })], prs: [makePr()], findings: [], fleet: emptyFleet, now });
+    expect(model.anomalies.filter((a) => a.id.startsWith("denials:"))).toEqual([]);
+    expect(model.repos[0]!.state).toBe("healthy");
+    expect(model.repos[0]!.denials).toBe(20);
+  });
+
+  it("marks the earlier week withheld when it has too few rounds for p95", () => {
+    const rounds = [
+      ...Array.from({ length: 20 }, () => makeRound()),
+      ...Array.from({ length: 3 }, () => makeRound({ recorded_at: new Date(now.getTime() - 10 * DAY_MS).toISOString() })),
+    ];
+    const model = buildToday({ rounds, prs: [makePr()], findings: [], fleet: emptyFleet, now });
+    const p95 = model.week.find((w) => w.label === "p95 round time")!;
+    expect(p95.value).not.toBeNull();
+    expect(p95.previous).toBeNull();
+    expect(p95.previousWithheld).toBe(true);
+  });
 });

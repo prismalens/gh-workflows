@@ -171,7 +171,13 @@ function NeedsYou({ needs, now, state }: { needs: NeedItem[]; now: Date; state: 
     <Card data-testid="needs-you">
       <div className="flex flex-wrap items-baseline gap-3 border-b border-border bg-muted/40 px-4 py-2.5">
         <h2 className="text-sm font-semibold">Needs you</h2>
-        <span className="tabular text-sm font-semibold">{formatCount(needs.length)}</span>
+        <span className="tabular text-sm font-semibold" title={state === "complete" ? undefined : "partial: unanswered threads are not counted yet"}>
+          {formatCount(needs.length)}
+          {state !== "complete" && "+"}
+        </span>
+        {state !== "complete" && needs.length > 0 && (
+          <span className="text-xs text-[var(--warning)]">{state === "loading" ? "so far; still reading findings" : "heads only; threads unknown"}</span>
+        )}
         <span className="text-xs text-muted-foreground">Ranked by severity, then age. Each row says what to do.</span>
         <Link to="/inbox" search={{ range: DEFAULT_RANGE }} className="ml-auto text-xs text-[var(--chart-1)] hover:underline">
           Open Inbox
@@ -264,7 +270,9 @@ function formatStat(value: number | null, format: WeekStat["format"]): string {
 
 function Delta({ stat }: { stat: WeekStat }) {
   if (stat.value === null) return <span className="text-muted-foreground">not comparable</span>;
-  if (stat.previous === null) return <span className="text-muted-foreground">no earlier figure</span>;
+  if (stat.previous === null) {
+    return <span className="text-muted-foreground">{stat.previousWithheld ? "earlier week withheld, low n" : "no earlier figure"}</span>;
+  }
   const diff = stat.value - stat.previous;
   const rel = stat.previous === 0 ? null : diff / stat.previous;
   if (diff === 0 || (rel !== null && Math.abs(rel) < 0.1)) return <span className="text-muted-foreground">about the same</span>;

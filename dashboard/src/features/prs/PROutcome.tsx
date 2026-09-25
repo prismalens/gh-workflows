@@ -47,7 +47,7 @@ export function OutcomeStrip({ pr }: { pr: PRSummary }) {
       <Cell
         label="Findings posted"
         value={posted.total !== null ? formatCount(posted.total) : "—"}
-        note={posted.note ?? (findingsUnread ? "findings could not load" : sevNote || `${formatCount(rows.length)} swept`)}
+        note={posted.note ?? (findings.isPending ? "reading findings…" : findingsUnread ? "findings could not load" : sevNote || `${formatCount(rows.length)} swept`)}
       />
       <Cell
         label="Fix commit cited"

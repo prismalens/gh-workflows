@@ -47,6 +47,8 @@ export interface WeekStat {
   worseWhen: "up" | "down" | null;
   format: "count" | "duration" | "percent";
   note?: string;
+  /** The earlier week had observations but too few for this aggregate. */
+  previousWithheld?: boolean;
 }
 
 export interface RepoLine {
@@ -219,7 +221,8 @@ export function buildToday(input: {
   }
   const totalDenials = [...denialsByRepo.values()].reduce((s, e) => s + e.denials, 0);
   for (const [repository, e] of denialsByRepo) {
-    const perRound = e.rounds ? e.denials / e.rounds : 0;
+    if (e.rounds < LOW_N_THRESHOLD) continue;
+    const perRound = e.denials / e.rounds;
     if (e.denials < 20 || perRound < 2) continue;
     const others = totalDenials - e.denials;
     const slow = e.slow.length
@@ -267,7 +270,9 @@ export function buildToday(input: {
   }, {});
 
   const durThis = durations(thisWeek);
+  const durPrev = durations(lastWeek);
   const cacheThis = cacheHit(thisWeek);
+  const cachePrev = cacheHit(lastWeek);
   const tokenless = thisWeek.length - cacheThis.used;
   const week: WeekStat[] = [
     { label: "Pull requests reviewed", value: prCount(thisWeek), previous: prCount(lastWeek), worseWhen: null, format: "count" },
@@ -283,7 +288,8 @@ export function buildToday(input: {
     {
       label: "p95 round time",
       value: p95(durThis),
-      previous: p95(durations(lastWeek)),
+      previous: p95(durPrev),
+      previousWithheld: durPrev.length > 0 && durPrev.length < P95_MIN_N,
       worseWhen: "up",
       format: "duration",
       note: durThis.length < P95_MIN_N ? `withheld: ${durThis.length} timed rounds, p95 needs ${P95_MIN_N}` : undefined,
@@ -291,7 +297,8 @@ export function buildToday(input: {
     {
       label: "Cache hit",
       value: cacheThis.value,
-      previous: cacheHit(lastWeek).value,
+      previous: cachePrev.value,
+      previousWithheld: cachePrev.used > 0 && cachePrev.used < LOW_N_THRESHOLD,
       worseWhen: "down",
       format: "percent",
       note:
@@ -328,7 +335,7 @@ export function buildToday(input: {
       ? "failing"
       : malformed.has(repository)
         ? "config malformed"
-        : denials !== null && denials / recorded.length >= 2 && denials >= 20
+        : denials !== null && recorded.length >= LOW_N_THRESHOLD && denials / recorded.length >= 2 && denials >= 20
           ? "tool denials"
           : rows.length === 0
             ? "quiet"
