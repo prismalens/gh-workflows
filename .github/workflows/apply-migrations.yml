@@ -1,5 +1,5 @@
 # The deploy refuses to run ahead of the schema and never applies a migration itself
-# (deploy-worker.yml). This is the one click that replaces a laptop apply with a rolled
+# (deploy-worker.yml). This is the one click that replaces a local apply with a rolled
 # token: the credential CI already holds, an Actions log as the audit trail, and the
 # applied set verified against d1_migrations rather than wrangler's summary. Story: #164.
 name: Apply D1 migrations

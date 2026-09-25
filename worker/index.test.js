@@ -5875,7 +5875,6 @@ describe("Runner registry (#184)", () => {
       "concurrency 0": { placement: "box", credentials: [cred({ concurrency: 0 })] },
       "concurrency 17": { placement: "box", credentials: [cred({ concurrency: 17 })] },
       "concurrency 1.5": { placement: "box", credentials: [cred({ concurrency: 1.5 })] },
-      "laptop placement": { placement: "laptop", credentials: [cred()] },
       "user-login kind": { placement: "box", credentials: [cred({ engine: "claude-code", kind: "user-login" })] },
       "duplicate engine and kind": { placement: "box", credentials: [cred(), cred({ fingerprint: "ffffffffffff" })] },
     };
@@ -5924,9 +5923,9 @@ describe("Runner registry (#184)", () => {
     assert.ok(sweepIdx !== -1 && sweepIdx < checkIdx, "the heartbeat sweep runs before the fingerprint check");
   });
 
-  it("a user-login credential on a laptop is refused with a 400 and nothing is written", async () => {
+  it("a user-login credential is refused with a 400 and nothing is written", async () => {
     const db = cpRunnerDb();
-    const body = { placement: "laptop", credentials: [{ engine: "claude-code", kind: "user-login", fingerprint: "abcdefabcdef", concurrency: 1 }] };
+    const body = { placement: "box", credentials: [{ engine: "claude-code", kind: "user-login", fingerprint: "abcdefabcdef", concurrency: 1 }] };
     const res = await worker.fetch(cpRunnerRequest("/runner/register", { body }), { DB: db });
     assert.equal(res.status, 400);
     assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);

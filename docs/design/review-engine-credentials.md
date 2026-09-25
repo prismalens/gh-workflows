@@ -4,7 +4,7 @@ Copied from the operator's draft on 2026-09-19 for prismalens/gh-workflows#184. 
 Reopened by the operator on 2026-09-19 after the #184 day-one plan (VPS, `claude -p
 --output-format stream-json` under `claude setup-token`, per-engine driver). Sources: two
 surveys (prismalens hub and repo; vendor docs and competitors), primary pages re-fetched by
-the Fable seat where a claim conflicted. Earlier research: the review engine options research of 2026-09-14, `docs/design/self-hosted-review.md` (2026-09-18), the ACP verification note of 2026-09-11, the prismalens laptop handoff of 2026-09-16.
+the Fable seat where a claim conflicted. Earlier research: the review engine options research of 2026-09-14, `docs/design/self-hosted-review.md` (2026-09-18), the ACP verification note of 2026-09-11, the prismalens handoff note of 2026-09-16.
 
 ## 1. Vendor policy, primary text
 
@@ -56,8 +56,9 @@ credentials ... for all Third-Party AI Model Providers." Subscription-multiplyin
 
 - ADR 0003 (accepted, reviewed 2026-09-11): "ACP is the harness seam. Every harness runs as a
   child of the API speaking the Agent Client Protocol over stdio." §8: a native adapter only
-  against a recorded ACP gap on the registry row. §9: "Cloud and VM placements are the same
-  ACP child in a container with the key in env; subscription logins are a laptop feature."
+  against a recorded ACP gap on the registry row. §9, paraphrased: cloud and VM placements are
+  the same ACP child in a container with the key in env, and subscription logins are not one of
+  those placements.
   Forbids: "routing a subscription through prismalens code," "a patched, vendored or wrapped
   Claude Code binary."
 - ADR 0004 §7: "The product never embeds a Claude subscription."
@@ -106,7 +107,8 @@ that case. `claude setup-token` in the first-party Action is the only named sanc
 
 Amend #184: the engine seam is ACP, one client that reuses prismalens's `acp-adapter.ts`
 canonical stream, with a per-engine driver only for a recorded gap (0003 §8). Credential on
-the box is an API key. Day one runs on this machine with `claude-agent-acp` or `opencode`
-against an API key, so no VPS and no deadline. Subscription use stays where Anthropic names
-it: the Action, or a laptop where the user signs in themselves. Public docs never mention
-subscriptions on the runner.
+the box is an API key or a keyless free model. Day one runs on this machine with
+`claude-agent-acp` or `opencode` against an API key, so no VPS and no deadline. The runner
+takes no subscription credential; `claude setup-token` inside the first-party Action is the
+one subscription form the lane accepts. The #184 ruling of 2026-09-23 keeps this: the runner's
+one placement is `box`, and trigger and credential decide policy.

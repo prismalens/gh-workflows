@@ -18,6 +18,13 @@ import { renderPrompt, promptHash, laneTokens } from './prompt.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATE = path.join(HERE, '..', 'prompt', 'template.md');
 const RETRY_DELAYS_S = [1, 2, 4, 8, 16];
+export const CONTAINER_NOT_READY = 'the container runtime is not built yet (#184); this runner leases no job until it is';
+
+// A pull job runs only inside the per-job container. That runtime is the next slice of #184;
+// until it lands this returns false, and the daemon neither registers nor leases.
+export function containerReady() {
+  return false;
+}
 
 const sleep = (ms, signal) => new Promise((resolve) => {
   if (signal?.aborted) return resolve();
@@ -212,6 +219,7 @@ async function postWithRetry(ctx, jobId, batch) {
 }
 
 export async function startDaemon(config, deps = {}) {
+  if (!(deps.containerReady ?? containerReady)()) throw new Error(CONTAINER_NOT_READY);
   const secrets = new Set([config.runner_token, ...(config.secrets?.values() ?? [])]);
   const write = deps.log ?? ((s) => process.stderr.write(`${s}\n`));
   const log = (msg) => write(`assayer-runner ${new Date().toISOString()} ${redact(msg, secrets)}`);
@@ -295,6 +303,7 @@ function main(argv) {
   if (argv.includes('--check')) {
     process.stdout.write(`placement ${config.placement}\n`);
     for (const c of config.credentials) process.stdout.write(`${c.name} ${c.engine} ${c.kind} ${c.fingerprint} ${c.concurrency}\n`);
+    if (!containerReady()) { process.stderr.write(`assayer-runner: ${CONTAINER_NOT_READY}\n`); process.exit(1); }
     process.exit(0);
   }
   startDaemon(config).then((d) => {

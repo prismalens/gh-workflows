@@ -8,7 +8,7 @@ const env = { ASSAYER_RUNNER_TOKEN: TOKEN, ANTHROPIC_API_KEY: 'sk-ant-test-value
 const good = (over = {}) => ({
   control_plane: 'https://assayer.example.test',
   runner_token: '${ASSAYER_RUNNER_TOKEN}',
-  placement: 'laptop',
+  placement: 'box',
   credentials: [{ name: 'anthropic', engine: 'claude-code', kind: 'api-key', env: 'ANTHROPIC_API_KEY', concurrency: 1 }],
   ...over,
 });
@@ -39,14 +39,10 @@ describe('runner config (#184)', () => {
     ['a literal runner token', good({ runner_token: TOKEN }), /runner_token must be a \$\{ENV\} reference/],
     ['an unset token variable', good({ runner_token: '${NOPE}' }), /NOPE is not set/],
     ['a malformed token', good(), /is not a runner token/, { ASSAYER_RUNNER_TOKEN: 'asr_short' }],
-    ['box placement', good({ placement: 'box' }), /container slice/],
+    ['a placement other than box', good({ placement: 'vps' }), /unknown placement vps/],
     ['user-login', good({ credentials: [{ name: 'u', engine: 'claude-code', kind: 'user-login', concurrency: 1 }] }), /deferred/],
     ['an api-key without env', good({ credentials: [{ name: 'a', engine: 'claude-code', kind: 'api-key', concurrency: 1 }] }), /names its environment variable/],
     ['an unset key variable', good({ credentials: [{ name: 'a', engine: 'claude-code', kind: 'api-key', env: 'MISSING_KEY', concurrency: 1 }] }), /MISSING_KEY is not set/],
-    ['two credentials on a laptop', good({ credentials: [
-      { name: 'a', engine: 'claude-code', kind: 'api-key', env: 'ANTHROPIC_API_KEY', concurrency: 1 },
-      { name: 'z', engine: 'opencode', kind: 'keyless', concurrency: 1 }] }), /exactly one credential/],
-    ['concurrency 2 on a laptop', good({ credentials: [{ name: 'z', engine: 'opencode', kind: 'keyless', concurrency: 2 }] }), /exactly one credential/],
     ['an unknown key', { ...good(), extra: 1 }, /config|Unrecognized/],
     ['an unknown engine', good({ credentials: [{ name: 'x', engine: 'gpt', kind: 'api-key', env: 'ANTHROPIC_API_KEY', concurrency: 1 }] }), /unknown engine/],
     ['http to a remote host', good({ control_plane: 'http://assayer.example.test' }), /must be https/],
@@ -57,6 +53,14 @@ describe('runner config (#184)', () => {
       assert.throws(() => parseConfig(raw, { ...env, ...(envOver ?? {}) }, { hostname: 'h' }), pattern);
     });
   }
+
+  it('takes several credentials and a concurrency above 1', () => {
+    const c = parseConfig(good({ credentials: [
+      { name: 'a', engine: 'claude-code', kind: 'api-key', env: 'ANTHROPIC_API_KEY', concurrency: 2 },
+      { name: 'z', engine: 'opencode', kind: 'keyless', concurrency: 3 }] }), env, { hostname: 'h' });
+    assert.equal(c.placement, 'box');
+    assert.deepEqual(c.credentials.map((x) => x.concurrency), [2, 3]);
+  });
 
   it('allows http to localhost for tests', () => {
     assert.equal(parseConfig(good({ control_plane: 'http://127.0.0.1:8787' }), env).control_plane, 'http://127.0.0.1:8787');
