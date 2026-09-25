@@ -6,7 +6,7 @@ import type { PrRow } from "@/api/types";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
 import { LIST_RATE_EQUIVALENT } from "@/honesty/thresholds";
-import { formatTimestamp, formatTimestampCompact } from "@/lib/format";
+import { formatRelative, formatTimestamp } from "@/lib/format";
 import { renderRoute } from "@/test/renderRoute";
 
 // Rounds are laid out backwards from the moment the test runs, so the rolling
@@ -135,10 +135,8 @@ describe("/fleet (the former overview): the altitude ruling", () => {
     for (const reason of reasons) {
       expect(reason).toMatch(/permission denial|attempt \d|reported an error/);
     }
-    const degraded = screen
-      .getAllByTestId("degraded")
-      .find((node) => node.textContent?.includes("Silent rounds"));
-    expect(degraded).toHaveAttribute("data-reason", "unbuilt");
+    // "Not collected yet" cards are gone (#209).
+    expect(screen.queryAllByTestId("degraded").filter((node) => node.getAttribute("data-reason") === "unbuilt")).toEqual([]);
   });
 
   it("keeps money out of every headline on the overview", async () => {
@@ -228,7 +226,7 @@ describe("/repos", () => {
     // "no round over" placeholder.
     expect(within(table).queryByText(/no round over/)).toBeNull();
     const sreforgeRow = within(table).getByText("prismalens/sreforge").closest("tr") as HTMLElement;
-    expect(within(sreforgeRow).getByText(/^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/)).toBeInTheDocument();
+    expect(within(sreforgeRow).getByText(/(\d+[mhd] ago|now|[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2})/)).toBeInTheDocument();
   });
 
   it("a quiet repository's Last round is its all-time last_recorded_at from the fleet route (#142 finding 3944697641, #185)", async () => {
@@ -255,7 +253,7 @@ describe("/repos", () => {
     const table = await screen.findByRole("table");
     const sreforgeRow = within(table).getByText("prismalens/sreforge").closest("tr") as HTMLElement;
     const cell = within(sreforgeRow).getByTitle(formatTimestamp(sreforge!.last_recorded_at));
-    expect(cell).toHaveTextContent(formatTimestampCompact(sreforge!.last_recorded_at));
+    expect(cell).toHaveTextContent(formatRelative(sreforge!.last_recorded_at));
   });
 
   it("surfaces a failed fleet query instead of a silently short list", async () => {
@@ -277,10 +275,8 @@ describe("/repos", () => {
     expect(
       await screen.findByText(/ever posted a round, which is not the same/),
     ).toBeInTheDocument();
-    const degraded = screen
-      .getAllByTestId("degraded")
-      .find((node) => node.textContent?.includes("Lane, key mode and config"));
-    expect(degraded).toHaveAttribute("data-reason", "unbuilt");
+    // "Not collected yet" cards are gone (#209).
+    expect(screen.queryAllByTestId("degraded").filter((node) => node.getAttribute("data-reason") === "unbuilt")).toEqual([]);
   });
 
   it("falls back to the default range on a marker range it cannot resolve (#104 finding 1)", async () => {
@@ -1205,7 +1201,10 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     // Raw verdict string in monospace under it
     expect(screen.getByTestId("raw-verdict")).toBeInTheDocument();
 
-    // Round timeline card
+    // Outcome strip and round lines; clicking a line expands the timeline card
+    expect(screen.getByTestId("pr-outcome")).toBeInTheDocument();
+    expect(screen.getByTestId("round-lines")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByTestId("round-line")[0]!);
     expect(screen.getByTestId("round-timeline-card")).toBeInTheDocument();
 
     // Ladder, config, totals
@@ -1556,18 +1555,21 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
 
     // Missing input_tokens: no cache percentage
     renderRoute({ path: `/prs/${owner}/${repo}/401`, api: cacheApi });
+    fireEvent.click(await screen.findByTestId("round-line"));
     expect(await screen.findByTestId("round-timeline-card")).toBeInTheDocument();
     expect(screen.queryByText(/cache \d+%/)).toBeNull();
 
     // Missing cache_creation_input_tokens: no cache percentage
     cleanup();
     renderRoute({ path: `/prs/${owner}/${repo}/402`, api: cacheApi });
+    fireEvent.click(await screen.findByTestId("round-line"));
     expect(await screen.findByTestId("round-timeline-card")).toBeInTheDocument();
     expect(screen.queryByText(/cache \d+%/)).toBeNull();
 
     // Complete token telemetry: renders cache percentage (proving both directions)
     cleanup();
     renderRoute({ path: `/prs/${owner}/${repo}/403`, api: cacheApi });
+    fireEvent.click(await screen.findByTestId("round-line"));
     expect(await screen.findByTestId("round-timeline-card")).toBeInTheDocument();
     expect(screen.getByText(/cache 25\.0%/)).toBeInTheDocument();
   });

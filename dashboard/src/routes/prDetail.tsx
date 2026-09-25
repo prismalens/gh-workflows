@@ -15,7 +15,8 @@ import {
 } from "@/features/prs/PRDetailPanels";
 import { HeadBanner } from "@/features/prs/HeadBanner";
 import { enrichPRs, groupRoundsByPR } from "@/features/prs/prs";
-import { RoundTimelineCard } from "@/features/prs/RoundTimelineCard";
+import { OutcomeStrip, RoundLines } from "@/features/prs/PROutcome";
+import { DEFAULT_RANGE } from "@/honesty/range";
 import { shortSha } from "@/lib/format";
 import { rootRoute } from "./root";
 
@@ -49,8 +50,8 @@ function PRDetailPage() {
       {/* Top back & title line */}
       <div className="flex flex-wrap items-center gap-3">
         <Button asChild size="sm" variant="ghost">
-          <Link to="/prs">
-            <ArrowLeft className="size-4" /> Pull requests
+          <Link to="/inbox" search={{ range: DEFAULT_RANGE }}>
+            <ArrowLeft className="size-4" /> Inbox
           </Link>
         </Button>
         <span className="font-mono text-xs text-muted-foreground">
@@ -122,37 +123,25 @@ function PRDetailPage() {
             )}
           </div>
 
-          {/* Head banner answering "has this head been read" (#75) */}
+          <OutcomeStrip pr={pr} />
+
+          {/* Head banner answering "has this head been read" (#75), and the next action */}
           <HeadBanner status={pr.headStatus} />
 
-          {/* Main 2-column layout: Timeline on left, Ladder/Config/Totals on right */}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-            {/* Left column: 2 spans */}
-            <div className="lg:col-span-2 flex flex-col gap-6">
-              <div className="rounded-lg border border-border bg-card p-4">
-                <div className="text-xs font-semibold pb-3 mb-4 border-b border-border/40">
-                  Rounds on this PR ({pr.rounds.length})
-                </div>
-                <div className="flex flex-col">
-                  {pr.rounds.map((round, idx) => (
-                    <RoundTimelineCard
-                      key={round.session_id}
-                      round={round}
-                      index={idx}
-                      totalRounds={pr.rounds.length}
-                    />
-                  ))}
-                </div>
-              </div>
+          <RoundLines pr={pr} />
 
-              {/* Report tabs (#75) */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <div className="flex min-w-0 flex-col gap-6 lg:col-span-2">
               <ReportTabs pr={pr} />
             </div>
-
-            {/* Right column: 1 span */}
-            <div className="flex flex-col gap-4">
+            <div className="flex min-w-0 flex-col gap-4">
               <HeadLadder pr={pr} />
-              <ConfigInEffect pr={pr} />
+              <details className="rounded-lg border border-border bg-card" data-testid="config-drawer">
+                <summary className="cursor-pointer px-4 py-3 text-xs font-semibold">Config this PR ran under</summary>
+                <div className="overflow-x-auto px-1 pb-2 break-all">
+                  <ConfigInEffect pr={pr} />
+                </div>
+              </details>
               <PRTotals pr={pr} />
             </div>
           </div>

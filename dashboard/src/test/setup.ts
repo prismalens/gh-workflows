@@ -4,6 +4,7 @@ import { afterEach, vi } from "vitest";
 
 // jsdom has no scrollTo, and the router calls it on every navigation.
 window.scrollTo = vi.fn();
+window.HTMLElement.prototype.scrollIntoView = vi.fn();
 
 afterEach(() => {
   cleanup();

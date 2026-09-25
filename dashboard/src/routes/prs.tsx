@@ -18,7 +18,6 @@ import {
   groupRoundsByPR,
   type PRSummary,
 } from "@/features/prs/prs";
-import { RangeControl } from "@/honesty/RangeControl";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
 import { rootRoute } from "./root";
 
@@ -166,12 +165,6 @@ function PRsPage() {
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-base font-semibold tracking-tight">Pull requests</h1>
-        <RangeControl
-          value={search.range}
-          onChange={(range) =>
-            void navigate({ search: (prev) => ({ ...prev, range, page: undefined }) })
-          }
-        />
       </div>
 
       <div className="flex flex-wrap items-center gap-3">

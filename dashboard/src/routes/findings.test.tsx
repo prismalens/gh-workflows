@@ -126,15 +126,18 @@ describe("/findings: the inbox", () => {
   });
 
   it("marks a fix_sha citation and shows body/path detail with an outbound link that does not overclaim (this pass)", async () => {
-    const rows = [finding({ fix_sha: "deadbee", fix_sha_source: "verify_table" })];
+    const rows = [finding({ fix_sha: "deadbee", fix_sha_source: "verify_table", body_excerpt: "Off-by-one" })];
     renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
     expect(await screen.findByTestId("fix-cited-badge")).toBeInTheDocument();
     expect(screen.getByText("Off-by-one")).toBeInTheDocument();
+    // In the redesigned view, clicking the row opens the peek panel
+    fireEvent.click(await screen.findByTestId("finding-row"));
+    const peek = await screen.findByTestId("finding-peek");
     // The URL is the PR's files tab - review_findings stores no thread URL and the
     // GraphQL thread id has no REST equivalent (#111), so the link cannot open the
     // specific thread. "Open thread on GitHub" asserted a specificity this row cannot
     // support; the label must not claim more than the href delivers.
-    const link = screen.getByRole("link", { name: /View PR files on GitHub/ });
+    const link = within(peek).getByRole("link", { name: /PR files on GitHub/ });
     expect(link).toHaveAttribute(
       "href",
       "https://github.com/prismalens/gh-workflows/pull/1/files",
@@ -211,32 +214,31 @@ describe("/findings: the inbox", () => {
   it("with a fate filter selected that matches nothing, still blames the selected filters", async () => {
     const rows = [finding({ thread_node_id: "PRRT_only", is_resolved: 0, human_reply_count: 0 })];
     renderRoute({ path: "/findings?fate=resolved-by-human", api: makeFixtureApi([], [], [], [], [], rows) });
-    expect(await screen.findByText("No findings match the selected filters.")).toBeInTheDocument();
+    expect(await screen.findByText("No findings match these filters.")).toBeInTheDocument();
     expect(
       screen.queryByText(/No findings recorded in the loaded window/),
     ).not.toBeInTheDocument();
   });
 
-  it("filters the table by the fate chip", async () => {
+  it("filters the table by the fate facet", async () => {
     const rows = [
       finding({
         thread_node_id: "PRRT_never",
-        header_raw: "Never answered header",
+        body_excerpt: "Never answered finding",
         is_resolved: 0,
         human_reply_count: 0,
       }),
       finding({
         thread_node_id: "PRRT_human",
-        header_raw: "Resolved by human header",
+        body_excerpt: "Resolved by human finding",
         is_resolved: 1,
         resolved_by_login: "alice",
       }),
     ];
     renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
 
-    await screen.findByText("Resolved by human header");
-    const fateGroup = screen.getByRole("group", { name: "Fate" });
-    fireEvent.click(within(fateGroup).getByRole("button", { name: "resolved-by-human" }));
+    await screen.findByText("Resolved by human finding");
+    fireEvent.click(await screen.findByTestId("facet-fate-resolved-by-human"));
 
     await waitFor(() => {
       expect(screen.getAllByTestId("fate-chip")).toHaveLength(1);
@@ -244,17 +246,85 @@ describe("/findings: the inbox", () => {
     expect(screen.getByTestId("fate-chip")).toHaveAttribute("data-fate", "resolved-by-human");
   });
 
+  it("clicking a facet updates the list", async () => {
+    const rows = [
+      finding({ thread_node_id: "PRRT_repo1", repository: "acme/one", body_excerpt: "H1" }),
+      finding({ thread_node_id: "PRRT_repo2", repository: "acme/two", body_excerpt: "H2" }),
+    ];
+    renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
+
+    await screen.findByText("H1");
+    expect(screen.getByText("H2")).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId("facet-repository-acme/one"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("H2")).not.toBeInTheDocument();
+      expect(screen.queryByText("H1")).toBeInTheDocument();
+    });
+  });
+
+  it("the 'Needs a reply' tab filters to never-answered", async () => {
+    const rows = [
+      finding({
+        thread_node_id: "PRRT_reply",
+        body_excerpt: "Needs reply finding",
+        is_resolved: 0,
+        human_reply_count: 0,
+      }),
+      finding({
+        thread_node_id: "PRRT_closed",
+        body_excerpt: "Human resolved finding",
+        is_resolved: 1,
+        resolved_by_login: "alice",
+      }),
+    ];
+    renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
+
+    await screen.findByText("Human resolved finding");
+    fireEvent.click(screen.getByRole("tab", { name: /Needs a reply/ }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Human resolved finding")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Needs reply finding")).toBeInTheDocument();
+  });
+
+  it("a row click opens the peek panel", async () => {
+    const rows = [finding({ thread_node_id: "PRRT_peek", body_excerpt: "Peek target" })];
+    renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
+
+    await screen.findByText("Peek target");
+    expect(screen.queryByTestId("finding-peek")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("finding-row"));
+
+    const peek = await screen.findByTestId("finding-peek");
+    expect(peek).toBeInTheDocument();
+    expect(within(peek).getByText("worker/index.js:10")).toBeInTheDocument();
+  });
+
+  it("typing path:src/ into the FilterBar creates a token", async () => {
+    const rows = [finding({ thread_node_id: "PRRT_tok", path: "src/main.ts" })];
+    renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
+
+    await screen.findByText("src/main.ts:10");
+    const input = screen.getByRole("searchbox", { name: "Filter" });
+    fireEvent.change(input, { target: { value: "path:src/ " } });
+
+    expect(await screen.findByTestId("filter-token-path")).toBeInTheDocument();
+    expect(screen.getByTestId("filter-token-path")).toHaveTextContent("path:src/");
+  });
+
   it("searches across path, header, repository and PR number", async () => {
     const rows = [
-      finding({ thread_node_id: "PRRT_a", header_raw: "Null pointer" }),
-      finding({ thread_node_id: "PRRT_b", header_raw: "Off-by-one", path: "dashboard/x.ts" }),
+      finding({ thread_node_id: "PRRT_a", body_excerpt: "Null pointer", header_raw: "Null pointer" }),
+      finding({ thread_node_id: "PRRT_b", body_excerpt: "Off-by-one", header_raw: "Off-by-one", path: "dashboard/x.ts" }),
     ];
     renderRoute({ path: "/findings", api: makeFixtureApi([], [], [], [], [], rows) });
 
     await screen.findByText("Null pointer");
-    fireEvent.change(screen.getByPlaceholderText(/Search path, header/), {
-      target: { value: "Null pointer" },
-    });
+    const input = screen.getByRole("searchbox", { name: "Filter" });
+    fireEvent.change(input, { target: { value: "Null pointer" } });
+    fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => {
       expect(screen.queryByText("Off-by-one")).not.toBeInTheDocument();
