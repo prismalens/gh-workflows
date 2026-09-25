@@ -162,7 +162,7 @@ row, the rule prismalens ADR 0003 §8 already applies.
 | Engine | ACP adapter | Credential kinds | State |
 |---|---|---|---|
 | `opencode` | `opencode acp` | `api-key` for 75+ providers, free tiers and Ollama | verified green in prismalens#561; the day-one engine |
-| `claude-code` | `claude-agent-acp` over the user's installed `claude` (`CLAUDE_CODE_EXECUTABLE`) | `api-key`, `bedrock`, `vertex`, `foundry`, an Anthropic-compatible base URL | passes the prismalens#639 gate |
+| `claude-code` | `claude-agent-acp` over the user's installed `claude` (`CLAUDE_CODE_EXECUTABLE`) | `api-key`, an Anthropic-compatible base URL; `bedrock`, `vertex`, `foundry` planned, refused by the runner today | passes the prismalens#639 gate |
 | `codex` | `codex-acp` | `api-key` | deferred: permission gating fails on both transports in prismalens#639 |
 | `diff-only` | none, one request to any OpenAI-compatible endpoint | `api-key`, keyless local | the PR-Agent shape; the zero-vendor floor |
 
@@ -219,19 +219,21 @@ can read carries it. Until then a spend cap on the key bounds the loss.
 
 ## 6. Credentials the runner takes
 
-The runner takes an API key, a cloud identity or no credential at all. It takes no
-subscription credential: there is no `user-login` kind in the runner or the control plane.
+The runner takes an API key or no credential at all. Cloud identities (`bedrock`, `vertex`,
+`foundry`) are the planned next kinds: `runner/src/config.js` refuses them today as deferred.
+It takes no subscription credential: the runner refuses `user-login` and the control plane has
+no such kind.
 The vendor terms behind that are in `docs/design/review-engine-credentials.md`.
 
 - **Anthropic.** The legal page (code.claude.com/docs/en/legal-and-compliance) bars third
   parties from routing requests "through Free, Pro, or Max plan credentials" on users' behalf,
   and bars tools that "collect, store, or intermediate" the credential. `claude-code` rows take
-  an API key, a cloud identity or an Anthropic-compatible base URL. The Actions lane accepts
+  an API key or an Anthropic-compatible base URL, and a cloud identity once that kind lands. The Actions lane accepts
   `claude setup-token` inside Anthropic's own action, the automated form the docs name.
 - **OpenAI.** "The right way to authenticate automation is with an API key"
   (learn.chatgpt.com/docs/auth/ci-cd-auth). `codex-acp` takes a key.
 - **Keys and cloud identity** are the portable layer and the OSS default. Bedrock, Vertex and
-  Foundry through the Claude CLI's env vars; OpenAI-compatible base URLs through Codex and
+  Foundry through the Claude CLI's env vars, once the runner accepts those kinds; OpenAI-compatible base URLs through Codex and
   OpenCode; keyless local models through `diff-only`, OpenCode, and Claude Code behind an
   Anthropic-compatible endpoint such as Ollama.
 - The control plane never stores key material. It stores fingerprints and the observed health
