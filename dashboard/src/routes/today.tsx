@@ -52,6 +52,11 @@ function TodayPage() {
   if (rounds.isPending) return <LoadingRows rows={8} label="Loading today" />;
   if (rounds.isError) return <QueryError error={rounds.error} title="Could not load rounds" />;
 
+  // An unloaded source is unknown, never clean: no "Nothing needs you" or "Nothing is broken" on a guess.
+  const prsLoaded = prs.data !== undefined;
+  const findingsLoaded = findings.data !== undefined;
+  const fleetLoaded = fleet.data !== undefined;
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -63,10 +68,24 @@ function TodayPage() {
         </div>
       </div>
 
-      <StatusStrip problems={model.problems} lastRoundAt={model.lastRoundAt} repositories={model.repositoriesPosting} />
+      <StatusStrip
+        problems={model.problems}
+        lastRoundAt={model.lastRoundAt}
+        repositories={model.repositoriesPosting}
+        fleet={fleetLoaded ? "loaded" : fleet.isError ? "failed" : "pending"}
+      />
 
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
-        <NeedsYou needs={model.needs} now={now} loadingFindings={findings.isPending} />
+        {prs.isError && !prsLoaded ? (
+          <QueryError error={prs.error} title="Could not load pull request state, so Needs you is not listed" />
+        ) : findings.isError && !findingsLoaded ? (
+          <div className="flex flex-col gap-2">
+            <QueryError error={findings.error} title="Could not load findings, so unanswered threads are not listed" />
+            <NeedsYou needs={model.needs} now={now} state="partial" />
+          </div>
+        ) : (
+          <NeedsYou needs={model.needs} now={now} state={prsLoaded && findingsLoaded ? "complete" : "loading"} />
+        )}
         <div className="flex flex-col gap-4">
           {model.anomalies.map((a) => (
             <section
@@ -97,25 +116,38 @@ function TodayPage() {
         </div>
       </div>
 
-      <ReposCard repos={model.repos} />
+      <ReposCard repos={model.repos} threadsKnown={findingsLoaded} />
     </div>
   );
 }
 
-function StatusStrip({ problems, lastRoundAt, repositories }: { problems: string[]; lastRoundAt: string | null; repositories: number }) {
-  const ok = problems.length === 0;
+function StatusStrip({
+  problems,
+  lastRoundAt,
+  repositories,
+  fleet,
+}: {
+  problems: string[];
+  lastRoundAt: string | null;
+  repositories: number;
+  fleet: "loaded" | "pending" | "failed";
+}) {
+  const ok = problems.length === 0 && fleet === "loaded";
+  const unknown = problems.length === 0 && fleet !== "loaded";
   return (
     <div
       data-testid="status-strip"
       role="status"
       className={cn(
         "flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border px-4 py-2.5 text-xs",
-        ok ? "border-emerald-500/40 bg-emerald-500/10" : "border-[var(--warning)]/50 bg-[var(--warning)]/10",
+        ok ? "border-emerald-500/40 bg-emerald-500/10" : unknown ? "border-border bg-muted/40" : "border-[var(--warning)]/50 bg-[var(--warning)]/10",
       )}
     >
-      <span className={cn("size-2.5 rounded-full", ok ? "bg-emerald-400" : "bg-[var(--warning)]")} aria-hidden />
+      <span className={cn("size-2.5 rounded-full", ok ? "bg-emerald-400" : unknown ? "bg-muted-foreground" : "bg-[var(--warning)]")} aria-hidden />
       {ok ? (
         <b>Nothing is broken</b>
+      ) : unknown ? (
+        <b>{fleet === "pending" ? "Reading config state…" : "Config state could not load, so config problems are unknown"}</b>
       ) : (
         <span className="flex flex-col">
           <b>{problems.length === 1 ? "1 problem" : `${problems.length} problems`}</b>
@@ -132,7 +164,7 @@ function StatusStrip({ problems, lastRoundAt, repositories }: { problems: string
   );
 }
 
-function NeedsYou({ needs, now, loadingFindings }: { needs: NeedItem[]; now: Date; loadingFindings: boolean }) {
+function NeedsYou({ needs, now, state }: { needs: NeedItem[]; now: Date; state: "complete" | "partial" | "loading" }) {
   const [all, setAll] = useState(false);
   const shown = all ? needs : needs.slice(0, NEEDS_SHOWN);
   return (
@@ -147,7 +179,11 @@ function NeedsYou({ needs, now, loadingFindings }: { needs: NeedItem[]; now: Dat
       </div>
       {needs.length === 0 ? (
         <p className="px-4 py-3 text-xs text-muted-foreground">
-          {loadingFindings ? "Reading findings…" : "Nothing needs you. Every open head is reviewed and every thread is answered."}
+          {state === "loading"
+            ? "Reading pull requests and findings…"
+            : state === "partial"
+              ? "No head needs you; threads are unknown until findings load."
+              : "Nothing needs you. Every open head is reviewed and every thread is answered."}
         </p>
       ) : (
         <table className="w-full text-xs">
@@ -227,7 +263,8 @@ function formatStat(value: number | null, format: WeekStat["format"]): string {
 }
 
 function Delta({ stat }: { stat: WeekStat }) {
-  if (stat.value === null || stat.previous === null) return <span className="text-muted-foreground">no earlier week</span>;
+  if (stat.value === null) return <span className="text-muted-foreground">not comparable</span>;
+  if (stat.previous === null) return <span className="text-muted-foreground">no earlier figure</span>;
   const diff = stat.value - stat.previous;
   const rel = stat.previous === 0 ? null : diff / stat.previous;
   if (diff === 0 || (rel !== null && Math.abs(rel) < 0.1)) return <span className="text-muted-foreground">about the same</span>;
@@ -285,7 +322,7 @@ const STATE_TONE: Record<RepoLine["state"], string> = {
   healthy: "text-emerald-400",
 };
 
-function ReposCard({ repos }: { repos: RepoLine[] }) {
+function ReposCard({ repos, threadsKnown }: { repos: RepoLine[]; threadsKnown: boolean }) {
   if (repos.length === 0) return null;
   return (
     <Card data-testid="today-repos">
@@ -328,8 +365,15 @@ function ReposCard({ repos }: { repos: RepoLine[] }) {
                   </div>
                 </td>
                 <td className="tabular px-2 py-2 text-right">{formatCount(r.rounds)}</td>
-                <td className={cn("tabular px-2 py-2 text-right", r.state === "tool denials" && "text-[var(--warning)]")}>{formatCount(r.denials)}</td>
-                <td className="tabular px-2 py-2 text-right">{formatCount(r.openThreads)}</td>
+                <td
+                  className={cn("tabular px-2 py-2 text-right", r.state === "tool denials" && "text-[var(--warning)]")}
+                  title={r.denials === null ? "permission_denials not recorded" : r.denialRounds < r.rounds ? `permission_denials recorded on ${r.denialRounds} of ${r.rounds} rounds` : undefined}
+                >
+                  {r.denials === null ? "not recorded" : `${formatCount(r.denials)}${r.denialRounds < r.rounds ? "*" : ""}`}
+                </td>
+                <td className="tabular px-2 py-2 text-right" title={threadsKnown ? undefined : "findings not loaded"}>
+                  {threadsKnown ? formatCount(r.openThreads) : "—"}
+                </td>
                 <td className="px-4 py-2 text-right text-muted-foreground" title={r.lastRoundAt ?? undefined}>
                   {formatRelative(r.lastRoundAt)}
                 </td>

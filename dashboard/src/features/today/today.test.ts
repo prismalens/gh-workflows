@@ -323,4 +323,42 @@ describe("buildToday", () => {
       "acme/service: its repo config layer is malformed, so the lane runs on workflow defaults.",
     );
   });
+  it("withholds p95 and cache hit under their minimum n and says why", () => {
+    const rounds = Array.from({ length: 5 }, () => makeRound());
+    const model = buildToday({ rounds, prs: [makePr()], findings: [], fleet: emptyFleet, now });
+    const p95 = model.week.find((w) => w.label === "p95 round time")!;
+    const cache = model.week.find((w) => w.label === "Cache hit")!;
+    expect(p95.value).toBeNull();
+    expect(p95.note).toContain("p95 needs 20");
+    expect(cache.value).toBeNull();
+    expect(cache.note).toContain("5 rounds carry token counts");
+  });
+
+  it("leaves rounds without token counts out of the cache ratio and says so", () => {
+    const rounds = [
+      ...Array.from({ length: 10 }, () => makeRound()),
+      makeRound({ input_tokens: null, cache_read_input_tokens: null, cache_creation_input_tokens: null }),
+    ];
+    const model = buildToday({ rounds, prs: [makePr()], findings: [], fleet: emptyFleet, now });
+    const cache = model.week.find((w) => w.label === "Cache hit")!;
+    expect(cache.value).toBeCloseTo(0.25);
+    expect(cache.note).toBe("1 of 11 rounds lack token counts and are left out");
+  });
+
+  it("names denials not recorded instead of counting them as zero", () => {
+    const rounds = [makeRound({ permission_denials: null }), makeRound({ permission_denials: null })];
+    const model = buildToday({ rounds, prs: [makePr()], findings: [], fleet: emptyFleet, now });
+    expect(model.repos[0]!.denials).toBeNull();
+    expect(model.repos[0]!.denialRounds).toBe(0);
+  });
+
+  it("rates denials over recorded rounds only", () => {
+    const rounds = [
+      ...Array.from({ length: 10 }, () => makeRound({ permission_denials: 3 })),
+      ...Array.from({ length: 10 }, () => makeRound({ permission_denials: null })),
+    ];
+    const model = buildToday({ rounds, prs: [makePr()], findings: [], fleet: emptyFleet, now });
+    expect(model.repos[0]!.state).toBe("tool denials");
+    expect(model.anomalies.find((a) => a.id === "denials:acme/web")?.detail).toContain("3.0 denials a round");
+  });
 });

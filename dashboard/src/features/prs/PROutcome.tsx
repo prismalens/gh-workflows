@@ -25,7 +25,10 @@ function Cell({ label, value, note, tone }: { label: string; value: string; note
 export function OutcomeStrip({ pr }: { pr: PRSummary }) {
   const findings = useFindingsQuery({ repository: pr.repository, prNumber: pr.number });
   const rows = findings.data?.rows ?? [];
-  const posted = pr.rounds.reduce((s, r) => s + (r.inline_count ?? 0), 0);
+  // A failed read is not zero findings: withhold the counts rather than show a clean 0.
+  const findingsValue = (n: number) => (findings.isPending ? "…" : findings.isError && !findings.data ? "—" : formatCount(n));
+  const findingsUnread = findings.isError && !findings.data;
+  const posted = recordedSum(pr.rounds, "inline_count");
   const open = rows.filter((r) => r.is_resolved !== 1).length;
   const fixed = rows.filter((r) => fixCitation(r) !== null).length;
   const humanResolved = rows.filter((r) => decodeFate(r) === "resolved-by-human").length;
@@ -35,35 +38,57 @@ export function OutcomeStrip({ pr }: { pr: PRSummary }) {
     return acc;
   }, {});
   const sevNote = Object.entries(sev).map(([k, n]) => `${n} ${k}`).join(" · ");
-  const wall = pr.rounds.reduce((s, r) => s + (r.duration_ms ?? 0), 0);
-  const longest = Math.max(0, ...pr.rounds.map((r) => r.duration_ms ?? 0));
-  const cost = pr.rounds.reduce((s, r) => s + (r.total_cost_usd ?? 0), 0);
+  const wall = recordedSum(pr.rounds, "duration_ms");
+  const durations = pr.rounds.map((r) => r.duration_ms).filter((d): d is number => d !== null);
+  const cost = recordedSum(pr.rounds, "total_cost_usd");
   const c = pr.roundsCountByType;
   return (
     <section data-testid="pr-outcome" className="grid grid-cols-2 overflow-hidden rounded-lg border border-border bg-card md:grid-cols-3 xl:grid-cols-6">
-      <Cell label="Findings posted" value={formatCount(posted)} note={sevNote || `${formatCount(rows.length)} swept`} />
+      <Cell
+        label="Findings posted"
+        value={posted.total !== null ? formatCount(posted.total) : "—"}
+        note={posted.note ?? (findingsUnread ? "findings could not load" : sevNote || `${formatCount(rows.length)} swept`)}
+      />
       <Cell
         label="Fix commit cited"
-        value={findings.isPending ? "…" : formatCount(fixed)}
-        note={humanResolved ? `${humanResolved} resolved by a person` : "self-graded unless a person resolved it"}
-        tone={fixed > 0 ? "text-emerald-400" : undefined}
+        value={findingsValue(fixed)}
+        note={findingsUnread ? "findings could not load" : humanResolved ? `${humanResolved} resolved by a person` : "self-graded unless a person resolved it"}
       />
-      <Cell label="Still open" value={findings.isPending ? "…" : formatCount(open)} note="threads on GitHub" tone={open > 0 ? "text-[var(--warning)]" : undefined} />
+      <Cell
+        label="Still open"
+        value={findingsValue(open)}
+        note={findingsUnread ? "findings could not load" : "threads on GitHub"}
+        tone={!findingsUnread && open > 0 ? "text-[var(--warning)]" : undefined}
+      />
       <Cell label="Rounds" value={formatCount(pr.rounds.length)} note={`${c.full} review · ${c.incremental} incremental · ${c.verify} verify`} />
-      <Cell label="Wall time" value={formatDuration(wall)} note={`longest ${formatDuration(longest)}`} />
-      <Cell label="At list rates" value={formatUsd(cost)} note="secondary: seats are flat-rate" />
+      <Cell
+        label="Wall time"
+        value={wall.total !== null ? formatDuration(wall.total) : "—"}
+        note={wall.note ?? (durations.length ? `longest ${formatDuration(Math.max(...durations))}` : undefined)}
+      />
+      <Cell label="At list rates" value={cost.total !== null ? formatUsd(cost.total) : "—"} note={cost.note ?? "secondary: seats are flat-rate"} />
     </section>
   );
+}
+
+type SummedField = "inline_count" | "duration_ms" | "total_cost_usd";
+
+/** A total over rounds that do not all carry the field is withheld and the field named. */
+function recordedSum(rounds: RoundRow[], field: SummedField): { total: number | null; note: string | null } {
+  const missing = rounds.filter((r) => r[field] === null).length;
+  if (missing > 0) return { total: null, note: `${field} not recorded on ${missing} of ${rounds.length} rounds` };
+  return { total: rounds.reduce((s, r) => s + (r[field] ?? 0), 0), note: null };
 }
 
 function roundOutcome(round: RoundRow): string {
   const status = decodeHeadStatus(round);
   if (round.round_type === "verify") return status.rawVerdict ?? status.explain;
-  const files = round.changed_files !== null ? `read ${formatCount(round.changed_files)} file${round.changed_files === 1 ? "" : "s"}` : "read";
-  const from = round.range_base ? ` from ${shortSha(round.range_base)}` : "";
-  const posted = round.inline_count ?? 0;
   if (status.state === "failed" || status.state === "did-not-run") return status.rawVerdict ?? status.explain;
-  return `${files}${from}; posted ${posted} finding${posted === 1 ? "" : "s"}`;
+  const files = round.changed_files !== null ? `read ${formatCount(round.changed_files)} file${round.changed_files === 1 ? "" : "s"}` : "changed_files not recorded";
+  const from = round.range_base ? ` from ${shortSha(round.range_base)}` : "";
+  const posted = round.inline_count;
+  const findings = posted !== null ? `posted ${posted} finding${posted === 1 ? "" : "s"}` : "inline_count not recorded";
+  return `${files}${from}; ${findings}`;
 }
 
 const PIP: Record<string, string> = {
@@ -111,8 +136,18 @@ export function RoundLines({ pr }: { pr: PRSummary }) {
                     <span className={cn("block size-2 rounded-full", PIP[status.state])} aria-label={status.label} />
                   </td>
                   <td className="px-2 py-2 font-mono whitespace-nowrap">
-                    <ChevronRight className={cn("mr-1 inline size-3 transition-transform", isOpen && "rotate-90")} aria-hidden />
-                    {roundLabel(round, total - idx)}
+                    <button
+                      type="button"
+                      aria-expanded={isOpen}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpen(isOpen ? null : round.session_id);
+                      }}
+                      className="rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                    >
+                      <ChevronRight className={cn("mr-1 inline size-3 transition-transform", isOpen && "rotate-90")} aria-hidden />
+                      {roundLabel(round, total - idx)}
+                    </button>
                   </td>
                   <td className="px-2 py-2">
                     {round.round_type ?? "review"}

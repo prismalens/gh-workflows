@@ -1,6 +1,7 @@
 import type { FindingRow, FleetReposResponse, PrRow, RoundRow } from "@/api/types";
 import { decodeFate } from "@/features/findings/findings";
 import { enrichPRs, groupRoundsByPR, type PRSummary } from "@/features/prs/prs";
+import { LOW_N_THRESHOLD, P95_MIN_N } from "@/honesty/thresholds";
 import { ageInDays } from "@/lib/format";
 
 const DAY_MS = 86_400_000;
@@ -52,7 +53,10 @@ export interface RepoLine {
   repository: string;
   state: "failing" | "config malformed" | "tool denials" | "quiet" | "healthy";
   rounds: number;
-  denials: number;
+  /** Null when no round this week carries `permission_denials`. */
+  denials: number | null;
+  /** Rounds this week that carry `permission_denials`; fewer than `rounds` means partial. */
+  denialRounds: number;
   openThreads: number;
   lastRoundAt: string | null;
   perDay: number[];
@@ -81,9 +85,26 @@ function isOpen(pr: PRSummary | undefined): boolean {
 const HEAD_NEED_MAX_DAYS = 14;
 
 function p95(values: number[]): number | null {
-  if (values.length < 5) return null;
+  if (values.length < P95_MIN_N) return null;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)] ?? null;
+}
+
+function hasTokens(r: RoundRow): boolean {
+  return r.input_tokens !== null && r.cache_read_input_tokens !== null && r.cache_creation_input_tokens !== null;
+}
+
+/** Only rounds carrying every token column count; below LOW_N_THRESHOLD of them the ratio is withheld. */
+function cacheHit(rows: RoundRow[]): { value: number | null; used: number } {
+  const used = rows.filter(hasTokens);
+  if (used.length < LOW_N_THRESHOLD) return { value: null, used: used.length };
+  let read = 0;
+  let all = 0;
+  for (const r of used) {
+    read += r.cache_read_input_tokens ?? 0;
+    all += (r.input_tokens ?? 0) + (r.cache_read_input_tokens ?? 0) + (r.cache_creation_input_tokens ?? 0);
+  }
+  return { value: all > 0 ? read / all : null, used: used.length };
 }
 
 function inWindow(iso: string | null, from: number, to: number): boolean {
@@ -186,12 +207,14 @@ export function buildToday(input: {
   }
 
   const anomalies: Anomaly[] = [];
+  // Only rounds that carry permission_denials count, so the per-round rate is over recorded rounds.
   const denialsByRepo = new Map<string, { denials: number; rounds: number; slow: number[] }>();
   for (const r of thisWeek) {
+    if (r.permission_denials === null) continue;
     const entry = denialsByRepo.get(r.repository) ?? { denials: 0, rounds: 0, slow: [] };
-    entry.denials += r.permission_denials ?? 0;
+    entry.denials += r.permission_denials;
     entry.rounds += 1;
-    if ((r.permission_denials ?? 0) >= 15 && r.duration_ms) entry.slow.push(r.duration_ms);
+    if (r.permission_denials >= 15 && r.duration_ms) entry.slow.push(r.duration_ms);
     denialsByRepo.set(r.repository, entry);
   }
   const totalDenials = [...denialsByRepo.values()].reduce((s, e) => s + e.denials, 0);
@@ -236,15 +259,6 @@ export function buildToday(input: {
 
   const prCount = (rows: RoundRow[]) => new Set(rows.map((r) => `${r.repository}#${r.pr_number}`)).size;
   const durations = (rows: RoundRow[]) => rows.map((r) => r.duration_ms).filter((d): d is number => d !== null);
-  const cacheHit = (rows: RoundRow[]) => {
-    let read = 0;
-    let all = 0;
-    for (const r of rows) {
-      read += r.cache_read_input_tokens ?? 0;
-      all += (r.input_tokens ?? 0) + (r.cache_read_input_tokens ?? 0) + (r.cache_creation_input_tokens ?? 0);
-    }
-    return all > 0 ? read / all : null;
-  };
   const findingsPosted = (from: number, to: number) => findings.filter((f) => inWindow(f.thread_created_at, from, to)).length;
   const typeCounts = thisWeek.reduce<Record<string, number>>((acc, r) => {
     const t = r.round_type ?? "unknown";
@@ -252,6 +266,9 @@ export function buildToday(input: {
     return acc;
   }, {});
 
+  const durThis = durations(thisWeek);
+  const cacheThis = cacheHit(thisWeek);
+  const tokenless = thisWeek.length - cacheThis.used;
   const week: WeekStat[] = [
     { label: "Pull requests reviewed", value: prCount(thisWeek), previous: prCount(lastWeek), worseWhen: null, format: "count" },
     {
@@ -263,8 +280,27 @@ export function buildToday(input: {
       note: Object.entries(typeCounts).map(([t, n]) => `${n} ${t}`).join(" · "),
     },
     { label: "Findings posted", value: findingsPosted(weekStart, nowMs + 1), previous: findingsPosted(prevStart, weekStart), worseWhen: null, format: "count" },
-    { label: "p95 round time", value: p95(durations(thisWeek)), previous: p95(durations(lastWeek)), worseWhen: "up", format: "duration" },
-    { label: "Cache hit", value: cacheHit(thisWeek), previous: cacheHit(lastWeek), worseWhen: "down", format: "percent" },
+    {
+      label: "p95 round time",
+      value: p95(durThis),
+      previous: p95(durations(lastWeek)),
+      worseWhen: "up",
+      format: "duration",
+      note: durThis.length < P95_MIN_N ? `withheld: ${durThis.length} timed rounds, p95 needs ${P95_MIN_N}` : undefined,
+    },
+    {
+      label: "Cache hit",
+      value: cacheThis.value,
+      previous: cacheHit(lastWeek).value,
+      worseWhen: "down",
+      format: "percent",
+      note:
+        cacheThis.value === null
+          ? `withheld: ${cacheThis.used} rounds carry token counts, under ${LOW_N_THRESHOLD}`
+          : tokenless > 0
+            ? `${tokenless} of ${thisWeek.length} rounds lack token counts and are left out`
+            : undefined,
+    },
     { label: "Rounds that failed", value: failedWeek, previous: failedPrev, worseWhen: "up", format: "count" },
   ];
 
@@ -279,7 +315,8 @@ export function buildToday(input: {
   const repoNames = new Set([...(fleet?.repositories ?? []).map((r) => r.repository), ...reposThisWeek]);
   const repos: RepoLine[] = [...repoNames].map((repository) => {
     const rows = thisWeek.filter((r) => r.repository === repository);
-    const denials = rows.reduce((s, r) => s + (r.permission_denials ?? 0), 0);
+    const recorded = rows.filter((r) => r.permission_denials !== null);
+    const denials = recorded.length ? recorded.reduce((s, r) => s + (r.permission_denials ?? 0), 0) : null;
     const failed = rows.some((r) => r.job_conclusion === "failure");
     const perDay = Array.from({ length: 7 }, (_, i) => {
       const from = weekStart + i * DAY_MS;
@@ -291,12 +328,12 @@ export function buildToday(input: {
       ? "failing"
       : malformed.has(repository)
         ? "config malformed"
-        : rows.length > 0 && denials / rows.length >= 2 && denials >= 20
+        : denials !== null && denials / recorded.length >= 2 && denials >= 20
           ? "tool denials"
           : rows.length === 0
             ? "quiet"
             : "healthy";
-    return { repository, state, rounds: rows.length, denials, openThreads: openThreadsByRepo.get(repository) ?? 0, lastRoundAt: lastRoundAtRepo, perDay };
+    return { repository, state, rounds: rows.length, denials, denialRounds: recorded.length, openThreads: openThreadsByRepo.get(repository) ?? 0, lastRoundAt: lastRoundAtRepo, perDay };
   });
   const stateRank: Record<RepoLine["state"], number> = { failing: 0, "config malformed": 1, "tool denials": 2, quiet: 3, healthy: 4 };
   repos.sort((a, b) => stateRank[a.state] - stateRank[b.state] || b.rounds - a.rounds);
