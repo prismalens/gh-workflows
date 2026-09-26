@@ -69,7 +69,6 @@ function makeFinding(overrides: Partial<FindingRow> = {}): FindingRow {
     thread_created_at: new Date(now.getTime() - 1 * DAY_MS).toISOString(),
     header_raw: "Finding header",
     body_excerpt: "Finding body",
-    diff_hunk: "@@ -1,1 +1,1 @@",
     human_reply_count: 0,
     human_reply_sha: null,
     fix_sha: null,

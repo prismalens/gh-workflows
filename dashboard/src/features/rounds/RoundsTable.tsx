@@ -29,6 +29,7 @@ import {
 import type { RoundRow } from "@/api/types";
 import { decodeHeadStatus } from "@/features/prs/headStatus";
 import { HeadStatusChip } from "@/features/prs/HeadStatusChip";
+import { engineLabel } from "@/features/rounds/engine";
 import { meanMetric, numeric } from "@/honesty/metrics";
 import { LIST_RATE_EQUIVALENT, LOW_N_THRESHOLD } from "@/honesty/thresholds";
 import {
@@ -214,6 +215,13 @@ const columns = helper.columns([
     ),
     cell: ({ row }) => (
       <span className="tabular">{orDash(row.original.total_cost_usd, formatUsd)}</span>
+    ),
+  }),
+  helper.accessor((row) => engineLabel(row), {
+    id: "engine",
+    header: "Engine",
+    cell: ({ row }) => (
+      <span className="font-mono text-xs text-muted-foreground">{engineLabel(row.original)}</span>
     ),
   }),
 ]);

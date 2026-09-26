@@ -24,7 +24,6 @@ function makeRow(overrides: Partial<FindingRow> = {}): FindingRow {
     thread_created_at: new Date(now.getTime() - 2 * 86_400_000).toISOString(), // 2 days old (1d-7d)
     header_raw: "_🎯 Functional Correctness_ | _🟠 Major_\n\nBug description",
     body_excerpt: "Bug description",
-    diff_hunk: "@@ -1,1 +1,1 @@",
     human_reply_count: 0,
     human_reply_sha: null,
     fix_sha: null,

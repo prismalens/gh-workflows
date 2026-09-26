@@ -68,6 +68,7 @@ USAGE_RECORDS_READ_ALLOWLIST = {
 REVIEW_FINDINGS_READ_ALLOWLIST = {
     "ingest_auth":      "Ingest authentication method ('oidc' | 'bearer') (#176); not yet surfaced in dashboard read API",
     "repository_id":    "GitHub repository ID from OIDC claims (#176); not yet surfaced in dashboard read API",
+    "diff_hunk":        "Stored by the sweep; the Console renders no diff, so the read never fetches it (#185)",
 }
 
 

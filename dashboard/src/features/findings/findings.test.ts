@@ -31,7 +31,6 @@ function row(overrides: Partial<FindingRow> = {}): FindingRow {
     thread_created_at: "2026-09-01T00:00:00Z",
     header_raw: "Bug",
     body_excerpt: "This looks off.",
-    diff_hunk: "@@ -1,3 +1,3 @@",
     human_reply_count: 0,
     human_reply_sha: null,
     fix_sha: null,

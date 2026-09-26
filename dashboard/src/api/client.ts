@@ -525,7 +525,6 @@ export const REQUIRED_FINDING_KEYS = [
   "thread_created_at",
   "header_raw",
   "body_excerpt",
-  "diff_hunk",
   "human_reply_count",
   "human_reply_sha",
   "fix_sha",
