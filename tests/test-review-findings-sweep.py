@@ -350,6 +350,27 @@ def main():
     check("throttle: PR 6 produced no row at all",
           not any(r.get("pr_number") == 6 for r in rows), rows)
 
+    # ── 1b. Four-part envelope: first line is header_raw, the rest is body_excerpt (#211) ──
+    envelope = "_🎯 Functional Correctness_ | _🟠 Major_ | _⚡ Quick win_\r\n\n**Null deref** in `f`."
+    fx_env = main_page(head_sha=OID_A, commit_oids=[OID_A], threads=[
+        thread("PRT_ENVELOPE", [comment("claude", envelope)]),
+        thread("PRT_BOLD", [comment("claude", "**Bug**: leaks a handle")]),
+        thread("PRT_PROSE", [comment("claude", "_just emphasis_ then prose")]),
+    ])
+    proc, rows = run_sweep(script, pr_list=[7], main_fixtures={7: [fx_env]})
+    by_id = {r["thread_node_id"]: r for r in rows}
+    env_row = by_id.get("PRT_ENVELOPE", {})
+    check("envelope: header_raw is the first line verbatim",
+          env_row.get("header_raw") == "_🎯 Functional Correctness_ | _🟠 Major_ | _⚡ Quick win_", env_row)
+    check("envelope: body_excerpt is the rest, without the header line",
+          env_row.get("body_excerpt") == "**Null deref** in `f`.", env_row)
+    bold_row = by_id.get("PRT_BOLD", {})
+    check("bold header: unchanged, header_raw is the bold text and body_excerpt the whole body",
+          bold_row.get("header_raw") == "Bug" and bold_row.get("body_excerpt") == "**Bug**: leaks a handle", bold_row)
+    prose_row = by_id.get("PRT_PROSE", {})
+    check("a lone emphasised word is not an envelope",
+          prose_row.get("header_raw") is None and prose_row.get("body_excerpt") == "_just emphasis_ then prose", prose_row)
+
     # ── 2. Human-reply SHA not among real commit oids: rejected, fix_sha stays null ──
     bad_thread = thread(
         "PRT_BAD_SHA",
