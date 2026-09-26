@@ -5742,7 +5742,6 @@ describe("Runner registry (#184)", () => {
   const accessed = (path, opts = {}) =>
     makeRequest(path, { ...opts, headers: { "Cf-Access-Jwt-Assertion": access.jwt, ...(opts.headers || {}) } });
   const validRegistration = () => ({
-    placement: "box",
     credentials: [
       { engine: "opencode", kind: "api-key", fingerprint: "0123456789ab", concurrency: 2 },
       { engine: "claude-code", kind: "api-key", fingerprint: "ba9876543210", concurrency: 1 },
@@ -5864,19 +5863,17 @@ describe("Runner registry (#184)", () => {
     const bodies = {
       "not json": "{",
       "array body": [],
-      "bad placement": { placement: "vps", credentials: [cred()] },
-      "no credentials": { placement: "box", credentials: [] },
-      "credentials not array": { placement: "box", credentials: {} },
-      "17 credentials": { placement: "box", credentials: Array.from({ length: 17 }, (_, i) => cred({ fingerprint: i.toString(16).padStart(12, "0") })) },
-      "unknown engine": { placement: "box", credentials: [cred({ engine: "gpt" })] },
-      "unknown kind": { placement: "box", credentials: [cred({ kind: "oauth" })] },
-      "short fingerprint": { placement: "box", credentials: [cred({ fingerprint: "0123" })] },
-      "uppercase fingerprint": { placement: "box", credentials: [cred({ fingerprint: "0123456789AB" })] },
-      "concurrency 0": { placement: "box", credentials: [cred({ concurrency: 0 })] },
-      "concurrency 17": { placement: "box", credentials: [cred({ concurrency: 17 })] },
-      "concurrency 1.5": { placement: "box", credentials: [cred({ concurrency: 1.5 })] },
-      "user-login kind": { placement: "box", credentials: [cred({ engine: "claude-code", kind: "user-login" })] },
-      "duplicate engine and kind": { placement: "box", credentials: [cred(), cred({ fingerprint: "ffffffffffff" })] },
+      "no credentials": { credentials: [] },
+      "credentials not array": { credentials: {} },
+      "17 credentials": { credentials: Array.from({ length: 17 }, (_, i) => cred({ fingerprint: i.toString(16).padStart(12, "0") })) },
+      "unknown engine": { credentials: [cred({ engine: "gpt" })] },
+      "unknown kind": { credentials: [cred({ kind: "oauth" })] },
+      "short fingerprint": { credentials: [cred({ fingerprint: "0123" })] },
+      "uppercase fingerprint": { credentials: [cred({ fingerprint: "0123456789AB" })] },
+      "concurrency 0": { credentials: [cred({ concurrency: 0 })] },
+      "concurrency 17": { credentials: [cred({ concurrency: 17 })] },
+      "concurrency 1.5": { credentials: [cred({ concurrency: 1.5 })] },
+      "duplicate engine and kind": { credentials: [cred(), cred({ fingerprint: "ffffffffffff" })] },
     };
     for (const [label, body] of Object.entries(bodies)) {
       const db = cpRunnerDb();
@@ -5916,19 +5913,20 @@ describe("Runner registry (#184)", () => {
     assert.deepEqual(ins1.args.slice(0, 5), [CP_RUNNER_ID, "opencode", "api-key", "0123456789ab", 2]);
     assert.deepEqual(ins2.args.slice(0, 5), [CP_RUNNER_ID, "claude-code", "api-key", "ba9876543210", 1]);
     assert.match(upd.sql, /UPDATE runners SET last_seen_at = \?/);
-    assert.ok(upd.args.includes("box") && upd.args.includes(CP_RUNNER_ID));
+    assert.deepEqual(upd.args.slice(1), [CP_RUNNER_ID]);
     assert.ok(!JSON.stringify(db.queries).includes(cpRunnerToken));
     const sweepIdx = db.queries.findIndex((q) => /UPDATE jobs/.test(q.sql));
     const checkIdx = db.queries.findIndex((q) => /FROM runner_credentials/.test(q.sql));
     assert.ok(sweepIdx !== -1 && sweepIdx < checkIdx, "the heartbeat sweep runs before the fingerprint check");
   });
 
-  it("a user-login credential is refused with a 400 and nothing is written", async () => {
+  it("a user-login credential registers: the engine's own sign-in on the runner's machine", async () => {
     const db = cpRunnerDb();
-    const body = { placement: "box", credentials: [{ engine: "claude-code", kind: "user-login", fingerprint: "abcdefabcdef", concurrency: 1 }] };
+    const batches = cpRecordBatches(db);
+    const body = { credentials: [{ engine: "claude-code", kind: "user-login", fingerprint: "abcdefabcdef", concurrency: 1 }] };
     const res = await worker.fetch(cpRunnerRequest("/runner/register", { body }), { DB: db });
-    assert.equal(res.status, 400);
-    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, 0);
+    assert.equal(res.status, 200);
+    assert.deepEqual(batches[0][1].args.slice(0, 5), [CP_RUNNER_ID, "claude-code", "user-login", "abcdefabcdef", 1]);
   });
 });
 
@@ -6004,7 +6002,6 @@ describe("Jobs and lease (#184)", () => {
       mode: validJob({ mode: "summon" }),
       engine: validJob({ engine: "gpt" }),
       credential_kind: validJob({ credential_kind: "oauth" }),
-      "credential_kind user-login": validJob({ credential_kind: "user-login" }),
       level: validJob({ level: "max" }),
       model: validJob({ model: "m".repeat(129) }),
       config_effective: validJob({ config_effective: [1] }),
@@ -6118,7 +6115,7 @@ describe("Jobs and lease (#184)", () => {
   });
 
   it("refuses bad lease parameters with a 400", async () => {
-    for (const qs of ["kind=api-key", "engine=opencode", "engine=gpt&kind=api-key", "engine=opencode&kind=oauth", "engine=claude-code&kind=user-login", "engine=opencode&kind=api-key&wait=21", "engine=opencode&kind=api-key&wait=-1", "engine=opencode&kind=api-key&wait=1.5", "engine=opencode&kind=api-key&wait=x"]) {
+    for (const qs of ["kind=api-key", "engine=opencode", "engine=gpt&kind=api-key", "engine=opencode&kind=oauth", "engine=opencode&kind=api-key&wait=21", "engine=opencode&kind=api-key&wait=-1", "engine=opencode&kind=api-key&wait=1.5", "engine=opencode&kind=api-key&wait=x"]) {
       const { db, claims } = cpLeaseDb();
       const res = await cpLease(qs, db, cpStubMinter());
       assert.equal(res.status, 400, qs);

@@ -228,9 +228,9 @@ const VALID_VERIFY_VERDICTS = new Set(["fixed", "still_applies", "cannot_verify"
 
 // Control plane vocabularies (#184). RUNNER_EVENT_TYPES is assayer/v1, runner/src/events.js.
 const ENGINES = Object.freeze(new Set(["opencode", "claude-code", "codex", "diff-only"]));
-// No subscription kind: a subscription runs only in the author's own harness (#184 ruling, 2026-09-23).
+// `user-login` is the engine's own sign-in on the runner's machine, as prismalens ADR 0003 has it.
 const CREDENTIAL_KINDS = Object.freeze(
-  new Set(["api-key", "bedrock", "vertex", "foundry", "keyless"])
+  new Set(["api-key", "bedrock", "vertex", "foundry", "keyless", "user-login"])
 );
 const JOB_MODES = Object.freeze(new Set(["review", "review-full", "incremental"]));
 const JOB_LEVELS = Object.freeze(new Set(["low", "medium", "high"]));
@@ -240,7 +240,6 @@ const JOB_STATES = Object.freeze(
 const RUNNER_EVENT_TYPES = Object.freeze(
   new Set(["started", "read", "agent", "finding", "summary", "usage", "error", "finished"])
 );
-const RUNNER_PLACEMENTS = Object.freeze(new Set(["box"]));
 const RUNNER_TOKEN_PATTERN = /^Bearer (asr_[A-Za-z0-9_-]{43})$/;
 const FINGERPRINT_PATTERN = /^[0-9a-f]{12}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -3293,9 +3292,6 @@ async function handleDeleteRunner(id, env) {
 }
 
 function validateRegistration(payload) {
-  if (!RUNNER_PLACEMENTS.has(payload.placement)) {
-    return "invalid-placement";
-  }
   const creds = payload.credentials;
   if (!Array.isArray(creds) || creds.length < 1 || creds.length > RUNNER_MAX_CREDENTIALS) {
     return "invalid-credentials";
@@ -3378,11 +3374,7 @@ async function handleRunnerRegister(request, env) {
           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
         ).bind(auth.runner_id, c.engine, c.kind, c.fingerprint, c.concurrency, nowIso)
       ),
-      env.DB.prepare("UPDATE runners SET last_seen_at = ?1, placement = ?2 WHERE id = ?3").bind(
-        nowIso,
-        payload.placement,
-        auth.runner_id
-      ),
+      env.DB.prepare("UPDATE runners SET last_seen_at = ?1 WHERE id = ?2").bind(nowIso, auth.runner_id),
     ]);
   } catch (err) {
     // Two runners racing for one fingerprint lose to the UNIQUE constraint, not to the check.

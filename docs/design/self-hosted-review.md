@@ -5,9 +5,9 @@ Written 2026-09-19 in the gh-workflows session. Inputs: the lane invariants and 
 contract (verified against main), a survey of Kodus, Qodo PR-Agent, CodeRabbit self-hosted,
 Bito and OpenHands (their own docs), the vendor terms and competitor survey of 2026-09-19
 (`docs/design/review-engine-credentials.md`), prismalens ADR 0003 and
-prismalens#639, and the #59 / #80 / #81 / #77 rulings. Placement and credentials follow the
-#184 ruling of 2026-09-23: trigger and credential decide policy, and the runner has one
-placement, `box`.
+prismalens#639, and the #59 / #80 / #81 / #77 rulings. Credentials follow prismalens ADR 0003 and #707: the engine
+runs as it would in a terminal on the runner's machine, with its own config and sign-in or a key
+in env, and security is what that engine allows and blocks (#184, 2026-09-26).
 
 ## 1. What this is for
 
@@ -31,8 +31,7 @@ CodeRabbit) or web + worker + queue + Postgres + vector store (Kodus, 8 GB RAM, 
 required). Every one of them is BYOK by API key; LiteLLM or an OpenAI-compatible base URL is the
 provider abstraction. Only PR-Agent and CodeRabbit read config from the default branch only, and
 only PR-Agent says why. Only OpenHands sandboxes the agent. None posts a verdict when the
-reviewer fails to run. None tracks cost per review. None compares two engines on one PR. None
-takes a subscription credential, and neither does this as a service credential; the
+reviewer fails to run. None tracks cost per review. None compares two engines on one PR. The
 first-party reviewers on a plan, Claude's action and Codex cloud review, are reviewers, and
 this is the layer around any reviewer.
 
@@ -59,10 +58,10 @@ GitHub ──webhook──▶ Control plane (Cloudflare Worker + D1, exists toda
                             ▲                     │
                  events, findings,                │ lease (long-poll)
                  usage, heartbeat                 ▼
-                   Runner (a daemon on the adopter's box, one container per job)
+                   Runner (a daemon on the adopter's machine, shipped as one image)
                       • registers its credentials: engine, kind, fingerprint, concurrency
                       • leases one job per credential slot
-                      • checks out base..head into a per-job engine container
+                      • checks out base..head into a fresh directory per job
                       • runs the engine adapter, streams normalized events
                       • never holds a GitHub write token
 ```
@@ -120,7 +119,6 @@ onto assayer/v1 and streams it back. Config in a file:
 ```yaml
 control_plane: https://assayer.example.workers.dev
 runner_token: ${RUNNER_TOKEN}
-placement: box                   # the only placement
 credentials:
   - name: anthropic-capped
     engine: claude-code
@@ -130,24 +128,32 @@ credentials:
     engine: opencode
     kind: api-key
     concurrency: 4
+  - name: mine
+    engine: claude-code
+    kind: user-login             # the engine's own sign-in on this machine
+    concurrency: 1
 ```
 
-- On start it fingerprints each credential (SHA-256 of the material, first 12 hex) and
-  registers `{engine, kind, fingerprint, concurrency, placement}`. The control plane stores
-  metadata only. This is #77 built the cheap way: the registry is what runners declare.
-- **Every job runs in a fresh engine container:** the checkout at `head_sha` mounted
-  read-only, egress allowed only to `api.github.com` and the model endpoint, no Docker socket,
-  non-root. The permission policy is the lane's tool allowlist, answered by the ACP client, with
-  no unrestricted shell. The policy is a guardrail; the container is the boundary.
-- **No job runs without the container.** Until the container runtime is built, the daemon's
-  `containerReady()` gate is closed and the daemon exits at startup, before it registers or
-  leases (`runner/README.md`).
-- **The free path** is the same container with OpenCode on a free provider, or Claude Code
-  behind an Anthropic-compatible local endpoint such as Ollama. It proves every part of the
-  product at no cost.
-- **The Actions lane** stays the zero-infrastructure path for adopters who bring an API key and
-  will not run a box, reduced over time to "lease, run, stream". Inside Anthropic's own action
-  it also accepts a `claude setup-token` credential, the form Anthropic documents there.
+- On start it fingerprints each credential (SHA-256 of a key, first 12 hex; a `keyless` or
+  `user-login` credential hashes kind, engine and host) and registers
+  `{engine, kind, fingerprint, concurrency}`. The control plane stores metadata only. This is
+  #77 built the cheap way: the registry is what runners declare.
+- **Every job gets a fresh checkout** at `head_sha` in a temp directory, deleted on every exit
+  path, and a read-only installation token revoked before the last events call.
+- **The engine runs as it would in a terminal** on the runner's machine: its own config and
+  sign-in, or the key its registry row reads, and an environment trimmed to that row's
+  allowlist (prismalens ADR 0003 and 0004). The permission policy is the lane's tool
+  allowlist, answered by the ACP client. Security is what the engine allows and blocks; the
+  runner adds no sandbox of its own.
+- **Where it runs is the adopter's call.** `runner/Dockerfile` builds one image with the
+  daemon and the engines; running it keeps the engines off the host's own files. A plain
+  `node src/daemon.js` works too.
+- **The free path** is OpenCode on a free provider, or Claude Code behind an
+  Anthropic-compatible local endpoint such as Ollama. It proves every part of the product at
+  no cost.
+- **The Actions lane** stays the zero-infrastructure path for adopters who will not run a
+  runner, reduced over time to "lease, run, stream". Inside Anthropic's own action it also
+  accepts a `claude setup-token` credential, the form Anthropic documents there.
 
 
 ### 3.3 Engines
@@ -161,8 +167,8 @@ row, the rule prismalens ADR 0003 §8 already applies.
 
 | Engine | ACP adapter | Credential kinds | State |
 |---|---|---|---|
-| `opencode` | `opencode acp` | `api-key` for 75+ providers, free tiers and Ollama | verified green in prismalens#561; the day-one engine |
-| `claude-code` | `claude-agent-acp` over the user's installed `claude` (`CLAUDE_CODE_EXECUTABLE`) | `api-key`, an Anthropic-compatible base URL; `bedrock`, `vertex`, `foundry` planned, refused by the runner today | passes the prismalens#639 gate |
+| `opencode` | `opencode acp` | `api-key` for 75+ providers, `keyless` free tiers and Ollama, `user-login` | verified green in prismalens#561; the day-one engine |
+| `claude-code` | `claude-agent-acp` over the user's installed `claude` (`CLAUDE_CODE_EXECUTABLE`) | `api-key`, an Anthropic-compatible base URL, `user-login`; `bedrock`, `vertex`, `foundry` planned, refused by the runner today | passes the prismalens#639 gate |
 | `codex` | `codex-acp` | `api-key` | deferred: permission gating fails on both transports in prismalens#639 |
 | `diff-only` | none, one request to any OpenAI-compatible endpoint | `api-key`, keyless local | the PR-Agent shape; the zero-vendor floor |
 
@@ -207,39 +213,27 @@ login as well. The fate taxonomy on `/findings` is untouched.
 | Concurrency group per PR (#12) | `jobs` unique on `(repository, pr_number, state in queued/leased/running)`; a new head supersedes, as today |
 | Admission from REST, not prose (#403, #410) | Webhook payload plus a REST re-read before enqueue |
 | Size refusal, never trim (#105) | Same limits, same `refused-size` event and verdict |
-| Prompt-injection blast radius | Engine container: read-only checkout, no shell, egress allowlist, credential dir outside workspace, non-root |
+| Prompt-injection blast radius | Admission refuses forks, so the code comes from people with push access; the engine's own permissions plus the lane's tool allowlist; a fresh checkout per job; no GitHub write token on the runner |
 | Credential exfiltration through a finding | Poster refuses any finding body containing a registered credential fingerprint prefix or a secret-shaped token; findings are schema-validated and size-capped |
 | Telemetry provenance (#176) | Runner token bound to registration; `repository` from the job |
 | Adopter isolation | Each adopter creates their own GitHub App through the manifest flow; there is no shared app and no tenancy, per the 2026-08-31 self-host ruling |
 
-What the table does not cover: the key sits in the engine's environment, so a steered engine
-can read it (#184, F1). The Actions lane has the same exposure with its token in env. The fix
-is a loopback proxy in the container that holds the key and injects it, so nothing the engine
-can read carries it. Until then a spend cap on the key bounds the loss.
+What the table does not cover: the engine can read its own credential, a key in env or its
+sign-in, as it can in a terminal. The Actions lane has the same exposure with its token in env.
+A spend cap on a key bounds the loss.
 
 ## 6. Credentials the runner takes
 
-The runner takes an API key or no credential at all. Cloud identities (`bedrock`, `vertex`,
-`foundry`) are the planned next kinds: `runner/src/config.js` refuses them today as deferred.
-It takes no subscription credential: the runner refuses `user-login` and the control plane has
-no such kind.
-The vendor terms behind that are in `docs/design/review-engine-credentials.md`.
+| Kind | What the engine gets |
+|---|---|
+| `api-key` | the variable the credential names, and nothing else from the runner's env |
+| `keyless` | no credential: OpenCode's free models, or a local Anthropic-compatible endpoint |
+| `user-login` | the engine's own sign-in on the runner's machine, read from its own config under `HOME` |
+| `bedrock`, `vertex`, `foundry` | planned; `runner/src/config.js` refuses them as deferred |
 
-- **Anthropic.** The legal page (code.claude.com/docs/en/legal-and-compliance) bars third
-  parties from routing requests "through Free, Pro, or Max plan credentials" on users' behalf,
-  and bars tools that "collect, store, or intermediate" the credential. `claude-code` rows take
-  an API key or an Anthropic-compatible base URL, and a cloud identity once that kind lands. The Actions lane accepts
-  `claude setup-token` inside Anthropic's own action, the automated form the docs name.
-- **OpenAI.** "The right way to authenticate automation is with an API key"
-  (learn.chatgpt.com/docs/auth/ci-cd-auth). `codex-acp` takes a key.
-- **Keys and cloud identity** are the portable layer and the OSS default. Bedrock, Vertex and
-  Foundry through the Claude CLI's env vars, once the runner accepts those kinds; OpenAI-compatible base URLs through Codex and
-  OpenCode; keyless local models through `diff-only`, OpenCode, and Claude Code behind an
-  Anthropic-compatible endpoint such as Ollama.
-- The control plane never stores key material. It stores fingerprints and the observed health
-  of rounds, which is what `Keys.dc.html` already specifies.
-- No reviewed product takes a personal subscription as a third-party credential. The only
-  subscription-backed review lanes are first-party: Claude's action and Codex cloud review.
+The control plane never stores key material. It stores fingerprints and the observed health of
+rounds, which is what `Keys.dc.html` already specifies. The vendor terms for each credential
+are in `docs/design/review-engine-credentials.md`.
 
 
 ## 7. Failure modes a stranger will hit
@@ -281,9 +275,6 @@ including a free local one. Those are the product.
 - The Actions lane stays, and becomes a thin runner over time. Two runners for one contract is
   the honest offer: run a box, or do not.
 - The telemetry Worker is the control plane; nothing moves off Cloudflare.
-- An author-side plugin (#184) runs the lane's prompt as a skill in the author's own harness
-  and submits its events to the control plane as an advisory round. It never posts through the
-  App, never gates and never changes admission.
 - Assayer gains an `engine` filter on existing views. Compare stays refused (#119); per-engine
   columns on `/findings` fates is the most #81 asked for, and its wording already forbids
   winner banners.
@@ -292,7 +283,7 @@ including a free local one. Those are the product.
 
 ## 10. Day one here, then the same steps, and one rotation
 
-Nothing on the runner has a deadline. The one dated item is the Actions lane's secret.
+Nothing on the runner has a deadline.
 
 1. **Prove the engine here.** On this machine, an ACP client on `@agentclientprotocol/sdk`
    against `opencode acp` (pinned 1.18.30, the row prismalens verified) or `claude-agent-acp`
@@ -314,21 +305,17 @@ Nothing on the runner has a deadline. The one dated item is the Actions lane's s
 5. **Second engine and docs.** The other ACP row on a key. Codex only once prismalens#639's
    permission gate passes. Write `docs/design/self-hosted-review.md` from this file, and the
    rulings for #59, #80, #81 and #77. Do not post them until the operator reads them.
-6. **Rotate the lane.** Independent of 1 to 5 and the only item with a date: prismalens and
-   sreforge hold `CLAUDE_CODE_OAUTH_TOKEN` and no `ANTHROPIC_API_KEY`. The lane stops when
-   the subscription lapses, around 2026-09-23, unless an API key secret is added and the
-   OAuth secret removed before then.
+6. **The lane's credential is each repository's choice.** `CLAUDE_CODE_OAUTH_TOKEN` inside
+   Anthropic's own action, or `ANTHROPIC_API_KEY`; the callee takes either.
 
 
 ## 11. Open questions
 
 1. Name. It is public-facing; "claude-review" cannot survive the second engine.
-2. Whether the box earns its keep at API rates. Today's volume is $150 to $370 a month at list
-   price wherever it runs, so the box's case is sandboxing, engine choice and the product
-   shape, not price.
-3. Whether the runner image bundles the vendor CLIs or expects them installed. Bundling pins
-   versions; expecting them keeps the image small. The Claude adapter finds `claude` through
-   `CLAUDE_CODE_EXECUTABLE`, so either works for it.
+2. Whether a runner earns its keep at API rates. Today's volume is $150 to $370 a month at list
+   price wherever it runs, so its case is engine choice, a sign-in the adopter already has,
+   and the product shape, not price.
+3. Settled: `runner/Dockerfile` bundles the vendor CLIs at pinned versions.
 4. What "level" means for `diff-only`, which has no subagents to spend.
 5. Whether GitHub-hosted runners remain a supported runner in v1 or only in the current lane.
 6. Whether prismalens's canonical stream adapter is imported as a package or copied; #182's

@@ -8,7 +8,6 @@ const env = { ASSAYER_RUNNER_TOKEN: TOKEN, ANTHROPIC_API_KEY: 'sk-ant-test-value
 const good = (over = {}) => ({
   control_plane: 'https://assayer.example.test',
   runner_token: '${ASSAYER_RUNNER_TOKEN}',
-  placement: 'box',
   credentials: [{ name: 'anthropic', engine: 'claude-code', kind: 'api-key', env: 'ANTHROPIC_API_KEY', concurrency: 1 }],
   ...over,
 });
@@ -35,12 +34,21 @@ describe('runner config (#184)', () => {
     assert.equal(fingerprint('keyless', 'opencode', null, 'h1'), a);
   });
 
+  it('takes a user-login credential: the engine\'s own sign-in, no key read, fingerprint per host and engine', () => {
+    const cfg = good({ credentials: [{ name: 'me', engine: 'claude-code', kind: 'user-login', concurrency: 1 }] });
+    const c = parseConfig(cfg, env, { hostname: 'h1' });
+    assert.equal(c.secrets.size, 0);
+    assert.equal(c.credentials[0].fingerprint, fingerprint('user-login', 'claude-code', null, 'h1'));
+    assert.notEqual(c.credentials[0].fingerprint, fingerprint('keyless', 'claude-code', null, 'h1'));
+  });
+
   const refusals = [
     ['a literal runner token', good({ runner_token: TOKEN }), /runner_token must be a \$\{ENV\} reference/],
     ['an unset token variable', good({ runner_token: '${NOPE}' }), /NOPE is not set/],
     ['a malformed token', good(), /is not a runner token/, { ASSAYER_RUNNER_TOKEN: 'asr_short' }],
-    ['a placement other than box', good({ placement: 'vps' }), /unknown placement vps/],
-    ['user-login', good({ credentials: [{ name: 'u', engine: 'claude-code', kind: 'user-login', concurrency: 1 }] }), /deferred/],
+    ['a placement key', good({ placement: 'box' }), /Unrecognized/],
+    ['bedrock', good({ credentials: [{ name: 'b', engine: 'claude-code', kind: 'bedrock', concurrency: 1 }] }), /deferred/],
+    ['a user-login with a key variable', good({ credentials: [{ name: 'u', engine: 'claude-code', kind: 'user-login', env: 'ANTHROPIC_API_KEY', concurrency: 1 }] }), /carries no key/],
     ['an api-key without env', good({ credentials: [{ name: 'a', engine: 'claude-code', kind: 'api-key', concurrency: 1 }] }), /names its environment variable/],
     ['an unset key variable', good({ credentials: [{ name: 'a', engine: 'claude-code', kind: 'api-key', env: 'MISSING_KEY', concurrency: 1 }] }), /MISSING_KEY is not set/],
     ['an unknown key', { ...good(), extra: 1 }, /config|Unrecognized/],
@@ -58,7 +66,6 @@ describe('runner config (#184)', () => {
     const c = parseConfig(good({ credentials: [
       { name: 'a', engine: 'claude-code', kind: 'api-key', env: 'ANTHROPIC_API_KEY', concurrency: 2 },
       { name: 'z', engine: 'opencode', kind: 'keyless', concurrency: 3 }] }), env, { hostname: 'h' });
-    assert.equal(c.placement, 'box');
     assert.deepEqual(c.credentials.map((x) => x.concurrency), [2, 3]);
   });
 

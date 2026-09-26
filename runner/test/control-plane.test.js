@@ -15,10 +15,10 @@ describe('control-plane client (#184)', () => {
       return new Response(null, { status: 204 });
     };
     const cp = createControlPlane({ baseUrl: 'https://cp.test', token: 'asr_x', fetch });
-    assert.deepEqual(await cp.register({ placement: 'box', credentials: [{ name: 'n', engine: 'opencode', kind: 'keyless', fingerprint: 'abcdefabcdef', concurrency: 1, env: null }] }), { runner_id: 'r' });
+    assert.deepEqual(await cp.register({ credentials: [{ name: 'n', engine: 'opencode', kind: 'keyless', fingerprint: 'abcdefabcdef', concurrency: 1, env: null }] }), { runner_id: 'r' });
     assert.equal(await cp.lease({ engine: 'opencode', kind: 'keyless', wait: 20 }), null);
     await cp.postEvents('job 1', []);
-    assert.deepEqual(JSON.parse(calls[0].init.body), { placement: 'box', credentials: [{ engine: 'opencode', kind: 'keyless', fingerprint: 'abcdefabcdef', concurrency: 1 }] });
+    assert.deepEqual(JSON.parse(calls[0].init.body), { credentials: [{ engine: 'opencode', kind: 'keyless', fingerprint: 'abcdefabcdef', concurrency: 1 }] });
     assert.equal(calls[1].url, 'https://cp.test/runner/lease?engine=opencode&kind=keyless&wait=20');
     assert.equal(calls[2].url, 'https://cp.test/runner/jobs/job%201/events');
     assert.deepEqual(JSON.parse(calls[2].init.body), { events: [] });
