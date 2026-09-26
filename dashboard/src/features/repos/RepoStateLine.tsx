@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 
 import { useFindingsQuery, useFleetReposQuery, usePRsQuery, useRoundsQuery } from "@/api/queries";
+import { QueryError } from "@/components/QueryState";
 import { buildToday, type RepoLine } from "@/features/today/today";
 import { formatCount, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -33,6 +34,7 @@ export function RepoStateLine({ repository }: { repository: string }) {
     return model.repos.find((r) => r.repository === repository) ?? null;
   }, [rounds.data, prs.data, findings.data, fleet.data, now, repository]);
 
+  if (rounds.isError) return <QueryError error={rounds.error} title="Could not load this repository's state" />;
   if (line === undefined) return null;
   return (
     <p data-testid="repo-state-line" className="text-xs text-muted-foreground">
