@@ -112,6 +112,9 @@ jobs:
       - name: actionlint pin drift
         run: python3 tests/test-actionlint-pin-drift.py
 
+      - name: runner image pin drift
+        run: python3 tests/test-runner-image-pin-drift.py
+
       # The one-click apply verifies against d1_migrations, never wrangler's summary (#164).
       - name: Apply migrations workflow behaviour
         run: python3 tests/test-apply-migrations.py

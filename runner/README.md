@@ -104,8 +104,31 @@ node src/daemon.js --config assayer-runner.json
 `finished._meta` carries `token_revoked` and `exit`. `test/daemon.test.js` pins revoke before the
 last events call on every path.
 
-Deferred: the container runtime, `bedrock`, `vertex` and `foundry`, streaming events mid-round, a lease-release route (so a
+Deferred: running jobs in the container (the image and proxy below exist), `bedrock`, `vertex` and `foundry`, streaming events mid-round, a lease-release route (so a
 restart requeues instead of finishing `cancelled`), and incremental jobs.
+
+## The job image and the key proxy
+
+Both exist; the daemon does not use them yet, so the gate above stays closed until the wiring lands (#184).
+
+- `image/Dockerfile` builds the job image: node 24 by digest, then git, gh, actionlint 1.7.12, shellcheck and
+  socat, each download checked by sha256, and `opencode-ai`, Claude Code and `claude-agent-acp` at exact
+  versions. `node scripts/build-image.mjs [--runtime podman|docker]` tags it `assayer-runner:<hash>`, where
+  the hash covers the Dockerfile, the entrypoint, `src/`, `prompt/` and the lockfile, and is also stored as the
+  `assayer.input_sha256` label. `tests/test-runner-image-pin-drift.py` keeps the pins honest, and the
+  `Runner image` workflow proves the image builds on any PR that touches `runner/`.
+- The container will run with `--network none`. `image/entrypoint.sh` bridges `127.0.0.1:8787` inside it to
+  the daemon's `src/key-proxy.js` on a unix socket, which is the only way out:
+  - Staging may `CONNECT` to `github.com` and `api.github.com` on 443.
+  - The engine may `CONNECT` to `api.github.com`, and its model requests go to the proxy as plain HTTP.
+  - The engine's "key" is a per-round nonce. The proxy checks it, then forwards to the one configured
+    upstream with the real key set on the wire, so the key never enters the container.
+- `src/probe.js` runs inside the image at daemon start and reports: uid, whether `/checkout` is writable,
+  runtime sockets, direct egress, the proxy's refusals, and the environment.
+
+What this cannot stop: exfiltration through the allowed upstreams, the engine appending to the shared round
+directory, kernel and runtime escapes (rootful docker is root-equivalent; prefer rootless podman), and
+resource abuse beyond the memory, pids and wall-clock limits.
 
 ## What the pieces are
 
