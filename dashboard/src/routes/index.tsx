@@ -34,7 +34,13 @@ import {
 } from "@/components/ui/table";
 import { bucketInbox, matchesInboxSearch, type InboxBucketKey } from "@/features/inbox/inbox";
 import { HeadStatusChip } from "@/features/prs/HeadStatusChip";
-import { enrichPRs, filterPRsByState, groupRoundsByPR, type PRSummary } from "@/features/prs/prs";
+import {
+  enrichPRs,
+  filterPRsByState,
+  groupRoundsByPR,
+  type PRSummary,
+  TITLE_NOT_SHARED,
+} from "@/features/prs/prs";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
 import { FilterBar } from "@/components/FilterBar";
 import type { FilterKey, FilterToken } from "@/features/filters/grammar";
@@ -300,8 +306,8 @@ function InboxTable({ prs, action }: { prs: PRSummary[]; action?: string }) {
                 title={pr.title}
               >
                 <span className="font-mono font-medium text-primary">#{pr.number}</span>{" "}
-                {pr.title === `PR #${pr.number}` ? (
-                  <span className="text-muted-foreground">title not recorded</span>
+                {pr.title === TITLE_NOT_SHARED ? (
+                  <span className="text-muted-foreground">{TITLE_NOT_SHARED}</span>
                 ) : (
                   pr.title
                 )}

@@ -466,6 +466,8 @@ jobs:
 
 
           HEADER_RE = re.compile(r"^\*\*(.+?)\*\*")
+          # The four-part envelope's first line, `_<Category>_ | _<Severity>_ | _<Effort>_` (#211).
+          ENVELOPE_RE = re.compile(r"^_[^_\n]+_(?:[ \t]*\|[ \t]*_[^_\n]+_)+[ \t]*$")
           SHA_RE = re.compile(r"`([0-9a-fA-F]{7,40})`")
           # These three strings are the exact reply templates the verify job in
           # claude-code-review.yml owns (TEMPLATES dict there). Matching them is reading the
@@ -497,9 +499,14 @@ jobs:
                   continue
 
               body = (first.get("body") or "")
-              header_match = HEADER_RE.match(body.strip())
-              header_raw = header_match.group(1) if header_match else None
-              body_excerpt = body.strip()
+              first_line, _, rest = body.strip().partition("\n")
+              if ENVELOPE_RE.match(first_line.rstrip()):
+                  header_raw = first_line.strip()
+                  body_excerpt = rest.strip()
+              else:
+                  header_match = HEADER_RE.match(body.strip())
+                  header_raw = header_match.group(1) if header_match else None
+                  body_excerpt = body.strip()
               if len(body_excerpt) > 500:
                   body_excerpt = body_excerpt[:500] + "..."
 

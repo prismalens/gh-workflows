@@ -6,6 +6,10 @@ import {
   type HeadStatus,
 } from "./headStatus";
 
+/** What a PR with no stored title or author shows; never an invented "PR #n" (#211). */
+export const TITLE_NOT_SHARED = "title not shared";
+export const AUTHOR_UNKNOWN = "author unknown";
+
 export interface PRSummary {
   id: string;
   repository: string;
@@ -81,8 +85,8 @@ export function groupRoundsByPR(rows: RoundRow[]): PRSummary[] {
       owner,
       repo,
       number: latestRound.pr_number!,
-      title: latestRound.pr_title || `PR #${latestRound.pr_number}`,
-      author: latestRound.pr_author || "—",
+      title: latestRound.pr_title || TITLE_NOT_SHARED,
+      author: latestRound.pr_author || AUTHOR_UNKNOWN,
       state: latestRound.pr_state || "open",
       stateIsFallback: true,
       mergedAt: null,

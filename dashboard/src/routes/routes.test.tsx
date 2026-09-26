@@ -1446,9 +1446,9 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(within(table).getByText("merged")).toBeInTheDocument();
     expect(within(table).queryByText("Stale round title")).toBeNull();
 
-    // Fallback: no prs row for 802, so the PR #n title and the round's
-    // pr_state show up muted, with the "not refreshed" hint.
-    expect(within(table).getByText("PR #802")).toBeInTheDocument();
+    // Fallback: no prs row for 802, so the title reads as not shared (#211) and the
+    // round's pr_state shows up muted, with the "not refreshed" hint.
+    expect(within(table).getByText("title not shared")).toBeInTheDocument();
     const fallbackState = within(table).getByText("closed", { selector: "span.italic" });
     expect(fallbackState).toHaveAttribute("title", "state at last round, not refreshed since");
 
@@ -1457,7 +1457,7 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     renderRoute({ path: "/prs?range=all&state=merged", api });
     await screen.findByRole("table");
     expect(screen.getByText("Current real title")).toBeInTheDocument();
-    expect(screen.queryByText("PR #802")).toBeNull();
+    expect(screen.queryByText("title not shared")).toBeNull();
   });
 
   it("shows the enrichment cutoff line when the prs response is truncated, not the whole window (#136 ruling, #142 finding 3944697631)", async () => {
