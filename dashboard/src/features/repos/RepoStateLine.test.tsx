@@ -23,11 +23,13 @@ describe("RepoStateLine", () => {
     expect(screen.queryByTestId("repo-state-line")).toBeNull();
   });
 
-  it("renders nothing while rounds are loaded but the fleet is still pending", () => {
+  it("holds its slot with a loading line while the fleet is still pending", () => {
     state.rounds = { data: { rows: [] }, isError: false, error: null };
     state.fleet = idle;
     render(<RepoStateLine repository="o/r" />);
-    expect(screen.queryByTestId("repo-state-line")).toBeNull();
+    const line = screen.getByTestId("repo-state-line");
+    expect(line).toHaveTextContent("Loading repository state");
+    expect(line).toHaveAttribute("aria-busy", "true");
   });
 
   it("shows a failed fleet request instead of rendering nothing", () => {

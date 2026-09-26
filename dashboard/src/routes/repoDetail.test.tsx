@@ -170,9 +170,9 @@ describe("/repos/$owner/$repo: the weekly health tab (#179)", () => {
     home.unmount();
 
     renderRoute({ path: `/repos/${repository}`, api });
-    const line = await screen.findByTestId("repo-state-line");
     expect(homeState).toBeTruthy();
-    expect(line.textContent).toContain(`${homeState} ·`);
+    // The line holds its slot with a loading text first; wait for the loaded one.
+    await waitFor(() => expect(screen.getByTestId("repo-state-line").textContent).toContain(`${homeState} ·`));
     expect(await screen.findByText(`No health report has arrived for ${repository}`)).toBeInTheDocument();
   });
 

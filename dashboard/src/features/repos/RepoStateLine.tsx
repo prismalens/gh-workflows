@@ -37,7 +37,14 @@ export function RepoStateLine({ repository }: { repository: string }) {
   if (rounds.isError || fleet.isError) {
     return <QueryError error={rounds.error ?? fleet.error} title="Could not load this repository's state" />;
   }
-  if (line === undefined) return null;
+  // Holds the slot while loading, so the tabs below do not shift when the line arrives.
+  if (line === undefined) {
+    return (
+      <p data-testid="repo-state-line" className="text-xs text-muted-foreground" aria-busy="true">
+        Loading repository state…
+      </p>
+    );
+  }
   return (
     <p data-testid="repo-state-line" className="text-xs text-muted-foreground">
       {line === null ? (
