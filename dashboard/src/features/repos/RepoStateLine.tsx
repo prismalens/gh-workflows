@@ -23,7 +23,7 @@ export function RepoStateLine({ repository }: { repository: string }) {
   const fleet = useFleetReposQuery("rolling");
 
   const line = useMemo(() => {
-    if (!rounds.data) return undefined;
+    if (!rounds.data || !fleet.data) return undefined;
     const model = buildToday({
       rounds: rounds.data.rows,
       prs: prs.data?.rows ?? [],
@@ -34,7 +34,9 @@ export function RepoStateLine({ repository }: { repository: string }) {
     return model.repos.find((r) => r.repository === repository) ?? null;
   }, [rounds.data, prs.data, findings.data, fleet.data, now, repository]);
 
-  if (rounds.isError) return <QueryError error={rounds.error} title="Could not load this repository's state" />;
+  if (rounds.isError || fleet.isError) {
+    return <QueryError error={rounds.error ?? fleet.error} title="Could not load this repository's state" />;
+  }
   if (line === undefined) return null;
   return (
     <p data-testid="repo-state-line" className="text-xs text-muted-foreground">
