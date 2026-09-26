@@ -168,7 +168,8 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
         .withMcpServer(mcpServer('github_comment', toolLog))
         .withSession(async (session) => {
           mapper.sessionId = session.sessionId;
-          raw('session', { sessionId: session.sessionId });
+          raw('session', { sessionId: session.sessionId, response: session.newSessionResponse ?? null });
+          mapper.onSession(session.newSessionResponse);
           const p = session.prompt(promptText);
           p.catch(() => {}); // surfaced through nextUpdate's stop or thrown below
           for (;;) {

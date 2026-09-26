@@ -130,7 +130,7 @@ restart requeues instead of finishing `cancelled`), and incremental jobs.
   `--body-file` takes only `-` (stdin): a path would let a steered engine record any readable
   file, a token store or `/proc/self/environ`, as the summary the poster publishes. Nothing a
   round does reaches GitHub except reads.
-- `src/acp-map.js`: `session/update` to events. One `read` per path per round from tool-call
+- `src/acp-map.js`: `session/update` to events. `started.model` is the model asked for, verbatim; `started._meta.served_model` is the one the agent reports in its `session/new` answer, and `model_substituted` flags a difference (prismalens#727). One `read` per path per round from tool-call
   locations, flagged when outside the checkout. The last `update_claude_comment` wins, as the
   lane's comment does. A finding or summary body that carries a credential-shaped token (a
   GitHub, Anthropic, OpenAI, AWS or Slack token, a private key, a `TOKEN=` line) is dropped
