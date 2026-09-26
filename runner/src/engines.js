@@ -48,7 +48,7 @@ export const ENGINES = Object.freeze({
     envAllow: [...BASE_ENV, 'GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN',
       'ANTHROPIC_MODEL', 'CLAUDE_CODE_EXECUTABLE', 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS',
       'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'],
-    credentialKinds: ['api-key', 'bedrock', 'vertex', 'foundry', 'user-login'],
+    credentialKinds: ['api-key', 'bedrock', 'vertex', 'foundry'],
     admitted: null, // prismalens#639 passes the gate; no admission record in this repo yet
     prepare({ model, env }) {
       return { ...env, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', ...(model ? { ANTHROPIC_MODEL: model } : {}) };

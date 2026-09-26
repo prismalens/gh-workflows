@@ -66,3 +66,8 @@ describe('runner config (#184)', () => {
     assert.equal(parseConfig(good({ control_plane: 'http://127.0.0.1:8787' }), env).control_plane, 'http://127.0.0.1:8787');
   });
 });
+
+it('claude-code offers no user-login kind (#184)', async () => {
+  const { ENGINES } = await import('../src/engines.js');
+  assert.ok(!ENGINES['claude-code'].credentialKinds.includes('user-login'));
+});
