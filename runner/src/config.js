@@ -1,6 +1,7 @@
 // The daemon's config file (#184): where the control plane is, which runner token to present,
-// its placement (always `box`), and which credentials it offers. Secrets never sit in the file: the
-// runner token and every key are named by environment variable and read at load.
+// and which credentials it offers. Secrets never sit in the file: the runner token and every key
+// are named by environment variable and read at load. A `user-login` credential is the engine's
+// own sign-in on this machine, used as it would be in a terminal (prismalens ADR 0003).
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
@@ -10,7 +11,7 @@ import { ENGINES } from './engines.js';
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const ENV_REF = /^\$\{([A-Z_][A-Z0-9_]*)\}$/;
 const RUNNER_TOKEN = /^asr_[A-Za-z0-9_-]{43}$/;
-const DEFERRED_KINDS = new Set(['user-login', 'bedrock', 'vertex', 'foundry']);
+const DEFERRED_KINDS = new Set(['bedrock', 'vertex', 'foundry']);
 
 const credentialSchema = z.object({
   name: z.string().regex(/^[a-z0-9-]{1,32}$/),
@@ -23,7 +24,6 @@ const credentialSchema = z.object({
 const configSchema = z.object({
   control_plane: z.string(),
   runner_token: z.string(),
-  placement: z.string(),
   credentials: z.array(credentialSchema).min(1).max(16),
 }).strict();
 
@@ -36,10 +36,10 @@ function sha12(text) {
 }
 
 // What the Worker's FINGERPRINT_PATTERN holds: 12 lowercase hex. An api-key's is a hash of the
-// key, so the key never leaves the process; a keyless one is stable per host and engine.
+// key, so the key never leaves the process; a keyless or user-login one is stable per host and engine.
 export function fingerprint(kind, engine, material, hostname) {
   if (kind === 'api-key') return sha12(material);
-  if (kind === 'keyless') return sha12(`keyless\n${engine}\n${hostname}`);
+  if (kind === 'keyless' || kind === 'user-login') return sha12(`${kind}\n${engine}\n${hostname}`);
   throw new Error(`no fingerprint for credential kind ${kind}`);
 }
 
@@ -66,8 +66,6 @@ export function parseConfig(raw, env = process.env, { hostname = os.hostname() }
   const token = env[ref[1]];
   if (!token) fail('runner_token', `${ref[1]} is not set`);
   if (!RUNNER_TOKEN.test(token)) fail('runner_token', `${ref[1]} is not a runner token`);
-
-  if (cfg.placement !== 'box') fail('placement', `unknown placement ${cfg.placement}`);
 
   const seenNames = new Set();
   const seenPairs = new Set();
@@ -100,12 +98,11 @@ export function parseConfig(raw, env = process.env, { hostname = os.hostname() }
 
   const config = {
     control_plane: checkControlPlane(cfg.control_plane),
-    placement: cfg.placement,
     credentials,
   };
   Object.defineProperty(config, 'runner_token', { value: token, enumerable: false });
   Object.defineProperty(config, 'secrets', { value: secrets, enumerable: false });
-  config.toJSON = () => ({ control_plane: config.control_plane, placement: config.placement, credentials });
+  config.toJSON = () => ({ control_plane: config.control_plane, credentials });
   Object.defineProperty(config, 'toJSON', { enumerable: false });
   return config;
 }

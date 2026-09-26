@@ -31,7 +31,7 @@ prompt allows.
 
 Staging never executes a binary the checkout brought with it: a committed `./actionlint` or
 `node_modules/.bin/*` is skipped and the skip is recorded in the manifest's tool notes, since
-this runs on the operator's machine before any sandbox. The same rule is in the workflow's
+staging runs on the runner's machine. The same rule is in the workflow's
 own step.
 
 The prompt tells the engine to read `.claude-review-manifest.json` and `.claude-review.diff`
@@ -59,12 +59,9 @@ Exit code 0 is `completed`, 3 an engine error, 4 a timeout, 2 bad usage.
 `src/daemon.js` (bin `assayer-runner`) registers with the control plane (#196's `/runner/*`
 routes), leases jobs for its credentials, checks each pull request out with the job's
 installation token, runs one round through `run.js`, posts the round's events, revokes the token
-and posts `finished`. Each job is meant to run in a fresh container: read-only checkout, egress
-to two hosts, non-root, no Docker socket. That container runtime is not built yet (#184), so
-`containerReady()` in `src/daemon.js` returns false and the daemon exits 1 at startup, before it
-registers or leases anything. `--check` prints the placement and each credential's fingerprint,
-exits 2 naming the field on a bad file, and exits 1 with the same container message on a good
-one. `test/daemon.test.js` pins that no register or lease call happens while the gate is closed.
+and posts `finished`. The engine runs as it would in a terminal on this machine: its own config
+and sign-in, or the key its credential names (prismalens ADR 0003). `--check` prints each
+credential's fingerprint and exits 0, or exits 2 naming the field on a bad file.
 
 ```bash
 export ASSAYER_RUNNER_TOKEN=asr_...        # from POST /api/runners
@@ -76,18 +73,26 @@ node src/daemon.js --config assayer-runner.json
 {
   "control_plane": "https://assayer.sfun.cloud",
   "runner_token": "${ASSAYER_RUNNER_TOKEN}",
-  "placement": "box",
   "credentials": [{ "name": "zen", "engine": "opencode", "kind": "keyless", "concurrency": 1 }]
 }
 ```
 
+In a container, with the engines and staging tools at the versions `Dockerfile` pins:
+
+```bash
+docker build -t assayer-runner runner/
+docker run -it --rm -v assayer-home:/home/assayer --entrypoint claude assayer-runner   # once, for a user-login credential
+docker run -d -v assayer-home:/home/assayer -v "$PWD/assayer-runner.json:/etc/assayer/runner.json:ro" \
+  -e ASSAYER_RUNNER_TOKEN assayer-runner
+```
+
 - Secrets never sit in the file. `runner_token` is a `${VAR}` reference, and an `api-key`
   credential names its variable in `env`. The fingerprint the runner registers is the first 12 hex
-  of the key's SHA-256, so the key never leaves the process. A `keyless` one is stable per host and
-  engine.
-- `placement` takes `box` only; any other value is refused. A runner may offer several
-  credentials, each with its own `concurrency`. `user-login`, `bedrock`, `vertex` and `foundry`
-  are refused.
+  of the key's SHA-256, so the key never leaves the process. A `keyless` or `user-login` one is
+  stable per host and engine.
+- `user-login` is the engine's own sign-in on this machine (`claude` or `opencode auth login`,
+  under `HOME`); the runner reads nothing of it. A runner may offer several credentials, each
+  with its own `concurrency`. `bedrock`, `vertex` and `foundry` are refused as deferred.
 - The checkout is a shallow fetch of the head and the base into a fresh temp dir, deleted on every
   path. The token goes to git in `GIT_CONFIG_VALUE_0` as an extraheader, never in argv or a URL.
 - **The heartbeat** is an empty events post every `min(60, heartbeat_timeout_s / 5)` seconds.
@@ -104,7 +109,7 @@ node src/daemon.js --config assayer-runner.json
 `finished._meta` carries `token_revoked` and `exit`. `test/daemon.test.js` pins revoke before the
 last events call on every path.
 
-Deferred: the container runtime, `bedrock`, `vertex` and `foundry`, streaming events mid-round, a lease-release route (so a
+Deferred: `bedrock`, `vertex` and `foundry`, streaming events mid-round, a lease-release route (so a
 restart requeues instead of finishing `cancelled`), and incremental jobs.
 
 ## What the pieces are
@@ -125,7 +130,7 @@ restart requeues instead of finishing `cancelled`), and incremental jobs.
   `--body-file` takes only `-` (stdin): a path would let a steered engine record any readable
   file, a token store or `/proc/self/environ`, as the summary the poster publishes. Nothing a
   round does reaches GitHub except reads.
-- `src/acp-map.js`: `session/update` to events. One `read` per path per round from tool-call
+- `src/acp-map.js`: `session/update` to events. `started.model` is the model asked for, verbatim; `started._meta.served_model` is the one the agent reports in its `session/new` answer, and `model_substituted` flags a difference (prismalens#727). One `read` per path per round from tool-call
   locations, flagged when outside the checkout. The last `update_claude_comment` wins, as the
   lane's comment does. A finding or summary body that carries a credential-shaped token (a
   GitHub, Anthropic, OpenAI, AWS or Slack token, a private key, a `TOKEN=` line) is dropped
@@ -149,9 +154,8 @@ the runner first, the policy answers, and a refusal does not end the turn. That 
 `--pure` with the project's own `opencode.json` disabled, is copied from the prismalens
 registry row that passed prismalens#561.
 
-The ACP policy is therefore a guardrail, not a boundary, which is what prismalens ADR 0003 §3
-says of every harness. The container is the boundary: read-only checkout, egress to two hosts,
-non-root.
+The ACP policy is therefore a guardrail, not a boundary, as prismalens ADR 0003 says of every
+agent. The runner adds no sandbox of its own: what the engine allows and blocks is the posture.
 
 `scripts/permission-probe.sh <checkout>` repeats the check against the real binary: an allowed
 command, a disallowed one, an edit and a delete, then proves nothing landed. Run it before
