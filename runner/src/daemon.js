@@ -1,30 +1,29 @@
 #!/usr/bin/env node
-// The runner daemon (#184): register with the control plane, lease jobs for each credential,
-// check the pull request out with the job's installation token, run one round through run.js,
-// post its events, revoke the token, then post `finished`. Revocation comes before the last
-// events call on every exit path, and test/daemon.test.js pins that order.
+// The runner daemon (#184): prove the job container, register with the control plane, lease
+// jobs for each credential, stage the pull request and run one round, each in its own container
+// behind the key proxy, post the events, revoke the token, then post `finished`. Revocation comes
+// before the last events call on every exit path, and test/daemon.test.js pins that order.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import { createControlPlane, ControlPlaneError, fitEvent, batches, redact } from './control-plane.js';
-import { revokeInstallationToken, checkout as gitCheckout } from './github.js';
+import { revokeInstallationToken } from './github.js';
 import { event, classifyFailure } from './events.js';
 import { ENGINES } from './engines.js';
 import { renderPrompt, promptHash, laneTokens } from './prompt.js';
+import { checkContainer, cliEnv, detectRuntime, jobDirs, resolveImage, runArgs, runStep } from './container.js';
+import { createKeyProxy, PROXY_URL } from './key-proxy.js';
+import { imageInputHash } from './image-hash.js';
+import { STAGE_FAILED } from './stage.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const TEMPLATE = path.join(HERE, '..', 'prompt', 'template.md');
+const RUNNER_ROOT = path.join(HERE, '..');
+const TEMPLATE = path.join(RUNNER_ROOT, 'prompt', 'template.md');
 const RETRY_DELAYS_S = [1, 2, 4, 8, 16];
-export const CONTAINER_NOT_READY = 'the container runtime is not built yet (#184); this runner leases no job until it is';
-
-// A pull job runs only inside the per-job container. That runtime is the next slice of #184;
-// until it lands this returns false, and the daemon neither registers nor leases.
-export function containerReady() {
-  return false;
-}
 
 const sleep = (ms, signal) => new Promise((resolve) => {
   if (signal?.aborted) return resolve();
@@ -38,37 +37,53 @@ function readEvents(out) {
   return readFileSync(file, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
 }
 
-// The default round: run.js as a child in its own process group, so a SIGTERM reaches it and
-// its engine together.
-export function spawnRound(job, { cwd, out, promptPath, promptHashValue, credential, credentialValue, installationToken, signal, laneVersion }) {
+function stepName(job, step) {
+  return `assayer-${String(job.id).slice(0, 8)}-${step}-${randomBytes(3).toString('hex')}`;
+}
+
+// Container step 1: checkout and manifest, /checkout writable, CONNECT to GitHub only.
+// A failure throws, and runJob reports it as the checkout-failure path.
+export async function containerStage(job, { jobDir, token, signal, container }) {
+  const values = { GH_TOKEN: token, ASSAYER_HTTPS_PROXY: PROXY_URL, HOME: '/round/home', LANG: 'C.UTF-8' };
+  const name = stepName(job, 'stage');
+  const args = runArgs({
+    ...container, name, checkoutMode: 'rw', jobDir, envNames: Object.keys(values),
+    cmd: ['node', '/opt/assayer/src/stage.js', '--repo', job.repository, '--pr', String(job.pr_number),
+      '--head-sha', job.head_sha, ...(job.base_sha ? ['--base-sha', job.base_sha] : []),
+      '--mode', job.mode, '--cwd', '/checkout', '--out', '/round'],
+  });
+  const r = await runStep({ runtime: container.runtime, args, env: cliEnv(values), signal, exec: container.exec, name });
+  if (r.code === 0) return;
+  let message = `staging exited ${r.code ?? r.signal}`;
+  if (r.code === STAGE_FAILED) {
+    try { message = readFileSync(path.join(jobDir, 'round', 'stage-error.txt'), 'utf8').trim() || message; } catch { /* keep the exit */ }
+  }
+  throw new Error(message);
+}
+
+// Container step 2: the engine, /checkout read-only, the model reached only through the proxy
+// with the round's nonce. No configured key reaches this environment.
+export function spawnRound(job, { jobDir, out, promptHashValue, credential, installationToken, proxyToken, signal, laneVersion, container }) {
   const row = ENGINES[job.engine];
-  const args = [path.join(HERE, 'run.js'), '--cwd', cwd, '--prompt', promptPath, '--out', out,
-    '--engine', job.engine, '--model', job.model ?? row.defaultModel ?? '', '--stage-manifest',
+  const model = job.model ?? row.defaultModel ?? null;
+  const values = {
+    GH_TOKEN: installationToken, ASSAYER_HTTPS_PROXY: PROXY_URL, ASSAYER_PROXY_TOKEN: proxyToken,
+    HOME: '/round/home', GH_CONFIG_DIR: '/round/home/gh', LANG: 'C.UTF-8', TMPDIR: '/tmp',
+  };
+  const cmd = ['node', '/opt/assayer/src/run.js', '--cwd', '/checkout', '--prompt', '/round/prompt.md', '--out', '/round',
+    '--engine', job.engine, ...(model ? ['--model', model] : []),
     '--repo', job.repository, '--pr', String(job.pr_number), '--head-sha', job.head_sha, '--mode', job.mode,
     '--prompt-hash', promptHashValue, '--credential-fingerprint', credential.fingerprint,
     ...(laneVersion ? ['--lane-version', laneVersion] : []),
-    ...(credential.env ? ['--credential-env', credential.env] : [])];
-  if (!(job.model ?? row.defaultModel)) args.splice(args.indexOf('--model'), 2);
-  const env = { GH_TOKEN: installationToken };
-  for (const k of ['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR']) if (process.env[k] !== undefined) env[k] = process.env[k];
-  if (credential.env) env[credential.env] = credentialValue;
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, args, { env, detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
-    child.stderr.on('data', () => {});
-    let killTimer = null;
-    const onAbort = () => {
-      try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ }
-      killTimer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } }, 5000);
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-    child.on('close', (code, sig) => {
-      clearTimeout(killTimer);
-      signal?.removeEventListener('abort', onAbort);
+    '--proxy-base-url', PROXY_URL, '--staged-json', '/round/staged.json'];
+  const name = stepName(job, 'engine');
+  const args = runArgs({ ...container, name, checkoutMode: 'ro', jobDir, envNames: Object.keys(values), cmd });
+  return runStep({ runtime: container.runtime, args, env: cliEnv(values), signal, exec: container.exec, name })
+    .then(({ code, signal: sig }) => {
       let events = null;
       try { events = readEvents(out); } catch { events = null; }
-      resolve({ code, signal: sig, events });
+      return { code, signal: sig, events };
     });
-  });
 }
 
 function exitLabel(conclusion) {
@@ -111,6 +126,7 @@ export async function runJob(ctx, lease) {
   };
   const startedEvent = () => event('started', { engine: job.engine, model: job.model ?? null, credential_fingerprint: credential.fingerprint });
   let dir = null;
+  let proxy = null;
   let heartbeat = null;
   let events = [];
   let conclusion = 'failed';
@@ -124,8 +140,15 @@ export async function runJob(ctx, lease) {
       cp.postEvents(job.id, []).catch((e) => { if (!loseLease(e)) log(`heartbeat: ${e.message}`); });
     }, beatMs);
     dir = ctx.mkTemp('assayer-job-');
+    jobDirs(dir);
     const out = path.join(dir, 'round');
-    const cwd = path.join(dir, 'checkout');
+    const proxyToken = randomBytes(24).toString('base64url');
+    ctx.secrets.add(proxyToken);
+    proxy = await ctx.createProxy({
+      socketPath: path.join(dir, 'sock', 'proxy.sock'), token: proxyToken,
+      upstream: { url: credential.upstream, auth: credential.upstream_auth ?? null, key: ctx.config.secrets?.get(credential.name) ?? null },
+      engineConnect: ENGINES[job.engine]?.egress ?? [], log,
+    });
     if (cancelled) {
       conclusion = 'cancelled'; exit = 'sigterm';
     } else if (job.mode === 'incremental') {
@@ -133,24 +156,31 @@ export async function runJob(ctx, lease) {
     } else {
       let checkedOut = false;
       try {
-        await ctx.checkout({ repository: job.repository, headSha: job.head_sha, baseSha: job.base_sha, token, dir: cwd });
+        proxy.setPhase('staging');
+        await ctx.stage(job, { jobDir: dir, token, signal: run.signal, container: ctx.container });
         checkedOut = true;
       } catch (e) {
-        const message = redact(e.message, ctx.secrets);
-        events = [startedEvent(), event('error', { failure_class: classifyFailure(message) ?? 'api-error', message })];
-        exit = 'checkout-failed';
+        if (cancelled) {
+          conclusion = 'cancelled'; exit = 'sigterm';
+        } else {
+          const message = redact(e.message, ctx.secrets);
+          events = [startedEvent(), event('error', { failure_class: classifyFailure(message) ?? 'api-error', message })];
+          exit = 'checkout-failed';
+        }
       }
-      if (checkedOut && cancelled) {
+      if (!checkedOut) {
+        // reported above
+      } else if (cancelled) {
         conclusion = 'cancelled'; exit = 'sigterm';
-      } else if (checkedOut) {
-        mkdirSync(out, { recursive: true });
+      } else {
+        proxy.setPhase('engine');
         const template = readFileSync(TEMPLATE, 'utf8');
         const promptPath = path.join(out, 'prompt.md');
         writeFileSync(promptPath, renderPrompt(template, laneTokens({ repo: job.repository, pr: job.pr_number, level: job.level ?? 'medium', mode: job.mode })));
         const result = await ctx.runRound(job, {
-          cwd, out, promptPath, promptHashValue: promptHash(template), credential,
-          credentialValue: ctx.config.secrets?.get(credential.name) ?? null,
-          installationToken: token, signal: run.signal, laneVersion: ctx.laneVersion ?? null,
+          jobDir: dir, out, promptPath, promptHashValue: promptHash(template), credential,
+          installationToken: token, proxyToken, signal: run.signal, laneVersion: ctx.laneVersion ?? null,
+          container: ctx.container,
         });
         const finished = result.events?.find((e) => e.type === 'finished');
         if (cancelled) {
@@ -172,6 +202,7 @@ export async function runJob(ctx, lease) {
   } finally {
     clearInterval(heartbeat);
     ctx.stopSignal.removeEventListener('abort', onStop);
+    try { await proxy?.close(); } catch (e) { log(`job ${job.id}: proxy close: ${e.message}`); }
   }
 
   try {
@@ -218,26 +249,51 @@ async function postWithRetry(ctx, jobId, batch) {
   }
 }
 
-export async function startDaemon(config, deps = {}) {
-  if (!(deps.containerReady ?? containerReady)()) throw new Error(CONTAINER_NOT_READY);
-  const secrets = new Set([config.runner_token, ...(config.secrets?.values() ?? [])]);
-  const write = deps.log ?? ((s) => process.stderr.write(`${s}\n`));
-  const log = (msg) => write(`assayer-runner ${new Date().toISOString()} ${redact(msg, secrets)}`);
-  const cp = deps.controlPlane ?? createControlPlane({ baseUrl: config.control_plane, token: config.runner_token, fetch: deps.fetch });
-  const stop = new AbortController();
-  const base = {
-    config, cp, log, secrets,
+// Detect the runtime, resolve this checkout's image and prove the container. Runs before any
+// register, on every start; a throw here means no control-plane call is ever made.
+export async function prepareContainer(config, deps = {}) {
+  const exec = deps.exec ?? spawn;
+  const runtime = detectRuntime(config, { which: deps.which });
+  const image = await (deps.resolveImage ?? resolveImage)({ runtime, hash: deps.imageHash ?? imageInputHash(RUNNER_ROOT), exec });
+  const container = {
+    runtime, image, exec, memory: config.container?.memory ?? '4g',
+    uid: deps.uid ?? process.getuid(), gid: deps.gid ?? process.getgid(),
+  };
+  const probe = await (deps.checkContainer ?? checkContainer)({
+    config, runtime, image, exec, uid: container.uid, gid: container.gid,
+    mkTemp: deps.mkTemp ?? ((prefix) => mkdtempSync(path.join(os.tmpdir(), prefix))),
+    rmDir: deps.rmDir ?? ((d) => rmSync(d, { recursive: true, force: true })),
+    createProxy: deps.createProxy ?? createKeyProxy,
+  });
+  return { container, probe };
+}
+
+export function createContext(config, deps, container, { log, secrets, cp, stopSignal }) {
+  return {
+    config, cp, log, secrets, container,
     revoke: deps.revoke ?? ((t) => revokeInstallationToken(t, { fetch: deps.fetch })),
-    checkout: deps.checkout ?? gitCheckout,
+    stage: deps.stage ?? containerStage,
     runRound: deps.runRound ?? spawnRound,
+    createProxy: deps.createProxy ?? createKeyProxy,
     mkTemp: deps.mkTemp ?? ((prefix) => mkdtempSync(path.join(os.tmpdir(), prefix))),
     rmDir: deps.rmDir ?? ((d) => rmSync(d, { recursive: true, force: true })),
     sleep: deps.sleep ?? sleep,
     backoffUnitMs: deps.backoffUnitMs ?? 1000,
     heartbeatMs: deps.heartbeatMs,
     laneVersion: deps.laneVersion ?? process.env.ASSAYER_LANE_VERSION ?? null,
-    stopSignal: stop.signal,
+    stopSignal,
   };
+}
+
+export async function startDaemon(config, deps = {}) {
+  const { container } = await prepareContainer(config, deps);
+  const secrets = new Set([config.runner_token, ...(config.secrets?.values() ?? [])]);
+  const write = deps.log ?? ((s) => process.stderr.write(`${s}\n`));
+  const log = (msg) => write(`assayer-runner ${new Date().toISOString()} ${redact(msg, secrets)}`);
+  const cp = deps.controlPlane ?? createControlPlane({ baseUrl: config.control_plane, token: config.runner_token, fetch: deps.fetch });
+  const stop = new AbortController();
+  const base = createContext(config, deps, container, { log, secrets, cp, stopSignal: stop.signal });
+  log(`container ${container.runtime} image ${container.image.slice(0, 19)} passed its check`);
 
   let registration;
   const register = async () => {
@@ -303,8 +359,11 @@ function main(argv) {
   if (argv.includes('--check')) {
     process.stdout.write(`placement ${config.placement}\n`);
     for (const c of config.credentials) process.stdout.write(`${c.name} ${c.engine} ${c.kind} ${c.fingerprint} ${c.concurrency}\n`);
-    if (!containerReady()) { process.stderr.write(`assayer-runner: ${CONTAINER_NOT_READY}\n`); process.exit(1); }
-    process.exit(0);
+    prepareContainer(config).then(({ container, probe }) => {
+      process.stdout.write(`runtime ${container.runtime}\nimage ${container.image}\n${JSON.stringify(probe)}\n`);
+      process.exit(0);
+    }).catch((e) => { process.stderr.write(`assayer-runner: ${e.message}\n`); process.exit(1); });
+    return;
   }
   startDaemon(config).then((d) => {
     for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, () => { d.stop(sig).then(() => process.exit(0)); });

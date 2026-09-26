@@ -56,17 +56,20 @@ Exit code 0 is `completed`, 3 an engine error, 4 a timeout, 2 bad usage.
 
 ## Run the daemon
 
-`src/daemon.js` (bin `assayer-runner`) registers with the control plane (#196's `/runner/*`
-routes), leases jobs for its credentials, checks each pull request out with the job's
-installation token, runs one round through `run.js`, posts the round's events, revokes the token
-and posts `finished`. Each job is meant to run in a fresh container: read-only checkout, egress
-to two hosts, non-root, no Docker socket. That container runtime is not built yet (#184), so
-`containerReady()` in `src/daemon.js` returns false and the daemon exits 1 at startup, before it
-registers or leases anything. `--check` prints the placement and each credential's fingerprint,
-exits 2 naming the field on a bad file, and exits 1 with the same container message on a good
-one. `test/daemon.test.js` pins that no register or lease call happens while the gate is closed.
+`src/daemon.js` (bin `assayer-runner`) proves the job container, registers with the control plane
+(#196's `/runner/*` routes), leases jobs for its credentials, and runs each job in two containers
+behind the key proxy. It then posts the round's events, revokes the token and posts `finished`.
+
+**Before any register, on every start:**
+1. It detects the runtime: `container.runtime`, else podman, else docker.
+2. It resolves `assayer-runner:<input hash>` built from this checkout, and refuses to start as root.
+3. It runs `src/probe.js` in a probe container.
+
+Any failure exits 1 before a single control-plane call. `--check` runs the same three steps and prints
+the image and the probe report. It exits 2 naming the field on a bad file.
 
 ```bash
+cd runner && node scripts/build-image.mjs  # once per checkout; tags assayer-runner:<hash>
 export ASSAYER_RUNNER_TOKEN=asr_...        # from POST /api/runners
 node src/daemon.js --config assayer-runner.json --check
 node src/daemon.js --config assayer-runner.json
@@ -77,19 +80,35 @@ node src/daemon.js --config assayer-runner.json
   "control_plane": "https://assayer.sfun.cloud",
   "runner_token": "${ASSAYER_RUNNER_TOKEN}",
   "placement": "box",
-  "credentials": [{ "name": "zen", "engine": "opencode", "kind": "keyless", "concurrency": 1 }]
+  "container": { "runtime": "podman", "memory": "4g" },
+  "credentials": [
+    { "name": "zen", "engine": "opencode", "kind": "keyless", "upstream": "https://opencode.ai/zen/v1", "concurrency": 1 },
+    { "name": "anthropic", "engine": "claude-code", "kind": "api-key", "env": "ANTHROPIC_API_KEY",
+      "upstream": "https://api.anthropic.com", "upstream_auth": "x-api-key", "concurrency": 1 }
+  ]
 }
 ```
 
-- Secrets never sit in the file. `runner_token` is a `${VAR}` reference, and an `api-key`
+- **Secrets never sit in the file.** `runner_token` is a `${VAR}` reference, and an `api-key`
   credential names its variable in `env`. The fingerprint the runner registers is the first 12 hex
-  of the key's SHA-256, so the key never leaves the process. A `keyless` one is stable per host and
-  engine.
-- `placement` takes `box` only; any other value is refused. A runner may offer several
-  credentials, each with its own `concurrency`. `user-login`, `bedrock`, `vertex` and `foundry`
-  are refused.
-- The checkout is a shallow fetch of the head and the base into a fresh temp dir, deleted on every
-  path. The token goes to git in `GIT_CONFIG_VALUE_0` as an extraheader, never in argv or a URL.
+  of the key's SHA-256. A `keyless` fingerprint is stable per host and engine.
+- **`upstream`** is where the key proxy forwards that credential's model requests: https, with no query
+  or trailing slash. `upstream_auth` says how an `api-key` travels (`x-api-key` or `bearer`). A keyless
+  credential has none.
+- **`placement`** takes `box` only. `user-login`, `bedrock`, `vertex` and `foundry` are refused.
+- **Runtime choice.** Rootless podman is preferred. Docker works, but its group is root-equivalent on
+  the box. The runtime is driven by its CLI only; no API socket is opened or mounted.
+
+| Step | Container | `/checkout` | Proxy lets through |
+|---|---|---|---|
+| Staging | `src/stage.js`: shallow fetch of head and base, then the manifest and diff | read-write | `CONNECT` to `github.com`, `api.github.com` |
+| Engine | `src/run.js` and the engine | read-only | model requests to `upstream` with the key set; `CONNECT` to `api.github.com` |
+
+Every container runs with `--network none --read-only --cap-drop ALL`, no new privileges, pid and
+memory limits, and the daemon's uid. Tokens travel as `-e NAME` with the value in the CLI's
+environment, never in argv. The engine sees `GH_TOKEN`, the proxy URL and the round's nonce. No
+configured key is ever in its environment.
+
 - **The heartbeat** is an empty events post every `min(60, heartbeat_timeout_s / 5)` seconds.
   Events post after the round in batches of at most 100, each event cut to 16 KiB.
 
@@ -98,37 +117,42 @@ node src/daemon.js --config assayer-runner.json
 | Success | the round's events | `finished{completed}` |
 | Engine failure or crash | the round's events, or a synthesized `started` + `error` | `finished{failed \| timed-out}` |
 | SIGTERM | whatever the round wrote | `finished{cancelled}` |
-| Checkout failure | `started` + `error` | `finished{failed}` |
+| Staging failure | `started` + `error` | `finished{failed}` |
 | Lease lost (409 or 403) | stops at the first 409 | none; the revoke still runs |
 
 `finished._meta` carries `token_revoked` and `exit`. `test/daemon.test.js` pins revoke before the
-last events call on every path.
+last events call on every path, and that the proxy closes exactly once on each.
 
-Deferred: running jobs in the container (the image and proxy below exist), `bedrock`, `vertex` and `foundry`, streaming events mid-round, a lease-release route (so a
-restart requeues instead of finishing `cancelled`), and incremental jobs.
+**Acceptance for a box**, run once per box and after every image rebuild:
+`GH_READ_TOKEN=... scripts/live-test.sh assayer-runner.json owner/repo <pr>`. It builds the image,
+runs `--check` and one real round with no control plane, then fails if any configured key appears
+in the round directory.
+
+Deferred: GHCR publishing, signing and arm64 for the image; `bedrock`, `vertex` and `foundry`;
+streaming events mid-round; a lease-release route, so a restart requeues instead of finishing
+`cancelled`; and incremental jobs.
 
 ## The job image and the key proxy
 
-Both exist; the daemon does not use them yet, so the gate above stays closed until the wiring lands (#184).
+- **The image.** `image/Dockerfile` builds from node 24 pinned by digest. It adds git, gh,
+  actionlint 1.7.12, shellcheck and socat, each download checked by sha256, plus `opencode-ai`,
+  Claude Code and `claude-agent-acp` at exact versions.
+  - `scripts/build-image.mjs` tags it `assayer-runner:<hash>` and stores the hash as the
+    `assayer.input_sha256` label. The hash covers the Dockerfile, the entrypoint, `src/`, `prompt/`
+    and the lockfile.
+  - `tests/test-runner-image-pin-drift.py` keeps the pins honest, and the `Runner image` workflow
+    builds the image on any PR that touches `runner/`.
+- **The proxy.** `image/entrypoint.sh` bridges `127.0.0.1:8787` in the container to
+  `src/key-proxy.js` on a unix socket. The daemon switches the proxy's phase between the two steps,
+  so nothing inside a container can widen it.
+  - The engine's "key" is a per-round nonce.
+  - The proxy checks the nonce, then forwards to the one configured upstream with the real key set on the wire.
 
-- `image/Dockerfile` builds the job image: node 24 by digest, then git, gh, actionlint 1.7.12, shellcheck and
-  socat, each download checked by sha256, and `opencode-ai`, Claude Code and `claude-agent-acp` at exact
-  versions. `node scripts/build-image.mjs [--runtime podman|docker]` tags it `assayer-runner:<hash>`, where
-  the hash covers the Dockerfile, the entrypoint, `src/`, `prompt/` and the lockfile, and is also stored as the
-  `assayer.input_sha256` label. `tests/test-runner-image-pin-drift.py` keeps the pins honest, and the
-  `Runner image` workflow proves the image builds on any PR that touches `runner/`.
-- The container will run with `--network none`. `image/entrypoint.sh` bridges `127.0.0.1:8787` inside it to
-  the daemon's `src/key-proxy.js` on a unix socket, which is the only way out:
-  - Staging may `CONNECT` to `github.com` and `api.github.com` on 443.
-  - The engine may `CONNECT` to `api.github.com`, and its model requests go to the proxy as plain HTTP.
-  - The engine's "key" is a per-round nonce. The proxy checks it, then forwards to the one configured
-    upstream with the real key set on the wire, so the key never enters the container.
-- `src/probe.js` runs inside the image at daemon start and reports: uid, whether `/checkout` is writable,
-  runtime sockets, direct egress, the proxy's refusals, and the environment.
-
-What this cannot stop: exfiltration through the allowed upstreams, the engine appending to the shared round
-directory, kernel and runtime escapes (rootful docker is root-equivalent; prefer rootless podman), and
-resource abuse beyond the memory, pids and wall-clock limits.
+**What this cannot stop:**
+- exfiltration through the allowed upstreams;
+- the engine appending to the shared round directory;
+- kernel and runtime escapes;
+- resource abuse beyond the memory, pids and wall-clock limits.
 
 ## What the pieces are
 

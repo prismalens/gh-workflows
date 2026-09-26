@@ -51,3 +51,12 @@ test('engineEnv passes one extra credential variable and nothing else (#184)', a
   assert.deepEqual(env, { PATH: '/bin', MY_KEY: 'k' });
   assert.deepEqual(engineEnv(ENGINES.opencode, { PATH: '/bin', MY_KEY: 'k' }), { PATH: '/bin' });
 });
+
+test('--proxy-base-url needs the round\'s nonce, and --staged-json replaces staging (#184)', () => {
+  const base = ['--cwd', '/c', '--prompt', '/p', '--out', '/o'];
+  assert.throws(() => parseArgs([...base, '--proxy-base-url', 'http://127.0.0.1:8787'], {}), /ASSAYER_PROXY_TOKEN/);
+  const o = parseArgs([...base, '--proxy-base-url', 'http://127.0.0.1:8787', '--staged-json', '/round/staged.json'], { ASSAYER_PROXY_TOKEN: 'n' });
+  assert.equal(o.proxyBaseUrl, 'http://127.0.0.1:8787');
+  assert.equal(o.stagedJson, '/round/staged.json');
+  assert.throws(() => parseArgs([...base, '--stage-manifest', '--repo', 'o/r', '--pr', '1', '--staged-json', '/s'], {}), /exclusive/);
+});

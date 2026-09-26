@@ -135,13 +135,20 @@ credentials:
 - On start it fingerprints each credential (SHA-256 of the material, first 12 hex) and
   registers `{engine, kind, fingerprint, concurrency, placement}`. The control plane stores
   metadata only. This is #77 built the cheap way: the registry is what runners declare.
-- **Every job runs in a fresh engine container:** the checkout at `head_sha` mounted
-  read-only, egress allowed only to `api.github.com` and the model endpoint, no Docker socket,
-  non-root. The permission policy is the lane's tool allowlist, answered by the ACP client, with
-  no unrestricted shell. The policy is a guardrail; the container is the boundary.
-- **No job runs without the container.** Until the container runtime is built, the daemon's
-  `containerReady()` gate is closed and the daemon exits at startup, before it registers or
-  leases (`runner/README.md`).
+- **Every job runs in two fresh containers** from an image built on the box and pinned by a hash
+  of its inputs. Each runs with `--network none`, non-root and no runtime socket. Its only way
+  out is the daemon's key proxy on a unix socket.
+  - **Staging** checks the head out read-write and may reach `github.com` and `api.github.com`.
+  - **The engine** gets the checkout read-only. It reaches the model only through the proxy,
+    which sets the key on the wire, and `api.github.com` for `gh`.
+
+  The permission policy is the lane's tool allowlist, answered by the ACP client, with no
+  unrestricted shell. The policy is a guardrail; the container is the boundary.
+- **No job runs without the container.** On every start, before it registers, the daemon
+  resolves the image and runs a probe container. The probe proves: non-root, a read-only
+  checkout, no runtime socket, no direct egress, the proxy refusing and allowing as it should,
+  and no configured key in the environment. Any failure exits before a single control-plane
+  call (`runner/README.md`).
 - **The free path** is the same container with OpenCode on a free provider, or Claude Code
   behind an Anthropic-compatible local endpoint such as Ollama. It proves every part of the
   product at no cost.
@@ -207,15 +214,16 @@ login as well. The fate taxonomy on `/findings` is untouched.
 | Concurrency group per PR (#12) | `jobs` unique on `(repository, pr_number, state in queued/leased/running)`; a new head supersedes, as today |
 | Admission from REST, not prose (#403, #410) | Webhook payload plus a REST re-read before enqueue |
 | Size refusal, never trim (#105) | Same limits, same `refused-size` event and verdict |
-| Prompt-injection blast radius | Engine container: read-only checkout, no shell, egress allowlist, credential dir outside workspace, non-root |
+| Prompt-injection blast radius | Engine container: read-only checkout, no shell, `--network none` with the key proxy as the only way out (the model upstream, and `api.github.com`), no key in its environment, non-root |
 | Credential exfiltration through a finding | Poster refuses any finding body containing a registered credential fingerprint prefix or a secret-shaped token; findings are schema-validated and size-capped |
 | Telemetry provenance (#176) | Runner token bound to registration; `repository` from the job |
 | Adopter isolation | Each adopter creates their own GitHub App through the manifest flow; there is no shared app and no tenancy, per the 2026-08-31 self-host ruling |
 
-What the table does not cover: the key sits in the engine's environment, so a steered engine
-can read it (#184, F1). The Actions lane has the same exposure with its token in env. The fix
-is a loopback proxy in the container that holds the key and injects it, so nothing the engine
-can read carries it. Until then a spend cap on the key bounds the loss.
+The runner's key never enters the container. The engine holds a per-round nonce, and the daemon's
+proxy swaps it for the key on the wire (#184, F1). The Actions lane still has its token in env.
+What the table does not cover: exfiltration through the allowed upstreams, the engine appending
+to the shared round directory, and kernel or runtime escapes. Rootful docker is root-equivalent,
+so rootless podman is preferred.
 
 ## 6. Credentials the runner takes
 
@@ -326,9 +334,8 @@ Nothing on the runner has a deadline. The one dated item is the Actions lane's s
 2. Whether the box earns its keep at API rates. Today's volume is $150 to $370 a month at list
    price wherever it runs, so the box's case is sandboxing, engine choice and the product
    shape, not price.
-3. Whether the runner image bundles the vendor CLIs or expects them installed. Bundling pins
-   versions; expecting them keeps the image small. The Claude adapter finds `claude` through
-   `CLAUDE_CODE_EXECUTABLE`, so either works for it.
+3. Answered (#184): the runner image bundles the vendor CLIs at pinned versions, built on the box
+   from `runner/image/Dockerfile`. Registry publishing, signing and arm64 are deferred.
 4. What "level" means for `diff-only`, which has no subagents to spend.
 5. Whether GitHub-hosted runners remain a supported runner in v1 or only in the current lane.
 6. Whether prismalens's canonical stream adapter is imported as a package or copied; #182's

@@ -59,4 +59,6 @@ with open(log, 'a') as f:
 PY
     echo "https://github.com/recorded/by/assayer-runner/pull/0#issuecomment-recorded"; exit 0 ;;
 esac
+# In the container only the proxy reaches GitHub; the engine itself never gets HTTPS_PROXY (#184).
+if [ -n "${ASSAYER_HTTPS_PROXY:-}" ]; then export HTTPS_PROXY="$ASSAYER_HTTPS_PROXY" https_proxy="$ASSAYER_HTTPS_PROXY"; fi
 exec "$real" "$@"

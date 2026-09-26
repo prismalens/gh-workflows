@@ -17,8 +17,8 @@ import { buildManifest } from './manifest.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-export function parseArgs(argv) {
-  const o = { engine: 'opencode', model: null, timeoutMs: 20 * 60 * 1000, idleMs: 8 * 60 * 1000, laneVersion: null, promptHash: null, stage: false, repo: null, pr: null, headSha: '', mode: 'review', credentialEnv: null, credentialFingerprint: null };
+export function parseArgs(argv, env = process.env) {
+  const o = { engine: 'opencode', model: null, timeoutMs: 20 * 60 * 1000, idleMs: 8 * 60 * 1000, laneVersion: null, promptHash: null, stage: false, repo: null, pr: null, headSha: '', mode: 'review', credentialEnv: null, credentialFingerprint: null, proxyBaseUrl: null, stagedJson: null };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]; const v = argv[i + 1];
     const need = () => { if (v === undefined) throw new Error(`${a} needs a value`); i += 1; return v; };
@@ -38,6 +38,8 @@ export function parseArgs(argv) {
     else if (a === '--mode') o.mode = need();
     else if (a === '--credential-env') o.credentialEnv = need();
     else if (a === '--credential-fingerprint') o.credentialFingerprint = need();
+    else if (a === '--proxy-base-url') o.proxyBaseUrl = need();
+    else if (a === '--staged-json') o.stagedJson = need();
     else throw new Error(`unknown argument ${a}`);
   }
   for (const k of ['cwd', 'prompt', 'out']) if (!o[k]) throw new Error(`--${k} is required`);
@@ -46,6 +48,8 @@ export function parseArgs(argv) {
   if (!Number.isFinite(o.idleMs) || o.idleMs <= 0) throw new Error('--idle-min must be a positive number');
   if (o.credentialEnv !== null && !/^[A-Z_][A-Z0-9_]*$/.test(o.credentialEnv)) throw new Error('--credential-env must be an environment variable name');
   if (o.credentialFingerprint !== null && !/^[0-9a-f]{12}$/.test(o.credentialFingerprint)) throw new Error('--credential-fingerprint must be 12 lowercase hex');
+  if (o.proxyBaseUrl !== null && !env.ASSAYER_PROXY_TOKEN) throw new Error('--proxy-base-url needs ASSAYER_PROXY_TOKEN in the environment');
+  if (o.stage && o.stagedJson) throw new Error('--stage-manifest and --staged-json are exclusive');
   if (o.stage) {
     if (!o.repo || !/^[\w.-]+\/[\w.-]+$/.test(o.repo)) throw new Error('--stage-manifest needs --repo owner/name');
     if (!o.pr || !/^\d+$/.test(o.pr)) throw new Error('--stage-manifest needs --pr N');
@@ -88,6 +92,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
   // are written into the checkout before the engine starts, as the Actions lane does. A
   // failure here is a round that never ran, not an engine error, and no engine is spawned.
   let staged = null;
+  if (opts.stagedJson) staged = JSON.parse(readFileSync(opts.stagedJson, 'utf8'));
   if (opts.stage) {
     const t0 = Date.now();
     try {
@@ -113,11 +118,14 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
   mkdirSync(binDir, { recursive: true });
   copyFileSync(path.join(HERE, 'gh-shim.sh'), path.join(binDir, 'gh'));
   chmodSync(path.join(binDir, 'gh'), 0o755);
-  const env = row.prepare({ model: opts.model, outDir: out, env: {
+  const proxy = opts.proxyBaseUrl ? { baseURL: opts.proxyBaseUrl, token: process.env.ASSAYER_PROXY_TOKEN } : null;
+  const env = row.prepare({ model: opts.model, outDir: out, proxy, env: {
     ...baseEnv, PATH: `${binDir}${path.delimiter}${baseEnv.PATH ?? process.env.PATH ?? ''}`,
     ASSAYER_TOOL_LOG: toolLog, ASSAYER_REAL_GH: realGh,
     // The shim is a copy in <out>/bin; secret-check.js stays here beside its imports.
     ASSAYER_SECRET_CHECK: path.join(HERE, 'secret-check.js'),
+    // Only the shim's real gh uses it; no engine gets HTTPS_PROXY (#184, spec Q2).
+    ...(process.env.ASSAYER_HTTPS_PROXY ? { ASSAYER_HTTPS_PROXY: process.env.ASSAYER_HTTPS_PROXY } : {}),
   } });
   const child = spawn(row.command, row.args({ cwd }), { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stderr.on('data', (d) => appendFileSync(stderrPath, d));

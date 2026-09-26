@@ -46,6 +46,8 @@ export async function checkout({ repository, headSha, baseSha, token, dir, spawn
     GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
     GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
   };
+  // Inside the staging container the proxy is the only way to github.com (#184).
+  for (const k of ['HTTPS_PROXY', 'https_proxy']) if (process.env[k]) env[k] = process.env[k];
   const shas = baseSha && baseSha !== headSha ? [headSha, baseSha] : [headSha];
   await run(spawn, ['init', '-q', dir], { env, timeoutMs });
   await run(spawn, ['fetch', '-q', '--depth=1', `https://github.com/${repository}.git`, ...shas], { cwd: dir, env, timeoutMs });

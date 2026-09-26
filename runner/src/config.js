@@ -17,13 +17,21 @@ const credentialSchema = z.object({
   engine: z.string(),
   kind: z.string(),
   env: z.string().regex(ENV_NAME).optional(),
+  upstream: z.string(),
+  upstream_auth: z.enum(['x-api-key', 'bearer']).optional(),
   concurrency: z.number().int().min(1).max(16),
+}).strict();
+
+const containerSchema = z.object({
+  runtime: z.enum(['podman', 'docker']).optional(),
+  memory: z.string().regex(/^\d+[kmg]$/).optional(),
 }).strict();
 
 const configSchema = z.object({
   control_plane: z.string(),
   runner_token: z.string(),
   placement: z.string(),
+  container: containerSchema.optional(),
   credentials: z.array(credentialSchema).min(1).max(16),
 }).strict();
 
@@ -41,6 +49,18 @@ export function fingerprint(kind, engine, material, hostname) {
   if (kind === 'api-key') return sha12(material);
   if (kind === 'keyless') return sha12(`keyless\n${engine}\n${hostname}`);
   throw new Error(`no fingerprint for credential kind ${kind}`);
+}
+
+// Where the key proxy forwards the engine's model requests (#184, spec §2): an https origin
+// with an optional path prefix, loopback http for tests.
+function checkUpstream(field, value) {
+  let url;
+  try { url = new URL(value); } catch { fail(field, 'not a URL'); }
+  const local = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) fail(field, 'must be https');
+  if (url.search || url.hash) fail(field, 'carries no query or hash');
+  if (value.endsWith('/')) fail(field, 'has no trailing slash');
+  return value;
 }
 
 function checkControlPlane(value) {
@@ -89,11 +109,15 @@ export function parseConfig(raw, env = process.env, { hostname = os.hostname() }
       material = env[c.env];
       if (!material) fail(`${at}.env`, `${c.env} is not set`);
       secrets.set(c.name, material);
+      if (!c.upstream_auth) fail(`${at}.upstream_auth`, 'an api-key credential names how the upstream takes it (x-api-key or bearer)');
     } else if (c.env) {
       fail(`${at}.env`, `a ${c.kind} credential carries no key`);
+    } else if (c.upstream_auth) {
+      fail(`${at}.upstream_auth`, `a ${c.kind} credential carries no upstream_auth`);
     }
     return {
       name: c.name, engine: c.engine, kind: c.kind, env: c.env ?? null, concurrency: c.concurrency,
+      upstream: checkUpstream(`${at}.upstream`, c.upstream), upstream_auth: c.upstream_auth ?? null,
       fingerprint: fingerprint(c.kind, c.engine, material, hostname),
     };
   });
@@ -101,11 +125,13 @@ export function parseConfig(raw, env = process.env, { hostname = os.hostname() }
   const config = {
     control_plane: checkControlPlane(cfg.control_plane),
     placement: cfg.placement,
+    // runtime stays null until the daemon detects one on PATH.
+    container: { runtime: cfg.container?.runtime ?? null, memory: cfg.container?.memory ?? '4g' },
     credentials,
   };
   Object.defineProperty(config, 'runner_token', { value: token, enumerable: false });
   Object.defineProperty(config, 'secrets', { value: secrets, enumerable: false });
-  config.toJSON = () => ({ control_plane: config.control_plane, placement: config.placement, credentials });
+  config.toJSON = () => ({ control_plane: config.control_plane, placement: config.placement, container: config.container, credentials });
   Object.defineProperty(config, 'toJSON', { enumerable: false });
   return config;
 }
