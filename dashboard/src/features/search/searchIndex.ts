@@ -21,7 +21,7 @@ export interface SearchResult {
 }
 
 const PAGES: { title: string; to: "/" | "/inbox" | "/fleet" | "/repos" | "/rounds" | "/prs"; keywords: string }[] = [
-  { title: "Today", to: "/", keywords: "home today status" },
+  { title: "Home", to: "/", keywords: "home today status" },
   { title: "Inbox", to: "/inbox", keywords: "inbox pull requests attention" },
   { title: "Fleet", to: "/fleet", keywords: "fleet charts overview cost tokens" },
   { title: "Repos", to: "/repos", keywords: "repositories repos" },

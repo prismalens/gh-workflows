@@ -1,10 +1,9 @@
 import { createRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft } from "lucide-react";
 
 import { useHealthReportsQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
+import { RepoStateLine } from "@/features/repos/RepoStateLine";
 import { WeeklyHealth } from "@/features/repos/WeeklyHealth";
 import { DEFAULT_RANGE } from "@/honesty/range";
 import { rootRoute } from "./root";
@@ -26,11 +25,6 @@ function RepoDetailPage() {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-3">
-        <Button asChild size="sm" variant="ghost">
-          <Link to="/repos" search={{ range: DEFAULT_RANGE }}>
-            <ArrowLeft className="size-4" /> Repos
-          </Link>
-        </Button>
         <h1 className="font-mono text-base font-semibold tracking-tight">{repository}</h1>
         <Link
           to="/rounds"
@@ -40,6 +34,7 @@ function RepoDetailPage() {
           Rounds
         </Link>
       </div>
+      <RepoStateLine repository={repository} />
 
       <div role="tablist" className="flex items-center gap-1 border-b border-border">
         {TABS.map((tab) => (
@@ -63,8 +58,9 @@ function RepoDetailPage() {
           <Alert variant="muted">
             <AlertTitle>No health report has arrived for {repository}</AlertTitle>
             <AlertDescription>
-              A report arrives once a week from the repository's telemetry-health workflow. None
-              is stored for this name.
+              The repository's telemetry-health workflow sends one every Monday at 06:17 UTC, or
+              when it is run by hand. The state line above comes from review rounds, not from this
+              report.
             </AlertDescription>
           </Alert>
         ) : (
