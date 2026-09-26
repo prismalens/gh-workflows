@@ -39,8 +39,8 @@ enabled = true
 head_sampling_rate = 1
 
 [triggers]
-# Daily retention purge (#183), off the hour.
-crons = ["23 4 * * *"]
+# Daily retention purge (#183), off the hour; every five minutes, the no-runner sweep (#184).
+crons = ["23 4 * * *", "2-59/5 * * * *"]
 
 [vars]
 TEXT_RETENTION_DAYS = "30"
@@ -49,5 +49,8 @@ TEXT_RETENTION_DAYS = "30"
 WEBHOOK_REPOSITORIES = "prismalens/sreforge"
 WEBHOOK_JOB_ENGINE = "opencode"
 WEBHOOK_JOB_CREDENTIAL_KIND = "keyless"
+# The poster finds its own liveness comment by this App's login, <slug>[bot] (#184).
+GITHUB_APP_SLUG = "assayer-review-dev"
+RUNNER_TIMEOUT_S = "900"
 OIDC_ALLOWED_REPOSITORY_IDS = "1124040129,1191857183,1331752084,1256451611"
 

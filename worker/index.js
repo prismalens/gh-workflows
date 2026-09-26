@@ -1,5 +1,6 @@
 import { jwtVerify, createRemoteJWKSet } from "jose";
-import { createInstallationTokenMinter, MintError } from "./github-app.js";
+import { createInstallationTokenMinter, MintError, POSTER_TOKEN_PERMISSIONS } from "./github-app.js";
+import { livenessBody, postRound, revokeToken, upsertLiveness } from "./poster.js";
 import { parseShareLevel, stripToLevel, TIERS } from "./tiers.js";
 import { reviewableLinesFromFiles } from "./review-size.js";
 
@@ -129,6 +130,8 @@ const VALID_LANE_EVENT_REASONS = new Set([
   "admission-off", // #189: review.admission is off
   "skip-label", // #189: claude_review_skip on the pull request
   "awaiting-label", // #189: admission by label and claude_review absent
+  "no-runner", // #184: no runner leased a queued job within RUNNER_TIMEOUT_S
+  "credential-cooldown", // #184: rate-limited or account-limit with reset_at; the job requeued for then
 ]);
 
 // A round that did not run writes no usage_records row, so its verdict never
@@ -146,6 +149,8 @@ const LANE_REASON_TO_VERDICT_KIND = {
   "api-error": "api-error",
   "skip-label": "skip-label",
   "awaiting-label": "awaiting-label",
+  "no-runner": "no-runner",
+  "credential-cooldown": "credential-cooldown",
 };
 
 const LANE_EVENT_NUMERIC_FIELDS = [
@@ -3588,7 +3593,8 @@ async function handleRunnerLease(request, url, env, mint) {
     for (;;) {
       job = await env.DB.prepare(
         `UPDATE jobs SET state='leased', runner_id=?1, credential_fingerprint=?2, leased_at=?3, heartbeat_at=?3, attempts=attempts+1
-WHERE id = (SELECT id FROM jobs WHERE state='queued' AND engine=?4 AND credential_kind=?5 ORDER BY created_at ASC LIMIT 1)
+WHERE id = (SELECT id FROM jobs WHERE state='queued' AND engine=?4 AND credential_kind=?5
+  AND (reset_at IS NULL OR reset_at <= ?3) ORDER BY created_at ASC LIMIT 1)
   AND state='queued'
 RETURNING id, repository, pr_number, base_sha, head_sha, mode, level, model, engine, credential_kind, config_effective, attempts`
       )
@@ -3822,7 +3828,182 @@ function roundStatements(env, job, events, finished, nowIso) {
   return [usageStmt, ...agentStmts];
 }
 
-async function handleRunnerEvents(request, env, jobId) {
+// The two runner verdicts and the poster (#184). A rate limit or account limit with a reset_at
+// requeues the job for then; a day out is a bad parse, not a wait worth keeping a job for.
+const COOLDOWN_CLASSES = new Set(["rate-limited", "account-limit"]);
+const COOLDOWN_MAX_MS = 24 * 60 * 60 * 1000;
+export const NO_RUNNER_CRON = "2-59/5 * * * *";
+
+function cooldownResetAt(error, nowMs) {
+  if (!error || !COOLDOWN_CLASSES.has(error.failure_class)) {
+    return null;
+  }
+  const at = Date.parse(error.reset_at);
+  if (Number.isNaN(at) || at <= nowMs || at - nowMs > COOLDOWN_MAX_MS) {
+    return null;
+  }
+  return new Date(at).toISOString();
+}
+
+function runnerTimeoutS(env) {
+  const parsed = Number(env?.RUNNER_TIMEOUT_S);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 900;
+}
+
+async function runnerLaneEvent(env, job, reason, nowIso) {
+  return env.DB.prepare(
+    `INSERT INTO lane_events (
+      run_id,
+      run_attempt,
+      recorded_at,
+      repository,
+      reason,
+      pr_number,
+      head_sha,
+      ingest_auth
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    ON CONFLICT(run_id, run_attempt) DO NOTHING`
+  ).bind(
+    await webhookRunId(`${reason}:${job.id}:${nowIso}`),
+    1,
+    nowIso,
+    job.repository,
+    reason,
+    toIntegerOrNull(job.pr_number),
+    job.head_sha,
+    "runner"
+  );
+}
+
+// Production hands the post to waitUntil so the runner's last call is not held on GitHub; a
+// caller without it (tests) awaits. A post that throws is recorded, never surfaced as a 500.
+async function afterResponse(opts, fn) {
+  const run = () => fn().catch(() => {});
+  if (typeof opts.waitUntil === "function") {
+    opts.waitUntil(run());
+  } else {
+    await run();
+  }
+}
+
+async function postedRounds(env, job) {
+  const row = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM jobs WHERE repository = ? AND pr_number = ? AND post_outcome LIKE 'posted%'"
+  )
+    .bind(job.repository, job.pr_number)
+    .first();
+  return toIntegerOrNull(row?.n) ?? 0;
+}
+
+async function withPosterToken(env, opts, job, fn) {
+  const slug = env?.GITHUB_APP_SLUG;
+  if (!slug) {
+    return "did-not-post: app-slug-unconfigured";
+  }
+  const mint = opts.mint || createInstallationTokenMinter(env).mint;
+  const [owner, repo] = job.repository.split("/");
+  let token;
+  try {
+    ({ token } = await mint({ owner, repo, permissions: POSTER_TOKEN_PERMISSIONS }));
+  } catch (e) {
+    return `did-not-post: ${e instanceof MintError ? e.code : "mint-failed"}`;
+  }
+  const fetchImpl = opts.fetch || globalThis.fetch;
+  try {
+    return await fn(token, `${slug}[bot]`, fetchImpl);
+  } catch (e) {
+    return `post-failed: ${e?.status ?? "error"}`;
+  } finally {
+    await revokeToken(fetchImpl, token);
+  }
+}
+
+// A verdict with no round behind it: no-runner, credential-cooldown, a round held back.
+async function postVerdictOnly(env, opts, job, verdict) {
+  const rounds = await postedRounds(env, job);
+  return withPosterToken(env, opts, job, async (token, appLogin, fetchImpl) => {
+    await upsertLiveness({
+      fetch: fetchImpl,
+      token,
+      appLogin,
+      repository: job.repository,
+      prNumber: job.pr_number,
+      body: livenessBody({ rounds, headSha: job.head_sha, engine: job.engine, model: job.model, verdict }),
+    });
+    return "posted-verdict";
+  });
+}
+
+// Reads this attempt's events from job_events and nothing else, so an author-side or foreign
+// row can never reach the pull request through here.
+async function postFinishedJob(env, opts, jobId) {
+  const job = await env.DB.prepare(
+    "SELECT id, repository, pr_number, head_sha, engine, model, events_from_seq FROM jobs WHERE id = ?"
+  )
+    .bind(jobId)
+    .first();
+  if (!job) {
+    return;
+  }
+  const { results } = await env.DB.prepare(
+    "SELECT payload FROM job_events WHERE job_id = ? AND seq > ? ORDER BY seq"
+  )
+    .bind(job.id, toIntegerOrNull(job.events_from_seq) ?? 0)
+    .all();
+  const events = [];
+  for (const row of results ?? []) {
+    try {
+      events.push(JSON.parse(row.payload));
+    } catch {
+      // A row this Worker wrote always parses.
+    }
+  }
+  const finished = lastOfType(events, "finished");
+  let outcome;
+  if (finished?._meta?.token_revoked !== true) {
+    await postVerdictOnly(
+      env,
+      opts,
+      job,
+      "the round finished, but its read token was not confirmed revoked, so nothing it wrote was posted."
+    );
+    outcome = "did-not-post: token-unrevoked";
+  } else {
+    const rounds = (await postedRounds(env, job)) + 1;
+    outcome = await withPosterToken(env, opts, job, async (token, appLogin, fetchImpl) => {
+      const r = await postRound({ fetch: fetchImpl, token, appLogin, job, events, rounds });
+      return `posted: ${r.inline} inline, ${r.refused} refused, ${r.summary} summary`;
+    });
+  }
+  await env.DB.prepare("UPDATE jobs SET post_outcome = ? WHERE id = ?")
+    .bind(truncateString(outcome), job.id)
+    .run();
+}
+
+// A queued job no runner took within RUNNER_TIMEOUT_S gets the no-runner verdict once and stays
+// queued, so a runner that comes back still takes it.
+export async function sweepNoRunner(env, nowMs, opts = {}) {
+  const nowIso = new Date(nowMs).toISOString();
+  const cutoff = new Date(nowMs - runnerTimeoutS(env) * 1000).toISOString();
+  const { results } = await env.DB.prepare(
+    `SELECT id, repository, pr_number, head_sha, engine, model FROM jobs
+      WHERE state = 'queued' AND no_runner_at IS NULL AND created_at < ?1
+        AND (reset_at IS NULL OR reset_at < ?1)
+      ORDER BY created_at LIMIT 50`
+  )
+    .bind(cutoff)
+    .all();
+  const minutes = Math.round(runnerTimeoutS(env) / 60);
+  for (const job of results ?? []) {
+    await env.DB.batch([
+      env.DB.prepare("UPDATE jobs SET no_runner_at = ?1 WHERE id = ?2 AND no_runner_at IS NULL").bind(nowIso, job.id),
+      await runnerLaneEvent(env, job, "no-runner", nowIso),
+    ]);
+    await postVerdictOnly(env, opts, job, `no runner took this job within ${minutes} minutes; it stays queued.`);
+  }
+}
+
+async function handleRunnerEvents(request, env, jobId, opts = {}) {
   if (await isIngestRateLimited(request, env)) {
     return new Response(null, { status: 429 });
   }
@@ -3857,7 +4038,7 @@ async function handleRunnerEvents(request, env, jobId) {
   try {
     const job = await env.DB.prepare(
       `SELECT id, runner_id, state, repository, pr_number, base_sha, head_sha, mode, level, model,
-        engine, credential_kind, config_effective FROM jobs WHERE id = ?`
+        engine, credential_kind, config_effective, events_from_seq FROM jobs WHERE id = ?`
     )
       .bind(jobId)
       .first();
@@ -3874,6 +4055,42 @@ async function handleRunnerEvents(request, env, jobId) {
     const nowIso = new Date().toISOString();
     const finished = lastOfType(events, "finished");
     const error = lastOfType(events, "error");
+    const fromSeq = toIntegerOrNull(job.events_from_seq) ?? 0;
+    let baseSeq = fromSeq;
+    if (events.length > 0) {
+      const seqRow = await env.DB.prepare(
+        "SELECT COALESCE(MAX(seq), 0) AS max_seq FROM job_events WHERE job_id = ?"
+      )
+        .bind(job.id)
+        .first();
+      baseSeq = toIntegerOrNull(seqRow?.max_seq) ?? 0;
+    }
+    const eventStatements = events.map((ev, i) =>
+      env.DB.prepare(
+        "INSERT INTO job_events (job_id, seq, type, at, payload) VALUES (?1, ?2, ?3, ?4, ?5)"
+      ).bind(job.id, baseSeq + i + 1, ev.type, truncateString(ev.at, 64), JSON.stringify(ev))
+    );
+
+    const cooldownUntil = finished ? cooldownResetAt(error, Date.parse(nowIso)) : null;
+    if (cooldownUntil) {
+      // The credential is out until reset_at: the job waits for it instead of failing, and the
+      // next attempt reads only its own events.
+      await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE jobs SET state = 'queued', runner_id = NULL, credential_fingerprint = NULL,
+            leased_at = NULL, heartbeat_at = NULL, attempts = 0, failure_class = ?1, reset_at = ?2,
+            events_from_seq = ?3
+          WHERE id = ?4 AND runner_id = ?5 AND state IN ('leased', 'running')`
+        ).bind(truncateString(error.failure_class), cooldownUntil, baseSeq + events.length, job.id, auth.runner_id),
+        ...eventStatements,
+        await runnerLaneEvent(env, job, "credential-cooldown", nowIso),
+      ]);
+      await afterResponse(opts, () =>
+        postVerdictOnly(env, opts, job, `waiting for the credential to reset at ${cooldownUntil}; the job requeued for then.`)
+      );
+      return new Response(null, { status: 204 });
+    }
+
     let set = "heartbeat_at = ?, state = 'running'";
     const setArgs = [nowIso];
     if (finished) {
@@ -3888,30 +4105,15 @@ async function handleRunnerEvents(request, env, jobId) {
       env.DB.prepare(
         `UPDATE jobs SET ${set} WHERE id = ? AND runner_id = ? AND state IN ('leased', 'running')`
       ).bind(...setArgs, job.id, auth.runner_id),
+      ...eventStatements,
     ];
-
-    if (events.length > 0) {
-      const seqRow = await env.DB.prepare(
-        "SELECT COALESCE(MAX(seq), 0) AS max_seq FROM job_events WHERE job_id = ?"
-      )
-        .bind(job.id)
-        .first();
-      const baseSeq = toIntegerOrNull(seqRow?.max_seq) ?? 0;
-      events.forEach((ev, i) => {
-        statements.push(
-          env.DB.prepare(
-            "INSERT INTO job_events (job_id, seq, type, at, payload) VALUES (?1, ?2, ?3, ?4, ?5)"
-          ).bind(job.id, baseSeq + i + 1, ev.type, truncateString(ev.at, 64), JSON.stringify(ev))
-        );
-      });
-    }
 
     if (finished) {
       const { results } = await env.DB.prepare(
-        `SELECT seq, type, payload FROM job_events WHERE job_id = ? AND type IN ('started', 'usage', 'error', 'agent')
+        `SELECT seq, type, payload FROM job_events WHERE job_id = ? AND seq > ? AND type IN ('started', 'usage', 'error', 'agent')
           ORDER BY seq`
       )
-        .bind(job.id)
+        .bind(job.id, fromSeq)
         .all();
       const earlier = [];
       for (const row of results ?? []) {
@@ -3925,6 +4127,9 @@ async function handleRunnerEvents(request, env, jobId) {
     }
 
     await env.DB.batch(statements);
+    if (finished) {
+      await afterResponse(opts, () => postFinishedJob(env, opts, job.id));
+    }
   } catch {
     return new Response(null, { status: 500 });
   }
@@ -4431,7 +4636,11 @@ export default {
       if (!match) {
         return new Response(null, { status: 404 });
       }
-      return handleRunnerEvents(request, env, match[1]);
+      return handleRunnerEvents(request, env, match[1], {
+        waitUntil: typeof ctx?.waitUntil === "function" ? ctx.waitUntil.bind(ctx) : undefined,
+        mint: opts.mintInstallationToken,
+        fetch: opts.fetch,
+      });
     }
 
     if (method === "GET" && pathname === "/runner/lease") {
@@ -4578,6 +4787,10 @@ export default {
 
   // wrangler.toml [triggers] crons (#183).
   async scheduled(event, env, ctx) {
+    if (event.cron === NO_RUNNER_CRON) {
+      ctx.waitUntil(sweepNoRunner(env, event.scheduledTime));
+      return;
+    }
     ctx.waitUntil(purgeExpired(env, new Date(event.scheduledTime)));
   },
 };
