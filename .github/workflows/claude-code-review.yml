@@ -5236,15 +5236,21 @@ jobs:
       paused_by: ${{ steps.liveness.outputs.paused_by }}
     steps:
       # GITHUB_TOKEN-authored label events start no workflow, so this cannot run a second round.
+      # A failed write fails the job, but only after the liveness comment posts (#219).
       - name: Apply the opt-in label a summon admitted under
+        id: apply-label
         if: needs.review.outputs.apply_label == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ needs.resolve.outputs.number }}
         run: |
-          gh api -X POST "repos/$REPO/issues/$PR/labels" -f 'labels[]=claude_review' --silent \
-            || echo "::warning::could not apply claude_review; the next push will await the label again (#219)"
+          for attempt in 1 2 3; do
+            gh api -X POST "repos/$REPO/issues/$PR/labels" -f 'labels[]=claude_review' --silent && exit 0
+            [ "$attempt" -lt 3 ] && sleep 5
+          done
+          echo "::error::could not apply claude_review after 3 attempts; the next push will await the label again (#219)"
+          echo "failed=true" >> "$GITHUB_OUTPUT"
       - name: Upsert liveness comment
         id: liveness
         env:
@@ -5827,6 +5833,9 @@ jobs:
             gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
           fi
           echo "liveness: $verdict"
+      - name: Fail when the opt-in label was not applied
+        if: steps.apply-label.outputs.failed == 'true'
+        run: exit 1
 
   # Fork heads get no secrets and therefore no review; without this the PR just goes
   # quiet, and silence reads as approval. github.token only, so it does not depend on
