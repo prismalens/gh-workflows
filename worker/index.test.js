@@ -6104,7 +6104,7 @@ describe("Jobs and lease (#184)", () => {
     assert.equal(res.status, 204);
     assert.deepEqual([claims[0][3], claims[0][4]], ["opencode", "api-key"]);
     const claim = db.queries.find((q) => /SET state='leased'/.test(q.sql));
-    assert.match(claim.sql, /WHERE state='queued' AND engine=\?4 AND credential_kind=\?5 ORDER BY created_at ASC LIMIT 1\)\s+AND state='queued'/);
+    assert.match(claim.sql, /WHERE state='queued' AND engine=\?4 AND credential_kind=\?5\s+AND \(reset_at IS NULL OR reset_at <= \?3\) ORDER BY created_at ASC LIMIT 1\)\s+AND state='queued'/);
     assert.match(claim.sql, /RETURNING id, repository, pr_number/);
     assert.equal(stub.calls.length, 0);
   });
@@ -6223,7 +6223,7 @@ function cpEventsDb({ job = cpJobRow(), maxSeq = 0, earlier = [] } = {}) {
   return cpRunnerDb((sql) => {
     if (/FROM jobs WHERE id = \?/.test(sql)) return job;
     if (/MAX\(seq\)/.test(sql)) return { max_seq: maxSeq };
-    if (/FROM job_events WHERE job_id = \? AND type IN/.test(sql)) {
+    if (/FROM job_events WHERE job_id = \? AND seq > \? AND type IN/.test(sql)) {
       return earlier.map((e, i) => ({ seq: i + 1, type: e.type, payload: JSON.stringify(e) }));
     }
     return null;
@@ -6325,7 +6325,8 @@ describe("Runner events (#184)", () => {
     assert.equal(res.status, 204);
     assert.equal(batches.length, 1);
     const batch = batches[0];
-    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql)).length, batch.length, "every write is in the batch");
+    // The poster's post_outcome is written after the round, outside it.
+    assert.equal(db.queries.filter((q) => CP_WRITE.test(q.sql) && !/post_outcome/.test(q.sql)).length, batch.length, "every write is in the batch");
 
     const jobUpdate = batch[0];
     assert.match(jobUpdate.sql, /UPDATE jobs SET heartbeat_at = \?, state = 'finished', conclusion = \?, finished_at = \?/);
@@ -7011,5 +7012,125 @@ describe("Webhook (#184 bullet 4)", () => {
     assert.equal(reviewableLinesFromFiles([f("a.js", 2500)], { maxFileLines: 0 }), 2500);
     // `*` crosses `/`, as Python's fnmatch does; `**/node_modules/**` needs a leading directory.
     assert.equal(reviewableLinesFromFiles([f("deep/x.min.css", 5), f("node_modules/a.js", 5), f("w/node_modules/a.js", 5)]), 5);
+  });
+});
+
+import { sweepNoRunner, NO_RUNNER_CRON } from "./index.js";
+import { POSTER_TOKEN_PERMISSIONS } from "./github-app.js";
+
+describe("Poster and the runner verdicts (#184)", () => {
+  const future = (ms) => new Date(Date.now() + ms).toISOString();
+  const laneReasons = (db) =>
+    db.queries.filter((q) => /INSERT INTO lane_events/.test(q.sql)).map((q) => cpInsertColumns(q).reason);
+
+  function gh() {
+    const calls = [];
+    const fetch = async (url, init = {}) => {
+      const u = new URL(url);
+      const method = init.method ?? "GET";
+      calls.push({ method, path: u.pathname, body: init.body ? JSON.parse(init.body) : undefined });
+      if (method === "GET") return new Response("[]", { status: 200 });
+      return new Response("{}", { status: method === "POST" ? 201 : 204 });
+    };
+    return { fetch, calls };
+  }
+
+  function postingDb(stored) {
+    return cpRunnerDb((sql) => {
+      if (/FROM jobs WHERE id = \?/.test(sql)) return cpJobRow();
+      if (/MAX\(seq\)/.test(sql)) return { max_seq: 0 };
+      if (/SELECT payload FROM job_events WHERE job_id = \? AND seq > \? ORDER BY seq/.test(sql)) {
+        return stored.map((e) => ({ payload: JSON.stringify(e) }));
+      }
+      if (/COUNT\(\*\) AS n FROM jobs/.test(sql)) return { n: 0 };
+      return null;
+    });
+  }
+
+  it("a rate limit with a reset_at requeues the job for then, records credential-cooldown, and writes no round", async () => {
+    const db = cpEventsDb();
+    const batches = cpRecordBatches(db);
+    const reset = future(3600_000);
+    const res = await cpPostEvents(db, [
+      cpEv("started", { engine: "opencode" }),
+      cpEv("error", { failure_class: "rate-limited", retryable: true, reset_at: reset, message: "429" }),
+      cpEv("finished", { conclusion: "failed" }),
+    ]);
+    assert.equal(res.status, 204);
+    const [batch] = batches;
+    assert.match(batch[0].sql, /UPDATE jobs SET state = 'queued', runner_id = NULL/);
+    assert.deepEqual(batch[0].args.slice(0, 3), ["rate-limited", new Date(Date.parse(reset)).toISOString(), 3]);
+    assert.deepEqual(laneReasons(db), ["credential-cooldown"]);
+    assert.equal(db.queries.filter((q) => /INSERT INTO usage_records/.test(q.sql)).length, 0);
+  });
+
+  it("a reset_at more than a day out is not a cooldown: the round finishes failed", async () => {
+    const db = cpEventsDb();
+    await cpPostEvents(db, [
+      cpEv("error", { failure_class: "account-limit", retryable: false, reset_at: future(3 * 86400_000), message: "x" }),
+      cpEv("finished", { conclusion: "failed" }),
+    ]);
+    assert.ok(db.queries.some((q) => /state = 'finished'/.test(q.sql)));
+    assert.deepEqual(laneReasons(db), []);
+  });
+
+  it("a finished round with its token revoked posts under a write token it then revokes, and records the outcome", async () => {
+    const stored = [
+      cpEv("started", { engine: "opencode", model: "m" }),
+      cpEv("finding", { path: "a.js", line: 3, side: "RIGHT", body: "_🎯 Functional Correctness_ | _🟠 Major_ | _⚡ Quick win_\n\nx" }),
+      cpEv("summary", { header: "## Code review", body: "## Code review\n\nOne." }),
+      { ...cpEv("finished", { conclusion: "completed" }), _meta: { token_revoked: true, exit: "success" } },
+    ];
+    const db = postingDb(stored);
+    const github = gh();
+    const minted = [];
+    const mint = async (args) => { minted.push(args); return { token: "ghs_poster", expires_at: "x" }; };
+    const res = await worker.fetch(
+      cpRunnerRequest(`/runner/jobs/${CP_JOB_ID}/events`, { body: { events: [stored[3]] } }),
+      { DB: db, GITHUB_APP_SLUG: "assayer-review-dev" },
+      { mintInstallationToken: mint, fetch: github.fetch },
+    );
+    assert.equal(res.status, 204);
+    assert.deepEqual(minted, [{ owner: "prismalens", repo: "sreforge", permissions: POSTER_TOKEN_PERMISSIONS }]);
+    assert.deepEqual(github.calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`), [
+      "POST /repos/prismalens/sreforge/pulls/183/comments",
+      "POST /repos/prismalens/sreforge/issues/183/comments",
+      "POST /repos/prismalens/sreforge/issues/183/comments",
+      "DELETE /installation/token",
+    ]);
+    const outcome = db.queries.find((q) => /SET post_outcome/.test(q.sql));
+    assert.equal(outcome.args[0], "posted: 1 inline, 0 refused, 1 summary");
+  });
+
+  it("a round whose token was not confirmed revoked posts nothing it wrote, says so, and records token-unrevoked", async () => {
+    const stored = [
+      cpEv("finding", { path: "a.js", line: 3, side: "RIGHT", body: "x" }),
+      cpEv("finished", { conclusion: "completed" }),
+    ];
+    const db = postingDb(stored);
+    const github = gh();
+    await worker.fetch(
+      cpRunnerRequest(`/runner/jobs/${CP_JOB_ID}/events`, { body: { events: [stored[1]] } }),
+      { DB: db, GITHUB_APP_SLUG: "assayer-review-dev" },
+      { mintInstallationToken: async () => ({ token: "t" }), fetch: github.fetch },
+    );
+    const writes = github.calls.filter((c) => c.method === "POST");
+    assert.equal(writes.length, 1);
+    assert.match(writes[0].path, /\/issues\/183\/comments$/);
+    assert.match(writes[0].body.body, /read token was not confirmed revoked/);
+    assert.equal(db.queries.find((q) => /SET post_outcome/.test(q.sql)).args[0], "did-not-post: token-unrevoked");
+  });
+
+  it("the no-runner sweep records the verdict once per job past RUNNER_TIMEOUT_S and leaves the job queued", async () => {
+    const job = { id: CP_JOB_ID, repository: "prismalens/sreforge", pr_number: 183, head_sha: CP_HEAD, engine: "opencode", model: null };
+    const db = cpRunnerDb((sql) => (/no_runner_at IS NULL AND created_at < \?1/.test(sql) ? [job] : null));
+    const now = Date.parse("2026-09-26T12:00:00Z");
+    await sweepNoRunner(db === null ? {} : { DB: db, RUNNER_TIMEOUT_S: "600" }, now);
+    const select = db.queries.find((q) => /no_runner_at IS NULL/.test(q.sql));
+    assert.equal(select.args[0], "2026-09-26T11:50:00.000Z");
+    assert.ok(db.queries.some((q) => /UPDATE jobs SET no_runner_at = \?1 WHERE id = \?2 AND no_runner_at IS NULL/.test(q.sql)));
+    assert.deepEqual(laneReasons(db), ["no-runner"]);
+    assert.ok(!db.queries.some((q) => /SET state/.test(q.sql)));
+    assert.equal(NO_RUNNER_CRON, "2-59/5 * * * *");
   });
 });

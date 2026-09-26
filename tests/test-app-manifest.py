@@ -53,6 +53,19 @@ def main():
             fails.append(f"the installation token asks for {sorted(extra)}, which the App manifest does not grant")
         print(f"  installation token permissions: {token_perms}")
 
+    m = re.search(r"POSTER_TOKEN_PERMISSIONS\s*=\s*Object\.freeze\((\{.*?\})\)", MINTER.read_text(), re.S)
+    if not m:
+        fails.append("POSTER_TOKEN_PERMISSIONS = Object.freeze({...}) not found in worker/github-app.js")
+    else:
+        poster_perms = json.loads(m.group(1))
+        # The poster writes comments and review comments (#184); it never gets contents.
+        if "contents" in poster_perms:
+            fails.append("the poster token must not ask for contents")
+        beyond = {k: v for k, v in poster_perms.items() if EXPECTED_PERMISSIONS.get(k) not in (v, "write")}
+        if beyond:
+            fails.append(f"the poster token asks for {beyond}, beyond what the App manifest grants")
+        print(f"  poster token permissions: {poster_perms}")
+
     print(f"  manifest default_permissions: {perms}")
     if fails:
         for f in fails:

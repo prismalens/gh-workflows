@@ -698,7 +698,37 @@ cron: it only matters while a runner is polling. A lease is claimed only for an
 
 On `finished`, the events route writes the round: one `usage_records` row keyed by the job id
 (`ingest_auth = 'runner'`, `engine`, repository and range from the job) and one `round_agents` row
-per `agent` event. `finding` and `summary` events stay in `job_events` for the poster (bullet 5).
+per `agent` event. `finding` and `summary` events stay in `job_events` for the poster.
+
+### The poster and the two runner verdicts
+
+After the round is written, `worker/poster.js` publishes it under the App's login
+(`GITHUB_APP_SLUG[bot]`). It reads this attempt's events from `job_events` and nothing else, and
+mints a separate token with `pull_requests` and `issues` write (`POSTER_TOKEN_PERMISSIONS`), which
+it revokes when done. The token never leaves the Worker.
+
+- Each `finding` becomes one review comment on the head commit. A credential-shaped body, a missing
+  line, a path outside the checkout, or a 422 from GitHub is counted as refused, never fatal.
+- The last `summary` becomes one issue comment.
+- Its own liveness comment is upserted: `<!-- claude-review-liveness rounds=N sha=<head> engine=<engine> -->`.
+  It PATCHes only a comment authored by the App. The Actions lane upserts only `github-actions[bot]`'s,
+  so the two never touch each other's.
+- It never calls `POST /pulls/:n/reviews`, so a runner round cannot approve or block.
+- A round whose `finished._meta.token_revoked` is not `true` posts none of what it wrote. The
+  liveness comment says so, and `jobs.post_outcome` records `did-not-post: token-unrevoked`.
+
+`jobs.post_outcome` records `posted: <n> inline, <n> refused, <n> summary`, `did-not-post: <why>`
+or `post-failed: <status>`. In production the post runs under `waitUntil`, after the runner's last
+call has been answered.
+
+- **`credential-cooldown`:** a round that finishes with a `rate-limited` or `account-limit` error
+  whose `reset_at` is less than a day out requeues. It writes no `usage_records` row, `attempts`
+  goes back to 0, and the lease skips it until `reset_at`. `events_from_seq` marks where the next
+  attempt's events start. A `lane_events` row records the reason, and the liveness comment names
+  the reset time.
+- **`no-runner`:** the `2-59/5 * * * *` cron finds queued jobs older than `RUNNER_TIMEOUT_S` with
+  no verdict yet. It stamps `no_runner_at` and writes a `lane_events` row, and the liveness comment
+  says no runner took the job. The job stays queued.
 
 ### The installation token
 
@@ -728,6 +758,8 @@ the lease at 20 s and batches events at 10 s or more, which stays inside it.
 | `WEBHOOK_JOB_ENGINE` | var | Engine of a job the webhook enqueues; default `opencode` |
 | `WEBHOOK_JOB_CREDENTIAL_KIND` | var | Credential kind of a job the webhook enqueues; default `keyless`, so a runner with no API key (opencode's free Zen models) can take it |
 | `RUNNER_HEARTBEAT_TIMEOUT_S` | var | Seconds without a heartbeat before a lease expires; default 300 |
+| `RUNNER_TIMEOUT_S` | var | Seconds a job may sit queued before the no-runner verdict; default 900 |
+| `GITHUB_APP_SLUG` | var | The App's slug; the poster finds its own liveness comment by `<slug>[bot]`. Unset, nothing is posted (`did-not-post: app-slug-unconfigured`) |
 | `LEASE_POLL_MS` | var | Interval between claim attempts inside one long-poll; default 2000 |
 
 ### Registering the App
