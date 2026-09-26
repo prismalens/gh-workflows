@@ -284,6 +284,8 @@ export interface FleetRepoRow {
   last_round: FleetLastRound | null;
   /** All-time, not windowed. */
   last_recorded_at: string | null;
+  /** Inside the window (#179): lane events skipped as an unchanged patch, rounds on an unmerged base PR. */
+  restacks: { unchanged_patch: number; unmerged_base: number };
 }
 
 /** GET /api/fleet/repos: aggregates only, windowed on the Worker (#185). */
@@ -356,4 +358,36 @@ export interface FleetFindingsResponse {
   totals: FleetFindingsCounts;
   repositories: FleetFindingsRepo[];
   review_to_merge_hours: number[];
+}
+
+/** `ingest_auth` values ('oidc', 'bearer', 'runner') to row counts; a null column counts as `unrecorded`. */
+export type IngestAuthCounts = Record<string, number>;
+
+/** One repository's rows by ingest table, written in the window. */
+export interface OpsIdentityRow {
+  repository: string;
+  tables: Partial<Record<OpsIdentityTable, IngestAuthCounts>>;
+}
+
+export const OPS_IDENTITY_TABLES = ["usage_records", "lane_events", "prs", "review_findings"] as const;
+export type OpsIdentityTable = (typeof OPS_IDENTITY_TABLES)[number];
+
+/** GET /api/ops (#179, #185): aggregates only, over the Worker's fixed 7-day window. */
+export interface OpsResponse {
+  window: { since: string; days: number };
+  identity: OpsIdentityRow[];
+  credentials: { repository: string; credential_type: string | null; rounds: number }[];
+  health: {
+    repository: string;
+    reports: number;
+    last_received_at: string;
+    unaccounted: number;
+    startup_failures: number;
+  }[];
+  worker: {
+    version_id: string | null;
+    version_tag: string | null;
+    version_timestamp: string | null;
+    d1_size_bytes: number | null;
+  };
 }

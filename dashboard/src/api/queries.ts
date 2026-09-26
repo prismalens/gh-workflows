@@ -252,6 +252,16 @@ export function useFleetReposQuery(range: StandardRangeKey) {
   });
 }
 
+/** The Ops page's one request (#179). */
+export function useOpsQuery() {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["ops"],
+    queryFn: () => api.fetchOps(),
+    staleTime: 30_000,
+  });
+}
+
 /** The Worker's cap on GET /api/health-reports: 200 weekly rows. */
 export const MAX_HEALTH_REPORTS = 200;
 

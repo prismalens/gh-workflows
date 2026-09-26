@@ -76,11 +76,12 @@ describe("the nav (#185)", () => {
   it("has a Review group and an Operate group, and no longer lists PRs, Rounds or Failures", async () => {
     renderRoute({ path: "/", api });
     const nav = await screen.findByRole("navigation", { name: "Main" });
-    expect(nav.textContent).toBe("TodayReviewInboxFindingsReposOperateFleet");
+    expect(nav.textContent).toBe("TodayReviewInboxFindingsReposOperateFleetOps");
     for (const gone of ["Overview", "PRs", "Rounds", "Failures"]) {
       expect(within(nav).queryByRole("link", { name: gone })).not.toBeInTheDocument();
     }
     expect(within(nav).getByRole("link", { name: "Fleet" }).getAttribute("href")).toMatch(/^\/fleet/);
+    expect(within(nav).getByRole("link", { name: "Ops" }).getAttribute("href")).toBe("/ops");
   });
 });
 

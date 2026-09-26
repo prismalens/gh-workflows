@@ -3076,8 +3076,30 @@ async function handleFleetRepos(url, env) {
       malformedByLayer.push({ layer, rows: rows.results ?? [] });
     }
 
+    // Restack visibility (#179). Lane events carry no session_id, so the 50-round cut
+    // falls back to its recorded_at bound for them.
+    const unchangedPatch = await (since === null
+      ? db.prepare(
+          "SELECT repository, COUNT(*) AS unchanged_patch FROM lane_events WHERE reason = 'unchanged-patch' GROUP BY repository"
+        )
+      : db
+          .prepare(
+            "SELECT repository, COUNT(*) AS unchanged_patch FROM lane_events WHERE recorded_at >= ? AND reason = 'unchanged-patch' GROUP BY repository"
+          )
+          .bind(since)
+    ).all();
+    const unmergedBase = await windowed(
+      `SELECT repository, COUNT(*) AS unmerged_base FROM usage_records WHERE ${and} base_pr_number IS NOT NULL GROUP BY repository`
+    ).all();
+
     const lastRecordedByRepo = new Map(
       (everPosted.results ?? []).map((r) => [r.repository, r.last_recorded_at])
+    );
+    const unchangedPatchByRepo = new Map(
+      (unchangedPatch.results ?? []).map((r) => [r.repository, r.unchanged_patch])
+    );
+    const unmergedBaseByRepo = new Map(
+      (unmergedBase.results ?? []).map((r) => [r.repository, r.unmerged_base])
     );
     const countsByRepo = new Map((counts.results ?? []).map((r) => [r.repository, r]));
     const lastRoundByRepo = new Map((lastRounds.results ?? []).map((r) => [r.repository, r]));
@@ -3099,6 +3121,10 @@ async function handleFleetRepos(url, env) {
             }
           : null,
         last_recorded_at: lastRecordedByRepo.get(repository) ?? null,
+        restacks: {
+          unchanged_patch: unchangedPatchByRepo.get(repository) ?? 0,
+          unmerged_base: unmergedBaseByRepo.get(repository) ?? 0,
+        },
       };
     });
 
@@ -3117,6 +3143,94 @@ async function handleFleetRepos(url, env) {
         rounds: repositories.reduce((sum, r) => sum + r.rounds, 0),
         repositories,
         malformed_configs,
+      }),
+      { headers: READ_HEADERS }
+    );
+  } catch {
+    return new Response(JSON.stringify({ error: "query failed" }), {
+      status: 500,
+      headers: READ_HEADERS,
+    });
+  }
+}
+
+// Each ingest table and the column that says when a row was last written; prs and
+// review_findings are upserted, so a row shows its most recent writer (#179).
+const OPS_IDENTITY_TABLES = [
+  ["usage_records", "recorded_at"],
+  ["lane_events", "recorded_at"],
+  ["prs", "updated_at"],
+  ["review_findings", "last_swept_at"],
+];
+const OPS_WINDOW_DAYS = 7;
+
+// GET /api/ops (#179, #185): how stats arrived, credential types, health report
+// receipt, Worker version and D1 size. Aggregates only, never a text column.
+async function handleOps(env) {
+  const db = env.DB;
+  const since = new Date(Date.now() - OPS_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  try {
+    const identity = new Map();
+    let d1SizeBytes = null;
+    for (const [table, column] of OPS_IDENTITY_TABLES) {
+      const res = await db
+        .prepare(
+          `SELECT repository, ingest_auth, COUNT(*) AS n FROM ${table} WHERE ${column} >= ? GROUP BY repository, ingest_auth`
+        )
+        .bind(since)
+        .all();
+      if (d1SizeBytes === null && Number.isFinite(res?.meta?.size_after)) {
+        d1SizeBytes = res.meta.size_after;
+      }
+      for (const row of res?.results ?? []) {
+        if (!identity.has(row.repository)) identity.set(row.repository, {});
+        const tables = identity.get(row.repository);
+        tables[table] ??= {};
+        const key = typeof row.ingest_auth === "string" && row.ingest_auth ? row.ingest_auth : "unrecorded";
+        tables[table][key] = (tables[table][key] ?? 0) + (Number(row.n) || 0);
+      }
+    }
+
+    const credentials = await db
+      .prepare(
+        "SELECT repository, credential_type, COUNT(*) AS rounds FROM usage_records WHERE recorded_at >= ? GROUP BY repository, credential_type ORDER BY repository, credential_type"
+      )
+      .bind(since)
+      .all();
+
+    const health = await db
+      .prepare(
+        "SELECT repository, COUNT(*) AS reports, MAX(received_at) AS last_received_at, SUM(CASE WHEN json_valid(unaccounted_runs) THEN json_array_length(unaccounted_runs) ELSE 0 END) AS unaccounted, SUM(startup_failures) AS startup_failures FROM health_reports WHERE received_at >= ? GROUP BY repository ORDER BY repository"
+      )
+      .bind(since)
+      .all();
+
+    const meta = env.CF_VERSION_METADATA;
+    return new Response(
+      JSON.stringify({
+        window: { since, days: OPS_WINDOW_DAYS },
+        identity: [...identity.keys()].sort().map((repository) => ({
+          repository,
+          tables: identity.get(repository),
+        })),
+        credentials: (credentials.results ?? []).map((r) => ({
+          repository: r.repository,
+          credential_type: r.credential_type ?? null,
+          rounds: Number(r.rounds) || 0,
+        })),
+        health: (health.results ?? []).map((r) => ({
+          repository: r.repository,
+          reports: Number(r.reports) || 0,
+          last_received_at: r.last_received_at,
+          unaccounted: Number(r.unaccounted) || 0,
+          startup_failures: Number(r.startup_failures) || 0,
+        })),
+        worker: {
+          version_id: typeof meta?.id === "string" ? meta.id : null,
+          version_tag: typeof meta?.tag === "string" && meta.tag ? meta.tag : null,
+          version_timestamp: typeof meta?.timestamp === "string" ? meta.timestamp : null,
+          d1_size_bytes: d1SizeBytes,
+        },
       }),
       { headers: READ_HEADERS }
     );
@@ -4492,6 +4606,14 @@ export default {
         return authError;
       }
       return handleFleetRepos(url, env);
+    }
+
+    if (method === "GET" && pathname === "/api/ops") {
+      const authError = await verifyAccess(request, env);
+      if (authError) {
+        return authError;
+      }
+      return handleOps(env);
     }
 
     if (method === "GET" && pathname === "/api/fleet/findings") {

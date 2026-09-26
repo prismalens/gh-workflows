@@ -5,6 +5,7 @@ import type {
   FindingsResponse,
   FleetFindingsResponse,
   FleetReposResponse,
+  OpsResponse,
   HealthReportRow,
   HealthReportsResponse,
   LaneEventRow,
@@ -603,6 +604,7 @@ export interface TelemetryApi {
   fetchFleetRepos(query: FleetReposQuery): Promise<FleetReposResponse>;
   fetchHealthReports(query?: HealthReportsQuery): Promise<HealthReportsResponse>;
   fetchFleetFindings(query: FleetFindingsQuery): Promise<FleetFindingsResponse>;
+  fetchOps(): Promise<OpsResponse>;
   /** Set only by the fixture table, so the UI can say the rounds are invented. */
   readonly fixtures?: boolean;
 }
@@ -619,6 +621,7 @@ export const httpApi: TelemetryApi = {
   fetchFleetRepos: (query) => getJson(fleetReposUrl(query), isFleetReposResponse),
   fetchHealthReports: (query = {}) => getJson(healthReportsUrl(query), isHealthReportsResponse),
   fetchFleetFindings: (query) => getJson(fleetFindingsUrl(query), isFleetFindingsResponse),
+  fetchOps: () => getJson("/api/ops", isOpsResponse),
 };
 
 /**
@@ -684,6 +687,12 @@ function isNullableString(value: unknown): boolean {
   return value === null || typeof value === "string";
 }
 
+function isRestacks(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const r = value as Record<string, unknown>;
+  return typeof r.unchanged_patch === "number" && typeof r.unmerged_base === "number";
+}
+
 function isFleetRepoRow(row: unknown): boolean {
   if (!row || typeof row !== "object") return false;
   const r = row as Record<string, unknown>;
@@ -691,7 +700,8 @@ function isFleetRepoRow(row: unknown): boolean {
     typeof r.repository !== "string" ||
     typeof r.rounds !== "number" ||
     typeof r.denials !== "number" ||
-    !isNullableString(r.last_recorded_at)
+    !isNullableString(r.last_recorded_at) ||
+    !isRestacks(r.restacks)
   ) {
     return false;
   }
@@ -783,5 +793,72 @@ export function isFleetFindingsResponse(value: unknown): value is FleetFindingsR
         typeof (r as Record<string, unknown>).repository === "string" &&
         isHoursList((r as Record<string, unknown>).review_to_merge_hours),
     )
+  );
+}
+
+function isCountMap(value: unknown): boolean {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.values(value).every((n) => typeof n === "number")
+  );
+}
+
+function isOpsIdentityRow(row: unknown): boolean {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  return (
+    typeof r.repository === "string" &&
+    !!r.tables &&
+    typeof r.tables === "object" &&
+    Object.values(r.tables).every(isCountMap)
+  );
+}
+
+function isOpsCredentialRow(row: unknown): boolean {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  return (
+    typeof r.repository === "string" &&
+    isNullableString(r.credential_type) &&
+    typeof r.rounds === "number"
+  );
+}
+
+function isOpsHealthRow(row: unknown): boolean {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  return (
+    typeof r.repository === "string" &&
+    typeof r.reports === "number" &&
+    typeof r.last_received_at === "string" &&
+    typeof r.unaccounted === "number" &&
+    typeof r.startup_failures === "number"
+  );
+}
+
+export function isOpsResponse(value: unknown): value is OpsResponse {
+  if (!value || typeof value !== "object") return false;
+  const val = value as Record<string, unknown>;
+  const win = val.window as Record<string, unknown> | null | undefined;
+  const w = val.worker as Record<string, unknown> | null | undefined;
+  return (
+    !!win &&
+    typeof win === "object" &&
+    typeof win.since === "string" &&
+    typeof win.days === "number" &&
+    Array.isArray(val.identity) &&
+    val.identity.every(isOpsIdentityRow) &&
+    Array.isArray(val.credentials) &&
+    val.credentials.every(isOpsCredentialRow) &&
+    Array.isArray(val.health) &&
+    val.health.every(isOpsHealthRow) &&
+    !!w &&
+    typeof w === "object" &&
+    isNullableString(w.version_id) &&
+    isNullableString(w.version_tag) &&
+    isNullableString(w.version_timestamp) &&
+    (w.d1_size_bytes === null || typeof w.d1_size_bytes === "number")
   );
 }

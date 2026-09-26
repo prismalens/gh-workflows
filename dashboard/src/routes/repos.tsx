@@ -107,6 +107,12 @@ function ReposPage() {
                     <TableHead>Type</TableHead>
                     <TableHead>Last decoded state</TableHead>
                     <TableHead>Denials</TableHead>
+                    <TableHead title="Lane events that skipped a restack because the patch did not change">
+                      Unchanged-patch skips
+                    </TableHead>
+                    <TableHead title="Rounds whose base was another open pull request">
+                      On an unmerged base
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -163,6 +169,12 @@ function ReposPage() {
                         )}
                       </TableCell>
                       <TableCell className="tabular">{formatCount(repo.denials)}</TableCell>
+                      <TableCell className="tabular">
+                        {formatCount(repo.restacks.unchanged_patch)}
+                      </TableCell>
+                      <TableCell className="tabular">
+                        {formatCount(repo.restacks.unmerged_base)}
+                      </TableCell>
                     </TableRow>
                     );
                   })}
@@ -172,7 +184,8 @@ function ReposPage() {
           </Card>
 
           <p className="text-xs text-muted-foreground">
-            A repository with no round in this window is still listed.
+            A repository with no round in this window is still listed. Restack counts include only
+            rounds from lanes that record them (#173), so older rounds count as zero.
           </p>
         </>
       )}
