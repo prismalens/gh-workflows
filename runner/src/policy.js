@@ -1,3 +1,6 @@
+import { realpathSync } from 'node:fs';
+import path from 'node:path';
+
 // The lane's --allowed-tools list, as an ACP permission policy. The list is load-bearing in
 // the Actions lane (prismalens/prismalens#403); here it is the answer to every
 // session/request_permission. `gh pr review` is deliberately absent. No unrestricted shell.
@@ -51,12 +54,51 @@ function commandOf(toolCall) {
   return null;
 }
 
-// Decide once per request. Returns {allow, reason}.
-export function decide(toolCall) {
+const PATH_KEYS = ['filePath', 'file_path', 'path', 'notebook_path'];
+
+function pathsOf(toolCall) {
+  const paths = [];
+  for (const loc of Array.isArray(toolCall.locations) ? toolCall.locations : []) {
+    if (loc && typeof loc.path === 'string') paths.push(loc.path);
+  }
+  const ri = toolCall.rawInput;
+  if (ri && typeof ri === 'object') {
+    for (const k of PATH_KEYS) if (typeof ri[k] === 'string' && ri[k]) paths.push(ri[k]);
+  }
+  return paths;
+}
+
+function within(root, p) {
+  const rel = path.relative(root, p);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+// A read or search stays inside the checkout, lexically and after symlinks (#184).
+// `~` is refused outright: the engine, not this process, would expand it.
+export function pathInside(root, candidate) {
+  if (candidate.startsWith('~')) return false;
+  const realRoot = realpathSync.native(root);
+  if (!within(realRoot, path.resolve(realRoot, candidate))) return false;
+  // Unnormalised, so `link/..` follows the link first, as the kernel would.
+  const joined = path.isAbsolute(candidate) ? candidate : `${realRoot}${path.sep}${candidate}`;
+  let real;
+  try { real = realpathSync.native(joined); } catch { return true; } // absent: nothing to read
+  return within(realRoot, real);
+}
+
+// Decide once per request. Returns {allow, reason}. With `root`, a read or search whose
+// path leaves the checkout is refused.
+export function decide(toolCall, { root } = {}) {
   const kind = toolCall.kind || 'other';
   const name = String(toolCall.name || toolCall.title || '');
   if (COMMENT_TOOL_IDS.has(name)) return { allow: true, reason: 'comment tool' };
-  if (READ_KINDS.has(kind)) return { allow: true, reason: `kind ${kind}` };
+  if (READ_KINDS.has(kind)) {
+    if (root && (kind === 'read' || kind === 'search')) {
+      const outside = pathsOf(toolCall).find((p) => !pathInside(root, p));
+      if (outside !== undefined) return { allow: false, reason: 'path outside the checkout' };
+    }
+    return { allow: true, reason: `kind ${kind}` };
+  }
   if (kind === 'execute') {
     const cmd = commandOf(toolCall);
     if (cmd !== null && commandAllowed(cmd)) return { allow: true, reason: 'allowed gh command' };

@@ -43,3 +43,30 @@ test('chooseOption prefers once-only forms and returns null when none fit', () =
   assert.equal(chooseOption([{ optionId: 'a', kind: 'allow_always' }], false), null);
   assert.equal(chooseOption([], true), null);
 });
+
+test('a read or search outside the checkout is refused, lexically and through symlinks (#184)', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const base = mkdtempSync(path.join(tmpdir(), 'policy-'));
+  const root = path.join(base, 'checkout');
+  mkdirSync(path.join(root, 'src'), { recursive: true });
+  mkdirSync(path.join(base, 'round'));
+  writeFileSync(path.join(root, 'src', 'a.js'), 'x');
+  writeFileSync(path.join(base, 'round', 'tool-log.jsonl'), 'secret');
+  writeFileSync(path.join(base, 'secret'), 'secret');
+  symlinkSync(path.join(base, 'round'), path.join(root, 'out'));
+
+  const read = (p) => decide({ kind: 'read', locations: [{ path: p }], rawInput: { filePath: p } }, { root });
+  assert.equal(read('src/a.js').allow, true);
+  assert.equal(read(path.join(root, 'src', 'a.js')).allow, true);
+  assert.equal(read('src/missing.js').allow, true, 'absent inside the checkout: nothing to read');
+  for (const p of ['/proc/self/environ', '/dev/stdin', '../round/tool-log.jsonl', 'out/tool-log.jsonl', 'out/../secret', '~/.config/gh/hosts.yml']) {
+    const d = read(p);
+    assert.equal(d.allow, false, p);
+    assert.equal(d.reason, 'path outside the checkout', p);
+  }
+  assert.equal(decide({ kind: 'search', rawInput: { path: '/etc', pattern: 'x' } }, { root }).allow, false);
+  assert.equal(decide({ kind: 'search', rawInput: { pattern: 'x' } }, { root }).allow, true, 'no path: the engine searches its cwd');
+  assert.equal(decide({ kind: 'read', rawInput: { filePath: '/proc/self/environ' } }).allow, true, 'no root: the caller opted out');
+});

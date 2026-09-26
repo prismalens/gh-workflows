@@ -135,7 +135,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
   const app = acp.client({ name: 'assayer-runner' })
     .onRequest(acp.methods.client.session.requestPermission, (ctx) => {
       const { toolCall, options } = ctx.params;
-      const d = decide(toolCall);
+      const d = decide(toolCall, { root: cwd });
       const optionId = chooseOption(options || [], d.allow);
       raw('permission', { toolCall, options, decision: d, optionId });
       if (optionId === null) return { outcome: { outcome: 'cancelled' } }; // agent offered no once-only option
