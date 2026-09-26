@@ -394,6 +394,7 @@ jobs:
       # auto-pause counting) needs no separate refusal channel. Story: #105.
       skip_reason: ${{ (steps.manifest.outputs.refused == 'true' && 'refused-size') || steps.mode.outputs.skip_reason }}
       fallback_reason: ${{ steps.mode.outputs.fallback_reason }}
+      apply_label: ${{ steps.mode.outputs.apply_label }}
       reviewable_lines: ${{ steps.manifest.outputs.reviewable_lines }}
       max_reviewable_lines: ${{ steps.manifest.outputs.max_reviewable_lines }}
       max_file_lines: ${{ steps.manifest.outputs.max_file_lines }}
@@ -1517,9 +1518,16 @@ jobs:
             exit 0
           fi
           if [ "$ADMISSION" = "label" ] && [ "$HAS_OPT_IN_LABEL" != "true" ]; then
-            echo "skipping review: admission is by label and the claude_review label is absent"
-            emit skip awaiting-label
-            exit 0
+            # A review summon already passed the live write-access check in `resolve`. It admits
+            # by having `announce` apply the label, so the label stays the one admitting state (#219).
+            if [ "${SUMMON:-}" = "incremental" ] || [ "${SUMMON:-}" = "full" ]; then
+              echo "admission is by label: a maintainer's summon admits and applies claude_review (#219)"
+              echo "apply_label=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "skipping review: admission is by label and the claude_review label is absent"
+              emit skip awaiting-label
+              exit 0
+            fi
           fi
 
           # Skip authors check for automatic pull_request events — evaluated before the
@@ -5227,6 +5235,22 @@ jobs:
       round_ordinal: ${{ steps.liveness.outputs.round_ordinal }}
       paused_by: ${{ steps.liveness.outputs.paused_by }}
     steps:
+      # GITHUB_TOKEN-authored label events start no workflow, so this cannot run a second round.
+      # A failed write fails the job, but only after the liveness comment posts (#219).
+      - name: Apply the opt-in label a summon admitted under
+        id: apply-label
+        if: needs.review.outputs.apply_label == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.resolve.outputs.number }}
+        run: |
+          for attempt in 1 2 3; do
+            gh api -X POST "repos/$REPO/issues/$PR/labels" -f 'labels[]=claude_review' --silent && exit 0
+            [ "$attempt" -lt 3 ] && sleep 5
+          done
+          echo "::error::could not apply claude_review after 3 attempts; the next push will await the label again (#219)"
+          echo "failed=true" >> "$GITHUB_OUTPUT"
       - name: Upsert liveness comment
         id: liveness
         env:
@@ -5418,7 +5442,7 @@ jobs:
             verdict_kind="skip-label"
           elif [ "$SKIP_REASON" = "awaiting-label" ]; then
             verdict="not admitted at \`$short\`: this repository admits reviews by label (\`admission: label\`). \
-          **This head has no machine review on record.** Apply the \`claude_review\` label to start a round."
+          **This head has no machine review on record.** Apply the \`claude_review\` label, or comment \`@claude review\` as a maintainer, to start a round."
             verdict_kind="awaiting-label"
           elif [ "$SKIP_REASON" = "paused" ]; then
             # The `@claude review` text below cannot self-summon: GITHUB_TOKEN-authored events
@@ -5809,6 +5833,9 @@ jobs:
             gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
           fi
           echo "liveness: $verdict"
+      - name: Fail when the opt-in label was not applied
+        if: steps.apply-label.outputs.failed == 'true'
+        run: exit 1
 
   # Fork heads get no secrets and therefore no review; without this the PR just goes
   # quiet, and silence reads as approval. github.token only, so it does not depend on

@@ -132,7 +132,7 @@ jobs:
 15. **Admission Is a Property of the Key**: `review.admission` in `.github/claude-review.yml` at the base ref decides when the lane reviews: `auto` (default), `label` or `off`.
     Config resolves through five layers, broadest first: workflow, org, repo, label, comment. Whether a narrower layer may override a key is a property of the key, not of the layer: `default_model` yields to a `--model` summon, `admission` does not.
     `off`: nothing reviews, comments or records a marker; the lane event is `admission-off`. Reversed by a commit to the base branch.
-    `label`: only pull requests carrying `claude_review` are reviewed; others get an `awaiting-label` verdict. Reversed by applying the label, with no push needed once the stub sends `labeled`.
+    `label`: only pull requests carrying `claude_review` are reviewed; others get an `awaiting-label` verdict. Reversed by applying the label, with no push needed once the stub sends `labeled`, or by a `@claude review` or `@claude full review` from someone with write access, which runs the round and applies the label (#219).
     `claude_review_skip` keeps the lane off one pull request under any admission (`skip-label`). Reversed by removing it.
     `@claude pause` stays the soft, comment-layer form (principle 11). Summons and in-thread replies are refused under all three stops.
     Consumer stubs must list `labeled, unlabeled` in `pull_request.types` and carry the principle-7 `cancel-in-progress`. Without them `auto` and `off` are unaffected, and a label takes effect at the next push or `@claude review`.

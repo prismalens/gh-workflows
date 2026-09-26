@@ -1,0 +1,33 @@
+# Proves the runner's job image builds and carries its tools (#184). Not a required check: it sits
+# behind a path filter, and a required check may not (AGENTS.md).
+name: Runner image
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - runner/**
+      - .github/workflows/runner-image.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-image-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image
+        working-directory: runner
+        run: node scripts/build-image.mjs --runtime docker | tee "$RUNNER_TEMP/image.txt"
+      - name: The image carries its tools
+        run: |
+          tag="$(tail -n1 "$RUNNER_TEMP/image.txt" | cut -d' ' -f1)"
+          docker run --rm --entrypoint '' "$tag" sh -c 'actionlint -version && shellcheck --version && gh --version && opencode --version && claude --version && socat -V | head -n2'
