@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { healthReportsUrl, httpApi } from "@/api/client";
-import type { HealthReportRow } from "@/api/types";
+import type { HealthReportRow, RoundRow } from "@/api/types";
 import { makeFixtureApi } from "@/fixtures/api";
 import { makeRounds } from "@/fixtures/rounds";
 import { renderRoute } from "@/test/renderRoute";
@@ -96,7 +96,7 @@ describe("/repos/$owner/$repo: the weekly health tab (#179)", () => {
       healthRow({ id: 7, repository: "prismalens/sreforge", runs_seen: 999 }),
     ]);
     const spy = vi.spyOn(api, "fetchHealthReports");
-    renderRoute({ path: `/repos/${REPO}`, api });
+    renderRoute({ path: `/repos/${REPO}?tab=health`, api });
 
     const panel = await screen.findByTestId("weekly-health");
     expect(screen.getByRole("heading", { name: REPO })).toBeInTheDocument();
@@ -125,7 +125,7 @@ describe("/repos/$owner/$repo: the weekly health tab (#179)", () => {
       }),
       healthRow({ id: 2, window_start: "2026-09-07T00:00:00Z", repository_id: null, ingest_auth: "bearer" }),
     ]);
-    renderRoute({ path: `/repos/${REPO}`, api });
+    renderRoute({ path: `/repos/${REPO}?tab=health`, api });
 
     const [first, second] = await screen.findAllByTestId("health-row");
     fireEvent.click(within(first).getByText("2"));
@@ -143,7 +143,7 @@ describe("/repos/$owner/$repo: the weekly health tab (#179)", () => {
     const api = apiWith([
       healthRow({ runs_accounted: 37, unaccounted_runs: "not json", lane_events_by_reason: "[]" }),
     ]);
-    renderRoute({ path: `/repos/${REPO}`, api });
+    renderRoute({ path: `/repos/${REPO}?tab=health`, api });
 
     const row = await screen.findByTestId("health-row");
     const degraded = within(row).getAllByTestId("degraded");
@@ -153,7 +153,7 @@ describe("/repos/$owner/$repo: the weekly health tab (#179)", () => {
   });
 
   it("says no report has arrived rather than showing an empty table", async () => {
-    renderRoute({ path: `/repos/${REPO}`, api: apiWith([]) });
+    renderRoute({ path: `/repos/${REPO}?tab=health`, api: apiWith([]) });
     expect(await screen.findByText(`No health report has arrived for ${REPO}`)).toBeInTheDocument();
     expect(screen.queryByRole("table")).toBeNull();
   });
@@ -162,9 +162,49 @@ describe("/repos/$owner/$repo: the weekly health tab (#179)", () => {
     const reports = Array.from({ length: 201 }, (_, i) =>
       healthRow({ id: i + 1, window_start: `2026-01-01T00:00:${String(i % 60).padStart(2, "0")}Z` }),
     );
-    renderRoute({ path: `/repos/${REPO}`, api: apiWith(reports) });
+    renderRoute({ path: `/repos/${REPO}?tab=health`, api: apiWith(reports) });
     await waitFor(() =>
       expect(screen.getByText(/Only the newest 200 reports are shown/)).toBeInTheDocument(),
     );
+  });
+});
+
+describe("/repos/$owner/$repo: five tabs, config read-only (#185, #78)", () => {
+  const SRE = "prismalens/sreforge";
+
+  it("renders the five tabs and opens on PRs", async () => {
+    renderRoute({ path: `/repos/${SRE}`, api: makeFixtureApi(makeRounds({ count: 24 })) });
+    const tabs = await screen.findAllByRole("tab");
+    expect(tabs.map((t) => t.textContent)).toEqual(["PRs", "Lane events", "Weekly health", "Config", "Failures"]);
+    expect(screen.getByRole("tab", { name: "PRs" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Config" })).toHaveAttribute("href", `/repos/${SRE}?range=rolling&tab=config`);
+  });
+
+  it("the config tab shows each key with the layer that supplied it, from the newest round, and links to the file", async () => {
+    const rounds = makeRounds({ count: 24 }).map((r): RoundRow => ({ ...r, config_effective: null }));
+    const mine = rounds.filter((r) => r.repository === SRE).sort((a, b) => b.recorded_at.localeCompare(a.recorded_at));
+    mine[1].config_effective = JSON.stringify({ level: { value: "low", layer: "workflow" } });
+    mine[0].config_effective = JSON.stringify({
+      level: { value: "high", layer: "repo" },
+      skip_authors: { value: ["dependabot[bot]"], layer: "org" },
+    });
+    renderRoute({ path: `/repos/${SRE}?tab=config`, api: makeFixtureApi(rounds) });
+
+    const card = await screen.findByTestId("repo-config");
+    const rows = within(card).getAllByTestId("config-row");
+    expect(rows.map((r) => within(r).getAllByRole("cell").map((c) => c.textContent))).toEqual([
+      ["level", "high", "repo"],
+      ["skip_authors", '["dependabot[bot]"]', "org"],
+    ]);
+    expect(within(card).getByRole("link", { name: /Change it in \.github\/claude-review\.yml/ })).toHaveAttribute(
+      "href",
+      `https://github.com/${SRE}/blob/HEAD/.github/claude-review.yml`,
+    );
+  });
+
+  it("the config tab says when no round recorded config, rather than an empty table", async () => {
+    const rounds = makeRounds({ count: 24 }).map((r): RoundRow => ({ ...r, config_effective: null }));
+    renderRoute({ path: `/repos/${SRE}?tab=config`, api: makeFixtureApi(rounds) });
+    expect(await screen.findByText("No round in the loaded window recorded its config")).toBeInTheDocument();
   });
 });
