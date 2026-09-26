@@ -12,6 +12,7 @@ import {
   fleetReposUrl,
   isFleetFindingsResponse,
   isFleetReposResponse,
+  isOpsResponse,
 } from "./client";
 
 const rows = makeRounds({ count: 64 });
@@ -701,8 +702,16 @@ describe("GET /api/fleet/repos (#185)", () => {
           verdict_kind: null,
         },
         last_recorded_at: "2026-09-20T00:00:00.000Z",
+        restacks: { unchanged_patch: 1, unmerged_base: 2 },
       },
-      { repository: "o/quiet", rounds: 0, denials: 0, last_round: null, last_recorded_at: null },
+      {
+        repository: "o/quiet",
+        rounds: 0,
+        denials: 0,
+        last_round: null,
+        last_recorded_at: null,
+        restacks: { unchanged_patch: 0, unmerged_base: 0 },
+      },
     ],
     malformed_configs: [{ repository: "o/busy", layer: "repo_config" }],
   };
@@ -734,6 +743,39 @@ describe("GET /api/fleet/repos (#185)", () => {
     await expect(httpApi.fetchFleetRepos({ range: "all" })).rejects.toMatchObject({
       kind: "malformed",
     });
+  });
+});
+
+describe("GET /api/ops (#179)", () => {
+  const opsBody = {
+    window: { since: "2026-09-19T00:00:00.000Z", days: 7 },
+    identity: [{ repository: "o/a", tables: { usage_records: { oidc: 2, unrecorded: 1 }, prs: { bearer: 1 } } }],
+    credentials: [{ repository: "o/a", credential_type: null, rounds: 1 }],
+    health: [
+      { repository: "o/a", reports: 1, last_received_at: "2026-09-25T00:00:00Z", unaccounted: 2, startup_failures: 0 },
+    ],
+    worker: { version_id: "v-1", version_tag: null, version_timestamp: null, d1_size_bytes: 4096 },
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("accepts the documented shape from /api/ops", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(opsBody), { headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(httpApi.fetchOps()).resolves.toEqual(opsBody);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/ops");
+  });
+
+  it("rejects a count that is not a number, and a missing worker block", () => {
+    expect(isOpsResponse(opsBody)).toBe(true);
+    expect(
+      isOpsResponse({ ...opsBody, identity: [{ repository: "o/a", tables: { prs: { bearer: "1" } } }] }),
+    ).toBe(false);
+    expect(isOpsResponse({ ...opsBody, worker: undefined })).toBe(false);
   });
 });
 

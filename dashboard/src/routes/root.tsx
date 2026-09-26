@@ -39,7 +39,7 @@ const NAV_GROUP = "text-[10.5px] font-medium uppercase tracking-wide text-muted-
 /**
  * Today, then the two groups of the Console IA ruling on #185 (#209). /prs,
  * /rounds and /failures leave the nav but keep their routes, so deep links
- * still land. Ops joins Operate once it has a page.
+ * still land.
  */
 function MainNav() {
   return (
@@ -63,6 +63,9 @@ function MainNav() {
       <span className={NAV_GROUP}>Operate</span>
       <Link to="/fleet" search={{ range: DEFAULT_RANGE }} className={NAV_LINK} activeProps={NAV_ACTIVE}>
         Fleet
+      </Link>
+      <Link to="/ops" className={NAV_LINK} activeProps={NAV_ACTIVE}>
+        Ops
       </Link>
     </nav>
   );

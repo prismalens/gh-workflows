@@ -1,3 +1,4 @@
+import { parseUnaccountedRuns } from "@/api/blobs";
 import type {
   ChangesQuery,
   FindingsQuery,
@@ -24,6 +25,9 @@ import type {
   HealthReportsResponse,
   LaneEventRow,
   LaneEventsResponse,
+  OpsIdentityRow,
+  OpsIdentityTable,
+  OpsResponse,
   PrRow,
   PrsResponse,
   RoundAgentRow,
@@ -334,7 +338,7 @@ export function makeFixtureApi(
         if (!lastRecorded.has(r.repository)) lastRecorded.set(r.repository, r.recorded_at);
       }
 
-      const inWindow = new Map<string, FleetRepoRow>();
+      const inWindow = new Map<string, Omit<FleetRepoRow, "restacks">>();
       for (const r of windowed.rows) {
         const entry = inWindow.get(r.repository);
         if (entry) {
@@ -356,6 +360,20 @@ export function makeFixtureApi(
         });
       }
 
+      const unmergedBase = new Map<string, number>();
+      for (const r of windowed.rows) {
+        if (r.base_pr_number != null) {
+          unmergedBase.set(r.repository, (unmergedBase.get(r.repository) ?? 0) + 1);
+        }
+      }
+      const windowStart = windowed.rows[windowed.rows.length - 1]?.recorded_at;
+      const unchangedPatch = new Map<string, number>();
+      for (const e of sortedEvents) {
+        if (e.reason !== "unchanged-patch") continue;
+        if (range !== "all" && (!windowStart || e.recorded_at < windowStart)) continue;
+        unchangedPatch.set(e.repository, (unchangedPatch.get(e.repository) ?? 0) + 1);
+      }
+
       const names = [...new Set([...lastRecorded.keys(), ...inWindow.keys()])].sort();
       const repositories = names.map((repository) => ({
         ...(inWindow.get(repository) ?? {
@@ -365,6 +383,10 @@ export function makeFixtureApi(
           last_round: null,
         }),
         last_recorded_at: lastRecorded.get(repository) ?? null,
+        restacks: {
+          unchanged_patch: unchangedPatch.get(repository) ?? 0,
+          unmerged_base: unmergedBase.get(repository) ?? 0,
+        },
       }));
 
       const DAY_MS = 24 * 60 * 60 * 1000;
@@ -390,6 +412,65 @@ export function makeFixtureApi(
           .map((item) => ({ repository: item.repository, layer: item.layer })),
         };
       },
+
+    // The Worker's /api/ops over the same 7 days, from the fixture tables (#179).
+    async fetchOps(): Promise<OpsResponse> {
+      const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const identity = new Map<string, OpsIdentityRow["tables"]>();
+      const tally = (repository: string, table: OpsIdentityTable, auth: string | null | undefined) => {
+        const tables = identity.get(repository) ?? {};
+        const counts = (tables[table] ??= {});
+        const key = auth || "unrecorded";
+        counts[key] = (counts[key] ?? 0) + 1;
+        identity.set(repository, tables);
+      };
+      const credentials = new Map<string, number>();
+      for (const r of sorted) {
+        if (r.recorded_at < since) continue;
+        tally(r.repository, "usage_records", r.ingest_auth);
+        const key = JSON.stringify([r.repository, r.credential_type ?? null]);
+        credentials.set(key, (credentials.get(key) ?? 0) + 1);
+      }
+      // Lane event rows are read without ingest_auth, so the fixture cannot say who wrote them.
+      for (const e of sortedEvents) {
+        if (e.recorded_at >= since) tally(e.repository, "lane_events", null);
+      }
+      const health = new Map<string, OpsResponse["health"][number]>();
+      for (const h of sortedHealth) {
+        if (h.received_at < since) continue;
+        const entry = health.get(h.repository) ?? {
+          repository: h.repository,
+          reports: 0,
+          last_received_at: h.received_at,
+          unaccounted: 0,
+          startup_failures: 0,
+        };
+        entry.reports += 1;
+        if (h.received_at > entry.last_received_at) entry.last_received_at = h.received_at;
+        entry.unaccounted += parseUnaccountedRuns(h)?.length ?? 0;
+        entry.startup_failures += h.startup_failures;
+        health.set(h.repository, entry);
+      }
+      return {
+        window: { since, days: 7 },
+        identity: [...identity.keys()].sort().map((repository) => ({
+          repository,
+          tables: identity.get(repository)!,
+        })),
+        credentials: [...credentials.entries()]
+          .map(([key, rounds]) => {
+            const [repository, credential_type] = JSON.parse(key) as [string, string | null];
+            return { repository, credential_type, rounds };
+          })
+          .sort((a, b) =>
+            a.repository === b.repository
+              ? String(a.credential_type).localeCompare(String(b.credential_type))
+              : a.repository.localeCompare(b.repository),
+          ),
+        health: [...health.values()].sort((a, b) => a.repository.localeCompare(b.repository)),
+        worker: { version_id: null, version_tag: null, version_timestamp: null, d1_size_bytes: null },
+      };
+    },
 
     async fetchHealthReports(query: HealthReportsQuery = {}): Promise<HealthReportsResponse> {
       let filtered = sortedHealth;

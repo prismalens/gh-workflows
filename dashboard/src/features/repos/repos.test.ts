@@ -4,7 +4,14 @@ import type { FleetRepoRow } from "@/api/types";
 import { malformedConfigs, quietRepos, repoParams, summariseRepos } from "./repos";
 
 function repo(overrides: Partial<FleetRepoRow> & { repository: string }): FleetRepoRow {
-  return { rounds: 0, denials: 0, last_round: null, last_recorded_at: null, ...overrides };
+  return {
+    rounds: 0,
+    denials: 0,
+    last_round: null,
+    last_recorded_at: null,
+    restacks: { unchanged_patch: 0, unmerged_base: 0 },
+    ...overrides,
+  };
 }
 
 describe("the repos list", () => {

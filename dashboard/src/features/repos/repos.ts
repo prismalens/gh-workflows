@@ -12,6 +12,8 @@ export interface RepoSummary {
   /** The two-state decoding of that last round. Null when there is no round. */
   lastState: VerdictState | null;
   denials: number;
+  /** Lane events skipped as an unchanged patch, and rounds on an unmerged base PR (#179). */
+  restacks: FleetRepoRow["restacks"];
 }
 
 /**
@@ -30,6 +32,7 @@ export function summariseRepos(rows: FleetRepoRow[]): RepoSummary[] {
     lastRound: row.last_round,
     lastState: row.last_round ? decodeVerdict(row.last_round) : null,
     denials: row.denials,
+    restacks: row.restacks,
   }));
 }
 

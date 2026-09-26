@@ -5284,9 +5284,15 @@ describe("Worker telemetry read API", () => {
   describe("GET /api/fleet/repos (#185)", () => {
     const TEXT_COLUMNS = /pr_title|pr_author|verdict_text|header_raw|body_excerpt|raw_result|diff_hunk/;
 
-    function fleetDb({ sevenDayCount = 0, totalCount = 0, fiftiethAt = null, fiftiethSession = "s-50", lastRecorded = [], windowed = [], lastRounds = [], malformed = {} } = {}) {
+    function fleetDb({ sevenDayCount = 0, totalCount = 0, fiftiethAt = null, fiftiethSession = "s-50", lastRecorded = [], windowed = [], lastRounds = [], malformed = {}, unchangedPatch = [], unmergedBase = [] } = {}) {
       return createFakeDb({
         handler: (sql) => {
+          if (sql.includes("AS unchanged_patch")) {
+            return unchangedPatch;
+          }
+          if (sql.includes("AS unmerged_base")) {
+            return unmergedBase;
+          }
           if (sql.includes("OFFSET 49")) {
             return fiftiethAt ? { recorded_at: fiftiethAt, session_id: fiftiethSession } : null;
           }
@@ -5385,7 +5391,12 @@ describe("Worker telemetry read API", () => {
       });
       // Rounds tied with the 50th on recorded_at are cut by session_id, so the
       // window holds 50 rounds, not 50 plus every tie.
-      for (const query of byCount.queries.filter((q) => q.args.length > 0 && !q.sql.includes("COUNT(*) AS cnt"))) {
+      // lane_events has no session_id, so its query keeps only the recorded_at bound.
+      const laneQuery = byCount.queries.find((q) => q.sql.includes("FROM lane_events"));
+      assert.deepEqual(laneQuery.args, ["2026-09-01T00:00:00.000Z"]);
+      for (const query of byCount.queries.filter(
+        (q) => q.args.length > 0 && !q.sql.includes("COUNT(*) AS cnt") && q !== laneQuery
+      )) {
         assert.match(query.sql, /\(recorded_at > \? OR \(recorded_at = \? AND session_id >= \?\)\)/);
         assert.deepEqual(query.args, ["2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z", "s-50"]);
       }
@@ -5440,6 +5451,7 @@ describe("Worker telemetry read API", () => {
           denials: 1,
           last_round: { session_id: "s-9", recorded_at: "2026-09-20T00:00:00.000Z", round_type: "full", verdict_kind: "reviewed" },
           last_recorded_at: "2026-09-20T00:00:00.000Z",
+          restacks: { unchanged_patch: 0, unmerged_base: 0 },
         },
         {
           repository: "o/quiet",
@@ -5447,6 +5459,7 @@ describe("Worker telemetry read API", () => {
           denials: 0,
           last_round: null,
           last_recorded_at: "2026-06-01T00:00:00.000Z",
+          restacks: { unchanged_patch: 0, unmerged_base: 0 },
         },
       ]);
       assertWall(db);
@@ -5493,10 +5506,148 @@ describe("Worker telemetry read API", () => {
       assert.deepEqual(await res.json(), { error: "query failed" });
     });
 
+    it("counts unchanged-patch skips and rounds on an unmerged base per repository (#179)", async () => {
+      const db = fleetDb({
+        lastRecorded: [
+          { repository: "o/a", last_recorded_at: "2026-09-20T00:00:00Z" },
+          { repository: "o/b", last_recorded_at: "2026-09-20T00:00:00Z" },
+        ],
+        unchangedPatch: [{ repository: "o/a", unchanged_patch: 3 }],
+        unmergedBase: [{ repository: "o/a", unmerged_base: 2 }],
+      });
+      const res = await getFleet("/api/fleet/repos?range=30d", db);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.deepEqual(
+        data.repositories.map((r) => [r.repository, r.restacks]),
+        [
+          ["o/a", { unchanged_patch: 3, unmerged_base: 2 }],
+          ["o/b", { unchanged_patch: 0, unmerged_base: 0 }],
+        ]
+      );
+      const lane = db.queries.find((q) => q.sql.includes("AS unchanged_patch"));
+      assert.match(lane.sql, /reason = 'unchanged-patch'/);
+      assert.equal(lane.args.length, 1);
+      assertWall(db);
+    });
+
     it("is closed without an Access header", async () => {
       const helper = await getAccessHelper();
       const db = fleetDb();
       const res = await worker.fetch(makeRequest("/api/fleet/repos?range=all", { method: "GET" }), { ...helper.env, DB: db });
+      assert.equal(res.status, 403);
+      assert.equal(db.queries.length, 0);
+    });
+  });
+
+  describe("GET /api/ops (#179)", () => {
+    const TEXT_COLUMNS = /pr_title|pr_author|verdict_text|header_raw|body_excerpt|raw_result|diff_hunk/;
+
+    async function sqliteDb() {
+      const { DatabaseSync } = await import("node:sqlite");
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const dir = path.join(path.dirname(new URL(import.meta.url).pathname), "migrations");
+      const sqlite = new DatabaseSync(":memory:");
+      for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
+        sqlite.exec(fs.readFileSync(path.join(dir, file), "utf8"));
+      }
+      const queries = [];
+      return {
+        sqlite,
+        queries,
+        prepare(sql) {
+          const bound = (args) => ({
+            async all() {
+              queries.push({ sql, args });
+              return { results: sqlite.prepare(sql).all(...args), meta: { size_after: 4096 } };
+            },
+          });
+          return { bind: (...args) => bound(args), ...bound([]) };
+        },
+      };
+    }
+
+    async function getOps(db, extraEnv = {}) {
+      const helper = await getAccessHelper();
+      return worker.fetch(makeAuthenticatedRequest("/api/ops", helper.jwt), { ...helper.env, DB: db, ...extraEnv });
+    }
+
+    const recent = () => new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const old = () => new Date(Date.now() - 9 * 24 * 60 * 60 * 1000).toISOString();
+
+    function seed(sqlite) {
+      const ur = sqlite.prepare(
+        "INSERT INTO usage_records (session_id, repository, recorded_at, ingest_auth, credential_type, per_model_usage) VALUES (?, ?, ?, ?, ?, '{}')"
+      );
+      ur.run("s1", "o/a", recent(), "oidc", "oauth");
+      ur.run("s2", "o/a", recent(), "oidc", "oauth");
+      ur.run("s3", "o/a", recent(), null, null);
+      ur.run("s4", "o/b", recent(), "bearer", "api_key");
+      ur.run("s5", "o/b", old(), "bearer", "api_key");
+      sqlite
+        .prepare("INSERT INTO lane_events (run_id, run_attempt, repository, pr_number, reason, recorded_at, ingest_auth) VALUES (1, 1, ?, ?, ?, ?, ?)")
+        .run("o/a", 1, "draft", recent(), "oidc");
+      sqlite
+        .prepare("INSERT INTO prs (repository, pr_number, state, updated_at, source, ingest_auth) VALUES (?, ?, ?, ?, ?, ?)")
+        .run("o/c", 1, "open", recent(), "round", "runner");
+      sqlite
+        .prepare(
+          `INSERT INTO health_reports (repository, window_start, window_end, runs_seen, runs_accounted, unaccounted_runs,
+            startup_failures, lane_events_by_reason, findings_swept, share, ingest_auth, received_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, '{}', 0, 'full', 'oidc', ?)`
+        )
+        .run("o/a", old(), recent(), 5, 3, '[{"id":1},{"id":2}]', 1, recent());
+    }
+
+    it("counts rows per repository and table by ingest_auth over 7 days, null as unrecorded", async () => {
+      const db = await sqliteDb();
+      seed(db.sqlite);
+      const res = await getOps(db, { CF_VERSION_METADATA: { id: "v-1", tag: "", timestamp: "2026-09-26T00:00:00Z" } });
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.window.days, 7);
+      assert.deepEqual(data.identity, [
+        { repository: "o/a", tables: { usage_records: { oidc: 2, unrecorded: 1 }, lane_events: { oidc: 1 } } },
+        { repository: "o/b", tables: { usage_records: { bearer: 1 } } },
+        { repository: "o/c", tables: { prs: { runner: 1 } } },
+      ]);
+      assert.deepEqual(data.credentials, [
+        { repository: "o/a", credential_type: null, rounds: 1 },
+        { repository: "o/a", credential_type: "oauth", rounds: 2 },
+        { repository: "o/b", credential_type: "api_key", rounds: 1 },
+      ]);
+      assert.deepEqual(data.health, [
+        { repository: "o/a", reports: 1, last_received_at: data.health[0].last_received_at, unaccounted: 2, startup_failures: 1 },
+      ]);
+      assert.deepEqual(data.worker, {
+        version_id: "v-1",
+        version_tag: null,
+        version_timestamp: "2026-09-26T00:00:00Z",
+        d1_size_bytes: 4096,
+      });
+      for (const query of db.queries) {
+        assert.doesNotMatch(query.sql, TEXT_COLUMNS);
+      }
+    });
+
+    it("reports a null version when the binding is absent", async () => {
+      const db = await sqliteDb();
+      const data = await (await getOps(db)).json();
+      assert.equal(data.worker.version_id, null);
+      assert.deepEqual(data.identity, []);
+    });
+
+    it("answers 500 when a query fails", async () => {
+      const res = await getOps(createFakeDb({ shouldThrow: true }));
+      assert.equal(res.status, 500);
+      assert.deepEqual(await res.json(), { error: "query failed" });
+    });
+
+    it("is closed without an Access header", async () => {
+      const helper = await getAccessHelper();
+      const db = createFakeDb();
+      const res = await worker.fetch(makeRequest("/api/ops", { method: "GET" }), { ...helper.env, DB: db });
       assert.equal(res.status, 403);
       assert.equal(db.queries.length, 0);
     });
