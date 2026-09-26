@@ -2229,6 +2229,8 @@ describe("Worker telemetry read API", () => {
       const data = await res.json();
       assert.equal(data.rows.length, 1);
       const row = data.rows[0];
+      // The runner writes engine (#184); the Console filters on it (#185).
+      assert.match(db.queries.find((q) => q.sql.includes("FROM usage_records")).sql, /\bengine\b/);
 
       // Verify all 15 new default columns are present in returned row
       assert.equal(row.lane_version, "v2.0.0");
@@ -4323,6 +4325,8 @@ describe("Worker telemetry read API", () => {
           query.sql.includes("ORDER BY thread_created_at DESC, thread_node_id DESC LIMIT ?")
         );
         assert.ok(!query.sql.toLowerCase().includes("severity"));
+        // The Console renders no diff, so the read never fetches one (#185).
+        assert.doesNotMatch(query.sql, /diff_hunk/);
         assert.equal(query.args[query.args.length - 1], 1);
       });
 

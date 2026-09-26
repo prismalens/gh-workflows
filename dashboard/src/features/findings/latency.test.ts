@@ -17,7 +17,6 @@ function finding(overrides: Partial<FindingRow> = {}): FindingRow {
     thread_created_at: "2026-09-01T00:00:00Z",
     header_raw: null,
     body_excerpt: null,
-    diff_hunk: null,
     human_reply_count: 0,
     human_reply_sha: null,
     fix_sha: null,

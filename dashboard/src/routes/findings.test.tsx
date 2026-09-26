@@ -19,7 +19,6 @@ function finding(overrides: Partial<FindingRow> = {}): FindingRow {
     thread_created_at: "2026-09-01T00:00:00.000Z",
     header_raw: "Off-by-one",
     body_excerpt: "This loop reads one past the end.",
-    diff_hunk: "@@ -1,3 +1,3 @@",
     human_reply_count: 0,
     human_reply_sha: null,
     fix_sha: null,
