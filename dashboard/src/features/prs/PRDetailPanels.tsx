@@ -87,7 +87,7 @@ function ConfigEffectiveRow({
         {entry ? (
           <>
             <span>{formatConfigValue(entry.value)}</span>{" "}
-            <span className="text-muted-foreground">· {entry.layer}</span>
+            <span className="text-muted-foreground">· {entry.layer ?? `${configKey}.layer not recorded`}</span>
           </>
         ) : (
           `${configKey}: not recorded on this round`

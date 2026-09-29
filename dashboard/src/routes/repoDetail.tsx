@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import {
   useAttentionQuery,
+  useConfigQuery,
   useHealthReportsQuery,
   useLaneEventsQuery,
   usePRsQuery,
@@ -187,10 +188,10 @@ function HealthTab({ repository }: { repository: string }) {
 
 function ConfigTab({ repository, range }: TabProps) {
   const now = useMemo(() => new Date(), []);
-  const blobs = useAttentionQuery({ range, repository }, now);
+  const blobs = useConfigQuery({ range, repository }, now);
   if (blobs.isPending) return <LoadingRows label="Loading config" />;
   if (blobs.isError) return <QueryError error={blobs.error} title="Could not load config" />;
-  return <RepoConfig repository={repository} blobRows={blobs.data.rows} range={range} />;
+  return <RepoConfig repository={repository} blobRows={blobs.data} range={range} />;
 }
 
 function FailuresTab({ repository, range }: TabProps) {

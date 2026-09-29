@@ -69,6 +69,35 @@ export function useAttentionQuery(filters: RoundsFilters, now: Date) {
   });
 }
 
+/** Pages until a row carries config_effective or the range runs out: the newest configured round
+ * can sit behind more than one page of rounds that predate the field (#230 review). */
+async function fetchUntilConfigured(api: TelemetryApi, query: RunsQuery): Promise<RoundRow[]> {
+  const rows: RoundRow[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await api.fetchRuns(cursor ? { ...query, cursor } : query);
+    rows.push(...page.rows);
+    if (!page.next_cursor || page.rows.some((row) => row.config_effective)) return rows;
+    cursor = page.next_cursor;
+  }
+}
+
+export function useConfigQuery(filters: RoundsFilters, now: Date) {
+  const api = useApi();
+  const since = rangeSince(filters.range, now);
+  const query: RunsQuery = {
+    include: "blobs",
+    limit: MAX_LIMIT_WITH_BLOBS,
+    ...(filters.repository ? { repository: filters.repository } : {}),
+    ...(since ? { since } : {}),
+  };
+  return useQuery({
+    queryKey: ["runs-config", query],
+    queryFn: () => fetchUntilConfigured(api, query),
+    staleTime: 30_000,
+  });
+}
+
 export function useSummaryQuery() {
   const api = useApi();
   return useQuery({

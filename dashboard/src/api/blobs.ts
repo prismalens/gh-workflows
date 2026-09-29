@@ -94,15 +94,16 @@ export function parseSubagentStats(row: RoundRow): FanOutStats | null {
 
 export interface ConfigEffectiveEntry {
   value: unknown;
-  layer: string;
+  /** Null when the entry carries no layer; the key still renders, with its layer not recorded. */
+  layer: string | null;
 }
 
 /**
  * `config_effective`: `{key: {value, layer}}` for every config key the lane resolved on this
  * round (#75). Returns null when the round carries no `config_effective` at all — the caller's
  * signal that this round predates the field, distinct from an object that exists but omits a
- * particular key. An entry missing `layer` or shaped as something other than an object is
- * dropped rather than guessed at; the rest of the object still renders.
+ * particular key. An entry shaped as something other than an object is dropped; one missing
+ * `layer` is kept with a null layer, so the key still shows.
  */
 export function parseConfigEffective(row: RoundRow): Record<string, ConfigEffectiveEntry> | null {
   const parsed = parseJson<Record<string, unknown>>(row.config_effective);
@@ -112,8 +113,7 @@ export function parseConfigEffective(row: RoundRow): Record<string, ConfigEffect
   for (const [key, entry] of Object.entries(parsed)) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const { value, layer } = entry as Record<string, unknown>;
-    if (typeof layer !== "string") continue;
-    result[key] = { value, layer };
+    result[key] = { value, layer: typeof layer === "string" ? layer : null };
   }
   return result;
 }

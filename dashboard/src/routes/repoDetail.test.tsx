@@ -202,6 +202,38 @@ describe("/repos/$owner/$repo: five tabs, config read-only (#185, #78)", () => {
     );
   });
 
+  it("the config tab names a missing value or layer instead of dropping the key or leaving a blank", async () => {
+    const rounds = makeRounds({ count: 24 }).map((r): RoundRow => ({ ...r, config_effective: null }));
+    const mine = rounds.filter((r) => r.repository === SRE).sort((a, b) => b.recorded_at.localeCompare(a.recorded_at));
+    mine[0].config_effective = JSON.stringify({ level: { layer: "repo" }, variant: { value: "b" } });
+    renderRoute({ path: `/repos/${SRE}?tab=config`, api: makeFixtureApi(rounds) });
+
+    const rows = within(await screen.findByTestId("repo-config")).getAllByTestId("config-row");
+    expect(rows.map((r) => within(r).getAllByRole("cell").map((c) => c.textContent))).toEqual([
+      ["level", "config_effective.level.value not recorded", "repo"],
+      ["variant", "b", "config_effective.variant.layer not recorded"],
+    ]);
+  });
+
+  it("the config tab says the newest round's config could not be read, rather than an empty table", async () => {
+    const rounds = makeRounds({ count: 24 }).map((r): RoundRow => ({ ...r, config_effective: null }));
+    const mine = rounds.filter((r) => r.repository === SRE).sort((a, b) => b.recorded_at.localeCompare(a.recorded_at));
+    mine[0].config_effective = "not json";
+    renderRoute({ path: `/repos/${SRE}?tab=config`, api: makeFixtureApi(rounds) });
+    expect(await screen.findByText("The newest round's config_effective could not be read")).toBeInTheDocument();
+    expect(screen.queryAllByTestId("config-row")).toHaveLength(0);
+  });
+
+  it("the config tab pages past more than 50 newer rounds that carry no config", async () => {
+    const rounds = makeRounds({ count: 400 }).map((r): RoundRow => ({ ...r, config_effective: null }));
+    const mine = rounds.filter((r) => r.repository === SRE).sort((a, b) => b.recorded_at.localeCompare(a.recorded_at));
+    expect(mine.length).toBeGreaterThan(55);
+    mine[55].config_effective = JSON.stringify({ level: { value: "high", layer: "repo" } });
+    renderRoute({ path: `/repos/${SRE}?tab=config&range=all`, api: makeFixtureApi(rounds) });
+    const rows = within(await screen.findByTestId("repo-config")).getAllByTestId("config-row");
+    expect(rows.map((r) => within(r).getAllByRole("cell").map((c) => c.textContent))).toEqual([["level", "high", "repo"]]);
+  });
+
   it("the config tab says when no round recorded config, rather than an empty table", async () => {
     const rounds = makeRounds({ count: 24 }).map((r): RoundRow => ({ ...r, config_effective: null }));
     renderRoute({ path: `/repos/${SRE}?tab=config`, api: makeFixtureApi(rounds) });

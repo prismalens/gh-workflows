@@ -24,14 +24,18 @@ export const CONFIG_PATH = ".github/claude-review.yml";
 // Narrowest last: a key from a narrower layer overrode every layer above it (#189).
 const LAYER_ORDER = ["workflow", "org", "repo", "summon"] as const;
 
-function formatValue(value: unknown): string {
+function formatValue(key: string, value: unknown): string {
+  if (value === undefined) return `config_effective.${key}.value not recorded`;
   if (value === null) return "null";
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
 }
 
-function LayerChip({ layer }: { layer: string }) {
+function LayerChip({ configKey, layer }: { configKey: string; layer: string | null }) {
+  if (layer === null) {
+    return <span className="text-xs text-muted-foreground">{`config_effective.${configKey}.layer not recorded`}</span>;
+  }
   const known = (LAYER_ORDER as readonly string[]).includes(layer);
   return (
     <Badge
@@ -68,9 +72,10 @@ export interface RepoConfigProps {
  */
 export function RepoConfig({ repository, blobRows, range }: RepoConfigProps) {
   const round = useMemo(() => latestConfigRound(blobRows, repository), [blobRows, repository]);
+  // Null on a round that carries config_effective means the blob could not be read.
   const entries = useMemo(() => {
     const parsed = round ? parseConfigEffective(round) : null;
-    return parsed ? Object.entries(parsed).sort(([a], [b]) => a.localeCompare(b)) : [];
+    return parsed ? Object.entries(parsed).sort(([a], [b]) => a.localeCompare(b)) : null;
   }, [round]);
   const fileUrl = `https://github.com/${repository}/blob/HEAD/${CONFIG_PATH}`;
 
@@ -102,6 +107,15 @@ export function RepoConfig({ repository, blobRows, range }: RepoConfigProps) {
                 <AlertDescription>
                   Rounds carry config_effective since #75. Widen the range, or wait for the next
                   round on {repository}.
+                </AlertDescription>
+              </Alert>
+            </div>
+          ) : entries === null ? (
+            <div className="p-4">
+              <Alert variant="muted">
+                <AlertTitle>The newest round's config_effective could not be read</AlertTitle>
+                <AlertDescription>
+                  It is not a JSON object of keys, so no config is shown for {repository}.
                 </AlertDescription>
               </Alert>
             </div>
@@ -140,10 +154,10 @@ export function RepoConfig({ repository, blobRows, range }: RepoConfigProps) {
                     <TableRow key={key} data-testid="config-row">
                       <TableCell className="font-mono text-xs">{key}</TableCell>
                       <TableCell className="font-mono text-xs break-all">
-                        {formatValue(entry.value)}
+                        {formatValue(key, entry.value)}
                       </TableCell>
                       <TableCell>
-                        <LayerChip layer={entry.layer} />
+                        <LayerChip configKey={key} layer={entry.layer} />
                       </TableCell>
                     </TableRow>
                   ))}
