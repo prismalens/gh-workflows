@@ -701,7 +701,7 @@ def main():
               "default_model", "auto_pause_rounds", "skip_authors", "escalation_paths",
               "path_filters", "path_instructions", "max_reviewable_lines", "max_file_lines",
               "language_map", "tool_findings", "issue_context_byte_budget",
-              "issue_context_total_byte_budget", "level", "context", "admission",
+              "issue_context_total_byte_budget", "level", "incremental_effort", "context", "admission",
           },
           f"got keys {sorted(config_effective.keys())}")
     check("config_effective excludes variant, same as config_hash", "variant" not in config_effective, f"got keys {sorted(config_effective.keys())}")
@@ -794,8 +794,26 @@ def main():
     ]
     check("effort: both claude-code-action calls pass an explicit --effort",
           len(claude_args) == 2 and all("--effort " in a for a in claude_args), claude_args)
-    check("effort: the review call's effort is review.level",
-          any("--effort ${{ steps.model.outputs.level }}" in a for a in claude_args), claude_args)
+    check("effort: an incremental round takes review.incremental_effort, any other round review.level",
+          any("--effort ${{ steps.mode.outputs.mode == 'incremental' && steps.config.outputs.incremental_effort || steps.model.outputs.level }}" in a
+              for a in claude_args), claude_args)
+
+    # review.incremental_effort (#234 ruling): default low, configurable, rejected outside the set.
+    rc, out, stdout, stderr = run_config_case(config_script)
+    check("incremental_effort: defaults to low", rc == 0 and out.get("incremental_effort") == "low",
+          f"rc={rc} got={out.get('incremental_effort')}")
+    check("incremental_effort: config_effective names the workflow layer",
+          json.loads(out.get("config_effective", "{}")).get("incremental_effort") == {"value": "low", "layer": "workflow"},
+          out.get("config_effective"))
+    rc, out, stdout, stderr = run_config_case(
+        config_script, config_yaml='version: 1\nreview:\n  incremental_effort: "high"\n')
+    check("incremental_effort: repo config raises it", rc == 0 and out.get("incremental_effort") == "high"
+          and "review.incremental_effort: high (source: repo config)" in stdout, f"got={out.get('incremental_effort')} stdout={stdout!r}")
+    rc, out, stdout, stderr = run_config_case(
+        config_script, config_yaml='version: 1\nreview:\n  incremental_effort: "max"\n')
+    check("incremental_effort: a value outside low/medium/high is rejected and the default stands",
+          out.get("incremental_effort") == "low" and "review.incremental_effort" in stdout and "::warning::" in stdout,
+          f"got={out.get('incremental_effort')} stdout={stdout!r}")
 
     # 3c. review.level (#101): repo config accepts 'high' through the same base-not-head
     # path as every other key (schema, repo layer, resolved_config, step outputs).
