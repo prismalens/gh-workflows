@@ -356,6 +356,7 @@ def main():
         thread("PRT_ENVELOPE", [comment("claude", envelope)]),
         thread("PRT_BOLD", [comment("claude", "**Bug**: leaks a handle")]),
         thread("PRT_PROSE", [comment("claude", "_just emphasis_ then prose")]),
+        thread("PRT_TWO", [comment("claude", "_first point_ | _second point_\nmore prose")]),
     ])
     proc, rows = run_sweep(script, pr_list=[7], main_fixtures={7: [fx_env]})
     by_id = {r["thread_node_id"]: r for r in rows}
@@ -370,6 +371,10 @@ def main():
     prose_row = by_id.get("PRT_PROSE", {})
     check("a lone emphasised word is not an envelope",
           prose_row.get("header_raw") is None and prose_row.get("body_excerpt") == "_just emphasis_ then prose", prose_row)
+    two_row = by_id.get("PRT_TWO", {})
+    check("a two-field line is not an envelope and stays in body_excerpt",
+          two_row.get("header_raw") is None
+          and two_row.get("body_excerpt") == "_first point_ | _second point_\nmore prose", two_row)
 
     # ── 2. Human-reply SHA not among real commit oids: rejected, fix_sha stays null ──
     bad_thread = thread(
