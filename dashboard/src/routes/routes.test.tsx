@@ -1345,7 +1345,8 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
 
     expect(await screen.findByText("This pull request was not found")).toBeInTheDocument();
     expect(screen.getByText(/no review rounds were found/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Back to pull requests" })).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "Open it on GitHub" });
+    expect(link).toHaveAttribute("href", "https://github.com/prismalens/prismalens/pull/99999");
   });
 
   it("/prs with no state parameter renders every state; an explicit state still filters (finding 3943781321, default reversed by #136)", async () => {

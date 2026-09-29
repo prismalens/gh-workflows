@@ -37,7 +37,7 @@ const NAV_ACTIVE = { className: "text-foreground" };
 const NAV_GROUP = "text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/70";
 
 /**
- * Today, then the two groups of the Console IA ruling on #185 (#209). /prs,
+ * Home, then the two groups of the Console IA ruling on #185 (#209). /prs,
  * /rounds and /failures leave the nav but keep their routes, so deep links
  * still land. Ops joins Operate once it has a page.
  */
@@ -45,7 +45,7 @@ function MainNav() {
   return (
     <nav aria-label="Main" className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
       <Link to="/" className={NAV_LINK} activeProps={NAV_ACTIVE} activeOptions={{ exact: true }}>
-        Today
+        Home
       </Link>
       <span aria-hidden className="mx-1 h-4 w-px bg-border" />
       <span className={NAV_GROUP}>Review</span>
@@ -126,7 +126,7 @@ function NotFound() {
       <AlertDescription>
         Nothing is routed at this address.{" "}
         <Link to="/" className="underline underline-offset-4">
-          Go to Today
+          Go to Home
         </Link>
         .
       </AlertDescription>
