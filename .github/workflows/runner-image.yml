@@ -1,0 +1,34 @@
+# Proves runner/Dockerfile builds and carries its tools (#184). Not a required check: it sits
+# behind a path filter, and a required check may not (AGENTS.md).
+name: Runner image
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - runner/**
+      - .github/workflows/runner-image.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-image-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: docker build -t assayer-runner runner/
+      - name: The image carries its tools and the daemon starts
+        run: |
+          docker run --rm --entrypoint sh assayer-runner -c 'actionlint -version && shellcheck --version && gh --version && opencode --version && claude --version && id -u'
+          printf '%s' '{"control_plane":"http://127.0.0.1:9","runner_token":"${ASSAYER_RUNNER_TOKEN}","credentials":[{"name":"zen","engine":"opencode","kind":"keyless","concurrency":1}]}' > "$RUNNER_TEMP/runner.json"
+          docker run --rm -e ASSAYER_RUNNER_TOKEN="asr_$(printf 't%.0s' $(seq 43))" \
+            -v "$RUNNER_TEMP/runner.json:/etc/assayer/runner.json:ro" assayer-runner --config /etc/assayer/runner.json --check

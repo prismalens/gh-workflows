@@ -63,6 +63,8 @@ export interface RoundRow {
   /** Written by the Worker, not the lane (migration 0014, #177): 'oidc' or 'bearer'. */
   ingest_auth?: string | null;
   repository_id?: number | null;
+  /** Written only by the runner path (#184): 'opencode' or 'claude-code'. Null is the Actions lane. */
+  engine?: string | null;
   /** Only present when the request passed include=blobs. */
   per_model_usage?: string | null;
   subagent_stats?: string | null;
@@ -251,7 +253,6 @@ export interface FindingRow {
   thread_created_at: string | null;
   header_raw: string | null;
   body_excerpt: string | null;
-  diff_hunk: string | null;
   human_reply_count: number | null;
   human_reply_sha: string | null;
   fix_sha: string | null;

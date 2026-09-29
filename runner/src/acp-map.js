@@ -15,9 +15,19 @@ const STOP_TO_CONCLUSION = Object.freeze({
   cancelled: 'cancelled',
 });
 
+// The model the agent says it is running: the `currentValue` of the `model` select in the
+// session/new answer, the only such field in ACP 1.4.0 (prismalens#727). Null when absent.
+export function selectedModel(configOptions) {
+  if (!Array.isArray(configOptions)) return null;
+  const opt = configOptions.find((o) => o && o.category === 'model' && o.type === 'select');
+  const v = opt?.currentValue;
+  return typeof v === 'string' && v ? v : null;
+}
+
 export class SessionMapper {
   constructor({ cwd, engine, model, promptHash, laneVersion, credentialFingerprint }) {
     this.cwd = path.resolve(cwd);
+    this.requestedModel = model ?? null;
     this.events = [event('started', {
       engine, model: model ?? null, credential_fingerprint: credentialFingerprint ?? null,
       prompt_hash: promptHash ?? null, lane_version: laneVersion ?? null,
@@ -31,6 +41,15 @@ export class SessionMapper {
     this.stopUsage = null;
     this.errored = false;
     this.toolCallCount = 0;
+  }
+
+  // Requested versus served: `started.model` stays what was asked for, verbatim.
+  onSession(newSessionResponse) {
+    const served = selectedModel(newSessionResponse?.configOptions);
+    if (served === null) return;
+    const meta = { ...(this.events[0]._meta ?? {}), served_model: served };
+    if (this.requestedModel !== null) meta.model_substituted = served !== this.requestedModel;
+    this.events[0]._meta = meta;
   }
 
   // Merge partial updates: a tool_call_update may carry only status, or only locations.

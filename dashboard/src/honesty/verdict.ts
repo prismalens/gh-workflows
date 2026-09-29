@@ -44,6 +44,8 @@ export const VERDICT_KIND_MAP: Record<string, VerdictState> = {
   "api-error": "did-not-run",
   "skip-label": "did-not-run",
   "awaiting-label": "did-not-run",
+  "no-runner": "did-not-run",
+  "credential-cooldown": "did-not-run",
 };
 
 export const ALL_VERDICT_KINDS = [
@@ -68,6 +70,8 @@ export const ALL_VERDICT_KINDS = [
   "api-error",
   "skip-label",
   "awaiting-label",
+  "no-runner",
+  "credential-cooldown",
 ] as const;
 
 export type VerdictKind = (typeof ALL_VERDICT_KINDS)[number];
@@ -161,6 +165,16 @@ export const VERDICT_KIND_DEFINITIONS: Record<
     group: "did-not-run",
     definition:
       "The repository admits reviews by label (admission: label) and the claude_review label is absent; this head has no machine review on record. Applying the label starts a round.",
+  },
+  "no-runner": {
+    group: "did-not-run",
+    definition:
+      "No runner took the queued job within RUNNER_TIMEOUT_S (15 minutes by default). The job stays queued, and a runner that comes back takes it.",
+  },
+  "credential-cooldown": {
+    group: "did-not-run",
+    definition:
+      "The runner's credential hit a rate or account limit that names a reset time. The job requeued for that time instead of failing.",
   },
   silent: {
     group: "silent",
@@ -279,6 +293,8 @@ const VERDICT_KIND_BUCKET_MAP: Record<string, VerdictKindBucket> = {
   "api-error": "did-not-run",
   "skip-label": "did-not-run",
   "awaiting-label": "did-not-run",
+  "no-runner": "did-not-run",
+  "credential-cooldown": "did-not-run",
   silent: "silent",
   "verify-silent": "silent",
   "verify-cancelled": "silent",

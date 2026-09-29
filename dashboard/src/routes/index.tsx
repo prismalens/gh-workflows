@@ -17,6 +17,7 @@ function CopyHint({ text, label }: { text: string; label: string }) {
   );
 }
 import { createRoute, Link } from "@tanstack/react-router";
+import { ExternalLink } from "lucide-react";
 import { z } from "zod";
 
 import { usePRsQuery, useRoundsQuery } from "@/api/queries";
@@ -70,10 +71,10 @@ const SECTIONS: { key: InboxBucketKey; title: string; blurb: string }[] = [
   { key: "failed", title: "Failed", blurb: "The lane ran and could not post." },
   {
     key: "did-not-run",
-    title: "Did not run",
-    blurb: "No review happened on the latest head, and the reason says why.",
+    title: "Head not reviewed",
+    blurb: "No round read the latest head's code, and the reason says why.",
   },
-  { key: "threads-open", title: "Threads open", blurb: "Findings nobody has closed yet." },
+  { key: "threads-open", title: "Threads open", blurb: "Reviewed, with findings nobody has closed yet." },
   {
     key: "findings-not-recorded",
     title: "Findings not recorded",
@@ -289,24 +290,38 @@ function InboxTable({ prs, action }: { prs: PRSummary[]; action?: string }) {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {prs.map((pr) => (
-          <TableRow key={pr.id}>
-            <TableCell className="text-xs text-muted-foreground">{pr.repository}</TableCell>
-            <TableCell className="max-w-[420px] truncate text-xs">
-              <Link
-                to="/prs/$owner/$repo/$number"
-                params={{ owner: pr.owner, repo: pr.repo, number: String(pr.number) }}
-                className="hover:underline"
-                title={pr.title}
-              >
-                <span className="font-mono font-medium text-primary">#{pr.number}</span>{" "}
-                {pr.title === `PR #${pr.number}` ? (
-                  <span className="text-muted-foreground">title not recorded</span>
-                ) : (
-                  pr.title
-                )}
-              </Link>
-            </TableCell>
+        {prs.map((pr) => {
+          const url = pr.url ?? `https://github.com/${pr.repository}/pull/${pr.number}`;
+          return (
+            <TableRow key={pr.id}>
+              <TableCell className="text-xs text-muted-foreground">{pr.repository}</TableCell>
+              <TableCell className="max-w-[420px] truncate text-xs">
+                <span className="flex items-center gap-1.5">
+                  <Link
+                    to="/prs/$owner/$repo/$number"
+                    params={{ owner: pr.owner, repo: pr.repo, number: String(pr.number) }}
+                    className="hover:underline"
+                    title={pr.title}
+                  >
+                    <span className="font-mono font-medium text-primary">#{pr.number}</span>{" "}
+                    {pr.title === `PR #${pr.number}` ? (
+                      <span className="text-muted-foreground">title not recorded</span>
+                    ) : (
+                      pr.title
+                    )}
+                  </Link>
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`Open ${pr.repository}#${pr.number} on GitHub`}
+                    title="Open on GitHub"
+                    className="inline-flex text-muted-foreground hover:text-foreground"
+                  >
+                    <ExternalLink className="size-3.5" />
+                  </a>
+                </span>
+              </TableCell>
             <TableCell className="text-xs text-muted-foreground">{pr.author}</TableCell>
             <TableCell>
               <HeadStatusChip status={pr.headStatus} />
@@ -345,7 +360,8 @@ function InboxTable({ prs, action }: { prs: PRSummary[]; action?: string }) {
               </TableCell>
             )}
           </TableRow>
-        ))}
+          );
+        })}
       </TableBody>
     </Table>
   );
