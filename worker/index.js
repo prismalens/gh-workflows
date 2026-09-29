@@ -3888,7 +3888,7 @@ async function afterResponse(opts, fn) {
 
 async function postedRounds(env, job) {
   const row = await env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM jobs WHERE repository = ? AND pr_number = ? AND post_outcome LIKE 'posted%'"
+    "SELECT COUNT(*) AS n FROM jobs WHERE repository = ? AND pr_number = ? AND post_outcome LIKE 'posted:%'"
   )
     .bind(job.repository, job.pr_number)
     .first();
@@ -3961,13 +3961,13 @@ async function postFinishedJob(env, opts, jobId) {
   const finished = lastOfType(events, "finished");
   let outcome;
   if (finished?._meta?.token_revoked !== true) {
-    await postVerdictOnly(
+    const verdict = await postVerdictOnly(
       env,
       opts,
       job,
       "the round finished, but its read token was not confirmed revoked, so nothing it wrote was posted."
     );
-    outcome = "did-not-post: token-unrevoked";
+    outcome = `did-not-post: token-unrevoked (${verdict})`;
   } else {
     const rounds = (await postedRounds(env, job)) + 1;
     outcome = await withPosterToken(env, opts, job, async (token, appLogin, fetchImpl) => {
@@ -3994,12 +3994,20 @@ export async function sweepNoRunner(env, nowMs, opts = {}) {
     .bind(cutoff)
     .all();
   const minutes = Math.round(runnerTimeoutS(env) / 60);
+  // One job's failure must not strand the rest of the batch without their verdict.
   for (const job of results ?? []) {
-    await env.DB.batch([
-      env.DB.prepare("UPDATE jobs SET no_runner_at = ?1 WHERE id = ?2 AND no_runner_at IS NULL").bind(nowIso, job.id),
-      await runnerLaneEvent(env, job, "no-runner", nowIso),
-    ]);
-    await postVerdictOnly(env, opts, job, `no runner took this job within ${minutes} minutes; it stays queued.`);
+    try {
+      await env.DB.batch([
+        env.DB.prepare("UPDATE jobs SET no_runner_at = ?1 WHERE id = ?2 AND no_runner_at IS NULL").bind(nowIso, job.id),
+        await runnerLaneEvent(env, job, "no-runner", nowIso),
+      ]);
+      const outcome = await postVerdictOnly(env, opts, job, `no runner took this job within ${minutes} minutes; it stays queued.`);
+      await env.DB.prepare("UPDATE jobs SET post_outcome = ? WHERE id = ?")
+        .bind(truncateString(outcome), job.id)
+        .run();
+    } catch (error) {
+      console.error("no-runner sweep: job failed", { jobId: job.id, error: String(error) });
+    }
   }
 }
 
@@ -4788,7 +4796,11 @@ export default {
   // wrangler.toml [triggers] crons (#183).
   async scheduled(event, env, ctx) {
     if (event.cron === NO_RUNNER_CRON) {
-      ctx.waitUntil(sweepNoRunner(env, event.scheduledTime));
+      ctx.waitUntil(
+        sweepNoRunner(env, event.scheduledTime).catch((error) => {
+          console.error("no-runner sweep failed", String(error));
+        })
+      );
       return;
     }
     ctx.waitUntil(purgeExpired(env, new Date(event.scheduledTime)));

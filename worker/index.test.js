@@ -7118,7 +7118,7 @@ describe("Poster and the runner verdicts (#184)", () => {
     assert.equal(writes.length, 1);
     assert.match(writes[0].path, /\/issues\/183\/comments$/);
     assert.match(writes[0].body.body, /read token was not confirmed revoked/);
-    assert.equal(db.queries.find((q) => /SET post_outcome/.test(q.sql)).args[0], "did-not-post: token-unrevoked");
+    assert.equal(db.queries.find((q) => /SET post_outcome/.test(q.sql)).args[0], "did-not-post: token-unrevoked (posted-verdict)");
   });
 
   it("the no-runner sweep records the verdict once per job past RUNNER_TIMEOUT_S and leaves the job queued", async () => {
@@ -7132,5 +7132,22 @@ describe("Poster and the runner verdicts (#184)", () => {
     assert.deepEqual(laneReasons(db), ["no-runner"]);
     assert.ok(!db.queries.some((q) => /SET state/.test(q.sql)));
     assert.equal(NO_RUNNER_CRON, "2-59/5 * * * *");
+  });
+
+  it("the no-runner sweep records each job's post outcome and carries on past a job that throws", async () => {
+    const jobs = ["a", "b"].map((id) => ({ id, repository: "prismalens/sreforge", pr_number: 183, head_sha: CP_HEAD, engine: "opencode", model: null }));
+    const db = cpRunnerDb((sql) => (/no_runner_at IS NULL AND created_at < \?1/.test(sql) ? jobs : null));
+    const batch = db.batch.bind(db);
+    let calls = 0;
+    db.batch = async (stmts) => {
+      calls += 1;
+      if (calls === 1) throw new Error("D1 busy");
+      return batch(stmts);
+    };
+    await cpCaptureConsole(() => sweepNoRunner({ DB: db, RUNNER_TIMEOUT_S: "600" }, Date.parse("2026-09-26T12:00:00Z")));
+    const outcomes = db.queries.filter((q) => /SET post_outcome/.test(q.sql));
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].args[1], "b");
+    assert.match(outcomes[0].args[0], /^did-not-post: /);
   });
 });
