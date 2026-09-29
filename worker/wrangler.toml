@@ -54,3 +54,7 @@ GITHUB_APP_SLUG = "assayer-review-dev"
 RUNNER_TIMEOUT_S = "900"
 OIDC_ALLOWED_REPOSITORY_IDS = "1124040129,1191857183,1331752084,1256451611"
 
+
+# /api/ops shows which Worker version is serving (#179).
+[version_metadata]
+binding = "CF_VERSION_METADATA"

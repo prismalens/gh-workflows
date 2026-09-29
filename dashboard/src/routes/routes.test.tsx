@@ -256,6 +256,38 @@ describe("/repos", () => {
     expect(cell).toHaveTextContent(formatRelative(sreforge!.last_recorded_at));
   });
 
+  it("names restack counts as not recorded when the window's rounds come from lanes that do not record them (#179)", async () => {
+    const base = makeFixtureApi(makeRounds({ count: 64, now }));
+    const coverage = {
+      ...base,
+      fetchFleetRepos: async (query: Parameters<typeof base.fetchFleetRepos>[0]) => {
+        const fleet = await base.fetchFleetRepos(query);
+        return {
+          ...fleet,
+          repositories: fleet.repositories.map((row) =>
+            row.repository === "prismalens/sreforge"
+              ? { ...row, rounds: 4, restacks: { unchanged_patch: 0, unmerged_base: 0, rounds_not_recorded: 4 } }
+              : row.repository === "Sumit1993/mage-memory"
+                ? { ...row, rounds: 2, restacks: { unchanged_patch: 3, unmerged_base: 0, rounds_not_recorded: 2 } }
+                : { ...row, rounds: 5, restacks: { unchanged_patch: 1, unmerged_base: 3, rounds_not_recorded: 2 } },
+          ),
+        };
+      },
+    };
+    renderRoute({ path: "/repos", api: coverage });
+    const table = await screen.findByRole("table");
+    const none = within(table).getByText("prismalens/sreforge").closest("tr") as HTMLElement;
+    expect(within(none).getByText("unchanged_patch not recorded")).toBeInTheDocument();
+    expect(within(none).getByText("unmerged_base not recorded")).toBeInTheDocument();
+    const partial = within(table).getByText("prismalens/prismalens").closest("tr") as HTMLElement;
+    expect(within(partial).getAllByText(/2 rounds not recorded/)).toHaveLength(2);
+    // A recorded skip stays visible even when every round in the window is uncovered.
+    const skips = within(table).getByText("Sumit1993/mage-memory").closest("tr") as HTMLElement;
+    expect(within(skips).queryByText("unchanged_patch not recorded")).toBeNull();
+    expect(within(skips).getByText("unmerged_base not recorded")).toBeInTheDocument();
+    expect(within(skips).getAllByRole("cell").some((c) => /^3 · 2 rounds not recorded$/.test(c.textContent ?? ""))).toBe(true);
+  });
+
   it("surfaces a failed fleet query instead of a silently short list", async () => {
     const base = makeFixtureApi(makeRounds({ count: 64, now }));
     const brokenFleet = {

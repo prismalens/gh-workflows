@@ -4,6 +4,7 @@ import { failuresRoute } from "./routes/failures";
 import { findingsRoute } from "./routes/findings";
 import { fleetRoute } from "./routes/fleet";
 import { indexRoute } from "./routes/index";
+import { opsRoute } from "./routes/ops";
 import { todayRoute } from "./routes/today";
 import { prDetailRoute } from "./routes/prDetail";
 import { prsRoute } from "./routes/prs";
@@ -17,6 +18,7 @@ export const routeTree = rootRoute.addChildren([
   todayRoute,
   indexRoute,
   fleetRoute,
+  opsRoute,
   prsRoute,
   prDetailRoute,
   roundsRoute,

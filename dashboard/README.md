@@ -6,10 +6,10 @@ the telemetry Worker in `../worker` through its `[assets]` binding, reading the 
 `GET /api/round-agents`, `GET /api/prs`, `GET /api/findings`, `GET /api/fleet/repos`,
 `GET /api/fleet/findings` and `GET /api/health-reports` routes behind Cloudflare Access.
 
-Eleven routes ship: `/` Today, `/inbox`, `/fleet` (the former overview), `/rounds`,
+Twelve routes ship: `/` Today, `/inbox`, `/fleet` (the former overview), `/ops`, `/rounds`,
 `/rounds/$sessionId`, `/repos`, `/repos/$owner/$repo`, `/failures`, `/prs`,
 `/prs/$owner/$repo/$number` and `/findings`. The nav lists Today, Review (Inbox, Findings, Repos)
-and Operate (Fleet); the rest keep their routes for deep links (#185). Compare was refused (#119).
+and Operate (Fleet, Ops); the rest keep their routes for deep links (#185). Compare was refused (#119).
 
 ## Today, search and filters (#209)
 
