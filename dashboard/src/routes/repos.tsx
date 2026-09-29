@@ -45,7 +45,8 @@ const EMPTY_ROWS = Object.freeze([]) as never[];
 /** A count only over rounds whose lane records the field; the rest are named, never zero (#179). */
 function RestackCount({ repo, field }: { repo: RepoSummary; field: "unchanged_patch" | "unmerged_base" }) {
   const missing = repo.restacks.rounds_not_recorded;
-  if (repo.rounds > 0 && missing >= repo.rounds) {
+  // An unchanged-patch skip is a lane event with no round, so a recorded one always shows.
+  if (repo.restacks[field] === 0 && repo.rounds > 0 && missing >= repo.rounds) {
     return <span className="text-muted-foreground">{field} not recorded</span>;
   }
   return (
