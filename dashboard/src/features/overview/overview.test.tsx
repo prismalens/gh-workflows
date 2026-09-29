@@ -448,7 +448,6 @@ describe("never-answered findings reach the attention feed (#111)", () => {
     thread_created_at: "2026-09-01T00:00:00Z",
     header_raw: "Unbounded page",
     body_excerpt: "first: 100 with no cursor loop.",
-    diff_hunk: "@@ -1,3 +1,3 @@",
     human_reply_count: 0,
     human_reply_sha: null,
     fix_sha: null,

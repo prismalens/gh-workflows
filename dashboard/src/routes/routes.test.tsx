@@ -1231,7 +1231,6 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
         thread_created_at: "2026-09-01T00:00:00.000Z",
         header_raw: "Scoped finding",
         body_excerpt: "detail",
-        diff_hunk: "@@ -1,1 +1,1 @@",
         human_reply_count: 1,
         human_reply_sha: null,
         fix_sha: "cafefeed",
@@ -1255,7 +1254,6 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
         thread_created_at: "2026-09-01T00:00:00.000Z",
         header_raw: "Other PR finding",
         body_excerpt: null,
-        diff_hunk: null,
         human_reply_count: 0,
         human_reply_sha: null,
         fix_sha: null,
@@ -1345,7 +1343,8 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
 
     expect(await screen.findByText("This pull request was not found")).toBeInTheDocument();
     expect(screen.getByText(/no review rounds were found/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Back to pull requests" })).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "Open it on GitHub" });
+    expect(link).toHaveAttribute("href", "https://github.com/prismalens/prismalens/pull/99999");
   });
 
   it("/prs with no state parameter renders every state; an explicit state still filters (finding 3943781321, default reversed by #136)", async () => {

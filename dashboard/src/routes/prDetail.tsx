@@ -1,12 +1,11 @@
 import { useMemo } from "react";
-import { createRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { createRoute } from "@tanstack/react-router";
+import { ExternalLink } from "lucide-react";
 
 import { usePRDetailQuery, usePRsQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   ConfigInEffect,
   HeadLadder,
@@ -16,7 +15,6 @@ import {
 import { HeadBanner } from "@/features/prs/HeadBanner";
 import { enrichPRs, groupRoundsByPR } from "@/features/prs/prs";
 import { OutcomeStrip, RoundLines } from "@/features/prs/PROutcome";
-import { DEFAULT_RANGE } from "@/honesty/range";
 import { shortSha } from "@/lib/format";
 import { rootRoute } from "./root";
 
@@ -49,11 +47,6 @@ function PRDetailPage() {
     <div className="flex flex-col gap-5">
       {/* Top back & title line */}
       <div className="flex flex-wrap items-center gap-3">
-        <Button asChild size="sm" variant="ghost">
-          <Link to="/inbox" search={{ range: DEFAULT_RANGE }}>
-            <ArrowLeft className="size-4" /> Inbox
-          </Link>
-        </Button>
         <span className="font-mono text-xs text-muted-foreground">
           {owner}/{repo}#{number}
         </span>
@@ -63,11 +56,7 @@ function PRDetailPage() {
         <Alert variant="muted">
           <AlertTitle>This pull request was not found</AlertTitle>
           <AlertDescription>
-            No review rounds were found for {owner}/{repo}#{number} in the readable telemetry window.{" "}
-            <Link to="/prs" className="underline underline-offset-4">
-              Back to pull requests
-            </Link>
-            .
+            No review rounds were found for {owner}/{repo}#{number} in the readable telemetry window.
           </AlertDescription>
         </Alert>
       ) : prQuery.isPending ? (
@@ -79,9 +68,14 @@ function PRDetailPage() {
           <AlertTitle>This pull request was not found</AlertTitle>
           <AlertDescription>
             No review rounds were found for {owner}/{repo}#{number} in the readable telemetry window.{" "}
-            <Link to="/prs" className="underline underline-offset-4">
-              Back to pull requests
-            </Link>
+            <a
+              href={`https://github.com/${owner}/${repo}/pull/${number}`}
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-4"
+            >
+              Open it on GitHub
+            </a>
             .
           </AlertDescription>
         </Alert>

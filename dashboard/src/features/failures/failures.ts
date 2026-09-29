@@ -383,6 +383,8 @@ export const LANE_EVENT_REASONS = [
   "admission-off",
   "skip-label",
   "awaiting-label",
+  "no-runner",
+  "credential-cooldown",
 ] as const;
 
 export type LaneEventReasonKey = (typeof LANE_EVENT_REASONS)[number];
@@ -410,6 +412,10 @@ export const LANE_EVENT_DEFINITIONS: Record<LaneEventReasonKey, string> = {
     "Run skipped because the claude_review_skip label is on the pull request; summons are refused too",
   "awaiting-label":
     "Run skipped because review.admission is label and the claude_review label is absent",
+  "no-runner":
+    "No runner took the queued job within RUNNER_TIMEOUT_S; the job stays queued and the App's liveness comment says so",
+  "credential-cooldown":
+    "The runner's credential hit a rate or account limit with a reset time; the job requeued for then",
 };
 
 export const FORK_HEAD_FOOTNOTE =

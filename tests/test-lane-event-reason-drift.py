@@ -32,7 +32,13 @@ def emitted_reasons() -> set[str]:
     found = set(re.findall(r'reason="([a-z-]+)"', text))
     # The initialiser (`reason=""`), not a reason.
     found.discard("")
-    return found
+    return found | worker_emitted_reasons()
+
+
+def worker_emitted_reasons() -> set[str]:
+    """Reasons the control plane records itself for runner jobs (#184): no-runner, credential-cooldown."""
+    text = (ROOT / "worker/index.js").read_text(encoding="utf-8")
+    return set(re.findall(r'runnerLaneEvent\(env, job, "([a-z-]+)"', text))
 
 
 def ungated_body_conditions() -> list[str]:

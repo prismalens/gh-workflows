@@ -14,6 +14,7 @@ import { DEFAULT_PAGE_SIZE, TablePager, type PageSize } from "@/components/Table
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { decodeHeadStatus } from "@/features/prs/headStatus";
+import { distinctEngines, engineLabel } from "@/features/rounds/engine";
 import { RoundsTable } from "@/features/rounds/RoundsTable";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
 import { rootRoute } from "./root";
@@ -26,6 +27,7 @@ const roundsSearchSchema = z.object({
   round_type: z.string().min(1).optional().catch(undefined),
   verdict: z.string().min(1).optional().catch(undefined),
   model: z.string().min(1).optional().catch(undefined),
+  engine: z.string().min(1).optional().catch(undefined),
   q: z.string().min(1).optional().catch(undefined),
   sort: z.string().min(1).optional().catch(undefined),
   dir: z.enum(["asc", "desc"]).optional().catch(undefined),
@@ -89,6 +91,7 @@ function RoundsPage() {
   const roundTypes = useMemo(() => distinctRoundTypes(fetched), [fetched]);
   const verdictOptions = useMemo(() => distinctVerdictLabels(windowed.rows), [windowed.rows]);
   const modelOptions = useMemo(() => distinctModels(windowed.rows), [windowed.rows]);
+  const engineOptions = useMemo(() => distinctEngines(windowed.rows), [windowed.rows]);
 
   const [searchDraft, setSearchDraft] = useState(search.q ?? "");
   useEffect(() => setSearchDraft(search.q ?? ""), [search.q]);
@@ -116,14 +119,17 @@ function RoundsPage() {
     if (search.model) {
       list = list.filter((row) => row.model === search.model);
     }
+    if (search.engine) {
+      list = list.filter((row) => engineLabel(row) === search.engine);
+    }
     if (search.q) {
       const needle = search.q.toLowerCase();
       list = list.filter((row) => matchesSearch(row, needle));
     }
     return list;
-  }, [windowed.rows, search.verdict, search.model, search.q]);
+  }, [windowed.rows, search.verdict, search.model, search.engine, search.q]);
 
-  const isFiltered = Boolean(search.verdict || search.model || search.q);
+  const isFiltered = Boolean(search.verdict || search.model || search.engine || search.q);
 
   const pageSize: PageSize = search.size ?? DEFAULT_PAGE_SIZE;
   const pageCount = Math.max(1, Math.ceil(matchingRows.length / pageSize));
@@ -199,6 +205,14 @@ function RoundsPage() {
           value={search.model}
           onChange={(model) =>
             void navigate({ search: (prev) => ({ ...prev, model, page: undefined }) })
+          }
+        />
+        <FilterChips
+          label="Engine"
+          options={engineOptions}
+          value={search.engine}
+          onChange={(engine) =>
+            void navigate({ search: (prev) => ({ ...prev, engine, page: undefined }) })
           }
         />
       </div>

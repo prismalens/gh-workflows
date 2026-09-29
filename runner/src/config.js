@@ -1,8 +1,10 @@
 // The daemon's config file (#184): where the control plane is, which runner token to present,
-// its placement (always `box`), and which credentials it offers. Secrets never sit in the file: the
-// runner token and every key are named by environment variable and read at load.
-import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+// and which credentials it offers. Secrets never sit in the file: the runner token and every key
+// are named by environment variable and read at load. A `user-login` credential is the engine's
+// own sign-in on this machine, used as it would be in a terminal (prismalens ADR 0003).
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import path from 'node:path';
 import os from 'node:os';
 import { z } from 'zod';
 import { ENGINES } from './engines.js';
@@ -10,7 +12,7 @@ import { ENGINES } from './engines.js';
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const ENV_REF = /^\$\{([A-Z_][A-Z0-9_]*)\}$/;
 const RUNNER_TOKEN = /^asr_[A-Za-z0-9_-]{43}$/;
-const DEFERRED_KINDS = new Set(['user-login', 'bedrock', 'vertex', 'foundry']);
+const DEFERRED_KINDS = new Set(['bedrock', 'vertex', 'foundry']);
 
 const credentialSchema = z.object({
   name: z.string().regex(/^[a-z0-9-]{1,32}$/),
@@ -23,7 +25,6 @@ const credentialSchema = z.object({
 const configSchema = z.object({
   control_plane: z.string(),
   runner_token: z.string(),
-  placement: z.string(),
   credentials: z.array(credentialSchema).min(1).max(16),
 }).strict();
 
@@ -36,11 +37,26 @@ function sha12(text) {
 }
 
 // What the Worker's FINGERPRINT_PATTERN holds: 12 lowercase hex. An api-key's is a hash of the
-// key, so the key never leaves the process; a keyless one is stable per host and engine.
-export function fingerprint(kind, engine, material, hostname) {
+// key, so the key never leaves the process; a keyless or user-login one is stable per host and engine.
+export function fingerprint(kind, engine, material, hostId) {
   if (kind === 'api-key') return sha12(material);
-  if (kind === 'keyless') return sha12(`keyless\n${engine}\n${hostname}`);
+  if (kind === 'keyless' || kind === 'user-login') return sha12(`${kind}\n${engine}\n${hostId}`);
   throw new Error(`no fingerprint for credential kind ${kind}`);
+}
+
+// A container's hostname is its ID, so it changes on every replacement. The id lives in the
+// home directory beside the sign-in instead, and moves with that volume (#229 review).
+export function loadHostId(home = os.homedir()) {
+  const file = path.join(home, '.assayer', 'host-id');
+  try { return readFileSync(file, 'utf8').trim(); } catch { /* first run */ }
+  const id = randomUUID();
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `${id}\n`, { flag: 'wx' });
+    return id;
+  } catch {
+    try { return readFileSync(file, 'utf8').trim(); } catch { return os.hostname(); }
+  }
 }
 
 function checkControlPlane(value) {
@@ -52,7 +68,7 @@ function checkControlPlane(value) {
   return value;
 }
 
-export function parseConfig(raw, env = process.env, { hostname = os.hostname() } = {}) {
+export function parseConfig(raw, env = process.env, { hostId } = {}) {
   const parsed = configSchema.safeParse(raw);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -66,8 +82,6 @@ export function parseConfig(raw, env = process.env, { hostname = os.hostname() }
   const token = env[ref[1]];
   if (!token) fail('runner_token', `${ref[1]} is not set`);
   if (!RUNNER_TOKEN.test(token)) fail('runner_token', `${ref[1]} is not a runner token`);
-
-  if (cfg.placement !== 'box') fail('placement', `unknown placement ${cfg.placement}`);
 
   const seenNames = new Set();
   const seenPairs = new Set();
@@ -94,18 +108,17 @@ export function parseConfig(raw, env = process.env, { hostname = os.hostname() }
     }
     return {
       name: c.name, engine: c.engine, kind: c.kind, env: c.env ?? null, concurrency: c.concurrency,
-      fingerprint: fingerprint(c.kind, c.engine, material, hostname),
+      fingerprint: fingerprint(c.kind, c.engine, material, c.kind === 'api-key' ? null : (hostId ??= loadHostId())),
     };
   });
 
   const config = {
     control_plane: checkControlPlane(cfg.control_plane),
-    placement: cfg.placement,
     credentials,
   };
   Object.defineProperty(config, 'runner_token', { value: token, enumerable: false });
   Object.defineProperty(config, 'secrets', { value: secrets, enumerable: false });
-  config.toJSON = () => ({ control_plane: config.control_plane, placement: config.placement, credentials });
+  config.toJSON = () => ({ control_plane: config.control_plane, credentials });
   Object.defineProperty(config, 'toJSON', { enumerable: false });
   return config;
 }
