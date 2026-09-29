@@ -35,7 +35,13 @@ import {
 } from "@/components/ui/table";
 import { bucketInbox, matchesInboxSearch, type InboxBucketKey } from "@/features/inbox/inbox";
 import { HeadStatusChip } from "@/features/prs/HeadStatusChip";
-import { enrichPRs, filterPRsByState, groupRoundsByPR, type PRSummary } from "@/features/prs/prs";
+import {
+  enrichPRs,
+  filterPRsByState,
+  groupRoundsByPR,
+  type PRSummary,
+  MISSING_TITLE_LABELS,
+} from "@/features/prs/prs";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
 import { FilterBar } from "@/components/FilterBar";
 import type { FilterKey, FilterToken } from "@/features/filters/grammar";
@@ -304,8 +310,8 @@ function InboxTable({ prs, action }: { prs: PRSummary[]; action?: string }) {
                     title={pr.title}
                   >
                     <span className="font-mono font-medium text-primary">#{pr.number}</span>{" "}
-                    {pr.title === `PR #${pr.number}` ? (
-                      <span className="text-muted-foreground">title not recorded</span>
+                    {MISSING_TITLE_LABELS.has(pr.title) ? (
+                      <span className="text-muted-foreground">{pr.title}</span>
                     ) : (
                       pr.title
                     )}

@@ -51,7 +51,14 @@ describe("enrichPRs (#136, #141)", () => {
     expect(enriched[0].stateIsFallback).toBe(false);
   });
 
-  it("keeps the round's pr_state and the PR #n fallback when no prs row matches", () => {
+  it("says the title was not shared when the round was written below full (#211)", () => {
+    const rounds = [round({ session_id: "s-3", repository: "a/b", pr_number: 3, pr_title: null, pr_author: null, share_level: "rounds" })];
+    const [pr] = groupRoundsByPR(rounds);
+    expect(pr.title).toBe("title not shared");
+    expect(pr.author).toBe("author not shared");
+  });
+
+  it("keeps the round's pr_state and says the title was not recorded when a full round lacks it", () => {
     const rounds = [
       round({
         session_id: "s-2",
@@ -59,13 +66,16 @@ describe("enrichPRs (#136, #141)", () => {
         pr_number: 2,
         pr_state: "open",
         pr_title: "",
+        pr_author: null,
+        share_level: "full",
       }),
     ];
     const prs = groupRoundsByPR(rounds);
     const enriched = enrichPRs(prs, [prRow({ repository: "a/b", pr_number: 999 })]);
 
     expect(enriched[0].state).toBe("open");
-    expect(enriched[0].title).toBe("PR #2");
+    expect(enriched[0].title).toBe("title not recorded");
+    expect(enriched[0].author).toBe("author not recorded");
     expect(enriched[0].stateIsFallback).toBe(true);
   });
 
