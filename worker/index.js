@@ -868,6 +868,8 @@ async function handleRuns(url, env) {
     "repository_id",
     // The level the row was written at, so a null text field reads as not collected (#183, #185 F6).
     "share_level",
+    // Set only by the runner path (#184); null is an Actions-lane round (#185).
+    "engine",
   ];
   if (includeBlobs) {
     columns.push(
@@ -2715,7 +2717,6 @@ async function handleFindings(url, env) {
     "thread_created_at",
     "header_raw",
     "body_excerpt",
-    "diff_hunk",
     "human_reply_count",
     "human_reply_sha",
     "fix_sha",
