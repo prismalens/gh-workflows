@@ -256,6 +256,31 @@ describe("/repos", () => {
     expect(cell).toHaveTextContent(formatRelative(sreforge!.last_recorded_at));
   });
 
+  it("names restack counts as not recorded when the window's rounds come from lanes that do not record them (#179)", async () => {
+    const base = makeFixtureApi(makeRounds({ count: 64, now }));
+    const coverage = {
+      ...base,
+      fetchFleetRepos: async (query: Parameters<typeof base.fetchFleetRepos>[0]) => {
+        const fleet = await base.fetchFleetRepos(query);
+        return {
+          ...fleet,
+          repositories: fleet.repositories.map((row) =>
+            row.repository === "prismalens/sreforge"
+              ? { ...row, rounds: 4, restacks: { unchanged_patch: 0, unmerged_base: 0, rounds_not_recorded: 4 } }
+              : { ...row, rounds: 5, restacks: { unchanged_patch: 1, unmerged_base: 3, rounds_not_recorded: 2 } },
+          ),
+        };
+      },
+    };
+    renderRoute({ path: "/repos", api: coverage });
+    const table = await screen.findByRole("table");
+    const none = within(table).getByText("prismalens/sreforge").closest("tr") as HTMLElement;
+    expect(within(none).getByText("unchanged_patch not recorded")).toBeInTheDocument();
+    expect(within(none).getByText("unmerged_base not recorded")).toBeInTheDocument();
+    const partial = within(table).getByText("prismalens/prismalens").closest("tr") as HTMLElement;
+    expect(within(partial).getAllByText(/2 rounds not recorded/)).toHaveLength(2);
+  });
+
   it("surfaces a failed fleet query instead of a silently short list", async () => {
     const base = makeFixtureApi(makeRounds({ count: 64, now }));
     const brokenFleet = {

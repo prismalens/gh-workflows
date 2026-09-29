@@ -702,7 +702,7 @@ describe("GET /api/fleet/repos (#185)", () => {
           verdict_kind: null,
         },
         last_recorded_at: "2026-09-20T00:00:00.000Z",
-        restacks: { unchanged_patch: 1, unmerged_base: 2 },
+        restacks: { unchanged_patch: 1, unmerged_base: 2, rounds_not_recorded: 0 },
       },
       {
         repository: "o/quiet",
@@ -710,7 +710,7 @@ describe("GET /api/fleet/repos (#185)", () => {
         denials: 0,
         last_round: null,
         last_recorded_at: null,
-        restacks: { unchanged_patch: 0, unmerged_base: 0 },
+        restacks: { unchanged_patch: 0, unmerged_base: 0, rounds_not_recorded: 0 },
       },
     ],
     malformed_configs: [{ repository: "o/busy", layer: "repo_config" }],
@@ -797,6 +797,56 @@ describe("the fleet fixture and the Worker agree on a thin rolling window (#185)
     expect(fixture.window).toEqual(workerWindow);
     expect(fixture.rounds).toBe(30);
     expect(isFleetReposResponse(fixture)).toBe(true);
+  });
+});
+
+describe("the fleet fixture counts restacks the way the Worker does (#179)", () => {
+  it("counts an unchanged-patch event between the since cutoff and the window's oldest round", async () => {
+    const now = new Date();
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const rows = makeRounds({ count: 3, now }).map((row, i) => ({
+      ...row,
+      repository: "o/a",
+      session_id: `r-${i}`,
+      lane_version: "5",
+      base_pr_number: null,
+      recorded_at: new Date(now.getTime() - (i + 1) * 3600 * 1000).toISOString(),
+    }));
+    const event = (daysAgo: number): LaneEventRow => ({
+      run_id: daysAgo,
+      run_attempt: 1,
+      recorded_at: new Date(now.getTime() - daysAgo * DAY_MS).toISOString(),
+      repository: "o/a",
+      reason: "unchanged-patch",
+      pr_number: 1,
+      head_sha: null,
+      run_url: null,
+      rounds_used: null,
+      lane_version: "5",
+      reviewable_lines: null,
+      max_reviewable_lines: null,
+      actor: null,
+    });
+    const fleet = await makeFixtureApi(rows, [event(5), event(40)]).fetchFleetRepos({ range: "30d" });
+    expect(fleet.repositories.find((r) => r.repository === "o/a")?.restacks).toEqual({
+      unchanged_patch: 1,
+      unmerged_base: 0,
+      rounds_not_recorded: 0,
+    });
+  });
+
+  it("names rounds from lanes before 5, and runner rounds, as not recorded", async () => {
+    const now = new Date();
+    const rows = makeRounds({ count: 4, now }).map((row, i) => ({
+      ...row,
+      repository: "o/a",
+      session_id: `r-${i}`,
+      base_pr_number: i === 0 ? 9 : null,
+      lane_version: ["5", "5", "4", null][i],
+      ingest_auth: "oidc",
+    }));
+    const fleet = await makeFixtureApi(rows).fetchFleetRepos({ range: "all" });
+    expect(fleet.repositories[0].restacks).toEqual({ unchanged_patch: 0, unmerged_base: 1, rounds_not_recorded: 2 });
   });
 });
 

@@ -3088,8 +3088,11 @@ async function handleFleetRepos(url, env) {
           )
           .bind(since)
     ).all();
+    // A null base_pr_number counts as a measured zero only from a lane that always sends it:
+    // lane 5 on, never a runner round. Lane 4 straddles #173, so its nulls are not recorded
+    // (dashboard/src/honesty/fieldEra.ts). The same rounds could not emit unchanged-patch either.
     const unmergedBase = await windowed(
-      `SELECT repository, COUNT(*) AS unmerged_base FROM usage_records WHERE ${and} base_pr_number IS NOT NULL GROUP BY repository`
+      `SELECT repository, COUNT(base_pr_number) AS unmerged_base, SUM(CASE WHEN base_pr_number IS NULL AND (ingest_auth = 'runner' OR lane_version IS NULL OR CAST(ltrim(lane_version, 'vV') AS INTEGER) < 5) THEN 1 ELSE 0 END) AS rounds_not_recorded FROM usage_records ${where} GROUP BY repository`
     ).all();
 
     const lastRecordedByRepo = new Map(
@@ -3098,9 +3101,7 @@ async function handleFleetRepos(url, env) {
     const unchangedPatchByRepo = new Map(
       (unchangedPatch.results ?? []).map((r) => [r.repository, r.unchanged_patch])
     );
-    const unmergedBaseByRepo = new Map(
-      (unmergedBase.results ?? []).map((r) => [r.repository, r.unmerged_base])
-    );
+    const unmergedBaseByRepo = new Map((unmergedBase.results ?? []).map((r) => [r.repository, r]));
     const countsByRepo = new Map((counts.results ?? []).map((r) => [r.repository, r]));
     const lastRoundByRepo = new Map((lastRounds.results ?? []).map((r) => [r.repository, r]));
     const names = [...new Set([...lastRecordedByRepo.keys(), ...countsByRepo.keys()])].sort();
@@ -3123,7 +3124,8 @@ async function handleFleetRepos(url, env) {
         last_recorded_at: lastRecordedByRepo.get(repository) ?? null,
         restacks: {
           unchanged_patch: unchangedPatchByRepo.get(repository) ?? 0,
-          unmerged_base: unmergedBaseByRepo.get(repository) ?? 0,
+          unmerged_base: unmergedBaseByRepo.get(repository)?.unmerged_base ?? 0,
+          rounds_not_recorded: unmergedBaseByRepo.get(repository)?.rounds_not_recorded ?? 0,
         },
       };
     });

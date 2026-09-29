@@ -9,7 +9,7 @@ function repo(overrides: Partial<FleetRepoRow> & { repository: string }): FleetR
     denials: 0,
     last_round: null,
     last_recorded_at: null,
-    restacks: { unchanged_patch: 0, unmerged_base: 0 },
+    restacks: { unchanged_patch: 0, unmerged_base: 0, rounds_not_recorded: 0 },
     ...overrides,
   };
 }

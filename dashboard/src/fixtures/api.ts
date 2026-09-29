@@ -39,6 +39,7 @@ import type {
 import { summariseConfigs } from "@/features/failures/failures";
 import { decodeDivergence, decodeFate, fixCitation } from "@/features/findings/findings";
 import { reviewToMergeHours } from "@/features/findings/latency";
+import { fieldEra } from "@/honesty/fieldEra";
 import { applyRange } from "@/honesty/range";
 import { FIXTURE_PRS } from "./prs";
 import { FIXTURE_ROUNDS } from "./rounds";
@@ -360,17 +361,32 @@ export function makeFixtureApi(
         });
       }
 
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      // The Worker's since for the 50-round side is the 50th round, or none at
+      // all when fewer than 50 exist.
+      const since =
+        range === "all"
+          ? null
+          : range === "rolling" && windowed.label === "the last 50 rounds"
+            ? (sorted[49]?.recorded_at ?? null)
+            : new Date(
+                now.getTime() - (range === "90d" ? 90 : range === "30d" ? 30 : 7) * DAY_MS,
+              ).toISOString();
+
       const unmergedBase = new Map<string, number>();
+      const notRecorded = new Map<string, number>();
       for (const r of windowed.rows) {
         if (r.base_pr_number != null) {
           unmergedBase.set(r.repository, (unmergedBase.get(r.repository) ?? 0) + 1);
+        } else if (fieldEra(r).reason === "lane-did-not-send") {
+          notRecorded.set(r.repository, (notRecorded.get(r.repository) ?? 0) + 1);
         }
       }
-      const windowStart = windowed.rows[windowed.rows.length - 1]?.recorded_at;
+      // Lane events carry no session_id, so they take the Worker's recorded_at bound.
       const unchangedPatch = new Map<string, number>();
       for (const e of sortedEvents) {
         if (e.reason !== "unchanged-patch") continue;
-        if (range !== "all" && (!windowStart || e.recorded_at < windowStart)) continue;
+        if (since !== null && e.recorded_at < since) continue;
         unchangedPatch.set(e.repository, (unchangedPatch.get(e.repository) ?? 0) + 1);
       }
 
@@ -386,20 +402,9 @@ export function makeFixtureApi(
         restacks: {
           unchanged_patch: unchangedPatch.get(repository) ?? 0,
           unmerged_base: unmergedBase.get(repository) ?? 0,
+          rounds_not_recorded: notRecorded.get(repository) ?? 0,
         },
       }));
-
-      const DAY_MS = 24 * 60 * 60 * 1000;
-      // The Worker's since for the 50-round side is the 50th round, or none at
-      // all when fewer than 50 exist.
-      const since =
-        range === "all"
-          ? null
-          : range === "rolling" && windowed.label === "the last 50 rounds"
-            ? (sorted[49]?.recorded_at ?? null)
-            : new Date(
-                now.getTime() - (range === "90d" ? 90 : range === "30d" ? 30 : 7) * DAY_MS,
-              ).toISOString();
 
       return {
         window: { range, since, label: windowed.label },

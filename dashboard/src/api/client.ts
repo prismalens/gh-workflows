@@ -690,7 +690,11 @@ function isNullableString(value: unknown): boolean {
 function isRestacks(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const r = value as Record<string, unknown>;
-  return typeof r.unchanged_patch === "number" && typeof r.unmerged_base === "number";
+  return (
+    typeof r.unchanged_patch === "number" &&
+    typeof r.unmerged_base === "number" &&
+    typeof r.rounds_not_recorded === "number"
+  );
 }
 
 function isFleetRepoRow(row: unknown): boolean {

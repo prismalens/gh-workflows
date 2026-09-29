@@ -284,8 +284,11 @@ export interface FleetRepoRow {
   last_round: FleetLastRound | null;
   /** All-time, not windowed. */
   last_recorded_at: string | null;
-  /** Inside the window (#179): lane events skipped as an unchanged patch, rounds on an unmerged base PR. */
-  restacks: { unchanged_patch: number; unmerged_base: number };
+  /**
+   * Inside the window (#179): lane events skipped as an unchanged patch, rounds on an unmerged
+   * base PR, and the rounds whose lane predates both fields, so they are not recorded, not zero.
+   */
+  restacks: { unchanged_patch: number; unmerged_base: number; rounds_not_recorded: number };
 }
 
 /** GET /api/fleet/repos: aggregates only, windowed on the Worker (#185). */

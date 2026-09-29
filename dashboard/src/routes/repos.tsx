@@ -15,7 +15,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { malformedConfigs, quietRepos, repoParams, summariseRepos } from "@/features/repos/repos";
+import {
+  malformedConfigs,
+  quietRepos,
+  repoParams,
+  summariseRepos,
+  type RepoSummary,
+} from "@/features/repos/repos";
 import { WatchOut } from "@/features/repos/WatchOut";
 import { linkableRange, standardRangeSchema } from "@/honesty/range";
 import { CountTile } from "@/honesty/Tile";
@@ -35,6 +41,25 @@ export const reposRoute = createRoute({
 });
 
 const EMPTY_ROWS = Object.freeze([]) as never[];
+
+/** A count only over rounds whose lane records the field; the rest are named, never zero (#179). */
+function RestackCount({ repo, field }: { repo: RepoSummary; field: "unchanged_patch" | "unmerged_base" }) {
+  const missing = repo.restacks.rounds_not_recorded;
+  if (repo.rounds > 0 && missing >= repo.rounds) {
+    return <span className="text-muted-foreground">{field} not recorded</span>;
+  }
+  return (
+    <>
+      {formatCount(repo.restacks[field])}
+      {missing > 0 && (
+        <span className="text-muted-foreground">
+          {" "}
+          · {formatCount(missing)} {missing === 1 ? "round" : "rounds"} not recorded
+        </span>
+      )}
+    </>
+  );
+}
 
 function ReposPage() {
   const search = reposRoute.useSearch();
@@ -170,10 +195,10 @@ function ReposPage() {
                       </TableCell>
                       <TableCell className="tabular">{formatCount(repo.denials)}</TableCell>
                       <TableCell className="tabular">
-                        {formatCount(repo.restacks.unchanged_patch)}
+                        <RestackCount repo={repo} field="unchanged_patch" />
                       </TableCell>
                       <TableCell className="tabular">
-                        {formatCount(repo.restacks.unmerged_base)}
+                        <RestackCount repo={repo} field="unmerged_base" />
                       </TableCell>
                     </TableRow>
                     );
@@ -184,8 +209,9 @@ function ReposPage() {
           </Card>
 
           <p className="text-xs text-muted-foreground">
-            A repository with no round in this window is still listed. Restack counts include only
-            rounds from lanes that record them (#173), so older rounds count as zero.
+            A repository with no round in this window is still listed. Restack counts come only from
+            rounds whose lane records them (lane 5 on, #173). Rounds from older lanes, lane 4 and
+            runner rounds are named as not recorded, never counted as zero.
           </p>
         </>
       )}

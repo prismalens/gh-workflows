@@ -5451,7 +5451,7 @@ describe("Worker telemetry read API", () => {
           denials: 1,
           last_round: { session_id: "s-9", recorded_at: "2026-09-20T00:00:00.000Z", round_type: "full", verdict_kind: "reviewed" },
           last_recorded_at: "2026-09-20T00:00:00.000Z",
-          restacks: { unchanged_patch: 0, unmerged_base: 0 },
+          restacks: { unchanged_patch: 0, unmerged_base: 0, rounds_not_recorded: 0 },
         },
         {
           repository: "o/quiet",
@@ -5459,7 +5459,7 @@ describe("Worker telemetry read API", () => {
           denials: 0,
           last_round: null,
           last_recorded_at: "2026-06-01T00:00:00.000Z",
-          restacks: { unchanged_patch: 0, unmerged_base: 0 },
+          restacks: { unchanged_patch: 0, unmerged_base: 0, rounds_not_recorded: 0 },
         },
       ]);
       assertWall(db);
@@ -5513,7 +5513,7 @@ describe("Worker telemetry read API", () => {
           { repository: "o/b", last_recorded_at: "2026-09-20T00:00:00Z" },
         ],
         unchangedPatch: [{ repository: "o/a", unchanged_patch: 3 }],
-        unmergedBase: [{ repository: "o/a", unmerged_base: 2 }],
+        unmergedBase: [{ repository: "o/a", unmerged_base: 2, rounds_not_recorded: 4 }],
       });
       const res = await getFleet("/api/fleet/repos?range=30d", db);
       assert.equal(res.status, 200);
@@ -5521,14 +5521,46 @@ describe("Worker telemetry read API", () => {
       assert.deepEqual(
         data.repositories.map((r) => [r.repository, r.restacks]),
         [
-          ["o/a", { unchanged_patch: 3, unmerged_base: 2 }],
-          ["o/b", { unchanged_patch: 0, unmerged_base: 0 }],
+          ["o/a", { unchanged_patch: 3, unmerged_base: 2, rounds_not_recorded: 4 }],
+          ["o/b", { unchanged_patch: 0, unmerged_base: 0, rounds_not_recorded: 0 }],
         ]
       );
       const lane = db.queries.find((q) => q.sql.includes("AS unchanged_patch"));
       assert.match(lane.sql, /reason = 'unchanged-patch'/);
       assert.equal(lane.args.length, 1);
       assertWall(db);
+    });
+
+    it("names rounds whose lane predates base_pr_number as not recorded, on the real schema (#179)", async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const dir = path.join(path.dirname(new URL(import.meta.url).pathname), "migrations");
+      const sqlite = new DatabaseSync(":memory:");
+      for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
+        sqlite.exec(fs.readFileSync(path.join(dir, file), "utf8"));
+      }
+      const ur = sqlite.prepare(
+        "INSERT INTO usage_records (session_id, repository, recorded_at, ingest_auth, lane_version, base_pr_number, per_model_usage) VALUES (?, 'o/a', '2026-09-20T00:00:00Z', ?, ?, ?, '{}')"
+      );
+      ur.run("s1", "oidc", "5", null); // lane 5: a measured no
+      ur.run("s2", "oidc", "5", 7); // lane 5: on an unmerged base
+      ur.run("s3", "oidc", "4", null); // lane 4 straddles #173
+      ur.run("s4", "oidc", null, null); // no lane version
+      ur.run("s5", "runner", "1b1c597", null); // runner rounds do not send it
+      const db = {
+        prepare(sql) {
+          const bound = (args) => ({
+            async all() { return { results: sqlite.prepare(sql).all(...args) }; },
+            async first() { return sqlite.prepare(sql).get(...args) ?? null; },
+          });
+          return { bind: (...args) => bound(args), ...bound([]) };
+        },
+      };
+      const res = await getFleet("/api/fleet/repos?range=all", db);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.deepEqual(data.repositories[0].restacks, { unchanged_patch: 0, unmerged_base: 1, rounds_not_recorded: 3 });
     });
 
     it("is closed without an Access header", async () => {
