@@ -27,8 +27,10 @@ plus free text. A token is a view of one URL search param, so a copied link, rel
 restore the view; nothing about a view is stored anywhere else. Findings adds a facet rail whose
 counts are what each option would return with the other filters held, preset views as tabs, group
 by PR, and a peek panel (`j` `k` `Enter` `Esc`).
-The repository page has one tab so far, Weekly health, which lists every `health_reports` row
-as it arrived (#179); the PR, lane event, config and failure tabs land with F4.
+The repository page has five tabs: PRs, Lane events, Weekly health (every `health_reports` row as
+it arrived, #179), Config and Failures. Config is read-only: each key the lane resolved on the
+newest round, with the layer that supplied it, and a link to `.github/claude-review.yml`. The
+dashboard is never a config layer; a change is a pull request against that file (#78, #189).
 
 `/findings` reads `GET /api/findings` (joined against `GET /api/prs` for PR state) and sorts each
 open review thread into one of four fates: `never-answered`, `pushback-open`,
