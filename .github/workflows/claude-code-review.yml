@@ -24,14 +24,14 @@ on:
           Override one run with `--model <alias>` matching an entry in `model_aliases`.
           Which IDs are usable is set by the CLAUDE_CODE_OAUTH_TOKEN subscription, not here.
         type: string
-        default: 'claude-sonnet-5'
+        default: 'claude-sonnet-5-5'
       model_aliases:
         description: |
           Comma-separated `alias=model-id` pairs selectable with `--model <alias>` in a summon.
           The alias is matched against the comment; the ID is emitted from THIS list and is never
           read out of the comment. An alias absent here is not selectable. Story: #27.
         type: string
-        default: 'opus=claude-opus-5,sonnet=claude-sonnet-5'
+        default: 'opus=claude-opus-5-5,sonnet=claude-sonnet-5-5'
       min_diff_lines:
         description: >-
           Skip an automatic `pull_request` round whose diff is smaller than this many
@@ -116,7 +116,7 @@ env:
   # The claude-code-action pin, duplicated at the two `uses:` lines below because `uses:`
   # cannot take a `${{ }}` expression. tests/test-action-version-drift.py fails the build
   # if this value and either `uses:` pin ever disagree. Story: #47 amendment.
-  ACTION_VERSION: '2261fcfc88e7de1b55f179edd588805e12de71f2'
+  ACTION_VERSION: '8ce9314fa9a404564fa7e954cd84f25bcba2b829'
 
 jobs:
   # ONE set of PR facts for automatic rounds, summons, and in-thread replies alike,
@@ -479,7 +479,7 @@ jobs:
 
           repo = os.environ.get("REPO", "")
           base_sha = os.environ.get("BASE_SHA", "")
-          default_model = os.environ.get("INPUT_DEFAULT_MODEL", "claude-sonnet-5")
+          default_model = os.environ.get("INPUT_DEFAULT_MODEL", "claude-sonnet-5-5")
           auto_pause_rounds = int(os.environ.get("INPUT_AUTO_PAUSE_ROUNDS", 5))
           raw_skip_authors = os.environ.get("INPUT_SKIP_AUTHORS", "dependabot[bot]")
           skip_authors = ",".join(x.strip() for x in raw_skip_authors.split(",") if x.strip())
@@ -575,7 +575,8 @@ jobs:
               "enable_ai_fix_prompt",
               "include_verification_note",
           }
-          ALLOWED_DEFAULT_MODELS = {"claude-sonnet-5", "claude-opus-5"}
+          # The 5.0 IDs stay accepted so a repo that pinned one keeps reviewing (#234).
+          ALLOWED_DEFAULT_MODELS = {"claude-sonnet-5-5", "claude-opus-5-5", "claude-sonnet-5", "claude-opus-5"}
           ALLOWED_SUPPRESS_BELOW = {"none", "Minor", "Major", "Critical"}
           # #101 ruling: 'low' is schema-rejected for this release. It ships once the
           # findings sweep (#47) has a 'medium' baseline to compare it against.
@@ -1714,7 +1715,7 @@ jobs:
           pr = os.environ.get("PR", "")
           body = os.environ.get("BODY", "")
           aliases_raw = os.environ.get("ALIASES", "")
-          default_model = os.environ.get("DEFAULT_MODEL", "claude-sonnet-5")
+          default_model = os.environ.get("DEFAULT_MODEL", "claude-sonnet-5-5")
           escalation_paths_raw = os.environ.get("ESCALATION_PATHS", "[]")
           level = os.environ.get("CONFIG_LEVEL", "medium")
 
@@ -1738,7 +1739,7 @@ jobs:
                   sys.exit(1)
               aliases[alias] = model_id
 
-          opus_model = aliases.get("opus", "claude-opus-5")
+          opus_model = aliases.get("opus", "claude-opus-5-5")
 
           # 1. Check for explicit --model <alias> in summon
           requested_alias = None
@@ -3345,8 +3346,8 @@ jobs:
             ${{ github.repository }}
           PR_NUMBER: >-
             ${{ needs.resolve.outputs.number }}
-          # review.level (#101): changes agent count and validation shape only, never
-          # which code is read. Computed in Python below, not as a ternary here, because
+          # review.level (#101): changes agent count, validation shape and effort
+          # (--effort, #234), never which code is read. Computed in Python below, not as a ternary here, because
           # its substituted text is multi-paragraph and GH Actions string literals cannot
           # carry embedded newlines.
           LEVEL: ${{ steps.model.outputs.level }}
@@ -3518,8 +3519,8 @@ jobs:
 
           text = open(sys.argv[1], encoding='utf-8').read()
 
-          # review.level (#101 ruling): changes agent count and validation shape only,
-          # never which code is read or any cap/budget/turn limit. Substituted here,
+          # review.level (#101 ruling): changes agent count, validation shape and effort
+          # (#234), never which code is read or any cap/budget/turn limit. Substituted here,
           # not as a GH Actions ternary env var like the tokens below, because a GH
           # Actions string literal cannot carry the embedded newlines these blocks need.
           # `low` is schema-rejected this release (see the config step), so `level` can
@@ -3636,7 +3637,7 @@ jobs:
         if: >-
           (steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental') &&
           steps.manifest.outputs.refused != 'true'
-        uses: anthropics/claude-code-action@2261fcfc88e7de1b55f179edd588805e12de71f2  # v1.0.228
+        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829  # v1.0.236
         # Synchronous subagents required in print mode or the reviewer exits before its
         # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
         env:
@@ -3654,10 +3655,13 @@ jobs:
           # Tool list is load-bearing; agent mode resolves tools ONLY from --allowed-tools
           # and MCP servers require them. Task is required for subagents; Bash(gh pr review:*)
           # is deliberately ABSENT. Story: prismalens/prismalens#403.
+          # --effort is review.level: on 5.5 models an unset effort is the CLI's default,
+          # which the model release recalibrated (#234).
           claude_args: >-
             --allowed-tools
             "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
             --model ${{ steps.model.outputs.model }}
+            --effort ${{ steps.model.outputs.level }}
 
       # An account, auth or quota failure returns as a normal `type: result` item with
       # `is_error: true`, not a step failure the caller can branch on cheaply. Classifying
@@ -4718,7 +4722,7 @@ jobs:
 
       - name: Run Claude Code Verification Round
         id: claude-verify
-        uses: anthropics/claude-code-action@2261fcfc88e7de1b55f179edd588805e12de71f2  # v1.0.228
+        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829  # v1.0.236
         env:
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
         with:
@@ -4758,11 +4762,13 @@ jobs:
           # `gh pr view` is here because without it the review agent can raise findings this
           # agent is structurally incapable of checking, and they resolve as `cannot_verify`
           # forever. Operator ruling on #123. `gh api` stays out: it can POST.
+          # A verify round has no review.level, so its effort is pinned, not left to the CLI (#234).
           claude_args: >-
             --json-schema '${{ steps.schema.outputs.json }}'
             --allowed-tools
             "Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*)"
             --model ${{ needs.review.outputs.model }}
+            --effort medium
 
       # Same extraction the review job calls, so a verify round writes telemetry too
       # (#87 cause 2, #176). This job never gets id-token: write (tripwire above); the

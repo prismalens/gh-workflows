@@ -770,6 +770,33 @@ def main():
     check("valid config logs consumed keys", "review.default_model=claude-opus-5" in stdout and "review.auto_pause_rounds=10" in stdout, f"stdout: {stdout}")
     check("valid config produces no warning", "::warning::" not in stdout, f"stdout: {stdout}")
 
+    # 3b2. The 5.5 model IDs (#234): the workflow defaults to them, a repo may pin either,
+    # and both 5.0 IDs stay accepted so a repo that pinned one keeps reviewing.
+    import yaml
+    wf = yaml.safe_load(WF.read_text())
+    inputs = wf[True]["workflow_call"]["inputs"]
+    check("5.5: default_model input defaults to claude-sonnet-5-5",
+          inputs["default_model"]["default"] == "claude-sonnet-5-5", inputs["default_model"]["default"])
+    check("5.5: model_aliases maps opus and sonnet to the 5.5 IDs",
+          inputs["model_aliases"]["default"] == "opus=claude-opus-5-5,sonnet=claude-sonnet-5-5",
+          inputs["model_aliases"]["default"])
+    for model_id in ("claude-sonnet-5-5", "claude-opus-5-5", "claude-sonnet-5", "claude-opus-5"):
+        rc, out, stdout, stderr = run_config_case(
+            config_script, config_yaml=f'version: 1\nreview:\n  default_model: "{model_id}"\n')
+        check(f"5.5: repo config accepts default_model {model_id}",
+              rc == 0 and out.get("default_model") == model_id and "::warning::" not in stdout,
+              f"rc={rc} got={out.get('default_model')} stdout={stdout!r}")
+    claude_args = [
+        step["with"]["claude_args"]
+        for job in wf["jobs"].values()
+        for step in job.get("steps", []) or []
+        if str(step.get("uses", "")).startswith("anthropics/claude-code-action@")
+    ]
+    check("effort: both claude-code-action calls pass an explicit --effort",
+          len(claude_args) == 2 and all("--effort " in a for a in claude_args), claude_args)
+    check("effort: the review call's effort is review.level",
+          any("--effort ${{ steps.model.outputs.level }}" in a for a in claude_args), claude_args)
+
     # 3c. review.level (#101): repo config accepts 'high' through the same base-not-head
     # path as every other key (schema, repo layer, resolved_config, step outputs).
     rc, out, stdout, stderr = run_config_case(config_script, config_yaml=VALID_CONFIG_LEVEL_HIGH)
