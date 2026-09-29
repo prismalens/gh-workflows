@@ -39,7 +39,7 @@ import {
   filterPRsByState,
   groupRoundsByPR,
   type PRSummary,
-  TITLE_NOT_SHARED,
+  MISSING_TITLE_LABELS,
 } from "@/features/prs/prs";
 import { applyRange, standardRangeSchema } from "@/honesty/range";
 import { FilterBar } from "@/components/FilterBar";
@@ -306,8 +306,8 @@ function InboxTable({ prs, action }: { prs: PRSummary[]; action?: string }) {
                 title={pr.title}
               >
                 <span className="font-mono font-medium text-primary">#{pr.number}</span>{" "}
-                {pr.title === TITLE_NOT_SHARED ? (
-                  <span className="text-muted-foreground">{TITLE_NOT_SHARED}</span>
+                {MISSING_TITLE_LABELS.has(pr.title) ? (
+                  <span className="text-muted-foreground">{pr.title}</span>
                 ) : (
                   pr.title
                 )}

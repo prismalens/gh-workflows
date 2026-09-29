@@ -37,6 +37,8 @@ export interface RoundRow {
   job_conclusion: string | null;
   pr_title: string | null;
   pr_author: string | null;
+  /** The level the row was written at (#183); below `full`, text fields were never stored. */
+  share_level?: string | null;
   pr_state: string | null;
   pr_base_ref: string | null;
   pr_head_ref: string | null;

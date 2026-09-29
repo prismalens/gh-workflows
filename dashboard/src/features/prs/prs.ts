@@ -6,9 +6,19 @@ import {
   type HeadStatus,
 } from "./headStatus";
 
-/** What a PR with no stored title or author shows; never an invented "PR #n" (#211). */
+/**
+ * What a PR with no stored title or author shows; never an invented "PR #n" (#211). A row
+ * written below `full` never stored them (not shared); a `full` or unlabelled row lost them.
+ */
 export const TITLE_NOT_SHARED = "title not shared";
-export const AUTHOR_UNKNOWN = "author unknown";
+export const AUTHOR_NOT_SHARED = "author not shared";
+export const TITLE_NOT_RECORDED = "title not recorded";
+export const AUTHOR_NOT_RECORDED = "author not recorded";
+export const MISSING_TITLE_LABELS: ReadonlySet<string> = new Set([TITLE_NOT_SHARED, TITLE_NOT_RECORDED]);
+
+function withheld(row: Pick<RoundRow, "share_level">): boolean {
+  return row.share_level != null && row.share_level !== "full";
+}
 
 export interface PRSummary {
   id: string;
@@ -85,8 +95,8 @@ export function groupRoundsByPR(rows: RoundRow[]): PRSummary[] {
       owner,
       repo,
       number: latestRound.pr_number!,
-      title: latestRound.pr_title || TITLE_NOT_SHARED,
-      author: latestRound.pr_author || AUTHOR_UNKNOWN,
+      title: latestRound.pr_title || (withheld(latestRound) ? TITLE_NOT_SHARED : TITLE_NOT_RECORDED),
+      author: latestRound.pr_author || (withheld(latestRound) ? AUTHOR_NOT_SHARED : AUTHOR_NOT_RECORDED),
       state: latestRound.pr_state || "open",
       stateIsFallback: true,
       mergedAt: null,

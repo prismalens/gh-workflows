@@ -1415,6 +1415,7 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
       repository: "prismalens/sreforge",
       pr_number: 802,
       pr_title: "",
+      share_level: "rounds",
       pr_state: "closed",
       recorded_at: new Date(now.getTime() - 1 * 3600000).toISOString(),
     };
@@ -1446,7 +1447,8 @@ describe("/prs and /prs/$owner/$repo/$number route integration (#75)", () => {
     expect(within(table).getByText("merged")).toBeInTheDocument();
     expect(within(table).queryByText("Stale round title")).toBeNull();
 
-    // Fallback: no prs row for 802, so the title reads as not shared (#211) and the
+    // Fallback: no prs row for 802, written at share level rounds, so the title reads as
+    // not shared (#211) and the
     // round's pr_state shows up muted, with the "not refreshed" hint.
     expect(within(table).getByText("title not shared")).toBeInTheDocument();
     const fallbackState = within(table).getByText("closed", { selector: "span.italic" });
