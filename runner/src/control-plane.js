@@ -38,9 +38,9 @@ export function createControlPlane({ baseUrl, token, fetch = globalThis.fetch })
     return res;
   };
   return {
-    async register({ placement, credentials }) {
+    async register({ credentials }) {
       const res = await call('POST', '/runner/register', {
-        body: { placement, credentials: credentials.map(({ engine, kind, fingerprint, concurrency }) => ({ engine, kind, fingerprint, concurrency })) },
+        body: { credentials: credentials.map(({ engine, kind, fingerprint, concurrency }) => ({ engine, kind, fingerprint, concurrency })) },
       });
       return res.json();
     },

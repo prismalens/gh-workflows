@@ -66,7 +66,14 @@ def valid_lane_event_reasons() -> set[str]:
 
 
 def main() -> None:
-    emitted = emitted_kinds()
+    # The control plane records two verdicts itself for runner jobs (#184); each is the
+    # LANE_REASON_TO_VERDICT_KIND value of a reason worker/index.js emits.
+    worker_reasons = set(
+        re.findall(r'runnerLaneEvent\(env, job, "([a-z-]+)"', WORKER_INDEX.read_text(encoding="utf-8"))
+    )
+    emitted = emitted_kinds() | {
+        v for k, v in lane_reason_to_verdict_kind().items() if k in worker_reasons
+    }
     known = known_kinds()
     fails = []
 

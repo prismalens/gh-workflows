@@ -6,12 +6,11 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { writeFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { startDaemon, containerReady, CONTAINER_NOT_READY } from '../src/daemon.js';
+import { startDaemon } from '../src/daemon.js';
 import { event } from '../src/events.js';
 import { ControlPlaneError } from '../src/control-plane.js';
 
 // Every loop test runs as if the container slice had landed.
-const ready = () => true;
 const RUNNER_TOKEN = `asr_${'r'.repeat(43)}`;
 const INSTALL_TOKEN = 'ghs_install_token_1';
 const KEY = 'sk-test-credential-value';
@@ -23,7 +22,7 @@ const JOB = {
 
 function config(concurrency = 1) {
   const c = {
-    control_plane: 'http://127.0.0.1:9', placement: 'box',
+    control_plane: 'http://127.0.0.1:9',
     credentials: [{ name: 'k', engine: 'opencode', kind: 'api-key', env: 'OPENCODE_KEY', concurrency, fingerprint: 'abcdefabcdef' }],
   };
   Object.defineProperty(c, 'runner_token', { value: RUNNER_TOKEN, enumerable: false });
@@ -77,7 +76,7 @@ const roundEvents = (conclusion = 'completed') => [
 async function runOne(w, deps = {}, cfg = config()) {
   const logs = [];
   let dirs = [];
-  const d = await startDaemon(cfg, { containerReady: ready,
+  const d = await startDaemon(cfg, {
     fetch: w.fetch, heartbeatMs: 20, backoffUnitMs: 1, log: (l) => logs.push(l),
     checkout: async () => {}, mkTemp: (p) => { const x = mkdtempSync(path.join(os.tmpdir(), p)); dirs.push(x); return x; },
     runRound: async () => ({ code: 0, events: roundEvents() }),
@@ -121,7 +120,7 @@ describe('daemon exit paths: revoke comes before the last events call', () => {
   it('SIGTERM mid-round: the run is aborted first, then revoke, then finished{cancelled}', async () => {
     const w = world();
     let aborted = false;
-    const d = await startDaemon(config(), { containerReady: ready,
+    const d = await startDaemon(config(), {
       fetch: w.fetch, heartbeatMs: 20, backoffUnitMs: 1, log: () => {}, checkout: async () => {},
       mkTemp: (p) => mkdtempSync(path.join(os.tmpdir(), p)),
       runRound: (job, { signal }) => new Promise((resolve) => {
@@ -181,7 +180,7 @@ describe('daemon exit paths: revoke comes before the last events call', () => {
   it('leases once per slot in parallel when concurrency is 2', async () => {
     const w = world({ jobs: [] });
     const cfg = config(2);
-    const d = await startDaemon(cfg, { containerReady: ready, fetch: w.fetch, log: () => {}, backoffUnitMs: 1 });
+    const d = await startDaemon(cfg, { fetch: w.fetch, log: () => {}, backoffUnitMs: 1 });
     await new Promise((r) => setTimeout(r, 30));
     await d.stop('test');
     const leases = w.calls.filter((c) => c.path === '/runner/lease');
@@ -197,7 +196,7 @@ describe('daemon exit paths: revoke comes before the last events call', () => {
 
   it('a second re-registration after a successful lease does not stop the daemon', async () => {
     const w = world({ jobs: [JOB, { ...JOB, id: '22222222-2222-4222-8222-222222222222' }], leaseErrorAt: (n) => n === 1 || n === 3 });
-    const d = await startDaemon(config(), { containerReady: ready, fetch: w.fetch, heartbeatMs: 20, backoffUnitMs: 1, log: () => {}, checkout: async () => {}, runRound: async () => ({ code: 0, events: roundEvents() }) });
+    const d = await startDaemon(config(), { fetch: w.fetch, heartbeatMs: 20, backoffUnitMs: 1, log: () => {}, checkout: async () => {}, runRound: async () => ({ code: 0, events: roundEvents() }) });
     let failed = null;
     d.done.catch((e) => { failed = e; });
     const until = Date.now() + 3000;
@@ -210,7 +209,7 @@ describe('daemon exit paths: revoke comes before the last events call', () => {
 
   it('back-to-back unregistered-credential with no lease between is fatal', async () => {
     const w = world({ jobs: [], leaseErrorAt: () => true });
-    const d = await startDaemon(config(), { containerReady: ready, fetch: w.fetch, backoffUnitMs: 1, log: () => {} });
+    const d = await startDaemon(config(), { fetch: w.fetch, backoffUnitMs: 1, log: () => {} });
     await assert.rejects(d.done, /credential unregistered twice/);
   });
 
@@ -251,7 +250,7 @@ describe('daemon exit paths: revoke comes before the last events call', () => {
 describe('register failures', () => {
   it('a duplicate fingerprint is fatal with a message that names the cause', async () => {
     const fetch = async () => new Response(JSON.stringify({ error: 'duplicate-fingerprint' }), { status: 409 });
-    await assert.rejects(startDaemon(config(), { containerReady: ready, fetch, log: () => {} }), /another live runner holds/);
+    await assert.rejects(startDaemon(config(), { fetch, log: () => {} }), /another live runner holds/);
   });
   it('ControlPlaneError carries the status and code', () => {
     const e = new ControlPlaneError(409, 'lease-lost');
@@ -260,37 +259,20 @@ describe('register failures', () => {
   });
 });
 
-describe('the container gate (#184)', () => {
-  it('is closed until the container slice lands', () => {
-    assert.equal(containerReady(), false);
-  });
-
-  it('with the real gate, startDaemon throws before any register or lease call', async () => {
-    const w = world();
-    let ran = false;
-    await assert.rejects(
-      startDaemon(config(), { fetch: w.fetch, log: () => {}, backoffUnitMs: 1, checkout: async () => {}, runRound: async () => { ran = true; return { code: 0, events: roundEvents() }; } }),
-      (e) => e.message === CONTAINER_NOT_READY,
-    );
-    await new Promise((r) => setTimeout(r, 30));
-    assert.deepEqual(w.calls, []);
-    assert.equal(ran, false);
-  });
-
-  it('the daemon binary refuses to start and --check exits non-zero, naming the missing runtime', () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'assayer-gate-'));
+describe('the daemon binary (#184)', () => {
+  it('--check prints each credential with its fingerprint and exits 0', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'assayer-check-'));
     const file = path.join(dir, 'runner.json');
     writeFileSync(file, JSON.stringify({
-      control_plane: 'http://127.0.0.1:9', runner_token: '${ASSAYER_RUNNER_TOKEN}', placement: 'box',
+      control_plane: 'http://127.0.0.1:9', runner_token: '${ASSAYER_RUNNER_TOKEN}',
       credentials: [{ name: 'zen', engine: 'opencode', kind: 'keyless', concurrency: 1 }],
     }));
     const bin = fileURLToPath(new URL('../src/daemon.js', import.meta.url));
-    const env = { PATH: process.env.PATH, ASSAYER_RUNNER_TOKEN: RUNNER_TOKEN };
-    for (const args of [['--config', file, '--check'], ['--config', file]]) {
-      const r = spawnSync(process.execPath, [bin, ...args], { env, encoding: 'utf8', timeout: 10000 });
-      assert.notEqual(r.status, 0, args.join(' '));
-      assert.match(r.stderr, /container runtime is not built yet \(#184\)/);
-    }
+    const r = spawnSync(process.execPath, [bin, '--config', file, '--check'], {
+      env: { PATH: process.env.PATH, ASSAYER_RUNNER_TOKEN: RUNNER_TOKEN }, encoding: 'utf8', timeout: 10000,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^zen opencode keyless [0-9a-f]{12} 1$/m);
     rmSync(dir, { recursive: true, force: true });
   });
 });

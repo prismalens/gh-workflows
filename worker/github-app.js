@@ -5,6 +5,8 @@ import { SignJWT, importPKCS8 } from "jose";
 // The runner reads the repository and the pull request and nothing else. Every value is "read",
 // and tests/test-app-manifest.py holds these keys to a subset of the App manifest's permissions.
 export const INSTALLATION_TOKEN_PERMISSIONS = Object.freeze({"contents": "read", "metadata": "read", "pull_requests": "read", "issues": "read"});
+// The poster's token never leaves the Worker: comments and review comments, nothing on contents.
+export const POSTER_TOKEN_PERMISSIONS = Object.freeze({"metadata": "read", "pull_requests": "write", "issues": "write"});
 
 const GITHUB_API = "https://api.github.com";
 
@@ -28,7 +30,7 @@ function githubHeaders(jwt) {
 
 export function createInstallationTokenMinter(env, { fetch: fetchImpl = globalThis.fetch, now = () => Date.now() } = {}) {
   return {
-    async mint({ owner, repo }) {
+    async mint({ owner, repo, permissions = INSTALLATION_TOKEN_PERMISSIONS }) {
       const appId = env?.GITHUB_APP_ID;
       const pem = env?.GITHUB_APP_PRIVATE_KEY;
       if (!appId || !pem) {
@@ -65,7 +67,7 @@ export function createInstallationTokenMinter(env, { fetch: fetchImpl = globalTh
       const minted = await fetchImpl(`${GITHUB_API}/app/installations/${installationId}/access_tokens`, {
         method: "POST",
         headers: { ...githubHeaders(jwt), "Content-Type": "application/json" },
-        body: JSON.stringify({ repositories: [repo], permissions: INSTALLATION_TOKEN_PERMISSIONS }),
+        body: JSON.stringify({ repositories: [repo], permissions }),
       });
       if (minted.status !== 201) {
         throw new MintError("github-error", minted.status);

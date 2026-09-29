@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { SessionMapper, readToolLog, headerOf, looksLikeSecret } from '../src/acp-map.js';
+import { SessionMapper, readToolLog, headerOf, looksLikeSecret, selectedModel } from '../src/acp-map.js';
 
 const cwd = '/repo';
 const mk = () => new SessionMapper({ cwd, engine: 'opencode', model: 'm', promptHash: 'h', laneVersion: 'v' });
@@ -166,4 +166,36 @@ test('an entry the recorder already redacted is dropped with its own reason', ()
   assert.ok(!evs.some((e) => e.type === 'summary'), 'no summary from a redacted record');
   const why = evs.at(-1)._meta.dropped.map((d) => d.why);
   assert.equal(why.filter((w) => /recorder redacted this record: credential-shaped body/.test(w)).length, 2, why.join(' | '));
+});
+
+const modelOption = (currentValue, over = {}) => ({ id: 'model', name: 'Model', type: 'select', category: 'model', currentValue, options: [], ...over });
+
+test('selectedModel reads only a model-category select, and nothing from an empty or odd value (prismalens#727)', () => {
+  assert.equal(selectedModel([modelOption('opencode/muse')]), 'opencode/muse');
+  assert.equal(selectedModel([modelOption('x', { category: 'mode' })]), null);
+  assert.equal(selectedModel([{ ...modelOption(true), type: 'boolean' }]), null);
+  assert.equal(selectedModel([modelOption('')]), null);
+  assert.equal(selectedModel(null), null);
+  assert.equal(selectedModel('model'), null);
+});
+
+test('started keeps the requested model verbatim and records the served one, flagging a substitution', () => {
+  const swapped = new SessionMapper({ cwd: '/w', engine: 'opencode', model: 'gemma4:31b' });
+  swapped.onSession({ sessionId: 's', configOptions: [modelOption('gemma3:12b')] });
+  assert.equal(swapped.events[0].model, 'gemma4:31b');
+  assert.equal(swapped.events[0]._meta.served_model, 'gemma3:12b');
+  assert.equal(swapped.events[0]._meta.model_substituted, true);
+
+  const same = new SessionMapper({ cwd: '/w', engine: 'opencode', model: 'm' });
+  same.onSession({ sessionId: 's', configOptions: [modelOption('m')] });
+  assert.equal(same.events[0]._meta.model_substituted, false);
+
+  const unasked = new SessionMapper({ cwd: '/w', engine: 'claude-code' });
+  unasked.onSession({ sessionId: 's', configOptions: [modelOption('claude-x')] });
+  assert.equal(unasked.events[0]._meta.served_model, 'claude-x');
+  assert.equal('model_substituted' in unasked.events[0]._meta, false);
+
+  const silent = new SessionMapper({ cwd: '/w', engine: 'opencode', model: 'm' });
+  silent.onSession({ sessionId: 's' });
+  assert.equal(silent.events[0]._meta, undefined);
 });

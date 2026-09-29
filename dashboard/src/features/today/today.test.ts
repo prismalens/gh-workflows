@@ -69,7 +69,6 @@ function makeFinding(overrides: Partial<FindingRow> = {}): FindingRow {
     thread_created_at: new Date(now.getTime() - 1 * DAY_MS).toISOString(),
     header_raw: "Finding header",
     body_excerpt: "Finding body",
-    diff_hunk: "@@ -1,1 +1,1 @@",
     human_reply_count: 0,
     human_reply_sha: null,
     fix_sha: null,
@@ -364,7 +363,7 @@ describe("buildToday", () => {
   it("withholds the denial rate below LOW_N_THRESHOLD recorded rounds but keeps the count", () => {
     const model = buildToday({ rounds: [makeRound({ permission_denials: 20 })], prs: [makePr()], findings: [], fleet: emptyFleet, now });
     expect(model.anomalies.filter((a) => a.id.startsWith("denials:"))).toEqual([]);
-    expect(model.repos[0]!.state).toBe("healthy");
+    expect(model.repos[0]!.state).toBe("reviewing");
     expect(model.repos[0]!.denials).toBe(20);
   });
 
