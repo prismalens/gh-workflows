@@ -10,8 +10,15 @@ import { FateChip, FixCitedBadge } from "./FateChip";
 import { decodeFate, FATE_COPY, fixCitation, prKey } from "./findings";
 import { findingBodyText, parseFindingLabel, type Severity } from "./severity";
 
-export function findingPrFilesUrl(row: FindingRow): string {
-  return `https://github.com/${row.repository}/pull/${row.pr_number}/files`;
+/**
+ * The thread itself when the sweep stored its URL (#185), else the PR's files tab, the closest
+ * honest link a row swept before that supports.
+ */
+export function findingGithubLink(row: FindingRow): { href: string; label: string } {
+  const pr = `https://github.com/${row.repository}/pull/${row.pr_number}`;
+  return row.thread_url?.startsWith(`${pr}#discussion_r`)
+    ? { href: row.thread_url, label: "Thread on GitHub" }
+    : { href: `${pr}/files`, label: "PR files on GitHub" };
 }
 
 const SEVERITY_STYLE: Record<Severity, string> = {
@@ -312,12 +319,12 @@ export function FindingPeek({
       </dl>
       <div className="flex flex-wrap gap-2">
         <a
-          href={findingPrFilesUrl(row)}
+          href={findingGithubLink(row).href}
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2.5 py-1 font-semibold hover:border-muted-foreground"
         >
-          PR files on GitHub <ExternalLink className="size-3" />
+          {findingGithubLink(row).label} <ExternalLink className="size-3" />
         </a>
         <Link
           to="/prs/$owner/$repo/$number"

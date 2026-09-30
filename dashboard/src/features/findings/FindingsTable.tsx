@@ -14,18 +14,8 @@ import { Badge } from "@/components/ui/badge";
 import { engineLabel } from "@/features/rounds/engine";
 import { decodeFate, fixCitation } from "./findings";
 import { FateChip, FixCitedBadge } from "./FateChip";
-import { SeverityChip } from "./FindingsExplorer";
+import { findingGithubLink, SeverityChip } from "./FindingsExplorer";
 import { findingBodyText, parseFindingLabel } from "./severity";
-
-/**
- * GitHub does not hand back a REST comment id for a GraphQL review thread node,
- * and review_findings stores no thread URL (#111's own scope: the sweep is
- * read-only over the GraphQL id). This links to the PR's own files tab, the
- * closest honest link this data supports, rather than guessing a comment anchor.
- */
-function prFilesUrl(row: FindingRow): string {
-  return `https://github.com/${row.repository}/pull/${row.pr_number}/files`;
-}
 
 export interface FindingsTableProps {
   rows: FindingRow[];
@@ -117,12 +107,12 @@ export function FindingsTable({
                 </TableCell>
                 <TableCell>
                   <a
-                    href={prFilesUrl(row)}
+                    href={findingGithubLink(row).href}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-0.5 text-primary hover:underline whitespace-nowrap"
                   >
-                    View PR files on GitHub <ExternalLink className="size-3" />
+                    {findingGithubLink(row).label} <ExternalLink className="size-3" />
                   </a>
                 </TableCell>
               </TableRow>

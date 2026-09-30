@@ -2455,6 +2455,17 @@ function validateFinding(finding) {
     return "invalid verify_verdict";
   }
 
+  // Only a comment URL on this finding's own pull request is stored as its link (#185).
+  if (
+    finding.thread_url != null &&
+    !(
+      typeof finding.thread_url === "string" &&
+      finding.thread_url.startsWith(`https://github.com/${finding.repository}/pull/${finding.pr_number}#discussion_r`)
+    )
+  ) {
+    return "invalid thread_url";
+  }
+
   // Absent or null is the Actions lane; a sweep older than #184 never sends it.
   if (finding.engine != null && !(typeof finding.engine === "string" && FINDING_ENGINE_RE.test(finding.engine))) {
     return "invalid engine";
@@ -2575,8 +2586,9 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
       ingest_auth,
       repository_id,
       share_level,
-      engine
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+      engine,
+      thread_url
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
     -- A thread is mutable state, not an immutable event (#47): every column is overwritten
     -- from the latest sweep pass rather than only filled in when currently null, so a newly
     -- resolved thread or an edited comment settles here on the very next sweep.
@@ -2604,7 +2616,8 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
       ingest_auth = excluded.ingest_auth,
       repository_id = COALESCE(excluded.repository_id, review_findings.repository_id),
       share_level = excluded.share_level,
-      engine = excluded.engine`
+      engine = excluded.engine,
+      thread_url = COALESCE(excluded.thread_url, review_findings.thread_url)`
   );
 
   const stmts = payload.findings
@@ -2638,7 +2651,8 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
       auth.method,
       auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null,
       level,
-      finding.engine ?? null
+      finding.engine ?? null,
+      truncateString(finding.thread_url, 512)
     )
   );
 
@@ -2741,6 +2755,7 @@ async function handleFindings(url, env) {
     "row_set_incomplete",
     "share_level",
     "engine",
+    "thread_url",
   ];
 
   let query = `SELECT

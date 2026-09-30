@@ -186,7 +186,7 @@ describe("/findings: the inbox", () => {
     expect(screen.queryByText(/divergence.*rate/i)).not.toBeInTheDocument();
     // Same overclaim as the findings table (this pass): the link is the PR's files
     // tab, never a specific thread, so the label must not say "thread".
-    const link = within(list).getByRole("link", { name: /View PR files on GitHub/ });
+    const link = within(list).getByRole("link", { name: /PR files on GitHub/ });
     expect(link).toHaveAttribute(
       "href",
       "https://github.com/prismalens/gh-workflows/pull/2/files",

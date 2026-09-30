@@ -265,6 +265,8 @@ export interface FindingRow {
   row_set_incomplete: number | null;
   /** Null for the Actions lane; absent from a Worker that predates #184's column. */
   engine?: string | null;
+  /** The thread's opening comment URL; null on rows swept before #185 stored it. */
+  thread_url?: string | null;
 }
 
 export interface FindingsResponse {
