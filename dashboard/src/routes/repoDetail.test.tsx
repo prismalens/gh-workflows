@@ -83,6 +83,8 @@ describe("/repos/$owner/$repo: the weekly health tab (#179)", () => {
   it("is where each /repos row links", async () => {
     renderRoute({ path: "/repos", api: makeFixtureApi(makeRounds({ count: 64 })) });
     const table = await screen.findByRole("table");
+    // Healthy repositories start folded under their owner (#185).
+    for (const b of within(table).queryAllByRole("button", { name: /^Show \d+ healthy$/ })) fireEvent.click(b);
     const link = within(table).getByRole("link", { name: "prismalens/sreforge" });
     expect(link).toHaveAttribute("href", "/repos/prismalens/sreforge");
   });
