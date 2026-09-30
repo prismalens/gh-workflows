@@ -83,3 +83,48 @@ export function repoParams(repository: string): { owner: string; repo: string } 
   if (slash <= 0 || slash === repository.length - 1) return null;
   return { owner: repository.slice(0, slash), repo: repository.slice(slash + 1) };
 }
+
+/** Worst first. A repository is healthy only when its last round reviewed code, with no denials. */
+export const REPO_HEALTH = ["malformed-config", "not-reviewed", "denials", "quiet", "healthy"] as const;
+export type RepoHealth = (typeof REPO_HEALTH)[number];
+
+export const REPO_HEALTH_LABEL: Record<RepoHealth, string> = {
+  "malformed-config": "config does not parse",
+  "not-reviewed": "last round did not review",
+  denials: "permission denials",
+  quiet: "quiet in the window",
+  healthy: "healthy",
+};
+
+export function repoHealth(repo: RepoSummary, malformed: ReadonlySet<string>): RepoHealth {
+  if (malformed.has(repo.repository)) return "malformed-config";
+  if (repo.rounds === 0) return "quiet";
+  if (repo.lastState !== "reviewed") return "not-reviewed";
+  if (repo.denials > 0) return "denials";
+  return "healthy";
+}
+
+export interface OwnerGroup {
+  owner: string;
+  worst: RepoHealth;
+  /** Worst first, then by name. */
+  repos: { repo: RepoSummary; health: RepoHealth }[];
+}
+
+/** Repos grouped by owner, the group with the worst repository first (#185). */
+export function groupByOwner(repos: RepoSummary[], malformed: ReadonlySet<string>): OwnerGroup[] {
+  const rank = (h: RepoHealth) => REPO_HEALTH.indexOf(h);
+  const groups = new Map<string, OwnerGroup["repos"]>();
+  for (const repo of repos) {
+    const owner = repo.repository.includes("/") ? repo.repository.split("/")[0] : repo.repository;
+    const list = groups.get(owner) ?? [];
+    list.push({ repo, health: repoHealth(repo, malformed) });
+    groups.set(owner, list);
+  }
+  return [...groups.entries()]
+    .map(([owner, list]) => {
+      list.sort((a, b) => rank(a.health) - rank(b.health) || a.repo.repository.localeCompare(b.repo.repository));
+      return { owner, worst: list[0].health, repos: list };
+    })
+    .sort((a, b) => rank(a.worst) - rank(b.worst) || a.owner.localeCompare(b.owner));
+}

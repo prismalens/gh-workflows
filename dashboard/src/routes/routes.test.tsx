@@ -186,10 +186,17 @@ describe("/fleet (the former overview): the altitude ruling", () => {
   });
 });
 
+
+/** Healthy repositories start folded under their owner (#185); these tests read every row. */
+function unfoldHealthy(table: HTMLElement) {
+  for (const button of within(table).queryAllByRole("button", { name: /^Show \d+ healthy$/ })) fireEvent.click(button);
+}
+
 describe("/repos", () => {
   it("lists what has posted, with its last round and last decoded state", async () => {
     renderRoute({ path: "/repos", api: fullApi });
     const table = await screen.findByRole("table");
+    unfoldHealthy(table);
     expect(within(table).getAllByText("reviewed").length).toBeGreaterThan(0);
     for (const repository of [
       "prismalens/prismalens",
@@ -276,6 +283,7 @@ describe("/repos", () => {
     };
     renderRoute({ path: "/repos", api: coverage });
     const table = await screen.findByRole("table");
+    unfoldHealthy(table);
     const none = within(table).getByText("prismalens/sreforge").closest("tr") as HTMLElement;
     expect(within(none).getByText("unchanged_patch not recorded")).toBeInTheDocument();
     expect(within(none).getByText("unmerged_base not recorded")).toBeInTheDocument();
@@ -286,6 +294,38 @@ describe("/repos", () => {
     expect(within(skips).queryByText("unchanged_patch not recorded")).toBeNull();
     expect(within(skips).getByText("unmerged_base not recorded")).toBeInTheDocument();
     expect(within(skips).getAllByRole("cell").some((c) => /^3 · 2 rounds not recorded$/.test(c.textContent ?? ""))).toBe(true);
+  });
+
+  it("groups repositories by owner, worst first, and folds the healthy ones (#185)", async () => {
+    const base = makeFixtureApi(makeRounds({ count: 64, now }));
+    const api = {
+      ...base,
+      fetchFleetRepos: async (query: Parameters<typeof base.fetchFleetRepos>[0]) => {
+        const fleet = await base.fetchFleetRepos(query);
+        const reviewed = fleet.repositories.find((r) => r.last_round)!.last_round!;
+        const healthy = { rounds: 3, denials: 0, last_round: { ...reviewed, verdict_kind: "reviewed" } };
+        return {
+          ...fleet,
+          malformed_configs: [],
+          repositories: [
+            { ...fleet.repositories[0], ...healthy, repository: "zeta/ok" },
+            { ...fleet.repositories[0], ...healthy, repository: "acme/ok" },
+            { ...fleet.repositories[0], ...healthy, repository: "acme/noisy", denials: 7 },
+            { ...fleet.repositories[0], ...healthy, repository: "zeta/quiet", rounds: 0, last_round: null },
+          ],
+        };
+      },
+    };
+    renderRoute({ path: "/repos", api });
+    const table = await screen.findByRole("table");
+    const groups = within(table).getAllByTestId("repo-owner-group").map((g) => g.textContent);
+    expect(groups[0]).toMatch(/^acme · 2 repositories permission denials/);
+    expect(groups[1]).toMatch(/^zeta · 2 repositories quiet in the window/);
+    expect(within(table).getAllByTestId("repo-row").map((r) => r.getAttribute("data-health"))).toEqual(["denials", "quiet"]);
+    expect(within(table).queryByText("acme/ok")).toBeNull();
+    fireEvent.click(within(table).getAllByRole("button", { name: "Show 1 healthy" })[0]);
+    expect(within(table).getByText("acme/ok")).toBeInTheDocument();
+    expect(within(table).queryByText("zeta/ok")).toBeNull();
   });
 
   it("surfaces a failed fleet query instead of a silently short list", async () => {
