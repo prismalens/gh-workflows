@@ -15,6 +15,7 @@ import {
   changedKeys,
   EMPTY_CONFIG,
   formatConfigValue,
+  parseYamlValue,
   readValue,
   validateConfigText,
   writeValue,
@@ -85,11 +86,8 @@ function DraftField({
       );
     }
     if (field.kind === "yaml") {
-      try {
-        return onCommit(readValue(`v:\n${raw.replace(/^/gm, "  ")}\n`, ["v"]));
-      } catch {
-        return setError("not YAML");
-      }
+      const parsed = parseYamlValue(raw);
+      return parsed.ok ? onCommit(parsed.value) : setError("not YAML");
     }
     return onCommit(raw);
   };

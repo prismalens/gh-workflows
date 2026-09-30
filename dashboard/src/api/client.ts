@@ -691,6 +691,8 @@ async function postConfigPr(request: ConfigPrRequest): Promise<ConfigPrResponse>
     throw new ConfigPrError("network", [String(cause)]);
   }
   if (res.type === "opaqueredirect" || res.status === 0) throw new ConfigPrError("unauthenticated");
+  // The same Access refusals getJson reads as a lost session (#96).
+  if (res.status === 401 || res.status === 403 || res.status === 503) throw new ConfigPrError("unauthenticated");
   let body: Record<string, unknown> = {};
   try {
     body = (await res.json()) as Record<string, unknown>;

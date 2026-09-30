@@ -84,6 +84,14 @@ export function readValue(text: string, path: string[]): unknown {
   return value && typeof value === "object" && "toJSON" in value ? (value as { toJSON(): unknown }).toJSON() : value;
 }
 
+/** One key's value typed as YAML; ok is false when the text does not parse. */
+export function parseYamlValue(raw: string): { ok: boolean; value?: unknown } {
+  const doc = parse(`v:\n${raw.replace(/^/gm, "  ")}\n`);
+  if (doc.errors.length) return { ok: false };
+  const value: unknown = doc.getIn(["v"]);
+  return { ok: true, value: value && typeof value === "object" && "toJSON" in value ? (value as { toJSON(): unknown }).toJSON() : value };
+}
+
 /**
  * Sets or removes one key and keeps every comment and key the operator did not touch. YAML 1.1,
  * because the lane reads with PyYAML: a string `off` is written quoted.

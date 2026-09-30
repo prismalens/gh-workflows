@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CONFIG_FIELDS, changedKeys, readValue, validateConfigText, writeValue } from "./configEdit";
+import { CONFIG_FIELDS, changedKeys, parseYamlValue, readValue, validateConfigText, writeValue } from "./configEdit";
 
 const FILE = "# kept\nversion: 1\nreview:\n  level: medium # also kept\n";
 
@@ -44,5 +44,12 @@ describe("configEdit (#78)", () => {
   it("summarises the changed keys for the PR body", () => {
     const next = writeValue(writeValue(FILE, ["review", "level"], "high"), ["review", "skip_authors"], ["bot"]);
     expect(changedKeys(FILE, next)).toEqual(["review.level: medium → high", 'review.skip_authors: (not set) → ["bot"]']);
+  });
+});
+
+describe("parseYamlValue (#237 review)", () => {
+  it("parses a value and refuses text that is not YAML", () => {
+    expect(parseYamlValue("- path: a/**\n  instructions: x")).toEqual({ ok: true, value: [{ path: "a/**", instructions: "x" }] });
+    expect(parseYamlValue("[unclosed").ok).toBe(false);
   });
 });

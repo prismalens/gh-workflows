@@ -48,6 +48,16 @@ describe("the Config tab edits the file through a pull request (#78)", () => {
     expect(within(editor).getByTestId("config-diff").textContent).toContain("+     - renovate[bot]");
   });
 
+  it("malformed YAML in a structured field keeps the draft and the key, and says so (#237 review)", async () => {
+    const editor = await openEditor();
+    const box = within(editor).getByLabelText("review.path_instructions");
+    fireEvent.change(box, { target: { value: "[unclosed" } });
+    fireEvent.blur(box);
+    expect(within(editor).getByText("not YAML")).toBeInTheDocument();
+    expect(box).toHaveValue("[unclosed");
+    expect(within(editor).queryByTestId("config-diff")).toBeNull();
+  });
+
   it("a file the lane would reject names the key and keeps the button disabled", async () => {
     const editor = await openEditor();
     fireEvent.click(within(editor).getByRole("tab", { name: "YAML" }));
