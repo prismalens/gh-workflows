@@ -17,7 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { isLaneVersionAtLeast2 } from "@/features/failures/failures";
-import { Approximate, Degraded } from "@/honesty/Degraded";
+import { Approximate, Degraded, withheldShare } from "@/honesty/Degraded";
 import { fieldEra } from "@/honesty/fieldEra";
 import {
   CACHE_CREATION_WEIGHT,
@@ -216,11 +216,13 @@ export function ResolutionPanel({ row }: { row: RoundRow }) {
           <span className="text-sm font-medium">
             {VERDICT_KIND_BUCKET_COPY[decodeVerdictKind(row)].label}
           </span>
-          {row.verdict_text && (
+          {row.verdict_text ? (
             <pre className="whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-xs">
               {row.verdict_text}
             </pre>
-          )}
+          ) : withheldShare(row) ? (
+            <Degraded what="Verdict text" reason="not-shared" share={withheldShare(row)!} />
+          ) : null}
         </div>
       ) : (
         <Degraded
@@ -448,7 +450,9 @@ export function DenialsPanel({ row }: { row: RoundRow }) {
         </Fact>
       </Facts>
 
-      {tools === null ? (
+      {tools === null && withheldShare(row) ? (
+        <Degraded what="Which tools were denied" reason="not-shared" share={withheldShare(row)!} />
+      ) : tools === null ? (
         <Degraded
           what="Which tools were denied"
           reason={emptyFieldReason(row)}
@@ -496,6 +500,8 @@ export function RawRecordPanel({ row }: { row: RoundRow }) {
         <pre className="max-h-96 overflow-auto rounded-md bg-muted/40 p-3 font-mono text-xs">
           {JSON.stringify(raw, null, 2)}
         </pre>
+      ) : withheldShare(row) ? (
+        <Degraded what="Raw result object" reason="not-shared" share={withheldShare(row)!} />
       ) : (
         <Degraded
           what="Raw result object"

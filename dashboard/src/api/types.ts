@@ -263,6 +263,8 @@ export interface FindingRow {
   head_sha_reviewed: string | null;
   last_swept_at: string | null;
   row_set_incomplete: number | null;
+  /** Absent on rows swept before #183. */
+  share_level?: string | null;
 }
 
 export interface FindingsResponse {
