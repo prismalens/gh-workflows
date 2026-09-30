@@ -1,6 +1,9 @@
 import { parseUnaccountedRuns } from "@/api/blobs";
 import type {
   ChangesQuery,
+  ConfigFileResponse,
+  ConfigPrRequest,
+  ConfigPrResponse,
   FindingsQuery,
   FleetFindingsQuery,
   FleetReposQuery,
@@ -62,6 +65,16 @@ const HEALTH_BLOB_COLUMNS = ["unaccounted_runs", "lane_events_by_reason"] as con
  * Filter, ordering, limit and cursor semantics have to match the Worker exactly, or a
  * green test proves nothing about the deployed contract.
  */
+export const FIXTURE_CONFIG_FILE = `# Review settings for this repository. The lane reads this file at each PR's base ref.
+version: 1
+review:
+  level: medium
+  skip_authors:
+    - dependabot[bot]
+findings:
+  suppress_below: Minor
+`;
+
 export function makeFixtureApi(
   rows: RoundRow[] = FIXTURE_ROUNDS,
   laneEvents: LaneEventRow[] = [],
@@ -417,6 +430,26 @@ export function makeFixtureApi(
           .map((item) => ({ repository: item.repository, layer: item.layer })),
         };
       },
+
+    // The Worker's /api/config-file and /api/config-pr (#78); nothing is written anywhere.
+    async fetchConfigFile(repository: string): Promise<ConfigFileResponse> {
+      return {
+        repository,
+        path: ".github/claude-review.yml",
+        default_branch: "main",
+        sha: "0".repeat(40),
+        content: FIXTURE_CONFIG_FILE,
+        can_open_pr: true,
+      };
+    },
+
+    async openConfigPr(request: ConfigPrRequest): Promise<ConfigPrResponse> {
+      return {
+        url: `https://github.com/${request.repository}/pull/0`,
+        number: 0,
+        branch: "assayer/config-fixture",
+      };
+    },
 
     // The Worker's /api/ops over the same 7 days, from the fixture tables (#179).
     async fetchOps(): Promise<OpsResponse> {
