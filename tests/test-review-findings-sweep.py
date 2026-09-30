@@ -163,11 +163,12 @@ def make_bin(td):
     return binp
 
 
-def comment(login, body, *, typename="Bot", diff_hunk=None, created_at="2026-01-01T00:00:00Z"):
+def comment(login, body, *, typename="Bot", diff_hunk=None, created_at="2026-01-01T00:00:00Z", url=None):
     return {
         "body": body,
         "diffHunk": diff_hunk,
         "createdAt": created_at,
+        "url": url,
         "author": {"login": login, "__typename": typename},
     }
 
@@ -498,8 +499,8 @@ def main():
     marker = "\n\n<!-- assayer-finding engine=opencode -->"
     app_body = "_🎯 Functional Correctness_ | _🟠 Major_ | _⚡ Quick win_\n\nbody" + marker
     app_thread = thread("PRT_APP", [
-        comment("assayer-review-dev", app_body),
-        comment("assayer-review-dev", "follow-up from the same App"),
+        comment("assayer-review-dev", app_body, url="https://github.com/o/r/pull/15#discussion_r77"),
+        comment("assayer-review-dev", "follow-up from the same App", url="https://github.com/o/r/pull/15#discussion_r78"),
         comment("octocat", "fixed in `" + OID_A[:7] + "`", typename="User"),
     ], resolved_by=None)
     app_unmarked = thread("PRT_APP_PLAIN", [comment("assayer-review-dev", "**nit**: no marker")], resolved_by=None)
@@ -517,6 +518,8 @@ def main():
           app_row is not None and app_row["human_reply_count"] == 1, app_row)
     check("a human's quoted sha on a runner thread is still verified",
           app_row is not None and app_row["human_reply_sha"] == OID_A, app_row)
+    check("the opening comment's URL is the thread link (#185)",
+          app_row is not None and app_row.get("thread_url") == "https://github.com/o/r/pull/15#discussion_r77", app_row)
     check("an App thread without the marker is excluded", "PRT_APP_PLAIN" not in by_id, rows)
     check("a human comment carrying the marker is excluded", "PRT_HUMAN_MARKER" not in by_id, rows)
     check("a claude[bot] thread records a null engine",
