@@ -4,8 +4,9 @@ name: Review Findings Sweep
 # the Claude review lane. Never called by gh-workflows itself: see the job `if:` below and
 # "gh-workflows is excluded" in the ingest-sweep amendment of #47.
 #
-# Enumerates claude[bot] review threads with the default read-only GITHUB_TOKEN and POSTs
-# them to the review-telemetry Worker's findings route. Amendments implemented here (#47,
+# Enumerates review-lane threads (claude[bot], and a runner round's App carrying the engine marker,
+# #184) with the default read-only GITHUB_TOKEN and POSTs them to the review-telemetry
+# Worker's findings route. Amendments implemented here (#47,
 # "Amendment: ingest sweep design"), each bought with a measured failure in that issue:
 #   1. one GraphQL query per PR, never aliased multi-PR batching (paginating WITHIN one PR,
 #      across multiple sequential queries, is not batching and stays within this rule)
@@ -487,19 +488,29 @@ jobs:
           # than silently looking like a complete sweep.
           row_set_incomplete = 0 if os.environ.get("ROW_SET_COMPLETE", "1") == "1" else 1
 
+          # A runner round is posted under its App's login, which differs per install, so its
+          # findings are known by the marker worker/poster.js stamps on each one (#184).
+          ENGINE_MARKER_RE = re.compile(r"<!-- assayer-finding engine=([a-z0-9-]{1,32}) -->")
+
           findings = []
           for thread in threads:
               comments = (thread.get("comments") or {}).get("nodes", []) or []
               if not comments:
                   continue
               first = comments[0]
-              # Amendment 10 / schema scope correction (#47): only the Claude lane lands
-              # here. A thread whose opening comment is not claude[bot] (CodeRabbit,
-              # a human review, anything else) is never a row in this table.
-              if normalize_login(first.get("author")) != "claude[bot]":
-                  continue
+              # Amendment 10 / schema scope correction (#47): only a review lane lands here,
+              # the Actions lane as claude[bot] or a runner round as an App carrying the
+              # marker. CodeRabbit, a human review or anything else is never a row.
+              reviewer = normalize_login(first.get("author"))
+              if reviewer == "claude[bot]":
+                  engine = None
+              else:
+                  marker = ENGINE_MARKER_RE.search(first.get("body") or "")
+                  if not marker or (first.get("author") or {}).get("__typename") != "Bot":
+                      continue
+                  engine = marker.group(1)
 
-              body = (first.get("body") or "")
+              body = ENGINE_MARKER_RE.sub("", first.get("body") or "")
               first_line, _, rest = body.strip().partition("\n")
               if ENVELOPE_RE.match(first_line.rstrip()):
                   header_raw = first_line.strip()
@@ -512,19 +523,19 @@ jobs:
                   body_excerpt = body_excerpt[:500] + "..."
 
               replies = comments[1:]
-              # Reply count includes any non-claude[bot] reply (amendment 10: the human/bot
-              # split is dashboard-code, versioned-exclusion-list territory, not an ingest
-              # classification -- resolved_by_login below is kept just as raw for the same
-              # reason).
+              # Reply count includes any reply not from the thread's reviewer (amendment 10:
+              # the human/bot split is dashboard-code, versioned-exclusion-list territory, not
+              # an ingest classification -- resolved_by_login below is kept just as raw for
+              # the same reason).
               human_reply_count = sum(
-                  1 for c in replies if normalize_login(c.get("author")) != "claude[bot]"
+                  1 for c in replies if normalize_login(c.get("author")) != reviewer
               )
 
               # human_reply_sha (amendment 8): re-read on every pass (amendment 7), and
               # accepted only once resolve_oid confirms it against a real commit on this PR.
               human_reply_sha = None
               for c in replies:
-                  if normalize_login(c.get("author")) == "claude[bot]":
+                  if normalize_login(c.get("author")) == reviewer:
                       continue
                   for m in SHA_RE.finditer(c.get("body") or ""):
                       resolved = resolve_oid(m.group(1))
@@ -588,6 +599,7 @@ jobs:
                   "head_sha_reviewed": head_sha,
                   "last_swept_at": swept_at,
                   "row_set_incomplete": row_set_incomplete,
+                  "engine": engine,
               })
 
           # The level rides the batch; the Worker drops what it does not allow (#183).

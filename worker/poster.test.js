@@ -46,10 +46,23 @@ describe("poster (#184)", () => {
       "POST /repos/prismalens/sreforge/issues/183/comments",
       "POST /repos/prismalens/sreforge/issues/183/comments",
     ]);
-    assert.deepEqual(writes[0].body, { body: envelope, commit_id: HEAD, path: "src/a.js", line: 12, side: "RIGHT" });
+    assert.deepEqual(writes[0].body, {
+      body: `${envelope}\n\n<!-- assayer-finding engine=opencode -->`,
+      commit_id: HEAD,
+      path: "src/a.js",
+      line: 12,
+      side: "RIGHT",
+    });
     assert.equal(writes[1].body.start_line, 18);
     assert.ok(writes[3].body.body.startsWith(`${LIVENESS_PREFIX} rounds=1 sha=${HEAD} engine=opencode -->`));
     assert.match(writes[3].body.body, /opencode\/muse-2\): reviewed `bbbbbbb`, 2 findings inline\./);
+  });
+
+  it("stamps the engine marker the sweep reads only for an engine of the registry's shape (#184)", async () => {
+    const gh = github();
+    await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: { ...JOB, engine: "Bad Engine -->" }, events: stream([finding()]), rounds: 1 });
+    const inline = gh.calls.find((c) => c.method === "POST" && c.path.endsWith("/pulls/183/comments"));
+    assert.equal(inline.body.body, envelope);
   });
 
   it("never calls POST /pulls/:n/reviews, so a round can neither approve nor block", async () => {

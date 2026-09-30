@@ -494,6 +494,34 @@ def main():
     check("Claude thread on the same PR still admitted",
           any(r["thread_node_id"] == "PRT_CLAUDE" for r in rows), rows)
 
+    # ── 5b. A runner round's thread is known by the poster's engine marker (#184) ──
+    marker = "\n\n<!-- assayer-finding engine=opencode -->"
+    app_body = "_🎯 Functional Correctness_ | _🟠 Major_ | _⚡ Quick win_\n\nbody" + marker
+    app_thread = thread("PRT_APP", [
+        comment("assayer-review-dev", app_body),
+        comment("assayer-review-dev", "follow-up from the same App"),
+        comment("octocat", "fixed in `" + OID_A[:7] + "`", typename="User"),
+    ], resolved_by=None)
+    app_unmarked = thread("PRT_APP_PLAIN", [comment("assayer-review-dev", "**nit**: no marker")], resolved_by=None)
+    human_marker = thread("PRT_HUMAN_MARKER", [comment("octocat", "**Bug**: x" + marker, typename="User")], resolved_by=None)
+    fx_runner = main_page(head_sha=OID_A, commit_oids=[OID_A],
+                          threads=[app_thread, app_unmarked, human_marker, claude_thread])
+    _, rows = run_sweep(script, pr_list=[15], main_fixtures={15: [fx_runner]})
+    by_id = {r["thread_node_id"]: r for r in rows}
+    app_row = by_id.get("PRT_APP")
+    check("runner thread admitted with its engine", app_row is not None and app_row.get("engine") == "opencode", rows)
+    check("runner thread's envelope parses with the marker stripped",
+          app_row is not None and app_row["header_raw"] == "_🎯 Functional Correctness_ | _🟠 Major_ | _⚡ Quick win_"
+          and app_row["body_excerpt"] == "body", app_row)
+    check("the App's own follow-up is not counted as a human reply",
+          app_row is not None and app_row["human_reply_count"] == 1, app_row)
+    check("a human's quoted sha on a runner thread is still verified",
+          app_row is not None and app_row["human_reply_sha"] == OID_A, app_row)
+    check("an App thread without the marker is excluded", "PRT_APP_PLAIN" not in by_id, rows)
+    check("a human comment carrying the marker is excluded", "PRT_HUMAN_MARKER" not in by_id, rows)
+    check("a claude[bot] thread records a null engine",
+          "PRT_CLAUDE" in by_id and by_id["PRT_CLAUDE"].get("engine", "missing") is None, rows)
+
     # ── 6. original_line is the durable key; line stays display-only ───────────────
     moved_thread = thread("PRT_MOVED", [comment("claude", "**Bug**: z")],
                           resolved_by=("claude", "Bot"), line=None, original_line=99)

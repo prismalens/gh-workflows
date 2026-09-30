@@ -230,6 +230,8 @@ const FINDING_NULLABLE_INTEGER_FIELDS = new Set(["original_line", "line"]);
 
 const VALID_FIX_SHA_SOURCES = new Set(["verify_table", "human_reply"]);
 const VALID_VERIFY_VERDICTS = new Set(["fixed", "still_applies", "cannot_verify"]);
+// The same shape the sweep's marker regex accepts (review-findings-sweep.yml, #184).
+const FINDING_ENGINE_RE = /^[a-z0-9-]{1,32}$/;
 
 // Control plane vocabularies (#184). RUNNER_EVENT_TYPES is assayer/v1, runner/src/events.js.
 const ENGINES = Object.freeze(new Set(["opencode", "claude-code", "codex", "diff-only"]));
@@ -2453,6 +2455,11 @@ function validateFinding(finding) {
     return "invalid verify_verdict";
   }
 
+  // Absent or null is the Actions lane; a sweep older than #184 never sends it.
+  if (finding.engine != null && !(typeof finding.engine === "string" && FINDING_ENGINE_RE.test(finding.engine))) {
+    return "invalid engine";
+  }
+
   return null;
 }
 
@@ -2567,8 +2574,9 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
       row_set_incomplete,
       ingest_auth,
       repository_id,
-      share_level
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+      share_level,
+      engine
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
     -- A thread is mutable state, not an immutable event (#47): every column is overwritten
     -- from the latest sweep pass rather than only filled in when currently null, so a newly
     -- resolved thread or an edited comment settles here on the very next sweep.
@@ -2595,7 +2603,8 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
       row_set_incomplete = excluded.row_set_incomplete,
       ingest_auth = excluded.ingest_auth,
       repository_id = COALESCE(excluded.repository_id, review_findings.repository_id),
-      share_level = excluded.share_level`
+      share_level = excluded.share_level,
+      engine = excluded.engine`
   );
 
   const stmts = payload.findings
@@ -2628,7 +2637,8 @@ async function handleIngestFindings(request, env, { getKey } = {}) {
       finding.row_set_incomplete,
       auth.method,
       auth.method === "oidc" ? (auth.repository_id !== null ? Number(auth.repository_id) : null) : null,
-      level
+      level,
+      finding.engine ?? null
     )
   );
 
@@ -2730,6 +2740,7 @@ async function handleFindings(url, env) {
     "last_swept_at",
     "row_set_incomplete",
     "share_level",
+    "engine",
   ];
 
   let query = `SELECT
