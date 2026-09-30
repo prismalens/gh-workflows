@@ -922,6 +922,35 @@ function isOpsHealthRow(row: unknown): boolean {
   );
 }
 
+function isOpsRunner(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const r = value as Record<string, unknown>;
+  return (
+    typeof r.id === "string" &&
+    typeof r.name === "string" &&
+    typeof r.created_at === "string" &&
+    isNullableString(r.revoked_at) &&
+    isNullableString(r.last_seen_at) &&
+    Array.isArray(r.credentials) &&
+    r.credentials.every((c: unknown) => {
+      const o = c as Record<string, unknown> | null;
+      return !!o && typeof o.engine === "string" && typeof o.credential_kind === "string" && typeof o.fingerprint === "string" && typeof o.concurrency === "number";
+    })
+  );
+}
+
+function isOpsQueueRow(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const q = value as Record<string, unknown>;
+  return (
+    typeof q.state === "string" &&
+    typeof q.engine === "string" &&
+    typeof q.credential_kind === "string" &&
+    typeof q.jobs === "number" &&
+    typeof q.oldest_created_at === "string"
+  );
+}
+
 export function isOpsResponse(value: unknown): value is OpsResponse {
   if (!value || typeof value !== "object") return false;
   const val = value as Record<string, unknown>;
@@ -932,6 +961,10 @@ export function isOpsResponse(value: unknown): value is OpsResponse {
     typeof win === "object" &&
     typeof win.since === "string" &&
     typeof win.days === "number" &&
+    Array.isArray(val.runners) &&
+    val.runners.every(isOpsRunner) &&
+    Array.isArray(val.queue) &&
+    val.queue.every(isOpsQueueRow) &&
     Array.isArray(val.identity) &&
     val.identity.every(isOpsIdentityRow) &&
     Array.isArray(val.credentials) &&

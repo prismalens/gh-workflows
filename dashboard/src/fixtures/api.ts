@@ -491,6 +491,9 @@ export function makeFixtureApi(
       }
       return {
         window: { since, days: 7 },
+        // The fixture tables hold no control-plane rows.
+        runners: [],
+        queue: [],
         identity: [...identity.keys()].sort().map((repository) => ({
           repository,
           tables: identity.get(repository)!,

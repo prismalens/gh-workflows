@@ -3173,7 +3173,7 @@ const OPS_IDENTITY_TABLES = [
 const OPS_WINDOW_DAYS = 7;
 
 // GET /api/ops (#179, #185): how stats arrived, credential types, health report
-// receipt, Worker version and D1 size. Aggregates only, never a text column.
+// receipt, Worker version and D1 size, runners and the job queue. Never a text column.
 async function handleOps(env) {
   const db = env.DB;
   const since = new Date(Date.now() - OPS_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
@@ -3213,10 +3213,49 @@ async function handleOps(env) {
       .bind(since)
       .all();
 
+    // Runners and their declared credentials: fingerprints only, never a secret (#77, #184).
+    const runnerRows = await db
+      .prepare("SELECT id, name, created_at, revoked_at, last_seen_at FROM runners ORDER BY revoked_at IS NOT NULL, created_at DESC")
+      .bind()
+      .all();
+    const runnerCredentials = await db
+      .prepare("SELECT runner_id, engine, credential_kind, fingerprint, concurrency FROM runner_credentials ORDER BY engine, credential_kind")
+      .bind()
+      .all();
+    // The queue: every job not yet finished, and what finished inside the window.
+    const queue = await db
+      .prepare(
+        "SELECT state, engine, credential_kind, COUNT(*) AS jobs, MIN(created_at) AS oldest_created_at FROM jobs WHERE finished_at IS NULL OR finished_at >= ? GROUP BY state, engine, credential_kind ORDER BY state, engine, credential_kind"
+      )
+      .bind(since)
+      .all();
+
     const meta = env.CF_VERSION_METADATA;
     return new Response(
       JSON.stringify({
         window: { since, days: OPS_WINDOW_DAYS },
+        runners: (runnerRows.results ?? []).map((r) => ({
+          id: r.id,
+          name: r.name,
+          created_at: r.created_at,
+          revoked_at: r.revoked_at ?? null,
+          last_seen_at: r.last_seen_at ?? null,
+          credentials: (runnerCredentials.results ?? [])
+            .filter((c) => c.runner_id === r.id)
+            .map((c) => ({
+              engine: c.engine,
+              credential_kind: c.credential_kind,
+              fingerprint: c.fingerprint,
+              concurrency: Number(c.concurrency) || 0,
+            })),
+        })),
+        queue: (queue.results ?? []).map((q) => ({
+          state: q.state,
+          engine: q.engine,
+          credential_kind: q.credential_kind,
+          jobs: Number(q.jobs) || 0,
+          oldest_created_at: q.oldest_created_at,
+        })),
         identity: [...identity.keys()].sort().map((repository) => ({
           repository,
           tables: identity.get(repository),

@@ -5672,6 +5672,48 @@ describe("Worker telemetry read API", () => {
       const data = await (await getOps(db)).json();
       assert.equal(data.worker.version_id, null);
       assert.deepEqual(data.identity, []);
+      assert.deepEqual(data.runners, []);
+      assert.deepEqual(data.queue, []);
+    });
+
+    it("lists runners with their declared credentials, never a token hash, and the job queue (#185)", async () => {
+      const db = await sqliteDb();
+      const s = db.sqlite;
+      s.prepare("INSERT INTO runners (id, name, token_hash, created_at, revoked_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+        "r-old", "gone", "hash-old", old(), recent(), old()
+      );
+      s.prepare("INSERT INTO runners (id, name, token_hash, created_at, revoked_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+        "r-1", "box-1", "hash-1", recent(), null, recent()
+      );
+      s.prepare(
+        "INSERT INTO runner_credentials (runner_id, engine, credential_kind, fingerprint, concurrency, registered_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("r-1", "opencode", "keyless", "0123456789ab", 1, recent());
+      const job = s.prepare(
+        `INSERT INTO jobs (id, repository, pr_number, base_sha, head_sha, mode, level, engine, credential_kind, state, created_at, finished_at)
+         VALUES (?, 'o/a', 1, 'b', 'h', 'review', 'medium', 'opencode', 'keyless', ?, ?, ?)`
+      );
+      job.run("j1", "queued", old(), null);
+      job.run("j2", "queued", recent(), null);
+      job.run("j3", "finished", recent(), recent());
+      job.run("j4", "finished", old(), old());
+
+      const data = await (await getOps(db)).json();
+      assert.deepEqual(
+        data.runners.map((r) => [r.name, r.revoked_at === null, r.credentials]),
+        [
+          ["box-1", true, [{ engine: "opencode", credential_kind: "keyless", fingerprint: "0123456789ab", concurrency: 1 }]],
+          ["gone", false, []],
+        ]
+      );
+      assert.ok(!JSON.stringify(data).includes("hash-1"), "no token hash in the response");
+      assert.deepEqual(
+        data.queue.map((q) => [q.state, q.engine, q.credential_kind, q.jobs]),
+        [
+          ["finished", "opencode", "keyless", 1],
+          ["queued", "opencode", "keyless", 2],
+        ]
+      );
+      assert.equal(data.queue[1].oldest_created_at, s.prepare("SELECT created_at FROM jobs WHERE id = 'j1'").get().created_at);
     });
 
     it("answers 500 when a query fails", async () => {

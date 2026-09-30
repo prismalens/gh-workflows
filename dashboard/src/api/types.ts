@@ -379,8 +379,27 @@ export const OPS_IDENTITY_TABLES = ["usage_records", "lane_events", "prs", "revi
 export type OpsIdentityTable = (typeof OPS_IDENTITY_TABLES)[number];
 
 /** GET /api/ops (#179, #185): aggregates only, over the Worker's fixed 7-day window. */
+export interface OpsRunner {
+  id: string;
+  name: string;
+  created_at: string;
+  revoked_at: string | null;
+  last_seen_at: string | null;
+  credentials: { engine: string; credential_kind: string; fingerprint: string; concurrency: number }[];
+}
+
+export interface OpsQueueRow {
+  state: string;
+  engine: string;
+  credential_kind: string;
+  jobs: number;
+  oldest_created_at: string;
+}
+
 export interface OpsResponse {
   window: { since: string; days: number };
+  runners: OpsRunner[];
+  queue: OpsQueueRow[];
   identity: OpsIdentityRow[];
   credentials: { repository: string; credential_type: string | null; rounds: number }[];
   health: {
