@@ -1,6 +1,7 @@
 import { jwtVerify, createRemoteJWKSet } from "jose";
 import { createInstallationTokenMinter, MintError, POSTER_TOKEN_PERMISSIONS } from "./github-app.js";
 import { livenessBody, postRound, revokeToken, upsertLiveness } from "./poster.js";
+import { ConfigEditError, openConfigPullRequest, readConfigFile } from "./config-edit.js";
 import { parseShareLevel, stripToLevel, TIERS } from "./tiers.js";
 import { reviewableLinesFromFiles } from "./review-size.js";
 
@@ -4713,6 +4714,46 @@ async function handleWebhook(request, env, { mint, fetch: fetchImpl }) {
   }
 }
 
+// The Console's config editor (#78). Behind Access; the App's installation decides what it may
+// touch, and a pull request is the only write.
+async function handleConfigEdit(request, url, env, opts) {
+  const mint = opts.mintInstallationToken || createInstallationTokenMinter(env).mint;
+  const fetchImpl = opts.fetch || globalThis.fetch;
+  const json = (status, body) => new Response(JSON.stringify(body), { status, headers: READ_HEADERS });
+  try {
+    if (request.method === "GET" && url.pathname === "/api/config-file") {
+      return json(200, await readConfigFile({ repository: url.searchParams.get("repository"), mint, fetch: fetchImpl }));
+    }
+    if (request.method === "POST" && url.pathname === "/api/config-pr") {
+      // A JSON content type forces a CORS preflight, so a cross-site form cannot post here.
+      if (!(request.headers.get("content-type") || "").startsWith("application/json")) {
+        return json(415, { error: "json-only" });
+      }
+      let payload;
+      try {
+        payload = await request.json();
+      } catch {
+        return json(400, { error: "invalid json body" });
+      }
+      const pr = await openConfigPullRequest({
+        repository: payload?.repository,
+        content: payload?.content,
+        base_sha: payload?.base_sha ?? null,
+        summary: payload?.summary,
+        mint,
+        fetch: fetchImpl,
+      });
+      return json(201, pr);
+    }
+    return new Response(null, { status: 405 });
+  } catch (e) {
+    if (e instanceof ConfigEditError) {
+      return json(e.status, { error: e.code, ...e.extra });
+    }
+    throw e;
+  }
+}
+
 export default {
   async fetch(request, env, ctx, options = {}) {
     const opts = (ctx && typeof ctx === "object" && (typeof ctx.getKey === "function" || typeof ctx.mintInstallationToken === "function")) ? ctx : (options || {});
@@ -4858,6 +4899,14 @@ export default {
         return handleDeleteChange(id, env);
       }
       return new Response(null, { status: 404 });
+    }
+
+    if (pathname === "/api/config-file" || pathname === "/api/config-pr") {
+      const authError = await verifyAccess(request, env);
+      if (authError) {
+        return authError;
+      }
+      return handleConfigEdit(request, url, env, opts);
     }
 
     if (pathname === "/api/runners" || pathname.startsWith("/api/runners/")) {

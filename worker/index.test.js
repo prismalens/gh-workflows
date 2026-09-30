@@ -7335,3 +7335,64 @@ describe("Poster and the runner verdicts (#184)", () => {
     assert.match(outcomes[0].args[0], /^did-not-post: /);
   });
 });
+
+describe("Config editor routes (#78)", () => {
+  const access = useControlPlaneAccess();
+  const accessed = (path, opts = {}) =>
+    makeRequest(path, { ...opts, headers: { "Cf-Access-Jwt-Assertion": access.jwt, ...(opts.headers || {}) } });
+  const github = async (url, init = {}) => {
+    const key = `${init.method || "GET"} ${String(url).replace("https://api.github.com", "")}`;
+    if (key === "GET /repos/o/r") return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+    if (key === "GET /repos/o/r/git/ref/heads/main") return new Response(JSON.stringify({ object: { sha: "c".repeat(40) } }), { status: 200 });
+    if (key === "POST /repos/o/r/pulls") return new Response(JSON.stringify({ html_url: "https://github.com/o/r/pull/3", number: 3 }), { status: 201 });
+    if (key.startsWith("GET /repos/o/r/contents/")) return new Response("{}", { status: 404 });
+    return new Response("{}", { status: key.startsWith("DELETE") ? 204 : 201 });
+  };
+  const mint = async () => ({ token: "ghs_t", installation_permissions: { contents: "write", pull_requests: "write" } });
+
+  it("both routes answer 403 without an Access assertion", async () => {
+    for (const [path, method] of [["/api/config-file?repository=o/r", "GET"], ["/api/config-pr", "POST"]]) {
+      const res = await worker.fetch(makeRequest(path, { method, body: method === "POST" ? {} : undefined }), access.env, {
+        mintInstallationToken: mint,
+        fetch: github,
+      });
+      assert.equal(res.status, 403, path);
+    }
+  });
+
+  it("GET /api/config-file returns the file state behind Access", async () => {
+    const res = await worker.fetch(accessed("/api/config-file?repository=o/r", { method: "GET" }), access.env, {
+      mintInstallationToken: mint,
+      fetch: github,
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.content, null);
+    assert.equal(body.can_open_pr, true);
+  });
+
+  it("POST /api/config-pr opens the PR, and refuses a non-JSON body and a rejected file", async () => {
+    const ok = await worker.fetch(
+      accessed("/api/config-pr", { body: { repository: "o/r", content: "version: 1\n", base_sha: null } }),
+      access.env,
+      { mintInstallationToken: mint, fetch: github }
+    );
+    assert.equal(ok.status, 201);
+    assert.equal((await ok.json()).number, 3);
+
+    const form = await worker.fetch(
+      accessed("/api/config-pr", { body: "repository=o/r", headers: { "content-type": "application/x-www-form-urlencoded" } }),
+      access.env,
+      { mintInstallationToken: mint, fetch: github }
+    );
+    assert.equal(form.status, 415);
+
+    const bad = await worker.fetch(
+      accessed("/api/config-pr", { body: { repository: "o/r", content: "version: 2\n", base_sha: null } }),
+      access.env,
+      { mintInstallationToken: mint, fetch: github }
+    );
+    assert.equal(bad.status, 400);
+    assert.equal((await bad.json()).error, "schema-rejected");
+  });
+});

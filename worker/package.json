@@ -16,6 +16,8 @@
     "wrangler": "4.127.1"
   },
   "dependencies": {
-    "jose": "6.2.12"
+    "@cfworker/json-schema": "4.1.1",
+    "jose": "6.2.12",
+    "yaml": "2.9.1"
   }
 }
