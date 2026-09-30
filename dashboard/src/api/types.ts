@@ -263,6 +263,8 @@ export interface FindingRow {
   head_sha_reviewed: string | null;
   last_swept_at: string | null;
   row_set_incomplete: number | null;
+  /** Null for the Actions lane; absent from a Worker that predates #184's column. */
+  engine?: string | null;
 }
 
 export interface FindingsResponse {

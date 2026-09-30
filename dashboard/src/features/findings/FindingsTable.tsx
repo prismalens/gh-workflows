@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { engineLabel } from "@/features/rounds/engine";
 import { decodeFate, fixCitation } from "./findings";
 import { FateChip, FixCitedBadge } from "./FateChip";
 import { SeverityChip } from "./FindingsExplorer";
@@ -63,6 +64,7 @@ export function FindingsTable({
             <TableHead>Finding</TableHead>
             <TableHead>Detail</TableHead>
             <TableHead>Fix</TableHead>
+            <TableHead>Engine</TableHead>
             <TableHead>Created</TableHead>
             <TableHead />
           </TableRow>
@@ -107,6 +109,9 @@ export function FindingsTable({
                   {body ?? "—"}
                 </TableCell>
                 <TableCell>{citation ? <FixCitedBadge citation={citation} /> : "—"}</TableCell>
+                <TableCell className="whitespace-nowrap font-mono text-muted-foreground" data-testid="finding-engine">
+                  {engineLabel(row)}
+                </TableCell>
                 <TableCell className="whitespace-nowrap">
                   <Timestamp iso={row.thread_created_at} compact />
                 </TableCell>

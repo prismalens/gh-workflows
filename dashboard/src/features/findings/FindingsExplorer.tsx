@@ -202,6 +202,12 @@ function GroupRows({
             </td>
             <td className="px-2 py-1.5">
               <SeverityChip severity={label.severity} />
+              {row.engine ? (
+                // A runner round's finding names its engine; the Actions lane stays unlabelled (#184).
+                <span className="ml-1 font-mono text-[10px] text-muted-foreground" data-testid="finding-engine">
+                  {row.engine}
+                </span>
+              ) : null}
             </td>
             <td className="max-w-[360px] truncate px-2 py-1.5" title={body ?? undefined}>
               {label.category && <span className="font-medium">{label.category}</span>}

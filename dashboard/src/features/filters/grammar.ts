@@ -3,7 +3,7 @@
  * A token is a view of one URL search param, so a copied link, reload and back
  * all restore it; the grammar never holds state of its own.
  */
-export const FILTER_KEYS = ["repo", "author", "path", "fate", "age", "sev", "state", "pr"] as const;
+export const FILTER_KEYS = ["repo", "author", "path", "fate", "age", "sev", "state", "pr", "engine"] as const;
 export type FilterKey = (typeof FILTER_KEYS)[number];
 
 export interface FilterToken {
@@ -25,6 +25,7 @@ export const FILTER_KEY_HINTS: Record<FilterKey, string> = {
   sev: "critical, major, minor, nitpick",
   state: "open, merged, closed, all",
   pr: "pull request number",
+  engine: "Actions lane, opencode, claude-code",
 };
 
 function isFilterKey(value: string): value is FilterKey {

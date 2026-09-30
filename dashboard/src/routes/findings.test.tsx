@@ -403,3 +403,22 @@ describe("the counts view (#185 F3)", () => {
   });
 });
 
+
+describe("/findings engine (#185, #184)", () => {
+  const rows = [
+    finding({ thread_node_id: "PRRT_lane", engine: null }),
+    finding({ thread_node_id: "PRRT_runner", engine: "opencode" }),
+  ];
+
+  it("offers the engines as a facet and filters by one, naming a runner's engine on its row", async () => {
+    renderRoute({ path: "/findings?engine=opencode", api: makeFixtureApi([], [], [], [], [], rows) });
+    await waitFor(() => expect(screen.getAllByTestId("finding-row")).toHaveLength(1));
+    expect(screen.getByTestId("finding-engine")).toHaveTextContent("opencode");
+  });
+
+  it("an Actions-lane filter keeps only claude[bot]'s findings", async () => {
+    renderRoute({ path: "/findings?engine=Actions%20lane", api: makeFixtureApi([], [], [], [], [], rows) });
+    await waitFor(() => expect(screen.getAllByTestId("finding-row")).toHaveLength(1));
+    expect(screen.queryByTestId("finding-engine")).toBeNull();
+  });
+});

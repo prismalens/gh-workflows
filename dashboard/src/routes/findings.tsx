@@ -55,6 +55,7 @@ const findingsSearchSchema = z.object({
   age: z.string().min(1).optional().catch(undefined),
   sev: z.enum(SEVERITY_VALUES).optional().catch(undefined),
   pr: z.string().min(1).optional().catch(undefined),
+  engine: z.string().min(1).optional().catch(undefined),
   sort: z.enum(["oldest", "newest"]).optional().catch(undefined),
   group: z.enum(["none"]).optional().catch(undefined),
   sel: z.string().min(1).optional().catch(undefined),
@@ -161,7 +162,7 @@ const VIEWS: { key: string; label: string; fate: FateFilterValue | undefined }[]
   { key: "all", label: "All", fate: undefined },
 ];
 
-const FINDING_KEYS: FilterKey[] = ["repo", "fate", "state", "path", "age", "sev", "pr"];
+const FINDING_KEYS: FilterKey[] = ["repo", "fate", "state", "path", "age", "sev", "pr", "engine"];
 
 type FindingsSearch = z.infer<typeof findingsSearchSchema>;
 
@@ -174,6 +175,7 @@ function tokensFromSearch(search: FindingsSearch): FilterToken[] {
     ["age", search.age],
     ["sev", search.sev],
     ["pr", search.pr],
+    ["engine", search.engine],
   ];
   return pairs.flatMap(([key, value]) => (value ? [{ key, value }] : []));
 }
@@ -190,6 +192,7 @@ function searchFromTokens(tokens: FilterToken[], text: string): Partial<Findings
     age: get("age"),
     sev: asSeverity(get("sev")),
     pr: get("pr"),
+    engine: get("engine"),
     q: text.trim() || undefined,
     page: undefined,
   };
@@ -232,6 +235,7 @@ function FindingsRows() {
     age: search.age,
     sev: search.sev,
     pr: search.pr,
+    engine: search.engine,
     q: search.q?.toLowerCase(),
   };
 
@@ -243,12 +247,12 @@ function FindingsRows() {
   const matchingRows = useMemo(
     () => sortFindings(filterFindings(fetched, filters, prStateOf, now), search.sort ?? "oldest"),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [fetched, prStateOf, now, search.repository, search.fate, search.pr_state, search.path, search.age, search.sev, search.pr, search.q, search.sort],
+    [fetched, prStateOf, now, search.repository, search.fate, search.pr_state, search.path, search.age, search.sev, search.pr, search.engine, search.q, search.sort],
   );
   const counts = useMemo(
     () => facetCounts(fetched, filters, prStateOf, now),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [fetched, prStateOf, now, search.repository, search.fate, search.pr_state, search.path, search.age, search.sev, search.pr, search.q],
+    [fetched, prStateOf, now, search.repository, search.fate, search.pr_state, search.path, search.age, search.sev, search.pr, search.engine, search.q],
   );
   const viewCounts = useMemo(() => {
     const base = filterFindings(fetched, { ...filters, fate: undefined }, prStateOf, now);
@@ -256,9 +260,9 @@ function FindingsRows() {
       VIEWS.map((v) => [v.key, v.fate ? base.filter((r) => matchesFateFilter(r, v.fate!)).length : base.length]),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetched, prStateOf, now, search.repository, search.pr_state, search.path, search.age, search.sev, search.pr, search.q]);
+  }, [fetched, prStateOf, now, search.repository, search.pr_state, search.path, search.age, search.sev, search.pr, search.engine, search.q]);
 
-  const isFiltered = Boolean(search.fate || search.q || search.path || search.age || search.sev || search.pr);
+  const isFiltered = Boolean(search.fate || search.q || search.path || search.age || search.sev || search.pr || search.engine);
   const groupByPr = search.group !== "none";
 
   const pageSize: PageSize = search.size ?? DEFAULT_PAGE_SIZE;
@@ -313,6 +317,15 @@ function FindingsRows() {
       selected: search.sev,
       onSelect: (v) => set({ sev: asSeverity(v), page: undefined }),
       options: Object.entries(SEVERITY_LABELS).map(([value, label]) => ({ value, label, count: counts.sev[value] ?? 0 })),
+    },
+    {
+      key: "engine",
+      title: "Engine",
+      selected: search.engine,
+      onSelect: (v) => set({ engine: v, page: undefined }),
+      options: Object.keys(counts.engine)
+        .sort()
+        .map((e) => ({ value: e, label: e, count: counts.engine[e] ?? 0 })),
     },
     {
       key: "prState",
