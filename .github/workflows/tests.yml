@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install deps
-        run: pip install --quiet pyyaml
+        run: pip install --quiet pyyaml jsonschema
 
       # Extracts and runs the real shell body out of claude-code-review.yml.
       - name: Liveness marker behaviour
@@ -36,6 +36,10 @@ jobs:
       # Extracts and runs the real script out of claude-code-review.yml. Story: #33, #34.
       - name: Review config and model escalation behaviour
         run: python3 tests/test-review-config.py
+
+      # The config editor's schema accepts exactly what validate_config accepts.
+      - name: Review config schema drift
+        run: python3 tests/test-review-config-schema-drift.py
 
       - name: Thread mutation and summary verification
         run: python3 tests/test-mutation-verdicts.py

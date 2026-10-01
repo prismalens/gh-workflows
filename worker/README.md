@@ -765,7 +765,10 @@ the lease at 20 s and batches events at 10 s or more, which stays inside it.
 ### Registering the App
 
 `worker/github-app.manifest.json` pins the App's permissions (`tests/test-app-manifest.py`).
-One App per install; there is no shared App.
+One App per install; there is no shared App. `contents: write` is there for the Console's config
+editor only: `CONFIG_PR_TOKEN_PERMISSIONS` is the one token that asks for it, and it branches,
+writes `.github/claude-review.yml` and opens the pull request, then is revoked (#78). An
+installation that declines the permission still works; the editor falls back to copy and commit.
 
 1. Replace `CONTROL_PLANE_HOST` in the manifest's `hook_attributes.url` with the Worker's host.
 2. Submit the JSON as the `manifest` field of a form POST to

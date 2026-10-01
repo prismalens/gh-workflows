@@ -8,6 +8,8 @@ import { renderRoute } from "@/test/renderRoute";
 
 const OPS: OpsResponse = {
   window: { since: "2026-09-19T00:00:00.000Z", days: 7 },
+  runners: [],
+  queue: [],
   identity: [
     { repository: "o/legacy", tables: { usage_records: { bearer: 4 } } },
     { repository: "o/modern", tables: { usage_records: { oidc: 31 }, prs: { oidc: 6 } } },
@@ -44,5 +46,33 @@ describe("/ops (#179)", () => {
     };
     renderRoute({ path: "/ops", api });
     expect(await screen.findByTestId("ops-worker-version")).toHaveTextContent("version not reported");
+  });
+
+  it("lists runners with their credential fingerprints and heartbeat, and the job queue (#185)", async () => {
+    const api = {
+      ...makeFixtureApi(),
+      fetchOps: async () => ({
+        ...OPS,
+        runners: [
+          {
+            id: "r-1",
+            name: "box-1",
+            created_at: "2026-09-30T00:00:00Z",
+            revoked_at: null,
+            last_seen_at: "2026-09-30T01:00:00Z",
+            credentials: [{ engine: "opencode", credential_kind: "keyless", fingerprint: "0123456789ab", concurrency: 1 }],
+          },
+          { id: "r-0", name: "old", created_at: "2026-09-20T00:00:00Z", revoked_at: "2026-09-24T00:00:00Z", last_seen_at: null, credentials: [] },
+        ],
+        queue: [{ state: "queued", engine: "opencode", credential_kind: "keyless", jobs: 4, oldest_created_at: "2026-09-24T00:00:00Z" }],
+      }),
+    };
+    renderRoute({ path: "/ops", api });
+    const runners = await screen.findByTestId("ops-runners");
+    expect(runners).toHaveTextContent("1 active of 2 registered");
+    expect(within(runners).getByText("opencode · keyless · 0123456789ab ×1")).toBeInTheDocument();
+    expect(within(within(runners).getByRole("row", { name: /old/ })).getByText("revoked")).toBeInTheDocument();
+    const queue = screen.getByTestId("ops-queue");
+    expect(within(queue).getByRole("row", { name: /queued/ })).toHaveTextContent("4");
   });
 });

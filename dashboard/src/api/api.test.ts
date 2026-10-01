@@ -749,6 +749,17 @@ describe("GET /api/fleet/repos (#185)", () => {
 describe("GET /api/ops (#179)", () => {
   const opsBody = {
     window: { since: "2026-09-19T00:00:00.000Z", days: 7 },
+    runners: [
+      {
+        id: "r-1",
+        name: "box-1",
+        created_at: "2026-09-30T00:00:00Z",
+        revoked_at: null,
+        last_seen_at: "2026-09-30T01:00:00Z",
+        credentials: [{ engine: "opencode", credential_kind: "keyless", fingerprint: "0123456789ab", concurrency: 1 }],
+      },
+    ],
+    queue: [{ state: "queued", engine: "opencode", credential_kind: "keyless", jobs: 2, oldest_created_at: "2026-09-24T00:00:00Z" }],
     identity: [{ repository: "o/a", tables: { usage_records: { oidc: 2, unrecorded: 1 }, prs: { bearer: 1 } } }],
     credentials: [{ repository: "o/a", credential_type: null, rounds: 1 }],
     health: [

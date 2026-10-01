@@ -604,6 +604,8 @@ export interface TelemetryApi {
   fetchHealthReports(query?: HealthReportsQuery): Promise<HealthReportsResponse>;
   fetchFleetFindings(query: FleetFindingsQuery): Promise<FleetFindingsResponse>;
   fetchOps(): Promise<OpsResponse>;
+  fetchConfigFile(repository: string): Promise<ConfigFileResponse>;
+  openConfigPr(request: ConfigPrRequest): Promise<ConfigPrResponse>;
   /** Set only by the fixture table, so the UI can say the rounds are invented. */
   readonly fixtures?: boolean;
 }
@@ -621,7 +623,88 @@ export const httpApi: TelemetryApi = {
   fetchHealthReports: (query = {}) => getJson(healthReportsUrl(query), isHealthReportsResponse),
   fetchFleetFindings: (query) => getJson(fleetFindingsUrl(query), isFleetFindingsResponse),
   fetchOps: () => getJson("/api/ops", isOpsResponse),
+  fetchConfigFile: (repository) =>
+    getJson(`/api/config-file?${new URLSearchParams({ repository })}`, isConfigFileResponse),
+  openConfigPr: (request) => postConfigPr(request),
 };
+
+/** The repository's .github/claude-review.yml on its default branch (#78). */
+export interface ConfigFileResponse {
+  repository: string;
+  path: string;
+  default_branch: string;
+  sha: string | null;
+  content: string | null;
+  can_open_pr: boolean;
+}
+
+export interface ConfigPrRequest {
+  repository: string;
+  content: string;
+  base_sha: string | null;
+  summary: string[];
+}
+
+export interface ConfigPrResponse {
+  url: string;
+  number: number;
+  branch: string;
+}
+
+export function isConfigFileResponse(value: unknown): value is ConfigFileResponse {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.repository === "string" &&
+    typeof v.path === "string" &&
+    typeof v.default_branch === "string" &&
+    (v.sha === null || typeof v.sha === "string") &&
+    (v.content === null || typeof v.content === "string") &&
+    typeof v.can_open_pr === "boolean"
+  );
+}
+
+/** A refused config PR: `code` is the Worker's error, `errors` its schema messages. */
+export class ConfigPrError extends Error {
+  code: string;
+  errors: string[];
+
+  constructor(code: string, errors: string[] = []) {
+    super(code);
+    this.name = "ConfigPrError";
+    this.code = code;
+    this.errors = errors;
+  }
+}
+
+async function postConfigPr(request: ConfigPrRequest): Promise<ConfigPrResponse> {
+  let res: Response;
+  try {
+    res = await fetch("/api/config-pr", {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      credentials: "same-origin",
+      redirect: "manual",
+      body: JSON.stringify(request),
+    });
+  } catch (cause) {
+    throw new ConfigPrError("network", [String(cause)]);
+  }
+  if (res.type === "opaqueredirect" || res.status === 0) throw new ConfigPrError("unauthenticated");
+  // The same Access refusals getJson reads as a lost session (#96).
+  if (res.status === 401 || res.status === 403 || res.status === 503) throw new ConfigPrError("unauthenticated");
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await res.json()) as Record<string, unknown>;
+  } catch {
+    body = {};
+  }
+  if (res.status === 201 && typeof body.url === "string" && typeof body.number === "number") {
+    return { url: body.url, number: body.number, branch: String(body.branch ?? "") };
+  }
+  const errors = Array.isArray(body.errors) ? body.errors.filter((e): e is string => typeof e === "string") : [];
+  throw new ConfigPrError(typeof body.error === "string" ? body.error : `http-${res.status}`, errors);
+}
 
 /**
  * The blob columns only arrive with include=blobs, and there is no by-id read
@@ -841,6 +924,35 @@ function isOpsHealthRow(row: unknown): boolean {
   );
 }
 
+function isOpsRunner(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const r = value as Record<string, unknown>;
+  return (
+    typeof r.id === "string" &&
+    typeof r.name === "string" &&
+    typeof r.created_at === "string" &&
+    isNullableString(r.revoked_at) &&
+    isNullableString(r.last_seen_at) &&
+    Array.isArray(r.credentials) &&
+    r.credentials.every((c: unknown) => {
+      const o = c as Record<string, unknown> | null;
+      return !!o && typeof o.engine === "string" && typeof o.credential_kind === "string" && typeof o.fingerprint === "string" && typeof o.concurrency === "number";
+    })
+  );
+}
+
+function isOpsQueueRow(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const q = value as Record<string, unknown>;
+  return (
+    typeof q.state === "string" &&
+    typeof q.engine === "string" &&
+    typeof q.credential_kind === "string" &&
+    typeof q.jobs === "number" &&
+    typeof q.oldest_created_at === "string"
+  );
+}
+
 export function isOpsResponse(value: unknown): value is OpsResponse {
   if (!value || typeof value !== "object") return false;
   const val = value as Record<string, unknown>;
@@ -851,6 +963,10 @@ export function isOpsResponse(value: unknown): value is OpsResponse {
     typeof win === "object" &&
     typeof win.since === "string" &&
     typeof win.days === "number" &&
+    Array.isArray(val.runners) &&
+    val.runners.every(isOpsRunner) &&
+    Array.isArray(val.queue) &&
+    val.queue.every(isOpsQueueRow) &&
     Array.isArray(val.identity) &&
     val.identity.every(isOpsIdentityRow) &&
     Array.isArray(val.credentials) &&

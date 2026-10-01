@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/prismalens/gh-workflows/tools/review-config/schema.json",
+  "title": ".github/claude-review.yml",
+  "description": "A mirror of validate_config in .github/workflows/claude-code-review.yml. tests/test-review-config-schema-drift.py fails when the two disagree. The workflow stays the authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version"
+  ],
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Always 1."
+    },
+    "extends": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*(@(?!/)(?!.*\\.\\.)[A-Za-z0-9_./-]*[A-Za-z0-9_.-])?$",
+      "description": "owner/repo[@ref]: that repository's .github/claude-review.yml is the shared layer under this one."
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_model": {
+          "enum": [
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+            "claude-sonnet-5",
+            "claude-opus-5"
+          ],
+          "description": "The model a round runs on unless an escalation path or a summon picks another."
+        },
+        "level": {
+          "enum": [
+            "medium",
+            "high"
+          ],
+          "description": "Effort per unit of reviewed code, never which code is read."
+        },
+        "admission": {
+          "enum": [
+            "auto",
+            "label",
+            "off",
+            false
+          ],
+          "description": "auto reviews every eligible PR; label only PRs carrying claude_review; off stops the lane."
+        },
+        "auto_pause_rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Rounds on one PR before the lane pauses until someone summons it."
+        },
+        "skip_authors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Logins whose PRs are never reviewed."
+        },
+        "escalation_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Globs whose change moves a round to Opus."
+        },
+        "path_filters": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Globs the review reads; a leading ! excludes."
+        },
+        "path_instructions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "instructions"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "instructions": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Extra review instructions for files matching a glob."
+        },
+        "max_reviewable_lines": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "A PR with more changed lines is refused; 0 disables the cap."
+        },
+        "max_file_lines": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "A file with more lines is skipped; 0 disables the check."
+        },
+        "language_map": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9]+$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Bare extension (no dot) to language name."
+        },
+        "tool_findings": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "actionlint",
+              "shellcheck",
+              "tsc",
+              "eslint",
+              "biome"
+            ]
+          },
+          "description": "Which of the catalog's static tools run and feed the review."
+        },
+        "issue_context_byte_budget": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Bytes of each linked issue the review reads."
+        },
+        "issue_context_total_byte_budget": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Bytes of linked issues the review reads in total."
+        },
+        "variant": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._-]*$",
+          "description": "An experiment label for A/B comparison; empty is control."
+        },
+        "context": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "repository",
+              "ref",
+              "paths"
+            ],
+            "properties": {
+              "repository": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*$"
+              },
+              "ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "paths": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$))"
+                }
+              }
+            }
+          },
+          "description": "Public repositories the review may read, at a fixed ref."
+        }
+      }
+    },
+    "findings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "suppress_below": {
+          "enum": [
+            "none",
+            "Minor",
+            "Major",
+            "Critical"
+          ],
+          "description": "Findings below this severity are not posted."
+        },
+        "enable_ai_fix_prompt": {
+          "type": "boolean",
+          "description": "Each finding carries a prompt to fix it."
+        },
+        "include_verification_note": {
+          "type": "boolean",
+          "description": "Each finding says how it was verified."
+        }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "share": {
+          "enum": [
+            "full",
+            "rounds",
+            "off",
+            true,
+            false
+          ],
+          "description": "What this repository sends to the telemetry Worker: full, rounds (no text) or off."
+        }
+      }
+    }
+  }
+}

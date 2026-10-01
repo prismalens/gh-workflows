@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { engineLabel } from "@/features/rounds/engine";
+import { withheldShare } from "@/honesty/Degraded";
 import { decodeFate, fixCitation } from "./findings";
 import { FateChip, FixCitedBadge } from "./FateChip";
 import { findingGithubLink, SeverityChip } from "./FindingsExplorer";
@@ -92,11 +93,11 @@ export function FindingsTable({
                 <TableCell className="max-w-[240px] truncate" title={row.header_raw ?? undefined}>
                   <span className="inline-flex items-center gap-1.5">
                     <SeverityChip severity={label.severity} />
-                    {label.category ?? row.header_raw ?? ""}
+                    {label.category ?? row.header_raw ?? (withheldShare(row) ? <NotShared share={withheldShare(row)!} /> : "")}
                   </span>
                 </TableCell>
                 <TableCell className="max-w-[280px] truncate text-muted-foreground" title={body ?? undefined}>
-                  {body ?? "—"}
+                  {body ?? (withheldShare(row) ? <NotShared share={withheldShare(row)!} /> : "—")}
                 </TableCell>
                 <TableCell>{citation ? <FixCitedBadge citation={citation} /> : "—"}</TableCell>
                 <TableCell className="whitespace-nowrap font-mono text-muted-foreground" data-testid="finding-engine">
@@ -121,5 +122,14 @@ export function FindingsTable({
         </TableBody>
       </Table>
     </div>
+  );
+}
+
+/** A text-tier cell the repository's share level kept out of the store (#183). */
+function NotShared({ share }: { share: string }) {
+  return (
+    <span className="text-xs text-muted-foreground" data-testid="not-shared">
+      not collected at share: {share}
+    </span>
   );
 }

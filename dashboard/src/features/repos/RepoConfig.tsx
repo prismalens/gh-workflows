@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ExternalLink } from "lucide-react";
 
@@ -7,6 +7,7 @@ import type { RoundRow } from "@/api/types";
 import { Timestamp } from "@/components/Timestamp";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -18,6 +19,7 @@ import {
 } from "@/components/ui/table";
 import { ConfigSection } from "@/features/failures/ConfigSection";
 import type { RangeKey } from "@/honesty/range";
+import { ConfigEditor, type EffectiveEntry } from "./ConfigEditor";
 
 export const CONFIG_PATH = ".github/claude-review.yml";
 
@@ -66,9 +68,9 @@ export interface RepoConfigProps {
 }
 
 /**
- * Read-only: what the lane resolved on this repository's newest round, and which layer supplied
- * each key. The dashboard is never a config layer; a change is a pull request against the
- * repository's own file, which the lane reads at the base ref (#189, #78).
+ * What the lane resolved on this repository's newest round, and which layer supplied each key.
+ * Edit opens the repository's own file; the dashboard is never a config layer, and a change is a
+ * pull request the lane reads at the base ref once it merges (#189, #78).
  */
 export function RepoConfig({ repository, blobRows, range }: RepoConfigProps) {
   const round = useMemo(() => latestConfigRound(blobRows, repository), [blobRows, repository]);
@@ -78,6 +80,15 @@ export function RepoConfig({ repository, blobRows, range }: RepoConfigProps) {
     return parsed ? Object.entries(parsed).sort(([a], [b]) => a.localeCompare(b)) : null;
   }, [round]);
   const fileUrl = `https://github.com/${repository}/blob/HEAD/${CONFIG_PATH}`;
+  const [editing, setEditing] = useState(false);
+  const effective = useMemo<Record<string, EffectiveEntry> | null>(
+    () => (entries ? Object.fromEntries(entries.map(([k, e]) => [k, { value: e.value, layer: e.layer }])) : null),
+    [entries],
+  );
+
+  if (editing) {
+    return <ConfigEditor repository={repository} effective={effective} onClose={() => setEditing(false)} />;
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -90,14 +101,19 @@ export function RepoConfig({ repository, blobRows, range }: RepoConfigProps) {
               {LAYER_ORDER.join(" → ")}.
             </p>
           </div>
-          <a
-            href={fileUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 text-xs underline-offset-4 hover:underline"
-          >
-            Change it in {CONFIG_PATH} <ExternalLink className="size-3" />
-          </a>
+          <div className="flex items-center gap-3">
+            <a
+              href={fileUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-xs underline-offset-4 hover:underline"
+            >
+              {CONFIG_PATH} <ExternalLink className="size-3" />
+            </a>
+            <Button size="sm" data-testid="config-edit" onClick={() => setEditing(true)}>
+              Edit
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-3 p-0">
           {!round ? (
@@ -138,8 +154,8 @@ export function RepoConfig({ repository, blobRows, range }: RepoConfigProps) {
                 ) : (
                   "a round"
                 )}
-                , <Timestamp iso={round.recorded_at} />. A change here goes through a pull request;
-                the lane reads the file at each PR's base ref, never its head.
+                , <Timestamp iso={round.recorded_at} />. Edit opens a pull request against the file;
+                the lane reads it at each PR's base ref, never its head.
               </p>
               <Table>
                 <TableHeader>

@@ -12,7 +12,7 @@ function recordingFetch({ installationStatus = 200, tokenStatus = 201 } = {}) {
   const fetchImpl = async (url, init = {}) => {
     calls.push({ url: String(url), init });
     if (String(url).endsWith("/installation")) {
-      return new Response(JSON.stringify({ id: 42 }), { status: installationStatus });
+      return new Response(JSON.stringify({ id: 42, permissions: { contents: "read", metadata: "read" } }), { status: installationStatus });
     }
     if (String(url).includes("/access_tokens")) {
       return new Response(JSON.stringify({ token: "ghs_minted", expires_at: "2026-09-21T13:00:00Z" }), {
@@ -40,7 +40,7 @@ describe("GitHub App installation token minter (#184)", () => {
       { fetch: fetchImpl }
     );
     const out = await minter.mint({ owner: "prismalens", repo: "sreforge" });
-    assert.deepEqual(out, { token: "ghs_minted", expires_at: "2026-09-21T13:00:00Z", installation_id: 42 });
+    assert.deepEqual(out, { token: "ghs_minted", expires_at: "2026-09-21T13:00:00Z", installation_id: 42, installation_permissions: { contents: "read", metadata: "read" } });
 
     assert.equal(calls.length, 2);
     assert.equal(calls[0].url, "https://api.github.com/repos/prismalens/sreforge/installation");

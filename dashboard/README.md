@@ -28,9 +28,14 @@ restore the view; nothing about a view is stored anywhere else. Findings adds a 
 counts are what each option would return with the other filters held, preset views as tabs, group
 by PR, and a peek panel (`j` `k` `Enter` `Esc`).
 The repository page has five tabs: PRs, Lane events, Weekly health (every `health_reports` row as
-it arrived, #179), Config and Failures. Config is read-only: each key the lane resolved on the
-newest round, with the layer that supplied it, and a link to `.github/claude-review.yml`. The
-dashboard is never a config layer; a change is a pull request against that file (#78, #189).
+it arrived, #179), Config and Failures. Config shows each key the lane resolved on the newest
+round, with the layer that supplied it. **Edit** loads `.github/claude-review.yml` from the default
+branch through `GET /api/config-file`, edits it as a form built from
+`tools/review-config/schema.json` or as YAML, and shows the diff. **Open pull request** has the App
+open a PR that changes only that file (`POST /api/config-pr`). The dashboard is never a config
+layer: the file stays the repo layer and the lane reads it at each PR's base ref, so a change
+applies once the PR merges (#78, #189). An installation without `contents: write` gets the YAML
+to copy and a link to GitHub's editor instead.
 
 `/findings` reads `GET /api/findings` (joined against `GET /api/prs` for PR state) and sorts each
 open review thread into one of four fates: `never-answered`, `pushback-open`,

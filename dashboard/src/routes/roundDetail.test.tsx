@@ -330,3 +330,23 @@ describe("/rounds/$sessionId agent tools panel (#179)", () => {
     expect(await screen.findByText(/no per-agent rows/)).toBeInTheDocument();
   });
 });
+
+describe("/rounds/$sessionId text tier withheld by share level (#185, #183)", () => {
+  it("names the share level on each text-tier panel of a round sent at share: rounds", async () => {
+    render({ ...lane5, share_level: "rounds", verdict_text: null, raw_result: null });
+    await screen.findByText("Resolution");
+    for (const what of ["Verdict text", "Which tools were denied", "Raw result object"]) {
+      const node = degraded(what);
+      expect(node, what).toBeDefined();
+      expect(node).toHaveAttribute("data-reason", "not-shared");
+      expect(node).toHaveTextContent("not collected at share: rounds");
+    }
+  });
+
+  it("keeps the lane-era reason on a round shared in full", async () => {
+    render({ ...lane5, share_level: "full", raw_result: null });
+    await screen.findByText("Resolution");
+    expect(degraded("Raw result object")).toHaveAttribute("data-reason", "lane-sent-nothing");
+    expect(screen.queryByText(/not collected at share/)).toBeNull();
+  });
+});

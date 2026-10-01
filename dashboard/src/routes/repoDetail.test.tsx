@@ -83,6 +83,8 @@ describe("/repos/$owner/$repo: the weekly health tab (#179)", () => {
   it("is where each /repos row links", async () => {
     renderRoute({ path: "/repos", api: makeFixtureApi(makeRounds({ count: 64 })) });
     const table = await screen.findByRole("table");
+    // Healthy repositories start folded under their owner (#185).
+    for (const b of within(table).queryAllByRole("button", { name: /^Show \d+ healthy$/ })) fireEvent.click(b);
     const link = within(table).getByRole("link", { name: "prismalens/sreforge" });
     expect(link).toHaveAttribute("href", "/repos/prismalens/sreforge");
   });
@@ -187,7 +189,7 @@ describe("/repos/$owner/$repo: the weekly health tab (#179)", () => {
   });
 });
 
-describe("/repos/$owner/$repo: five tabs, config read-only (#185, #78)", () => {
+describe("/repos/$owner/$repo: five tabs, and the config in effect (#185, #78)", () => {
   const SRE = "prismalens/sreforge";
 
   it("renders the five tabs and opens on PRs", async () => {
@@ -214,7 +216,7 @@ describe("/repos/$owner/$repo: five tabs, config read-only (#185, #78)", () => {
       ["level", "high", "repo"],
       ["skip_authors", '["dependabot[bot]"]', "org"],
     ]);
-    expect(within(card).getByRole("link", { name: /Change it in \.github\/claude-review\.yml/ })).toHaveAttribute(
+    expect(within(card).getByRole("link", { name: /\.github\/claude-review\.yml/ })).toHaveAttribute(
       "href",
       `https://github.com/${SRE}/blob/HEAD/.github/claude-review.yml`,
     );

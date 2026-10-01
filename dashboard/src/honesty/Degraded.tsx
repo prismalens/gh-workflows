@@ -13,7 +13,8 @@ export type DegradedReason =
   | "lane-did-not-send"
   | "lane-sent-nothing"
   | "unreadable"
-  | "unobservable";
+  | "unobservable"
+  | "not-shared";
 
 export const REASON_COPY: Record<
   DegradedReason,
@@ -46,6 +47,11 @@ export const REASON_COPY: Record<
     explain:
       "The store holds a value for this round, but nothing in it can be counted. That is a fact about this payload, not about the lane version.",
   },
+  "not-shared": {
+    badge: "not collected at this share level",
+    explain:
+      "The repository's telemetry.share keeps text-tier fields out of the store, so the Worker never stored this (#183). Raising share to full collects it on later rounds; this round will never carry it.",
+  },
   unobservable: {
     badge: "not observable",
     explain:
@@ -63,11 +69,19 @@ export interface DegradedProps {
    * when it has one (a runner round is not an old lane, #179), and is appended otherwise.
    */
   cause?: string;
+  /** The row's share_level, for the not-shared reason: the badge names it. */
+  share?: string;
   className?: string;
 }
 
-export function Degraded({ what, reason, detail, cause, className }: DegradedProps) {
+/** The share level that withheld a row's text tier, or null when the row was shared in full (#183). */
+export function withheldShare(row: { share_level?: string | null }): string | null {
+  return row.share_level != null && row.share_level !== "full" ? row.share_level : null;
+}
+
+export function Degraded({ what, reason, detail, cause, share, className }: DegradedProps) {
   const copy = REASON_COPY[reason];
+  const badge = reason === "not-shared" && share ? `not collected at share: ${share}` : copy.badge;
   const explain = cause && copy.cause ? copy.explain.replace(copy.cause, cause) : copy.explain;
   const extra = [cause && !copy.cause ? cause : null, detail].filter(Boolean).join(" ");
   return (
@@ -78,7 +92,7 @@ export function Degraded({ what, reason, detail, cause, className }: DegradedPro
     >
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium">{what}</span>
-        <Badge variant="outline">{copy.badge}</Badge>
+        <Badge variant="outline">{badge}</Badge>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
         {explain}
