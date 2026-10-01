@@ -1,6 +1,6 @@
 import type { FindingRow } from "@/api/types";
 import { matchesAge, parseAge } from "@/features/filters/grammar";
-import { engineLabel } from "@/features/rounds/engine";
+import { engineFilterValue, engineLabel } from "@/features/rounds/engine";
 import { ageInDays } from "@/lib/format";
 import {
   decodeFate,
@@ -69,7 +69,7 @@ export function filterFindings(
     if (path && !(row.path ?? "").toLowerCase().includes(path)) return false;
     if (skip !== "age" && f.age && !matchesAgeValue(ageInDays(row.thread_created_at, now), f.age)) return false;
     if (skip !== "sev" && f.sev && severityOf(row) !== f.sev) return false;
-    if (skip !== "engine" && f.engine && engineLabel(row) !== f.engine) return false;
+    if (skip !== "engine" && f.engine && engineFilterValue(engineLabel(row)) !== engineFilterValue(f.engine)) return false;
     if (f.pr && String(row.pr_number) !== f.pr.replace(/^#/, "")) return false;
     if (f.q && !matchesFindingSearch(row, f.q)) return false;
     return true;

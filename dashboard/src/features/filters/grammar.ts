@@ -25,7 +25,7 @@ export const FILTER_KEY_HINTS: Record<FilterKey, string> = {
   sev: "critical, major, minor, nitpick",
   state: "open, merged, closed, all",
   pr: "pull request number",
-  engine: "Actions lane, opencode, claude-code",
+  engine: "actions-lane, opencode, claude-code, engine-not-recorded",
 };
 
 function isFilterKey(value: string): value is FilterKey {

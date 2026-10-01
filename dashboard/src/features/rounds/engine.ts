@@ -11,3 +11,8 @@ export function engineLabel(row: { engine?: string | null }): string {
 export function distinctEngines(rows: { engine?: string | null }[]): string[] {
   return [...new Set(rows.map(engineLabel))].sort();
 }
+
+/** A filter value has no whitespace (the query grammar splits on it), so labels go as slugs. */
+export function engineFilterValue(label: string): string {
+  return label.trim().toLowerCase().replace(/\s+/g, "-");
+}

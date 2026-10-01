@@ -491,7 +491,9 @@ jobs:
 
           # A runner round is posted under its App's login, which differs per install, so its
           # findings are known by the marker worker/poster.js stamps on each one (#184).
-          ENGINE_MARKER_RE = re.compile(r"<!-- assayer-finding engine=([a-z0-9-]{1,32}) -->")
+          # Only the trailing marker counts: a finding that quotes a marker in its text must
+          # not be read as that engine, and the quoted text stays intact.
+          ENGINE_MARKER_RE = re.compile(r"\s*<!-- assayer-finding engine=([a-z0-9-]{1,32}) -->\s*\Z")
 
           findings = []
           for thread in threads:
@@ -511,7 +513,7 @@ jobs:
                       continue
                   engine = marker.group(1)
 
-              body = ENGINE_MARKER_RE.sub("", first.get("body") or "")
+              body = ENGINE_MARKER_RE.sub("", first.get("body") or "", count=1)
               first_line, _, rest = body.strip().partition("\n")
               if ENVELOPE_RE.match(first_line.rstrip()):
                   header_raw = first_line.strip()

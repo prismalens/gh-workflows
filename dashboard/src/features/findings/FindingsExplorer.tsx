@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { FateChip, FixCitedBadge } from "./FateChip";
 import { decodeFate, FATE_COPY, fixCitation, prKey } from "./findings";
 import { findingBodyText, parseFindingLabel, type Severity } from "./severity";
+import { engineLabel } from "@/features/rounds/engine";
 
 /**
  * The thread itself when the sweep stored its URL (#185), else the PR's files tab, the closest
@@ -209,10 +210,11 @@ function GroupRows({
             </td>
             <td className="px-2 py-1.5">
               <SeverityChip severity={label.severity} />
-              {row.engine ? (
-                // A runner round's finding names its engine; the Actions lane stays unlabelled (#184).
+              {row.engine !== null ? (
+                // A runner round's finding names its engine and an older Worker's row says the
+                // engine is not recorded; the Actions lane stays unlabelled (#184).
                 <span className="ml-1 font-mono text-[10px] text-muted-foreground" data-testid="finding-engine">
-                  {row.engine}
+                  {engineLabel(row)}
                 </span>
               ) : null}
             </td>

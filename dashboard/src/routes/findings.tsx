@@ -17,6 +17,7 @@ import { FacetRail, type Facet } from "@/components/FacetRail";
 import { FilterBar } from "@/components/FilterBar";
 import { Button } from "@/components/ui/button";
 import { AGE_BUCKETS, facetCounts, filterFindings, sortFindings, type FindingFilters } from "@/features/findings/explore";
+import { engineFilterValue } from "@/features/rounds/engine";
 import { FindingPeek, FindingsList } from "@/features/findings/FindingsExplorer";
 import type { FilterKey, FilterToken } from "@/features/filters/grammar";
 import { FindingsTiles, FixLoopQualitySection } from "@/features/findings/FindingsTiles";
@@ -325,7 +326,7 @@ function FindingsRows() {
       onSelect: (v) => set({ engine: v, page: undefined }),
       options: Object.keys(counts.engine)
         .sort()
-        .map((e) => ({ value: e, label: e, count: counts.engine[e] ?? 0 })),
+        .map((e) => ({ value: engineFilterValue(e), label: e, count: counts.engine[e] ?? 0 })),
     },
     {
       key: "prState",

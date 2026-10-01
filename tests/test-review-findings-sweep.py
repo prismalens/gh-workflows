@@ -525,6 +525,17 @@ def main():
     check("a claude[bot] thread records a null engine",
           "PRT_CLAUDE" in by_id and by_id["PRT_CLAUDE"].get("engine", "missing") is None, rows)
 
+    # A finding that quotes another engine's marker is read by the trailing one, and the quote stays.
+    quoted = "**Bug**: see `<!-- assayer-finding engine=claude-code -->`"
+    quote_thread = thread("PRT_APP_QUOTE", [comment("assayer-review-dev", quoted + marker)], resolved_by=None)
+    fx_quote = main_page(head_sha=OID_A, commit_oids=[OID_A], threads=[quote_thread])
+    _, rows = run_sweep(script, pr_list=[16], main_fixtures={16: [fx_quote]})
+    q_row = next((r for r in rows if r["thread_node_id"] == "PRT_APP_QUOTE"), None)
+    check("a quoted marker does not override the poster's trailing marker",
+          q_row is not None and q_row.get("engine") == "opencode", q_row)
+    check("the quoted marker stays in the finding text",
+          q_row is not None and "engine=claude-code" in q_row["body_excerpt"], q_row)
+
     # ── 6. original_line is the durable key; line stays display-only ───────────────
     moved_thread = thread("PRT_MOVED", [comment("claude", "**Bug**: z")],
                           resolved_by=("claude", "Bot"), line=None, original_line=99)
