@@ -1,5 +1,6 @@
 import type { FindingRow } from "@/api/types";
 import { matchesAge, parseAge } from "@/features/filters/grammar";
+import { engineFilterValue, engineLabel } from "@/features/rounds/engine";
 import { ageInDays } from "@/lib/format";
 import {
   decodeFate,
@@ -18,10 +19,11 @@ export interface FindingFilters {
   age?: string;
   sev?: string;
   pr?: string;
+  engine?: string;
   q?: string;
 }
 
-type FacetKey = "fate" | "repository" | "age" | "sev" | "prState";
+type FacetKey = "fate" | "repository" | "age" | "sev" | "prState" | "engine";
 
 export const AGE_BUCKETS = [
   { value: "<1d", label: "under a day" },
@@ -67,6 +69,7 @@ export function filterFindings(
     if (path && !(row.path ?? "").toLowerCase().includes(path)) return false;
     if (skip !== "age" && f.age && !matchesAgeValue(ageInDays(row.thread_created_at, now), f.age)) return false;
     if (skip !== "sev" && f.sev && severityOf(row) !== f.sev) return false;
+    if (skip !== "engine" && f.engine && engineFilterValue(engineLabel(row)) !== engineFilterValue(f.engine)) return false;
     if (f.pr && String(row.pr_number) !== f.pr.replace(/^#/, "")) return false;
     if (f.q && !matchesFindingSearch(row, f.q)) return false;
     return true;
@@ -79,6 +82,7 @@ export interface FacetCounts {
   age: Record<string, number>;
   sev: Record<string, number>;
   prState: Record<string, number>;
+  engine: Record<string, number>;
 }
 
 function tally<T>(rows: T[], keyOf: (row: T) => string | null | undefined): Record<string, number> {
@@ -107,6 +111,7 @@ export function facetCounts(
     ),
     sev: tally(filterFindings(rows, f, prStateOf, now, "sev"), severityOf),
     prState: tally(filterFindings(rows, f, prStateOf, now, "prState"), (r) => prStateOf(r) ?? "unknown"),
+    engine: tally(filterFindings(rows, f, prStateOf, now, "engine"), engineLabel),
   };
 }
 

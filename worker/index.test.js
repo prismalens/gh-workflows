@@ -3951,6 +3951,53 @@ describe("Worker telemetry read API", () => {
         assert.equal(insertQuery.args[8], "github-actions[bot]"); // resolved_by_login
       });
 
+      it("stores a runner finding's engine, null when the sweep sends none, and refuses a malformed one (#184)", async () => {
+        const send = async (finding) => {
+          const db = createFakeDb();
+          const res = await worker.fetch(
+            makeRequest("/ingest/findings", { headers: { authorization: `Bearer ${VALID_TOKEN}` }, body: { findings: [finding] } }),
+            { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db }
+          );
+          return { res, db };
+        };
+        const runner = await send(sampleFinding({ engine: "opencode" }));
+        assert.equal(runner.res.status, 204);
+        assert.ok(runner.db.queries[0].sql.includes("engine = excluded.engine"));
+        assert.equal(runner.db.queries[0].args.at(-2), "opencode");
+
+        const lane = await send(sampleFinding());
+        assert.equal(lane.db.queries[0].args.at(-2), null);
+
+        for (const engine of ["Open Code", "x".repeat(33), 7, "a -->"]) {
+          const bad = await send(sampleFinding({ engine }));
+          assert.equal(bad.res.status, 400, String(engine));
+        }
+      });
+
+      it("stores the thread's comment URL only when it points into this finding's own PR (#185)", async () => {
+        const send = async (finding) => {
+          const db = createFakeDb();
+          const res = await worker.fetch(
+            makeRequest("/ingest/findings", { headers: { authorization: `Bearer ${VALID_TOKEN}` }, body: { findings: [finding] } }),
+            { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db }
+          );
+          return { res, db };
+        };
+        const url = "https://github.com/prismalens/example/pull/42#discussion_r123456";
+        const ok = await send(sampleFinding({ thread_url: url }));
+        assert.equal(ok.res.status, 204);
+        assert.equal(ok.db.queries[0].args.at(-1), url);
+        assert.ok(ok.db.queries[0].sql.includes("thread_url = COALESCE(excluded.thread_url, review_findings.thread_url)"));
+        for (const thread_url of [
+          "https://github.com/prismalens/other/pull/42#discussion_r1",
+          "https://github.com/prismalens/example/pull/43#discussion_r1",
+          "https://evil.example/prismalens/example/pull/42#discussion_r1",
+          "javascript:alert(1)",
+        ]) {
+          assert.equal((await send(sampleFinding({ thread_url }))).res.status, 400, thread_url);
+        }
+      });
+
       it("writes a batch of several findings in full", async () => {
         const db = createFakeDb();
         const env = { REVIEW_TELEMETRY_TOKEN: VALID_TOKEN, DB: db };

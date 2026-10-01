@@ -263,6 +263,10 @@ export interface FindingRow {
   head_sha_reviewed: string | null;
   last_swept_at: string | null;
   row_set_incomplete: number | null;
+  /** Null for the Actions lane; absent from a Worker that predates #184's column. */
+  engine?: string | null;
+  /** The thread's opening comment URL; null on rows swept before #185 stored it. */
+  thread_url?: string | null;
   /** Absent on rows swept before #183. */
   share_level?: string | null;
 }

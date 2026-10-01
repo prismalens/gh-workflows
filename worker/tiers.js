@@ -112,8 +112,9 @@ export const TIERS = Object.freeze({
       "row_set_incomplete",
       "ingest_auth",
       "share_level",
+      "engine",
     ],
-    rounds: ["path", "original_line", "line", "human_reply_sha", "fix_sha", "head_sha_reviewed", "repository_id"],
+    rounds: ["path", "original_line", "line", "human_reply_sha", "fix_sha", "head_sha_reviewed", "repository_id", "thread_url"],
     text: ["resolved_by_login", "header_raw", "body_excerpt", "diff_hunk"],
   },
   prs: {

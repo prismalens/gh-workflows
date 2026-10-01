@@ -9,9 +9,17 @@ import { cn } from "@/lib/utils";
 import { FateChip, FixCitedBadge } from "./FateChip";
 import { decodeFate, FATE_COPY, fixCitation, prKey } from "./findings";
 import { findingBodyText, parseFindingLabel, type Severity } from "./severity";
+import { engineLabel } from "@/features/rounds/engine";
 
-export function findingPrFilesUrl(row: FindingRow): string {
-  return `https://github.com/${row.repository}/pull/${row.pr_number}/files`;
+/**
+ * The thread itself when the sweep stored its URL (#185), else the PR's files tab, the closest
+ * honest link a row swept before that supports.
+ */
+export function findingGithubLink(row: FindingRow): { href: string; label: string } {
+  const pr = `https://github.com/${row.repository}/pull/${row.pr_number}`;
+  return row.thread_url?.startsWith(`${pr}#discussion_r`)
+    ? { href: row.thread_url, label: "Thread on GitHub" }
+    : { href: `${pr}/files`, label: "PR files on GitHub" };
 }
 
 const SEVERITY_STYLE: Record<Severity, string> = {
@@ -202,6 +210,13 @@ function GroupRows({
             </td>
             <td className="px-2 py-1.5">
               <SeverityChip severity={label.severity} />
+              {row.engine !== null ? (
+                // A runner round's finding names its engine and an older Worker's row says the
+                // engine is not recorded; the Actions lane stays unlabelled (#184).
+                <span className="ml-1 font-mono text-[10px] text-muted-foreground" data-testid="finding-engine">
+                  {engineLabel(row)}
+                </span>
+              ) : null}
             </td>
             <td className="max-w-[360px] truncate px-2 py-1.5" title={body ?? undefined}>
               {label.category && <span className="font-medium">{label.category}</span>}
@@ -306,12 +321,12 @@ export function FindingPeek({
       </dl>
       <div className="flex flex-wrap gap-2">
         <a
-          href={findingPrFilesUrl(row)}
+          href={findingGithubLink(row).href}
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2.5 py-1 font-semibold hover:border-muted-foreground"
         >
-          PR files on GitHub <ExternalLink className="size-3" />
+          {findingGithubLink(row).label} <ExternalLink className="size-3" />
         </a>
         <Link
           to="/prs/$owner/$repo/$number"

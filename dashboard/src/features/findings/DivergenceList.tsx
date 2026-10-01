@@ -11,6 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { findingGithubLink } from "./FindingsExplorer";
 import { decodeDivergence, DIVERGENCE_COPY, divergentFindings } from "./findings";
 
 /**
@@ -67,12 +68,12 @@ export function DivergenceList({ rows }: { rows: FindingRow[] }) {
                 </TableCell>
                 <TableCell>
                   <a
-                    href={`https://github.com/${row.repository}/pull/${row.pr_number}/files`}
+                    href={findingGithubLink(row).href}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-0.5 text-primary hover:underline whitespace-nowrap"
                   >
-                    View PR files on GitHub <ExternalLink className="size-3" />
+                    {findingGithubLink(row).label} <ExternalLink className="size-3" />
                   </a>
                 </TableCell>
               </TableRow>

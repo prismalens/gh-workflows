@@ -18,6 +18,12 @@ const SECRET_PATTERNS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
 ];
 
+// The sweep knows a runner's finding by this marker, since the App's login differs per install
+// (review-findings-sweep.yml, #184).
+export function findingMarker(engine) {
+  return typeof engine === "string" && /^[a-z0-9-]{1,32}$/.test(engine) ? `<!-- assayer-finding engine=${engine} -->` : "";
+}
+
 export function looksLikeSecret(text) {
   return typeof text === "string" && SECRET_PATTERNS.some((p) => p.test(text));
 }
@@ -99,8 +105,9 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
       out.refused += 1;
       continue;
     }
+    const marker = findingMarker(job.engine);
     const comment = {
-      body: f.body,
+      body: marker ? `${f.body}\n\n${marker}` : f.body,
       commit_id: job.head_sha,
       path: f.path,
       line: f.line,
