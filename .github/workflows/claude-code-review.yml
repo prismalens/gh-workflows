@@ -504,6 +504,9 @@ jobs:
           # code is read. No workflow input either — org/repo config only, default medium.
           # 'low' is schema-rejected this release (see ALLOWED_LEVELS below).
           level = "medium"
+          # review.incremental_effort (#234 ruling, 2026-09-29): an incremental round reviews
+          # one push's range, so it runs at low effort unless a repo raises it.
+          incremental_effort = "low"
           # review.admission (#189): no workflow input backs it, org/repo config only. A
           # narrower layer (label, comment) can never override `off`.
           admission = "auto"
@@ -529,6 +532,7 @@ jobs:
               "issue_context_total_byte_budget": "workflow default",
               "variant": "control",
               "level": "workflow default",
+              "incremental_effort": "workflow default",
               "admission": "workflow default",
               "context": "workflow default",
               "telemetry_share": "workflow default",
@@ -561,6 +565,7 @@ jobs:
               "issue_context_total_byte_budget",
               "variant",
               "level",
+              "incremental_effort",
               "context",
               "admission",
           }
@@ -581,6 +586,7 @@ jobs:
           # #101 ruling: 'low' is schema-rejected for this release. It ships once the
           # findings sweep (#47) has a 'medium' baseline to compare it against.
           ALLOWED_LEVELS = {"medium", "high"}
+          ALLOWED_INCREMENTAL_EFFORTS = {"low", "medium", "high"}
           ALLOWED_ADMISSION = {"auto", "label", "off"}
           # #146's catalog. Adding a genuinely new tool still needs a workflow change (the
           # command that runs it); this key only lets a repo narrow which of the catalog run.
@@ -684,6 +690,14 @@ jobs:
                               errors.append(
                                   f"Invalid value for 'review.level' in {filename}: {lvl!r}. "
                                   f"Allowed values: {sorted(ALLOWED_LEVELS)}"
+                              )
+
+                      if "incremental_effort" in review:
+                          eff = review["incremental_effort"]
+                          if not isinstance(eff, str) or eff not in ALLOWED_INCREMENTAL_EFFORTS:
+                              errors.append(
+                                  f"Invalid value for 'review.incremental_effort' in {filename}: {eff!r}. "
+                                  f"Allowed values: {sorted(ALLOWED_INCREMENTAL_EFFORTS)}"
                               )
 
                       if "admission" in review:
@@ -1091,6 +1105,10 @@ jobs:
                                   level = review["level"]
                                   sources["level"] = "org defaults"
                                   org_consumed.append(f"review.level={level}")
+                              if "incremental_effort" in review:
+                                  incremental_effort = review["incremental_effort"]
+                                  sources["incremental_effort"] = "org defaults"
+                                  org_consumed.append(f"review.incremental_effort={incremental_effort}")
                               if "admission" in review:
                                   admission = "off" if review["admission"] is False else review["admission"]
                                   sources["admission"] = "org defaults"
@@ -1203,6 +1221,10 @@ jobs:
                               level = review["level"]
                               sources["level"] = "repo config"
                               consumed.append(f"review.level={level}")
+                          if "incremental_effort" in review:
+                              incremental_effort = review["incremental_effort"]
+                              sources["incremental_effort"] = "repo config"
+                              consumed.append(f"review.incremental_effort={incremental_effort}")
                           if "admission" in review:
                               admission = "off" if review["admission"] is False else review["admission"]
                               sources["admission"] = "repo config"
@@ -1312,6 +1334,7 @@ jobs:
               "issue_context_byte_budget": issue_context_byte_budget,
               "issue_context_total_byte_budget": issue_context_total_byte_budget,
               "level": level,
+              "incremental_effort": incremental_effort,
               "admission": admission,
               "context": context_config,
           }
@@ -1349,6 +1372,7 @@ jobs:
           print(f"  review.issue_context_total_byte_budget: {issue_context_total_byte_budget} (source: {sources['issue_context_total_byte_budget']})")
           print(f"  review.variant: {variant or '(control)'} (source: {sources['variant']})")
           print(f"  review.level: {level} (source: {sources['level']})")
+          print(f"  review.incremental_effort: {incremental_effort} (source: {sources['incremental_effort']})")
           print(f"  review.admission: {admission} (source: {sources['admission']})")
           print(f"  telemetry.share: {telemetry_share} (source: {sources['telemetry_share']})")
           print(f"  config_hash: {config_hash}")
@@ -1373,6 +1397,7 @@ jobs:
                   f.write(f"config_effective={config_effective_json}\n")
                   f.write(f"variant={variant}\n")
                   f.write(f"level={level}\n")
+                  f.write(f"incremental_effort={incremental_effort}\n")
                   f.write(f"admission={admission}\n")
                   f.write(f"context={json.dumps(context_config, separators=(',', ':'))}\n")
                   f.write(f"telemetry_share={telemetry_share}\n")
@@ -1702,6 +1727,8 @@ jobs:
           DEFAULT_MODEL: ${{ steps.config.outputs.default_model }}
           ESCALATION_PATHS: ${{ steps.config.outputs.escalation_paths }}
           CONFIG_LEVEL: ${{ steps.config.outputs.level }}
+          MODE: ${{ steps.mode.outputs.mode }}
+          INCREMENTAL_EFFORT: ${{ steps.config.outputs.incremental_effort }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -1825,6 +1852,15 @@ jobs:
               if LEVEL_ORDER.get(level, 1) < LEVEL_ORDER["medium"]:
                   level = "medium"
 
+          # The round's --effort: review.level, except an incremental round, which runs at
+          # review.incremental_effort (#234). The escalation floor binds that too, so a push
+          # touching an escalation path is never reviewed below medium.
+          effort = level
+          if os.environ.get("MODE", "") == "incremental":
+              effort = os.environ.get("INCREMENTAL_EFFORT", "") or "low"
+              if matched_file and LEVEL_ORDER.get(effort, 0) < LEVEL_ORDER["medium"]:
+                  effort = "medium"
+
           github_output = os.environ.get("GITHUB_OUTPUT", "")
           if github_output:
               with open(github_output, "a", encoding="utf-8") as f:
@@ -1833,6 +1869,7 @@ jobs:
                   f.write(f"model_fallback={model_fallback}\n")
                   f.write(f"level={level}\n")
                   f.write(f"level_source={level_source}\n")
+                  f.write(f"effort={effort}\n")
           PY
 
       - name: Checkout repository
@@ -3655,13 +3692,13 @@ jobs:
           # Tool list is load-bearing; agent mode resolves tools ONLY from --allowed-tools
           # and MCP servers require them. Task is required for subagents; Bash(gh pr review:*)
           # is deliberately ABSENT. Story: prismalens/prismalens#403.
-          # --effort is review.level: on 5.5 models an unset effort is the CLI's default,
-          # which the model release recalibrated (#234).
+          # --effort is review.level, or review.incremental_effort (default low, floored at
+          # medium by escalation_paths) on an incremental round. On 5.5 models an unset effort is the CLI's recalibrated default (#234).
           claude_args: >-
             --allowed-tools
             "Task,Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
             --model ${{ steps.model.outputs.model }}
-            --effort ${{ steps.model.outputs.level }}
+            --effort ${{ steps.model.outputs.effort }}
 
       # An account, auth or quota failure returns as a normal `type: result` item with
       # `is_error: true`, not a step failure the caller can branch on cheaply. Classifying

@@ -208,7 +208,7 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
 def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude-sonnet-5",
                    default_model="claude-sonnet-5", escalation_paths=None, path_filters=None,
                    changed_files=None, repo="prismalens/test-repo", pr="42",
-                   files_fail=False, config_level="medium"):
+                   files_fail=False, config_level="medium", mode="review", incremental_effort="low"):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
@@ -240,6 +240,8 @@ def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude
             FAKE_FILES_JSON=files_json,
             FAKE_FILES_FAIL="1" if files_fail else "0",
             CONFIG_LEVEL=config_level,
+            MODE=mode,
+            INCREMENTAL_EFFORT=incremental_effort,
         )
 
         p = subprocess.run(["bash", "-c", script], env=env,
@@ -701,7 +703,7 @@ def main():
               "default_model", "auto_pause_rounds", "skip_authors", "escalation_paths",
               "path_filters", "path_instructions", "max_reviewable_lines", "max_file_lines",
               "language_map", "tool_findings", "issue_context_byte_budget",
-              "issue_context_total_byte_budget", "level", "context", "admission",
+              "issue_context_total_byte_budget", "level", "incremental_effort", "context", "admission",
           },
           f"got keys {sorted(config_effective.keys())}")
     check("config_effective excludes variant, same as config_hash", "variant" not in config_effective, f"got keys {sorted(config_effective.keys())}")
@@ -794,8 +796,41 @@ def main():
     ]
     check("effort: both claude-code-action calls pass an explicit --effort",
           len(claude_args) == 2 and all("--effort " in a for a in claude_args), claude_args)
-    check("effort: the review call's effort is review.level",
-          any("--effort ${{ steps.model.outputs.level }}" in a for a in claude_args), claude_args)
+    check("effort: every round passes the model step's resolved effort",
+          any("--effort ${{ steps.model.outputs.effort }}" in a
+              for a in claude_args), claude_args)
+
+    # The model step resolves --effort: incremental rounds take incremental_effort, and an
+    # escalation path floors that at medium (CodeRabbit security review on #236).
+    _, out, _, _ = run_model_case(model_script, config_level="high")
+    check("effort: a full round runs at review.level", out.get("effort") == "high", out)
+    _, out, _, _ = run_model_case(model_script, config_level="high", mode="incremental")
+    check("effort: an incremental round runs at incremental_effort", out.get("effort") == "low", out)
+    _, out, _, _ = run_model_case(model_script, mode="incremental", incremental_effort="high")
+    check("effort: a raised incremental_effort is used", out.get("effort") == "high", out)
+    _, out, _, _ = run_model_case(model_script, mode="incremental", escalation_paths=["auth/**"],
+                                  changed_files=["auth/login.py"])
+    check("effort: an escalation path floors an incremental round at medium", out.get("effort") == "medium", out)
+    _, out, _, _ = run_model_case(model_script, mode="incremental", escalation_paths=["auth/**"],
+                                  changed_files=["docs/readme.md"])
+    check("effort: no escalation match leaves an incremental round low", out.get("effort") == "low", out)
+
+    # review.incremental_effort (#234 ruling): default low, configurable, rejected outside the set.
+    rc, out, stdout, stderr = run_config_case(config_script)
+    check("incremental_effort: defaults to low", rc == 0 and out.get("incremental_effort") == "low",
+          f"rc={rc} got={out.get('incremental_effort')}")
+    check("incremental_effort: config_effective names the workflow layer",
+          json.loads(out.get("config_effective", "{}")).get("incremental_effort") == {"value": "low", "layer": "workflow"},
+          out.get("config_effective"))
+    rc, out, stdout, stderr = run_config_case(
+        config_script, config_yaml='version: 1\nreview:\n  incremental_effort: "high"\n')
+    check("incremental_effort: repo config raises it", rc == 0 and out.get("incremental_effort") == "high"
+          and "review.incremental_effort: high (source: repo config)" in stdout, f"got={out.get('incremental_effort')} stdout={stdout!r}")
+    rc, out, stdout, stderr = run_config_case(
+        config_script, config_yaml='version: 1\nreview:\n  incremental_effort: "max"\n')
+    check("incremental_effort: a value outside low/medium/high is rejected and the default stands",
+          out.get("incremental_effort") == "low" and "review.incremental_effort" in stdout and "::warning::" in stdout,
+          f"got={out.get('incremental_effort')} stdout={stdout!r}")
 
     # 3c. review.level (#101): repo config accepts 'high' through the same base-not-head
     # path as every other key (schema, repo layer, resolved_config, step outputs).
