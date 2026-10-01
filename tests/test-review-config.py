@@ -208,7 +208,7 @@ def run_config_case(script, *, org_config_yaml=None, org_is_404=True, org_fail=F
 def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude-sonnet-5",
                    default_model="claude-sonnet-5", escalation_paths=None, path_filters=None,
                    changed_files=None, repo="prismalens/test-repo", pr="42",
-                   files_fail=False, config_level="medium"):
+                   files_fail=False, config_level="medium", mode="review", incremental_effort="low"):
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         binp = tdp / "bin"
@@ -240,6 +240,8 @@ def run_model_case(script, *, body="", aliases="opus=claude-opus-5,sonnet=claude
             FAKE_FILES_JSON=files_json,
             FAKE_FILES_FAIL="1" if files_fail else "0",
             CONFIG_LEVEL=config_level,
+            MODE=mode,
+            INCREMENTAL_EFFORT=incremental_effort,
         )
 
         p = subprocess.run(["bash", "-c", script], env=env,
@@ -794,9 +796,24 @@ def main():
     ]
     check("effort: both claude-code-action calls pass an explicit --effort",
           len(claude_args) == 2 and all("--effort " in a for a in claude_args), claude_args)
-    check("effort: an incremental round takes review.incremental_effort, any other round review.level",
-          any("--effort ${{ steps.mode.outputs.mode == 'incremental' && steps.config.outputs.incremental_effort || steps.model.outputs.level }}" in a
+    check("effort: every round passes the model step's resolved effort",
+          any("--effort ${{ steps.model.outputs.effort }}" in a
               for a in claude_args), claude_args)
+
+    # The model step resolves --effort: incremental rounds take incremental_effort, and an
+    # escalation path floors that at medium (CodeRabbit security review on #236).
+    _, out, _, _ = run_model_case(model_script, config_level="high")
+    check("effort: a full round runs at review.level", out.get("effort") == "high", out)
+    _, out, _, _ = run_model_case(model_script, config_level="high", mode="incremental")
+    check("effort: an incremental round runs at incremental_effort", out.get("effort") == "low", out)
+    _, out, _, _ = run_model_case(model_script, mode="incremental", incremental_effort="high")
+    check("effort: a raised incremental_effort is used", out.get("effort") == "high", out)
+    _, out, _, _ = run_model_case(model_script, mode="incremental", escalation_paths=["auth/**"],
+                                  changed_files=["auth/login.py"])
+    check("effort: an escalation path floors an incremental round at medium", out.get("effort") == "medium", out)
+    _, out, _, _ = run_model_case(model_script, mode="incremental", escalation_paths=["auth/**"],
+                                  changed_files=["docs/readme.md"])
+    check("effort: no escalation match leaves an incremental round low", out.get("effort") == "low", out)
 
     # review.incremental_effort (#234 ruling): default low, configurable, rejected outside the set.
     rc, out, stdout, stderr = run_config_case(config_script)
