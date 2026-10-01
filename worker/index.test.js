@@ -5672,6 +5672,48 @@ describe("Worker telemetry read API", () => {
       const data = await (await getOps(db)).json();
       assert.equal(data.worker.version_id, null);
       assert.deepEqual(data.identity, []);
+      assert.deepEqual(data.runners, []);
+      assert.deepEqual(data.queue, []);
+    });
+
+    it("lists runners with their declared credentials, never a token hash, and the job queue (#185)", async () => {
+      const db = await sqliteDb();
+      const s = db.sqlite;
+      s.prepare("INSERT INTO runners (id, name, token_hash, created_at, revoked_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+        "r-old", "gone", "hash-old", old(), recent(), old()
+      );
+      s.prepare("INSERT INTO runners (id, name, token_hash, created_at, revoked_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+        "r-1", "box-1", "hash-1", recent(), null, recent()
+      );
+      s.prepare(
+        "INSERT INTO runner_credentials (runner_id, engine, credential_kind, fingerprint, concurrency, registered_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("r-1", "opencode", "keyless", "0123456789ab", 1, recent());
+      const job = s.prepare(
+        `INSERT INTO jobs (id, repository, pr_number, base_sha, head_sha, mode, level, engine, credential_kind, state, created_at, finished_at)
+         VALUES (?, 'o/a', 1, 'b', 'h', 'review', 'medium', 'opencode', 'keyless', ?, ?, ?)`
+      );
+      job.run("j1", "queued", old(), null);
+      job.run("j2", "queued", recent(), null);
+      job.run("j3", "finished", recent(), recent());
+      job.run("j4", "finished", old(), old());
+
+      const data = await (await getOps(db)).json();
+      assert.deepEqual(
+        data.runners.map((r) => [r.name, r.revoked_at === null, r.credentials]),
+        [
+          ["box-1", true, [{ engine: "opencode", credential_kind: "keyless", fingerprint: "0123456789ab", concurrency: 1 }]],
+          ["gone", false, []],
+        ]
+      );
+      assert.ok(!JSON.stringify(data).includes("hash-1"), "no token hash in the response");
+      assert.deepEqual(
+        data.queue.map((q) => [q.state, q.engine, q.credential_kind, q.jobs]),
+        [
+          ["finished", "opencode", "keyless", 1],
+          ["queued", "opencode", "keyless", 2],
+        ]
+      );
+      assert.equal(data.queue[1].oldest_created_at, s.prepare("SELECT created_at FROM jobs WHERE id = 'j1'").get().created_at);
     });
 
     it("answers 500 when a query fails", async () => {
@@ -7333,5 +7375,66 @@ describe("Poster and the runner verdicts (#184)", () => {
     assert.equal(outcomes.length, 1);
     assert.equal(outcomes[0].args[1], "b");
     assert.match(outcomes[0].args[0], /^did-not-post: /);
+  });
+});
+
+describe("Config editor routes (#78)", () => {
+  const access = useControlPlaneAccess();
+  const accessed = (path, opts = {}) =>
+    makeRequest(path, { ...opts, headers: { "Cf-Access-Jwt-Assertion": access.jwt, ...(opts.headers || {}) } });
+  const github = async (url, init = {}) => {
+    const key = `${init.method || "GET"} ${String(url).replace("https://api.github.com", "")}`;
+    if (key === "GET /repos/o/r") return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+    if (key === "GET /repos/o/r/git/ref/heads/main") return new Response(JSON.stringify({ object: { sha: "c".repeat(40) } }), { status: 200 });
+    if (key === "POST /repos/o/r/pulls") return new Response(JSON.stringify({ html_url: "https://github.com/o/r/pull/3", number: 3 }), { status: 201 });
+    if (key.startsWith("GET /repos/o/r/contents/")) return new Response("{}", { status: 404 });
+    return new Response("{}", { status: key.startsWith("DELETE") ? 204 : 201 });
+  };
+  const mint = async () => ({ token: "ghs_t", installation_permissions: { contents: "write", pull_requests: "write" } });
+
+  it("both routes answer 403 without an Access assertion", async () => {
+    for (const [path, method] of [["/api/config-file?repository=o/r", "GET"], ["/api/config-pr", "POST"]]) {
+      const res = await worker.fetch(makeRequest(path, { method, body: method === "POST" ? {} : undefined }), access.env, {
+        mintInstallationToken: mint,
+        fetch: github,
+      });
+      assert.equal(res.status, 403, path);
+    }
+  });
+
+  it("GET /api/config-file returns the file state behind Access", async () => {
+    const res = await worker.fetch(accessed("/api/config-file?repository=o/r", { method: "GET" }), access.env, {
+      mintInstallationToken: mint,
+      fetch: github,
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.content, null);
+    assert.equal(body.can_open_pr, true);
+  });
+
+  it("POST /api/config-pr opens the PR, and refuses a non-JSON body and a rejected file", async () => {
+    const ok = await worker.fetch(
+      accessed("/api/config-pr", { body: { repository: "o/r", content: "version: 1\n", base_sha: null } }),
+      access.env,
+      { mintInstallationToken: mint, fetch: github }
+    );
+    assert.equal(ok.status, 201);
+    assert.equal((await ok.json()).number, 3);
+
+    const form = await worker.fetch(
+      accessed("/api/config-pr", { body: "repository=o/r", headers: { "content-type": "application/x-www-form-urlencoded" } }),
+      access.env,
+      { mintInstallationToken: mint, fetch: github }
+    );
+    assert.equal(form.status, 415);
+
+    const bad = await worker.fetch(
+      accessed("/api/config-pr", { body: { repository: "o/r", content: "version: 2\n", base_sha: null } }),
+      access.env,
+      { mintInstallationToken: mint, fetch: github }
+    );
+    assert.equal(bad.status, 400);
+    assert.equal((await bad.json()).error, "schema-rejected");
   });
 });

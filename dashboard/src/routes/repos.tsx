@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { createRoute, Link } from "@tanstack/react-router";
 import { z } from "zod";
 
@@ -6,6 +6,7 @@ import { useFleetReposQuery } from "@/api/queries";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Table,
@@ -16,10 +17,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  groupByOwner,
   malformedConfigs,
   quietRepos,
   repoParams,
+  REPO_HEALTH_LABEL,
   summariseRepos,
+  type OwnerGroup,
+  type RepoHealth,
   type RepoSummary,
 } from "@/features/repos/repos";
 import { WatchOut } from "@/features/repos/WatchOut";
@@ -62,6 +67,114 @@ function RestackCount({ repo, field }: { repo: RepoSummary; field: "unchanged_pa
   );
 }
 
+function RepoRow({
+  repo,
+  health,
+  lastRecorded,
+}: {
+  repo: RepoSummary;
+  health: RepoHealth;
+  lastRecorded: string | null;
+}) {
+  const params = repoParams(repo.repository);
+  return (
+    <TableRow data-testid="repo-row" data-health={health}>
+                      <TableCell className="whitespace-nowrap">
+                        {params ? (
+                          <Link
+                            to="/repos/$owner/$repo"
+                            params={params}
+                            className="underline-offset-4 hover:underline"
+                          >
+                            {repo.repository}
+                          </Link>
+                        ) : (
+                          repo.repository
+                        )}
+                      </TableCell>
+                      <TableCell className="tabular">{formatCount(repo.rounds)}</TableCell>
+                      <TableCell className="tabular whitespace-nowrap">
+                        {repo.lastRound ? (
+                          <Link
+                            to="/rounds/$sessionId"
+                            params={{ sessionId: repo.lastRound.session_id }}
+                            search={{ at: repo.lastRound.recorded_at }}
+                            className="underline-offset-4 hover:underline"
+                          >
+                            <Timestamp iso={repo.lastRound.recorded_at} compact />
+                          </Link>
+                        ) : lastRecorded ? (
+                          // Quiet in this window: last_recorded_at is all-time, so the
+                          // row still knows when it last posted (#142 finding 3944697641).
+                          <Timestamp
+                            iso={lastRecorded}
+                            compact
+                          />
+                        ) : (
+                          <span className="text-muted-foreground">no round ever recorded</span>
+                        )}
+                      </TableCell>
+                      <TableCell>{orDash(repo.lastRound?.round_type ?? null)}</TableCell>
+                      <TableCell>
+                        {repo.lastState ? (
+                          <Badge
+                            variant={repo.lastState === "reviewed" ? "outline" : "warning"}
+                            title={VERDICT_COPY[repo.lastState].explain}
+                          >
+                            {VERDICT_COPY[repo.lastState].label}
+                          </Badge>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="tabular">{formatCount(repo.denials)}</TableCell>
+                      <TableCell className="tabular">
+                        <RestackCount repo={repo} field="unchanged_patch" />
+                      </TableCell>
+                      <TableCell className="tabular">
+                        <RestackCount repo={repo} field="unmerged_base" />
+                      </TableCell>
+                    </TableRow>
+  );
+}
+
+/** One owner: its repositories worst first, with the healthy ones folded until asked for (#185). */
+function OwnerRows({ group, lastRecordedByRepo }: { group: OwnerGroup; lastRecordedByRepo: Map<string, string | null> }) {
+  const [open, setOpen] = useState(false);
+  const healthy = group.repos.filter((r) => r.health === "healthy");
+  const shown = open ? group.repos : group.repos.filter((r) => r.health !== "healthy");
+  return (
+    <>
+      <TableRow data-testid="repo-owner-group" className="bg-muted/30 hover:bg-muted/30">
+        <TableCell colSpan={8} className="text-xs">
+          <span className="font-semibold">{group.owner}</span>{" "}
+          <span className="text-muted-foreground">
+            · {group.repos.length} {group.repos.length === 1 ? "repository" : "repositories"}
+          </span>{" "}
+          {group.worst !== "healthy" && <Badge variant="warning">{REPO_HEALTH_LABEL[group.worst]}</Badge>}
+        </TableCell>
+      </TableRow>
+      {shown.map(({ repo, health }) => (
+        <RepoRow
+          key={repo.repository}
+          repo={repo}
+          health={health}
+          lastRecorded={lastRecordedByRepo.get(repo.repository) ?? null}
+        />
+      ))}
+      {healthy.length > 0 && (
+        <TableRow className="hover:bg-transparent">
+          <TableCell colSpan={8} className="py-1">
+            <Button variant="ghost" size="sm" onClick={() => setOpen((v) => !v)}>
+              {open ? `Fold ${healthy.length} healthy` : `Show ${healthy.length} healthy`}
+            </Button>
+          </TableCell>
+        </TableRow>
+      )}
+    </>
+  );
+}
+
 function ReposPage() {
   const search = reposRoute.useSearch();
 
@@ -79,6 +192,10 @@ function ReposPage() {
   const malformedItems = fleet.data?.malformed_configs ?? EMPTY_ROWS;
   const malformed = useMemo(() => malformedConfigs(malformedItems), [malformedItems]);
   const quiet = useMemo(() => quietRepos(rows), [rows]);
+  const groups = useMemo(
+    () => groupByOwner(repos, new Set(malformed.map((m) => m.repository))),
+    [repos, malformed],
+  );
   const lastRecordedByRepo = useMemo(
     () => new Map(rows.map((r) => [r.repository, r.last_recorded_at])),
     [rows],
@@ -142,68 +259,9 @@ function ReposPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {repos.map((repo) => {
-                    const params = repoParams(repo.repository);
-                    return (
-                    <TableRow key={repo.repository}>
-                      <TableCell className="whitespace-nowrap">
-                        {params ? (
-                          <Link
-                            to="/repos/$owner/$repo"
-                            params={params}
-                            className="underline-offset-4 hover:underline"
-                          >
-                            {repo.repository}
-                          </Link>
-                        ) : (
-                          repo.repository
-                        )}
-                      </TableCell>
-                      <TableCell className="tabular">{formatCount(repo.rounds)}</TableCell>
-                      <TableCell className="tabular whitespace-nowrap">
-                        {repo.lastRound ? (
-                          <Link
-                            to="/rounds/$sessionId"
-                            params={{ sessionId: repo.lastRound.session_id }}
-                            search={{ at: repo.lastRound.recorded_at }}
-                            className="underline-offset-4 hover:underline"
-                          >
-                            <Timestamp iso={repo.lastRound.recorded_at} compact />
-                          </Link>
-                        ) : lastRecordedByRepo.get(repo.repository) ? (
-                          // Quiet in this window: last_recorded_at is all-time, so the
-                          // row still knows when it last posted (#142 finding 3944697641).
-                          <Timestamp
-                            iso={lastRecordedByRepo.get(repo.repository) ?? null}
-                            compact
-                          />
-                        ) : (
-                          <span className="text-muted-foreground">no round ever recorded</span>
-                        )}
-                      </TableCell>
-                      <TableCell>{orDash(repo.lastRound?.round_type ?? null)}</TableCell>
-                      <TableCell>
-                        {repo.lastState ? (
-                          <Badge
-                            variant={repo.lastState === "reviewed" ? "outline" : "warning"}
-                            title={VERDICT_COPY[repo.lastState].explain}
-                          >
-                            {VERDICT_COPY[repo.lastState].label}
-                          </Badge>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="tabular">{formatCount(repo.denials)}</TableCell>
-                      <TableCell className="tabular">
-                        <RestackCount repo={repo} field="unchanged_patch" />
-                      </TableCell>
-                      <TableCell className="tabular">
-                        <RestackCount repo={repo} field="unmerged_base" />
-                      </TableCell>
-                    </TableRow>
-                    );
-                  })}
+                  {groups.map((group) => (
+                    <OwnerRows key={group.owner} group={group} lastRecordedByRepo={lastRecordedByRepo} />
+                  ))}
                 </TableBody>
               </Table>
             </CardContent>

@@ -1,8 +1,9 @@
 """The GitHub App manifest asks for the minimum, and the minted token asks for less (#184).
 
 The App's private key is a Worker secret anyone who can deploy the Worker can read, so the
-permission set is pinned here: contents and metadata read, pull_requests and issues write,
-nothing else. The installation token the lease mints must be read-only and a subset of it.
+permission set is pinned here: metadata read, contents, pull_requests and issues write, nothing
+else. The installation token the lease mints must be read-only and a subset of it. contents:
+write exists for the config editor's pull request (#78), and only its token may ask for it.
 """
 import json
 import pathlib
@@ -14,7 +15,7 @@ MANIFEST = ROOT / "worker" / "github-app.manifest.json"
 MINTER = ROOT / "worker" / "github-app.js"
 
 EXPECTED_PERMISSIONS = {
-    "contents": "read",
+    "contents": "write",
     "metadata": "read",
     "pull_requests": "write",
     "issues": "write",
@@ -65,6 +66,26 @@ def main():
         if beyond:
             fails.append(f"the poster token asks for {beyond}, beyond what the App manifest grants")
         print(f"  poster token permissions: {poster_perms}")
+
+    text = MINTER.read_text()
+    for name in ("CONFIG_READ_TOKEN_PERMISSIONS", "CONFIG_PR_TOKEN_PERMISSIONS"):
+        m = re.search(name + r"\s*=\s*Object\.freeze\((\{.*?\})\)", text, re.S)
+        if not m:
+            fails.append(f"{name} = Object.freeze({{...}}) not found in worker/github-app.js")
+            continue
+        p = json.loads(m.group(1))
+        beyond = {k: v for k, v in p.items() if EXPECTED_PERMISSIONS.get(k) not in (v, "write")}
+        if beyond:
+            fails.append(f"{name} asks for {beyond}, beyond what the App manifest grants")
+        if "issues" in p:
+            fails.append(f"{name} must not ask for issues")
+        if name == "CONFIG_READ_TOKEN_PERMISSIONS" and any(v != "read" for v in p.values()):
+            fails.append(f"{name} must be read-only")
+        print(f"  {name}: {p}")
+    others = re.findall(r"export const (\w+_PERMISSIONS)\s*=\s*Object\.freeze\((\{.*?\})\)", text, re.S)
+    for name, body in others:
+        if name != "CONFIG_PR_TOKEN_PERMISSIONS" and json.loads(body).get("contents") == "write":
+            fails.append(f"{name} asks for contents: write; only the config editor's token may")
 
     print(f"  manifest default_permissions: {perms}")
     if fails:

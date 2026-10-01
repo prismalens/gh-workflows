@@ -7,6 +7,9 @@ import { SignJWT, importPKCS8 } from "jose";
 export const INSTALLATION_TOKEN_PERMISSIONS = Object.freeze({"contents": "read", "metadata": "read", "pull_requests": "read", "issues": "read"});
 // The poster's token never leaves the Worker: comments and review comments, nothing on contents.
 export const POSTER_TOKEN_PERMISSIONS = Object.freeze({"metadata": "read", "pull_requests": "write", "issues": "write"});
+// The config editor reads one file, and opens a pull request that changes only that file (#78).
+export const CONFIG_READ_TOKEN_PERMISSIONS = Object.freeze({"contents": "read", "metadata": "read"});
+export const CONFIG_PR_TOKEN_PERMISSIONS = Object.freeze({"contents": "write", "metadata": "read", "pull_requests": "write"});
 
 const GITHUB_API = "https://api.github.com";
 
@@ -62,7 +65,7 @@ export function createInstallationTokenMinter(env, { fetch: fetchImpl = globalTh
       if (!installation.ok) {
         throw new MintError("github-error", installation.status);
       }
-      const { id: installationId } = await installation.json();
+      const { id: installationId, permissions: installationPermissions } = await installation.json();
 
       const minted = await fetchImpl(`${GITHUB_API}/app/installations/${installationId}/access_tokens`, {
         method: "POST",
@@ -73,7 +76,7 @@ export function createInstallationTokenMinter(env, { fetch: fetchImpl = globalTh
         throw new MintError("github-error", minted.status);
       }
       const { token, expires_at } = await minted.json();
-      return { token, expires_at, installation_id: installationId };
+      return { token, expires_at, installation_id: installationId, installation_permissions: installationPermissions ?? {} };
     },
   };
 }

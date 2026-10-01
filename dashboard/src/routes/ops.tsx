@@ -1,7 +1,13 @@
 import { createRoute, Link } from "@tanstack/react-router";
 
 import { useOpsQuery } from "@/api/queries";
-import { OPS_IDENTITY_TABLES, type OpsIdentityRow, type OpsIdentityTable } from "@/api/types";
+import {
+  OPS_IDENTITY_TABLES,
+  type OpsIdentityRow,
+  type OpsIdentityTable,
+  type OpsQueueRow,
+  type OpsRunner,
+} from "@/api/types";
 import { LoadingRows, QueryError } from "@/components/QueryState";
 import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
@@ -99,6 +105,8 @@ function OpsPage() {
               </span>
             </CardContent>
           </Card>
+
+          <RunnersSection runners={ops.data.runners} queue={ops.data.queue} />
 
           <IdentitySection identity={ops.data.identity} />
 
@@ -237,5 +245,102 @@ function IdentitySection({ identity }: { identity: OpsIdentityRow[] }) {
         </p>
       </CardContent>
     </Card>
+  );
+}
+
+/** Runners and what they declared, then the job queue they lease from (#184, #185). */
+function RunnersSection({ runners, queue }: { runners: OpsRunner[]; queue: OpsQueueRow[] }) {
+  const active = runners.filter((r) => r.revoked_at === null);
+  return (
+    <>
+      <Card data-testid="ops-runners">
+        <CardHeader>
+          <CardTitle className="text-sm">Runners</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            {active.length} active of {runners.length} registered. A credential shows its fingerprint, never its secret.
+          </p>
+        </CardHeader>
+        <CardContent className="p-0">
+          {runners.length === 0 ? (
+            <p className="px-4 pb-4 text-xs text-muted-foreground">
+              No runner has registered. Webhook jobs wait in the queue until one leases them.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Runner</TableHead>
+                  <TableHead>Credentials</TableHead>
+                  <TableHead className="w-[170px]">Last heartbeat</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {runners.map((r) => (
+                  <TableRow key={r.id} className={r.revoked_at ? "opacity-60" : undefined}>
+                    <TableCell className="text-xs">
+                      <span className="font-medium">{r.name}</span>{" "}
+                      {r.revoked_at ? <Badge variant="outline">revoked</Badge> : null}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      {r.credentials.length === 0 ? (
+                        <span className="text-muted-foreground">none</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {r.credentials.map((c) => (
+                            <Badge key={c.fingerprint} variant="outline" className="font-mono">
+                              {c.engine} · {c.credential_kind} · {c.fingerprint} ×{c.concurrency}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      {r.last_seen_at ? <Timestamp iso={r.last_seen_at} compact /> : <span className="text-muted-foreground">never</span>}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card data-testid="ops-queue">
+        <CardHeader>
+          <CardTitle className="text-sm">Job queue</CardTitle>
+          <p className="text-xs text-muted-foreground">Every unfinished job, and what finished in the window.</p>
+        </CardHeader>
+        <CardContent className="p-0">
+          {queue.length === 0 ? (
+            <p className="px-4 pb-4 text-xs text-muted-foreground">No jobs.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>State</TableHead>
+                  <TableHead>Engine</TableHead>
+                  <TableHead>Credential</TableHead>
+                  <TableHead className="text-right">Jobs</TableHead>
+                  <TableHead className="w-[170px]">Oldest</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {queue.map((q) => (
+                  <TableRow key={`${q.state}|${q.engine}|${q.credential_kind}`}>
+                    <TableCell className="text-xs">{q.state}</TableCell>
+                    <TableCell className="text-xs">{q.engine}</TableCell>
+                    <TableCell className="text-xs">{q.credential_kind}</TableCell>
+                    <TableCell className="text-right text-xs tabular-nums">{formatCount(q.jobs)}</TableCell>
+                    <TableCell className="text-xs">
+                      <Timestamp iso={q.oldest_created_at} compact />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </>
   );
 }
