@@ -3674,7 +3674,7 @@ jobs:
         if: >-
           (steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental') &&
           steps.manifest.outputs.refused != 'true'
-        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829  # v1.0.236
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029  # v1.0.239
         # Synchronous subagents required in print mode or the reviewer exits before its
         # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
         env:
@@ -4759,7 +4759,7 @@ jobs:
 
       - name: Run Claude Code Verification Round
         id: claude-verify
-        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829  # v1.0.236
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029  # v1.0.239
         env:
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
         with:
