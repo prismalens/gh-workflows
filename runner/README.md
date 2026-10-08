@@ -81,7 +81,7 @@ In a container, with the engines and staging tools at the versions `Dockerfile` 
 
 ```bash
 docker build -t assayer-runner runner/
-docker run -it --rm -v assayer-home:/home/assayer --entrypoint claude assayer-runner   # once, for a user-login credential
+docker run -it --rm -v assayer-home:/home/assayer --entrypoint claude assayer-runner   # once, for a user-login credential (codex: --entrypoint codex ... login --device-auth)
 docker run -d -v assayer-home:/home/assayer -v "$PWD/assayer-runner.json:/etc/assayer/runner.json:ro" \
   -e ASSAYER_RUNNER_TOKEN assayer-runner
 ```
@@ -90,7 +90,7 @@ docker run -d -v assayer-home:/home/assayer -v "$PWD/assayer-runner.json:/etc/as
   credential names its variable in `env`. The fingerprint the runner registers is the first 12 hex
   of the key's SHA-256, so the key never leaves the process. A `keyless` or `user-login` one is
   stable per host and engine.
-- `user-login` is the engine's own sign-in on this machine (`claude` or `opencode auth login`,
+- `user-login` is the engine's own sign-in on this machine (`claude`, `codex login` or `opencode auth login`,
   under `HOME`); the runner reads nothing of it. A runner may offer several credentials, each
   with its own `concurrency`. `bedrock`, `vertex` and `foundry` are refused as deferred.
 - The checkout is a shallow fetch of the head and the base into a fresh temp dir, deleted on every
@@ -156,6 +156,20 @@ registry row that passed prismalens#561.
 
 The ACP policy is therefore a guardrail, not a boundary, as prismalens ADR 0003 says of every
 agent. The runner adds no sandbox of its own: what the engine allows and blocks is the posture.
+
+Codex runs through `@agentclientprotocol/codex-acp` 2.1.1, verified 2026-10-08 on
+`gpt-6.1-sol` with a ChatGPT sign-in. The row starts it in the adapter's `read-only` mode, whose
+default is a workspace-write mode with an automatic reviewer. Every command runs inside Codex's
+own sandbox, with no writes and no network, and does not ask. A command that needs out asks, and
+the policy answers. Codex's permission request quotes such a script into one word, and the
+summary arrives as `gh pr comment --body "<lines>"`. The policy accepts a multi-line body only
+inside single quotes, or inside double quotes holding no `"`, `$`, backtick or backslash. A body
+outside that is refused, and since Codex offers only `cancel` for that request and for every
+edit, a refusal ends the round as `cancelled`, not `completed`. The probe's edit step therefore
+ends its Codex run early. Nothing lands. The row also turns off the user's Codex plugins, web
+search and the checkout's `AGENTS.md`; the sign-in stays in `CODEX_HOME`. Zed's
+`@zed-industries/codex-acp` is deprecated: its 0.16.0 core cannot use `gpt-6.1-sol` on a
+ChatGPT sign-in, and its refusal aborts the turn.
 
 `scripts/permission-probe.sh <checkout>` repeats the check against the real binary: an allowed
 command, a disallowed one, an edit and a delete, then proves nothing landed. Run it before

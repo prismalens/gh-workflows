@@ -12,6 +12,9 @@ ARG GH_SHA256=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8
 ARG OPENCODE_VERSION=1.18.30
 ARG CLAUDE_CODE_VERSION=2.1.283
 ARG CLAUDE_AGENT_ACP_VERSION=0.81.2
+ARG CODEX_ACP_VERSION=2.1.1
+# The Codex the adapter resolves (^0.159.1), installed too so `codex login` runs in the image.
+ARG CODEX_VERSION=0.159.3
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates curl python3 xz-utils \
@@ -33,6 +36,8 @@ RUN npm install -g --no-fund --no-audit \
       "opencode-ai@${OPENCODE_VERSION}" \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
       "@agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP_VERSION}" \
+      "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}" \
+      "@openai/codex@${CODEX_VERSION}" \
  && npm cache clean --force
 
 WORKDIR /opt/assayer

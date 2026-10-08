@@ -42,6 +42,25 @@ export const ENGINES = Object.freeze({
       };
     },
   },
+  codex: {
+    // @agentclientprotocol/codex-acp, the maintained adapter on the Codex App Server. Zed's
+    // @zed-industries/codex-acp 0.16.0 is deprecated: its old core is refused gpt-6.1 on a
+    // ChatGPT login, and its only refusal aborts the turn.
+    command: 'codex-acp',
+    args: () => [],
+    envAllow: [...BASE_ENV, 'GH_TOKEN', 'GITHUB_TOKEN', 'CODEX_HOME', 'OPENAI_API_KEY', 'CODEX_API_KEY'],
+    credentialKinds: ['api-key', 'user-login'],
+    admitted: null,
+    // The adapter's default mode writes the workspace with an automatic reviewer. read-only puts
+    // Codex's own sandbox around every command and asks the runner before leaving it. The
+    // sign-in stays in the user's CODEX_HOME: a copied auth.json forks the rotating refresh token.
+    prepare({ model, env }) {
+      return {
+        ...env, INITIAL_AGENT_MODE: 'read-only', NO_BROWSER: '1',
+        CODEX_CONFIG: JSON.stringify({ web_search: 'disabled', project_doc_max_bytes: 0, features: { plugins: false }, ...(model ? { model } : {}) }),
+      };
+    },
+  },
   'claude-code': {
     command: 'claude-agent-acp',
     args: () => [],
