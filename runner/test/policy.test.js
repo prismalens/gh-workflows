@@ -54,6 +54,7 @@ test('a gh pr comment body spans lines only inside inert quotes', () => {
     'gh pr comment 221 --body "x\n`id`"', 'gh pr comment 221 --body "x\n$(id)"', 'gh pr comment 221 --body "a\\"\nid"',
     "gh pr comment 221 --body 'a'\nid", "gh pr comment 221 --body 'a'; id", 'gh pr review 221 --body "x\ny"',
     'gh pr comment 221 --body "x\ny" | sh', 'gh pr comment 221 --body "x" "y\nz"',
+    "gh pr comment 221 --body 'a\x1b[2Jb'", 'gh pr comment 221 --body "a\x00b"', "gh pr comment 221 --body 'a\r\nb'",
   ]) assert.equal(commandAllowed(c), false, c);
 });
 

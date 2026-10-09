@@ -35,6 +35,8 @@ const READ_KINDS = new Set(['read', 'search', 'think']);
 const COMMENT_BODY = /^(gh pr comment(?:[ \t]+[\w./:=,@#+-]+)*)[ \t]+(?:--body|-b)[ \t]+(?:'[^']*'|"[^"$`\\]*")((?:[ \t]+[\w./:=,@#+-]+)*)$/;
 
 export function commandAllowed(command) {
+  // A quoted body may hold line feeds and tabs; no other control character passes, quoted or not.
+  if (/[\x00-\x08\x0b-\x1f\x7f]/.test(String(command || ''))) return false;
   const body = COMMENT_BODY.exec(String(command || '').trim());
   if (body) return commandAllowed(body[1] + body[2]);
   // A stderr redirect to /dev/null or to stdout changes nothing the lane cares about; strip
