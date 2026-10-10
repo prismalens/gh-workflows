@@ -30,9 +30,9 @@ const COMMENT_TOOL_IDS = Object.freeze(new Set([
 // ACP tool kinds the lane's read-only tools map onto.
 const READ_KINDS = new Set(['read', 'search', 'think']);
 
-// A summary body may span lines only inside quotes bash expands nothing in: single quotes,
-// or double quotes holding no " $ ` or backslash. The words around it pass the usual check.
-const COMMENT_BODY = /^(gh pr comment(?:[ \t]+[\w./:=,@#+-]+)*)[ \t]+(?:--body|-b)[ \t]+(?:'[^']*'|"[^"$`\\]*")((?:[ \t]+[\w./:=,@#+-]+)*)$/;
+// A summary body may span lines only inside quotes bash expands nothing in: single quotes
+// (an apostrophe as '"'"'), or double quotes holding no " $ ` or backslash. The words around it pass the usual check.
+const COMMENT_BODY = /^(gh pr comment(?:[ \t]+[\w./:=,@#+-]+)*)[ \t]+(?:--body|-b)[ \t]+(?:'[^']*'(?:"'"'[^']*')*|"[^"$`\\]*")((?:[ \t]+[\w./:=,@#+-]+)*)$/;
 
 export function commandAllowed(command) {
   // A quoted body may hold line feeds and tabs; no other control character passes, quoted or not.
@@ -52,9 +52,10 @@ export function commandAllowed(command) {
 }
 
 // Codex's permission request shell-quotes a script that needs quoting into one word.
+// It may switch quote styles mid-word ("…"'`…`'"…"); only segments bash expands nothing in count.
 function unwrapWord(c) {
-  const m = /^"((?:[^"\\]|\\["\\$`])*)"$/.exec(c);
-  return m ? m[1].replace(/\\(["\\$`])/g, '$1') : c;
+  if (!/^(?:'[^']*'|"(?:[^"\\$`]|\\["\\$`])*")+$/.test(c)) return c;
+  return c.replace(/'([^']*)'|"((?:[^"\\$`]|\\["\\$`])*)"/g, (_, sq, dq) => sq ?? dq.replace(/\\(["\\$`])/g, '$1'));
 }
 
 function commandOf(toolCall) {
