@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -274,5 +274,18 @@ describe('the daemon binary (#184)', () => {
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /^zen opencode keyless [0-9a-f]{12} 1$/m);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('the round prompt follows the engine', () => {
+  it('a codex job gets prompt/codex.md with its two commits; the lane template stays for opencode', async () => {
+    const prompts = [];
+    const cfg = config();
+    cfg.credentials.push({ name: 'c', engine: 'codex', kind: 'user-login', env: null, concurrency: 1, fingerprint: 'fedcbafedcba' });
+    const w = world({ jobs: [{ ...JOB, engine: 'codex', credential_kind: 'user-login' }] });
+    await runOne(w, { runRound: async (job, { promptPath }) => { prompts.push(readFileSync(promptPath, 'utf8')); return { code: 0, events: roundEvents() }; } }, cfg);
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0], new RegExp(`git diff ${'b'.repeat(40)} ${'a'.repeat(40)} -- <path>`));
+    assert.doesNotMatch(prompts[0], /Launch 4 agents/);
   });
 });

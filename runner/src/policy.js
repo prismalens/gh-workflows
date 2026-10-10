@@ -30,9 +30,9 @@ const COMMENT_TOOL_IDS = Object.freeze(new Set([
 // ACP tool kinds the lane's read-only tools map onto.
 const READ_KINDS = new Set(['read', 'search', 'think']);
 
-// A summary body may span lines only inside quotes bash expands nothing in: single quotes,
-// or double quotes holding no " $ ` or backslash. The words around it pass the usual check.
-const COMMENT_BODY = /^(gh pr comment(?:[ \t]+[\w./:=,@#+-]+)*)[ \t]+(?:--body|-b)[ \t]+(?:'[^']*'|"[^"$`\\]*")((?:[ \t]+[\w./:=,@#+-]+)*)$/;
+// A summary body may span lines only inside quotes bash expands nothing in: single quotes
+// (an apostrophe as '"'"'), or double quotes holding no " $ ` or backslash. The words around it pass the usual check.
+const COMMENT_BODY = /^(gh pr comment(?:[ \t]+[\w./:=,@#+-]+)*)[ \t]+(?:--body|-b)[ \t]+(?:'[^']*'(?:"'"'[^']*')*|"[^"$`\\]*")((?:[ \t]+[\w./:=,@#+-]+)*)$/;
 
 export function commandAllowed(command) {
   // A quoted body may hold line feeds and tabs; no other control character passes, quoted or not.
@@ -52,9 +52,10 @@ export function commandAllowed(command) {
 }
 
 // Codex's permission request shell-quotes a script that needs quoting into one word.
+// It may switch quote styles mid-word ("…"'`…`'"…"); only segments bash expands nothing in count.
 function unwrapWord(c) {
-  const m = /^"((?:[^"\\]|\\["\\$`])*)"$/.exec(c);
-  return m ? m[1].replace(/\\(["\\$`])/g, '$1') : c;
+  if (!/^(?:'[^']*'|"(?:[^"\\$`]|\\["\\$`])*")+$/.test(c)) return c;
+  return c.replace(/'([^']*)'|"((?:[^"\\$`]|\\["\\$`])*)"/g, (_, sq, dq) => sq ?? dq.replace(/\\(["\\$`])/g, '$1'));
 }
 
 function commandOf(toolCall) {
@@ -73,6 +74,12 @@ export function decide(toolCall) {
   const kind = toolCall.kind || 'other';
   const name = String(toolCall.name || toolCall.title || '');
   if (COMMENT_TOOL_IDS.has(name)) return { allow: true, reason: 'comment tool' };
+  // Codex asks for an MCP call as kind execute, naming the server and tool in rawInput.
+  const ri = toolCall.rawInput;
+  if (ri && typeof ri.server === 'string' && typeof ri.tool === 'string') {
+    const id = `mcp__${ri.server}__${ri.tool}`;
+    return LANE_ALLOWED_TOOLS.includes(id) ? { allow: true, reason: 'comment tool' } : { allow: false, reason: `mcp tool ${id}` };
+  }
   if (READ_KINDS.has(kind)) return { allow: true, reason: `kind ${kind}` };
   if (kind === 'execute') {
     const cmd = commandOf(toolCall);

@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-import { renderPrompt, promptHash, TOKENS, NESTED_TOKENS } from '../src/prompt.js';
+import { renderPrompt, renderCodexPrompt, promptHash, TOKENS, NESTED_TOKENS } from '../src/prompt.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATE_PATH = path.join(__dirname, '..', 'prompt', 'template.md');
@@ -174,4 +174,13 @@ test('laneTokens and scripts/render-prompt.mjs render one prompt, for every mode
     assert.equal(renderPrompt(template, laneTokens(opts)), printed);
     assert.doesNotMatch(printed, /@@[A-Z0-9_]+@@/);
   }
+});
+
+test('the Codex template renders the round commits and leaves no placeholder', () => {
+  const t = readFileSync(path.join(__dirname, '..', 'prompt', 'codex.md'), 'utf8');
+  const out = renderCodexPrompt(t, { repo: 'o/r', pr: 7, baseSha: 'b'.repeat(40), headSha: 'a'.repeat(40) });
+  assert.match(out, /Review pull request o\/r#7/);
+  assert.match(out, new RegExp(`git diff ${'b'.repeat(40)} ${'a'.repeat(40)} -- <path>`));
+  assert.doesNotMatch(out, /@@/);
+  assert.throws(() => renderCodexPrompt('@@REPO@@ @@LEVEL@@', { repo: 'o/r', pr: 1, baseSha: 'b', headSha: 'a' }), /LEVEL/);
 });
