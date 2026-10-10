@@ -51,13 +51,18 @@ export const ENGINES = Object.freeze({
     envAllow: [...BASE_ENV, 'GH_TOKEN', 'GITHUB_TOKEN', 'CODEX_HOME', 'OPENAI_API_KEY', 'CODEX_API_KEY'],
     credentialKinds: ['api-key', 'user-login'],
     admitted: null,
+    // Sol defaults to low effort and caps each tool output at 10k tokens; the Codex template
+    // reads the diff per file instead of the lane's six scripted agents (#184 comment 6096062849).
+    promptTemplate: 'codex.md',
+    timeoutMin: 90,
+    idleMin: 15,
     // The adapter's default mode writes the workspace with an automatic reviewer. read-only puts
     // Codex's own sandbox around every command and asks the runner before leaving it. The
     // sign-in stays in the user's CODEX_HOME: a copied auth.json forks the rotating refresh token.
     prepare({ model, env }) {
       return {
         ...env, INITIAL_AGENT_MODE: 'read-only', NO_BROWSER: '1',
-        CODEX_CONFIG: JSON.stringify({ web_search: 'disabled', project_doc_max_bytes: 0, features: { plugins: false }, ...(model ? { model } : {}) }),
+        CODEX_CONFIG: JSON.stringify({ web_search: 'disabled', project_doc_max_bytes: 0, model_reasoning_effort: 'xhigh', features: { plugins: false }, ...(model ? { model } : {}) }),
       };
     },
   },

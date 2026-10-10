@@ -121,7 +121,10 @@ export class SessionMapper {
 
   onError(err, stage = 'prompt') {
     this.errored = true;
-    const message = err?.message || String(err);
+    let message = err?.message || String(err);
+    // Codex reports a ChatGPT usage limit as agent text, then fails the prompt with "Internal error".
+    const said = this.agentText.join('').slice(-500).trim();
+    if (stage === 'prompt' && classifyFailure(message) === 'api-error' && /usage limit|weekly limit|five.hour limit/i.test(said)) message = `${message}: ${said}`;
     const failure_class = classifyFailure(message) || 'api-error';
     this.events.push(event('error', { failure_class, message, reset_at: resetAtFrom(message) }, { stage, code: err?.code ?? null }));
   }

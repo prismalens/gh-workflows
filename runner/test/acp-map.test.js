@@ -199,3 +199,16 @@ test('started keeps the requested model verbatim and records the served one, fla
   silent.onSession({ sessionId: 's' });
   assert.equal(silent.events[0]._meta, undefined);
 });
+
+test('a Codex usage limit said as agent text, then a bare Internal error, is account-limit with reset_at', () => {
+  const m = new SessionMapper({ cwd, engine: 'codex', model: 'gpt-6.1-sol', promptHash: 'h', laneVersion: 'v' });
+  m.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro) or try again at 9:00 AM.\n\n" } });
+  m.onError(Object.assign(new Error('Internal error'), { code: -32603 }));
+  const err = m.events.find((e) => e.type === 'error');
+  assert.equal(err.failure_class, 'account-limit');
+  assert.equal(err.reset_at, '9:00 AM');
+  const plain = mk();
+  plain.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Reviewing the quota code.' } });
+  plain.onError(new Error('Internal error'));
+  assert.equal(plain.events.find((e) => e.type === 'error').failure_class, 'api-error');
+});

@@ -59,6 +59,6 @@ export function classifyFailure(text) {
 }
 
 export function resetAtFrom(text) {
-  const m = /resets? (?:in|at) ([^.\n]+)/i.exec(String(text || ''));
+  const m = /(?:resets?|try again) (?:in|at) ([^\n]+?)(?:\.(?:\s|$)|\n|$)/i.exec(String(text || ''));
   return m ? m[1].trim() : null;
 }

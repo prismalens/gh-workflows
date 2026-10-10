@@ -73,6 +73,12 @@ export function decide(toolCall) {
   const kind = toolCall.kind || 'other';
   const name = String(toolCall.name || toolCall.title || '');
   if (COMMENT_TOOL_IDS.has(name)) return { allow: true, reason: 'comment tool' };
+  // Codex asks for an MCP call as kind execute, naming the server and tool in rawInput.
+  const ri = toolCall.rawInput;
+  if (ri && typeof ri.server === 'string' && typeof ri.tool === 'string') {
+    const id = `mcp__${ri.server}__${ri.tool}`;
+    return LANE_ALLOWED_TOOLS.includes(id) ? { allow: true, reason: 'comment tool' } : { allow: false, reason: `mcp tool ${id}` };
+  }
   if (READ_KINDS.has(kind)) return { allow: true, reason: `kind ${kind}` };
   if (kind === 'execute') {
     const cmd = commandOf(toolCall);

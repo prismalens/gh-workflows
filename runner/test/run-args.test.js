@@ -60,6 +60,15 @@ test('the codex row: read-only mode, no plugins, the model in CODEX_CONFIG, the 
   const env = row.prepare({ model: 'gpt-6.1-sol', outDir: '/tmp/x', env: base });
   assert.equal(env.INITIAL_AGENT_MODE, 'read-only');
   assert.equal(env.CODEX_HOME, '/h/.codex');
-  assert.deepEqual(JSON.parse(env.CODEX_CONFIG), { web_search: 'disabled', project_doc_max_bytes: 0, features: { plugins: false }, model: 'gpt-6.1-sol' });
+  assert.deepEqual(JSON.parse(env.CODEX_CONFIG), { web_search: 'disabled', project_doc_max_bytes: 0, model_reasoning_effort: 'xhigh', features: { plugins: false }, model: 'gpt-6.1-sol' });
   assert.equal(JSON.parse(row.prepare({ model: null, env: {} }).CODEX_CONFIG).model, undefined);
+});
+
+test('timeouts default per engine: codex runs longer unless a flag says otherwise', () => {
+  const base = ['--cwd', '/c', '--prompt', '/p', '--out', '/o'];
+  assert.equal(parseArgs(base).timeoutMs, 20 * 60000);
+  assert.equal(parseArgs(base).idleMs, 8 * 60000);
+  assert.equal(parseArgs([...base, '--engine', 'codex']).timeoutMs, 90 * 60000);
+  assert.equal(parseArgs([...base, '--engine', 'codex']).idleMs, 15 * 60000);
+  assert.equal(parseArgs([...base, '--engine', 'codex', '--timeout-min', '5']).timeoutMs, 5 * 60000);
 });

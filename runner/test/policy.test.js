@@ -65,3 +65,13 @@ test('Codex command shapes: argv behind a shell, and a script quoted into one wo
   assert.equal(decide({ kind: 'execute', rawInput: { command: '"gh pr comment 1 --body \\"## Code review\nNo issues.\\""' } }).allow, true);
   assert.equal(decide({ kind: 'execute', rawInput: { command: '"gh pr comment 1 --body \\"x\n\\$(id)\\""' } }).allow, false);
 });
+
+test('Codex MCP approvals: only the two comment tools pass, by server and tool', () => {
+  const mcp = (server, tool) => decide({ kind: 'execute', title: `mcp.${server}.${tool}`, rawInput: { server, tool, arguments: {} } });
+  assert.equal(mcp('github_inline_comment', 'create_inline_comment').allow, true);
+  assert.equal(mcp('github_comment', 'update_claude_comment').allow, true);
+  for (const [s, t] of [['github_comment', 'create_inline_comment'], ['evil', 'create_inline_comment'], ['github_inline_comment', 'delete_comment'], ['shell', 'exec']]) {
+    assert.equal(mcp(s, t).allow, false, `${s}/${t}`);
+  }
+  assert.equal(decide({ kind: 'execute', rawInput: { server: 1, tool: 'create_inline_comment' } }).allow, false);
+});
