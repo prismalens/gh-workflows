@@ -119,7 +119,7 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
     // The shim is a copy in <out>/bin; secret-check.js stays here beside its imports.
     ASSAYER_SECRET_CHECK: path.join(HERE, 'secret-check.js'),
   } });
-  const child = spawn(row.command, row.args({ cwd }), { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(row.command, row.args({ cwd, model: opts.model }), { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stderr.on('data', (d) => appendFileSync(stderrPath, d));
   let childExit = null;
   child.on('exit', (code, signal) => { childExit = { code, signal }; });

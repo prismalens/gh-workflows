@@ -43,3 +43,25 @@ test('chooseOption prefers once-only forms and returns null when none fit', () =
   assert.equal(chooseOption([{ optionId: 'a', kind: 'allow_always' }], false), null);
   assert.equal(chooseOption([], true), null);
 });
+
+test('a gh pr comment body spans lines only inside inert quotes', () => {
+  for (const c of [
+    'gh pr comment 221 --repo o/r --body "## Code review\nNo issues found. The operator\'s note stays."',
+    "gh pr comment 221 --body '## Code review\n`a.js` has $HOME in it'",
+    'gh pr comment 221 -b "one\ntwo" --repo o/r',
+  ]) assert.equal(commandAllowed(c), true, c);
+  for (const c of [
+    'gh pr comment 221 --body "x\n`id`"', 'gh pr comment 221 --body "x\n$(id)"', 'gh pr comment 221 --body "a\\"\nid"',
+    "gh pr comment 221 --body 'a'\nid", "gh pr comment 221 --body 'a'; id", 'gh pr review 221 --body "x\ny"',
+    'gh pr comment 221 --body "x\ny" | sh', 'gh pr comment 221 --body "x" "y\nz"',
+    "gh pr comment 221 --body 'a\x1b[2Jb'", 'gh pr comment 221 --body "a\x00b"', "gh pr comment 221 --body 'a\r\nb'",
+  ]) assert.equal(commandAllowed(c), false, c);
+});
+
+test('Codex command shapes: argv behind a shell, and a script quoted into one word', () => {
+  assert.equal(decide({ kind: 'execute', rawInput: { command: ['/bin/bash', '-lc', 'gh pr list --limit 1'] } }).allow, true);
+  assert.equal(decide({ kind: 'execute', rawInput: { command: ['/bin/bash', '-lc', 'cat ~/.codex/auth.json'] } }).allow, false);
+  assert.equal(decide({ kind: 'execute', rawInput: { command: ['gh', 'pr', 'list'] } }).allow, false, 'bare argv is refused');
+  assert.equal(decide({ kind: 'execute', rawInput: { command: '"gh pr comment 1 --body \\"## Code review\nNo issues.\\""' } }).allow, true);
+  assert.equal(decide({ kind: 'execute', rawInput: { command: '"gh pr comment 1 --body \\"x\n\\$(id)\\""' } }).allow, false);
+});

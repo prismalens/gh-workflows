@@ -51,3 +51,15 @@ test('engineEnv passes one extra credential variable and nothing else (#184)', a
   assert.deepEqual(env, { PATH: '/bin', MY_KEY: 'k' });
   assert.deepEqual(engineEnv(ENGINES.opencode, { PATH: '/bin', MY_KEY: 'k' }), { PATH: '/bin' });
 });
+
+test('the codex row: read-only mode, no plugins, the model in CODEX_CONFIG, the sign-in left in CODEX_HOME', async () => {
+  const { ENGINES, engineEnv } = await import('../src/engines.js');
+  const row = ENGINES.codex;
+  const base = engineEnv(row, { PATH: '/bin', CODEX_HOME: '/h/.codex', ANTHROPIC_API_KEY: 'k', OPENAI_API_KEY: 'o' });
+  assert.deepEqual(base, { PATH: '/bin', CODEX_HOME: '/h/.codex', OPENAI_API_KEY: 'o' });
+  const env = row.prepare({ model: 'gpt-6.1-sol', outDir: '/tmp/x', env: base });
+  assert.equal(env.INITIAL_AGENT_MODE, 'read-only');
+  assert.equal(env.CODEX_HOME, '/h/.codex');
+  assert.deepEqual(JSON.parse(env.CODEX_CONFIG), { web_search: 'disabled', project_doc_max_bytes: 0, features: { plugins: false }, model: 'gpt-6.1-sol' });
+  assert.equal(JSON.parse(row.prepare({ model: null, env: {} }).CODEX_CONFIG).model, undefined);
+});

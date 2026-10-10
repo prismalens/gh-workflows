@@ -30,7 +30,15 @@ const COMMENT_TOOL_IDS = Object.freeze(new Set([
 // ACP tool kinds the lane's read-only tools map onto.
 const READ_KINDS = new Set(['read', 'search', 'think']);
 
+// A summary body may span lines only inside quotes bash expands nothing in: single quotes,
+// or double quotes holding no " $ ` or backslash. The words around it pass the usual check.
+const COMMENT_BODY = /^(gh pr comment(?:[ \t]+[\w./:=,@#+-]+)*)[ \t]+(?:--body|-b)[ \t]+(?:'[^']*'|"[^"$`\\]*")((?:[ \t]+[\w./:=,@#+-]+)*)$/;
+
 export function commandAllowed(command) {
+  // A quoted body may hold line feeds and tabs; no other control character passes, quoted or not.
+  if (/[\x00-\x08\x0b-\x1f\x7f]/.test(String(command || ''))) return false;
+  const body = COMMENT_BODY.exec(String(command || '').trim());
+  if (body) return commandAllowed(body[1] + body[2]);
   // A stderr redirect to /dev/null or to stdout changes nothing the lane cares about; strip
   // those two forms, then refuse any other chaining, substitution or redirection. A pipe into
   // `head` is refused as the lane's own matcher would refuse it: every part must be allowed.
@@ -43,10 +51,19 @@ export function commandAllowed(command) {
   return COMMAND_PREFIXES.some((p) => c === p || c.startsWith(p + ' '));
 }
 
+// Codex's permission request shell-quotes a script that needs quoting into one word.
+function unwrapWord(c) {
+  const m = /^"((?:[^"\\]|\\["\\$`])*)"$/.exec(c);
+  return m ? m[1].replace(/\\(["\\$`])/g, '$1') : c;
+}
+
 function commandOf(toolCall) {
   const ri = toolCall.rawInput;
   if (ri && typeof ri === 'object') {
-    for (const k of ['command', 'cmd', 'input']) if (typeof ri[k] === 'string') return ri[k];
+    for (const k of ['command', 'cmd', 'input']) if (typeof ri[k] === 'string') return unwrapWord(ri[k]);
+    // Codex sends argv, wrapped as [shell, -lc, script]. Anything else argv-shaped is refused.
+    const a = ri.command;
+    if (Array.isArray(a) && a.length === 3 && /^(\/usr)?\/bin\/(ba|z)?sh$/.test(a[0]) && ['-c', '-lc'].includes(a[1]) && typeof a[2] === 'string') return a[2];
   }
   return null;
 }
