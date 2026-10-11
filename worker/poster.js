@@ -2,6 +2,10 @@
 // It writes inline review comments, one summary issue comment and its own liveness comment.
 // It never calls POST /pulls/:n/reviews, so a runner round can neither approve nor block.
 
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { gfmFromMarkdown } from "mdast-util-gfm";
+import { gfm } from "micromark-extension-gfm";
+
 const GITHUB_API = "https://api.github.com";
 export const LIVENESS_PREFIX = "<!-- claude-review-liveness";
 // GitHub refuses a comment body over 65536 characters.
@@ -29,33 +33,21 @@ export function findingMarker(engine) {
 // so a suggestion or a decorator still applies (OBJ-027).
 export function quiet(text) {
   if (typeof text !== "string") return text;
-  const prose = (t) => t.replace(/@(?=[A-Za-z0-9])/g, "@\u200d");
-  // Inline spans close on a backtick run of the same length (GFM); anything else is prose.
-  const inline = (t) => {
-    const parts = t.split(/(`+)([\s\S]*?[^`])\1(?!`)/);
-    let r = "";
-    for (let i = 0; i < parts.length; i += 3) r += prose(parts[i]) + (i + 2 < parts.length ? parts[i + 1] + parts[i + 2] + parts[i + 1] : "");
-    return r;
+  // Only GFM text nodes are prose; code, HTML and everything else keep their bytes.
+  const ranges = [];
+  const walk = (node) => {
+    if (node.type === "text") ranges.push([node.position.start.offset, node.position.end.offset]);
+    for (const child of node.children ?? []) walk(child);
   };
-  const out = [];
-  let fence = null;
-  let buf = [];
-  const flush = () => { if (buf.length) out.push(inline(buf.join("\n"))); buf = []; };
-  for (const line of text.split("\n")) {
-    const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-    if (fence) {
-      out.push(line);
-      if (open && open[1][0] === fence[0] && open[1].length >= fence.length && /^ {0,3}[`~]+[ \t]*$/.test(line)) fence = null;
-    } else if (open) {
-      flush();
-      fence = open[1];
-      out.push(line);
-    } else {
-      buf.push(line);
-    }
+  walk(fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }));
+  let out = "";
+  let at = 0;
+  for (const [start, end] of ranges.sort((a, b) => a[0] - b[0])) {
+    if (start < at) continue;
+    out += text.slice(at, start) + text.slice(start, end).replace(/@(?=[A-Za-z0-9])/g, "@\u200d");
+    at = end;
   }
-  flush();
-  return out.join("\n");
+  return out + text.slice(at);
 }
 
 export function looksLikeSecret(text) {
@@ -84,7 +76,7 @@ export function roundVerdict({ conclusion, headSha, findings, failureClass, unpl
   if (conclusion === "completed") {
     // A finding GitHub would not anchor is still a finding: "no findings" would be false (OBJ-005).
     const missed = unplaced > 0 ? `, ${unplaced} not placed inline (posted as comments)` : "";
-    const lost = dropped > 0 ? `, ${dropped} withheld (credential-shaped or oversized)` : "";
+    const lost = dropped > 0 ? `, ${dropped} withheld (credential-shaped, oversized or unreadable)` : "";
     if (findings === 0 && unplaced === 0 && dropped === 0) return `reviewed \`${short}\`, no findings.`;
     return `reviewed \`${short}\`, ${findings} finding${findings === 1 ? "" : "s"} inline${missed}${lost}.`;
   }

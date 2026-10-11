@@ -309,10 +309,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: runner/package-lock.json
+          cache-dependency-path: |
+            runner/package-lock.json
+            worker/package-lock.json
 
+      # The CLI imports ../worker/poster.js, which needs the worker's runtime dependencies.
       - name: Install
-        run: npm ci
+        run: npm ci && npm ci --omit=dev --prefix ../worker
 
       # Unit tests only: the contract, the policy and the mapper. The engine itself is
       # covered by runner/scripts/permission-probe.sh, which needs a model. Story: #184.

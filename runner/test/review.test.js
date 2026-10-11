@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseArgs, parseTarget, livenessRecords, priorReview, publish, fileJournal } from '../src/review.js';
+import { parseArgs, parseTarget, livenessRecords, priorReview, publish, fileJournal, withheldCount } from '../src/review.js';
 import { readFileSync } from 'node:fs';
 import { LIVENESS_PREFIX, livenessBody } from '../../worker/poster.js';
 
@@ -47,6 +47,11 @@ describe('assayer review (#184)', () => {
     assert.ok(priorReview(contributor, { headSha: HEAD, engine: 'codex', canWrite: (l) => l === 'sumit' }));
     const bot = livenessRecords([live({ user: { login: 'my-assayer[bot]', type: 'Bot' }, author_association: 'NONE' })]);
     assert.ok(priorReview(bot, { headSha: HEAD, engine: 'codex', canWrite: () => false }));
+  });
+
+  it('counts a corrupt tool-log line as a withheld finding (OBJ-005)', () => {
+    assert.equal(withheldCount({ dropped: [{ tool: 'create_inline_comment' }, { tool: 'post_summary' }], tool_log_corrupt_lines: 2 }), 3);
+    assert.equal(withheldCount({}), 0);
   });
 
   it('a failed round is not a verdict: it is never published', async () => {

@@ -156,6 +156,13 @@ describe("poster (#184)", () => {
     assert.equal(quiet("````\n```\n@a\n````\n@b"), "````\n```\n@a\n````\n@\u200db");
   });
 
+  it("leaves indented, blockquoted and mixed-fence code byte-exact (OBJ-027)", () => {
+    assert.equal(quiet("text\n\n    @decorator\n    def f(): pass\n\n@x"), "text\n\n    @decorator\n    def f(): pass\n\n@\u200dx");
+    assert.equal(quiet("> ```py\n> @decorator\n> ```\n> see @bob"), "> ```py\n> @decorator\n> ```\n> see @\u200dbob");
+    assert.equal(quiet("- item\n\n  ```\n  @a\n  ```"), "- item\n\n  ```\n  @a\n  ```");
+    assert.equal(quiet("```\n```~~~\n@decorator\n```\n@y"), "```\n```~~~\n@decorator\n```\n@\u200dy");
+  });
+
   it("ends every comment a round posts in the engine marker, so a stub can divert it (OBJ-020)", async () => {
     const gh = github({ refuse: new Set(["src/a.js"]) });
     await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, rounds: 1, events: stream([finding()]) });
@@ -189,7 +196,7 @@ describe("poster (#184)", () => {
 
   it("a withheld finding is never reported as no findings (OBJ-005)", async () => {
     assert.equal(roundVerdict({ conclusion: "completed", headSha: HEAD, findings: 0, dropped: 1 }),
-      "reviewed `bbbbbbb`, 0 findings inline, 1 withheld (credential-shaped or oversized).");
+      "reviewed `bbbbbbb`, 0 findings inline, 1 withheld (credential-shaped, oversized or unreadable).");
   });
 
   it("keys an unplaced finding by its place in the round, so a resume posts the right one (OBJ-006)", async () => {

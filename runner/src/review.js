@@ -125,6 +125,13 @@ export function fileJournal(dir) {
   return { has: (k) => seen.has(k), record: (k, id) => { seen.set(k, id); appendFileSync(file, JSON.stringify({ key: k, id, at: new Date().toISOString() }) + '\n'); } };
 }
 
+// Findings the runner lost before they became events. A corrupt tool-log line may have been
+// one, so it counts as withheld rather than letting the verdict say "no findings" (OBJ-005).
+export function withheldCount(summary) {
+  const dropped = (summary.dropped ?? []).filter((d) => d.tool === 'create_inline_comment' || /finding/i.test(d.why ?? '')).length;
+  return dropped + (summary.tool_log_corrupt_lines ?? 0);
+}
+
 export async function publish(dir, { log = (s) => process.stderr.write(s + '\n'), fetch = globalThis.fetch, token = null, login = null } = {}) {
   const round = JSON.parse(readFileSync(path.join(dir, 'round.json'), 'utf8'));
   const events = readFileSync(path.join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -140,11 +147,12 @@ export async function publish(dir, { log = (s) => process.stderr.write(s + '\n')
   const rounds = Math.max(0, ...live.map((r) => r.rounds)) + 1;
   // Findings on an older head still land (GitHub shows them outdated); the verdict line does
   // not, or it would replace a newer head's verdict.
+  const summary = JSON.parse(readFileSync(path.join(dir, 'summary.json'), 'utf8'));
   const headNow = () => ghJson(`repos/${round.repository}/pulls/${round.pr_number}`).head.sha;
   const current = headNow();
   const r = await postRound({
     fetch, token, appLogin: login, job: round, events, rounds, journal: fileJournal(dir), engineLiveness: true,
-    engineDropped: (JSON.parse(readFileSync(path.join(dir, 'summary.json'), 'utf8')).dropped ?? []).filter((d) => d.tool === 'create_inline_comment' || /finding/i.test(d.why ?? '')).length,
+    engineDropped: withheldCount(summary),
     skipLiveness: current !== round.head_sha,
     // Asked again just before the verdict line, since posting the findings takes a while.
     livenessStillCurrent: async () => headNow() === round.head_sha,
