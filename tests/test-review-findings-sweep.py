@@ -122,6 +122,14 @@ case "$args" in
     exit 0
     ;;
 esac
+case "$args" in
+  *"/collaborators/"*"/permission"*)
+    login=$(printf '%s' "$args" | sed -E 's#.*/collaborators/([^/ ]+)/permission.*#\1#')
+    var="FAKE_PERM_${login//-/_}"
+    printf '%s' "${!var:-read}"
+    exit 0
+    ;;
+esac
 echo "gh stub: unrouted call: $args" >&2
 exit 1
 """
@@ -244,7 +252,8 @@ class SweepResult(tuple):
 def run_sweep(script, *, pr_list=None, main_fixtures, overflow_fixtures=None, http_code="200",
               max_attempts=2, backoff=0, full_history="false", window_days="3",
               pr_number=None, event_pr_number=None, event_action=None, auth_header=None,
-              telemetry_share=None, ingest_token="tok", ingest_url="https://example.com"):
+              telemetry_share=None, ingest_token="tok", ingest_url="https://example.com",
+              extra_env=None):
     """
     main_fixtures: {pr_number: [page1_json, page2_json, ...]}. A PR whose list runs out
     before pagination is done (or an empty list) leaves later calls with no fixture, which
@@ -295,6 +304,7 @@ def run_sweep(script, *, pr_list=None, main_fixtures, overflow_fixtures=None, ht
             SWEEP_MAX_ATTEMPTS=str(max_attempts),
             SWEEP_BACKOFF_BASE_SECONDS=str(backoff),
         )
+        env.update(extra_env or {})
         for n, pages in main_fixtures.items():
             for i, fx in enumerate(pages, start=1):
                 if fx is not None:
@@ -524,6 +534,17 @@ def main():
     check("a human comment carrying the marker is excluded", "PRT_HUMAN_MARKER" not in by_id, rows)
     check("a claude[bot] thread records a null engine",
           "PRT_CLAUDE" in by_id and by_id["PRT_CLAUDE"].get("engine", "missing") is None, rows)
+
+    # A local round posts under its operator's login (#184): a writer's marked finding is a
+    # row, a read-only member's is not, whatever their association says.
+    local_thread = thread("PRT_LOCAL", [comment("sumit-1", "**Bug**: y" + marker, typename="User")], resolved_by=None)
+    reader_thread = thread("PRT_READER", [comment("reader", "**Bug**: z" + marker, typename="User")], resolved_by=None)
+    fx_local = main_page(head_sha=OID_A, commit_oids=[OID_A], threads=[local_thread, reader_thread])
+    _, rows = run_sweep(script, pr_list=[17], main_fixtures={17: [fx_local]}, extra_env={"FAKE_PERM_sumit_1": "write"})
+    by_id = {r["thread_node_id"]: r for r in rows}
+    check("a writer's marked finding from a local round is a row with its engine",
+          by_id.get("PRT_LOCAL", {}).get("engine") == "opencode", rows)
+    check("a read-only user's marked finding is not a row", "PRT_READER" not in by_id, rows)
 
     # A finding that quotes another engine's marker is read by the trailing one, and the quote stays.
     quoted = "**Bug**: see `<!-- assayer-finding engine=claude-code -->`"

@@ -383,7 +383,24 @@ jobs:
               done
             done < "$overflow_ids_file"
 
-            findings_json=$(REPOSITORY="$REPOSITORY" PR_NUMBER="$pr" SWEPT_AT="$SWEPT_AT" ROW_SET_COMPLETE="$complete" SHARE_LEVEL="${TELEMETRY_SHARE:-}" python3 - "$pr_dir" <<'PY'
+            # A marked finding by a person counts only when that person can write here: a
+            # local round posts under its operator's own login (#184). Association is not
+            # write access (MEMBER can be read-only), so ask for the effective permission.
+            writers='[]'
+            for login in $(cat "${pr_dir}"/main_page_*.json \
+                | jq -r '.. | objects | select(has("comments")) | .comments.nodes[0]? // empty
+                    | select((.author.__typename // "") == "User")
+                    | select((.body // "") | test("<!-- assayer-finding engine=[a-z0-9-]{1,32} -->\\s*$"))
+                    | .author.login' | sort -u); do
+              case "$login" in *[!A-Za-z0-9-]*|'') continue ;; esac
+              if perm=$(gh api "repos/${REPOSITORY}/collaborators/${login}/permission" --jq .permission 2>/dev/null); then
+                case "$perm" in admin|write) writers=$(jq -c --arg l "$login" '. + [$l]' <<<"$writers") ;; esac
+              else
+                echo "::warning::could not read ${login}'s permission on ${REPOSITORY}; their marked findings on #${pr} are not rows this sweep"
+              fi
+            done
+
+            findings_json=$(REPOSITORY="$REPOSITORY" PR_NUMBER="$pr" SWEPT_AT="$SWEPT_AT" ROW_SET_COMPLETE="$complete" SHARE_LEVEL="${TELEMETRY_SHARE:-}" WRITER_LOGINS="$writers" python3 - "$pr_dir" <<'PY'
           import glob
           import json
           import os
@@ -494,6 +511,8 @@ jobs:
           # Only the trailing marker counts: a finding that quotes a marker in its text must
           # not be read as that engine, and the quoted text stays intact.
           ENGINE_MARKER_RE = re.compile(r"\s*<!-- assayer-finding engine=([a-z0-9-]{1,32}) -->\s*\Z")
+          # Logins the shell step above confirmed hold write or admin here (#184).
+          WRITERS = set(json.loads(os.environ.get("WRITER_LOGINS") or "[]"))
 
           findings = []
           for thread in threads:
@@ -502,14 +521,17 @@ jobs:
                   continue
               first = comments[0]
               # Amendment 10 / schema scope correction (#47): only a review lane lands here,
-              # the Actions lane as claude[bot] or a runner round as an App carrying the
-              # marker. CodeRabbit, a human review or anything else is never a row.
+              # the Actions lane as claude[bot], or a marked finding from an App or from a
+              # writer's local round (#184). CodeRabbit or an unmarked comment is never a row.
               reviewer = normalize_login(first.get("author"))
               if reviewer == "claude[bot]":
                   engine = None
               else:
                   marker = ENGINE_MARKER_RE.search(first.get("body") or "")
-                  if not marker or (first.get("author") or {}).get("__typename") != "Bot":
+                  author = first.get("author") or {}
+                  trusted = author.get("__typename") == "Bot" or (
+                      author.get("__typename") == "User" and author.get("login") in WRITERS)
+                  if not marker or not trusted:
                       continue
                   engine = marker.group(1)
 

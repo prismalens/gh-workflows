@@ -135,7 +135,8 @@ jobs:
     # Stories: prismalens/prismalens#403 and #422.
     # A label event for any other label is not the lane's business and must not start
     # `review`: each would spin the config read for nothing. Only the two admission labels
-    # pass (#189).
+    # pass (#189). A finding a local round posted under its operator's login ends in the
+    # assayer marker and is not a reply to answer (#184).
     if: >-
       (github.event_name == 'pull_request' && (
         (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
@@ -154,7 +155,9 @@ jobs:
             )
           ) || (
             github.event_name == 'pull_request_review_comment' &&
-            github.event.pull_request.state == 'open'
+            github.event.pull_request.state == 'open' &&
+            !(endsWith(github.event.comment.body, '-->') &&
+              contains(github.event.comment.body, '<!-- assayer-finding engine='))
           )
         )
       )
