@@ -19,13 +19,23 @@ const THREADS_QUERY = `query($o:String!,$r:String!,$n:Int!,$after:String){reposi
 
 export function github(fetchImpl, token) {
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'assayer-cli' };
-  const call = async (method, p, body) => {
-    const res = await fetchImpl(`${GITHUB_API}${p}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  // A read that hits a network error is tried again; a write is not, since it may have landed.
+  const call = async (method, p, body, { retry = method === 'GET' } = {}) => {
+    let res;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        res = await fetchImpl(`${GITHUB_API}${p}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+        break;
+      } catch (e) {
+        if (!retry || attempt === 3) throw e;
+        await new Promise((r) => setTimeout(r, 1000 * attempt));
+      }
+    }
     if (!res.ok) throw Object.assign(new Error(`github ${method} ${p.split('?')[0]} ${res.status}`), { status: res.status });
     return res.json();
   };
   const graphql = async (query, variables) => {
-    const r = await call('POST', '/graphql', { query, variables });
+    const r = await call('POST', '/graphql', { query, variables }, { retry: !query.trimStart().startsWith('mutation') });
     if (r.errors?.length) throw new Error(`github graphql: ${r.errors[0].message}`);
     return r.data;
   };
@@ -58,9 +68,12 @@ export async function listThreads(api, repo, pr) {
 }
 
 // Only threads this reviewer started: unresolved, first comment by `login` and ending in this
-// engine's marker. Anyone else's thread, even one quoting the marker, is never touched.
+// engine's marker. Anyone else's thread, even one quoting the marker, is never touched. Within a
+// thread the reviewer's own comments are told by the marker, not the login: run locally, the
+// reviewer and the PR's author are often the same account.
 export function ownOpenThreads(nodes, { login, engine }) {
   const marker = findingMarker(engine);
+  const ours = (c) => c?.author?.login === login && typeof c.body === 'string' && c.body.trimEnd().endsWith(marker);
   const out = [];
   for (const t of nodes) {
     const comments = t.comments?.nodes ?? [];
@@ -69,9 +82,9 @@ export function ownOpenThreads(nodes, { login, engine }) {
     out.push({
       thread_id: t.id, root_id: first.databaseId, path: t.path, line: t.line ?? null,
       since: first.originalCommit?.oid ?? null, body: first.body,
-      replies: comments.slice(1).filter((c) => c.author?.login !== login).map((c) => ({ author: c.author?.login ?? null, body: c.body })),
+      replies: comments.slice(1).filter((c) => !ours(c)).map((c) => ({ author: c.author?.login ?? null, body: c.body })),
       // Someone spoke after the reviewer's last word, so a verdict owes them a reply.
-      awaiting: comments.at(-1)?.author?.login !== login,
+      awaiting: !ours(comments.at(-1)),
       // The whole conversation as judged, edits included, to tell when a verdict went stale.
       conversation: JSON.stringify(comments.map((c) => [c.author?.login ?? null, c.body])),
     });
@@ -158,6 +171,7 @@ export async function applyVerdicts({ api, repo, pr, engine, login, headSha, thr
       out.replied += 1;
     }
     if (v.verdict === 'fixed') {
+      if ((await api.call('GET', `/repos/${repo}/pulls/${pr}`)).head?.sha !== headSha) { log('assayer: the PR moved while replying; the thread stays open'); out.stale += 1; journal?.record(key, 'stale'); continue; }
       try {
         await api.graphql('mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}', { t: t.thread_id });
         out.resolved += 1;

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { listThreads, ownOpenThreads, threadsToCheck, readVerdicts, checkVerdicts, applyVerdicts } from '../src/threads.js';
+import { github, listThreads, ownOpenThreads, threadsToCheck, readVerdicts, checkVerdicts, applyVerdicts } from '../src/threads.js';
 import { decide } from '../src/policy.js';
 
 const HEAD = 'a'.repeat(40);
@@ -38,6 +38,21 @@ describe('threads (#184)', () => {
     assert.equal(t.awaiting, false);
     const [u] = ownOpenThreads([node('T1', [comment('me', MARK), comment('dev', 'done')])], { login: 'me', engine: 'codex' });
     assert.equal(u.awaiting, true);
+  });
+
+  it('counts the author\'s own unmarked reply as a reply, since a local reviewer shares their login', () => {
+    const [t] = ownOpenThreads([node('T1', [comment('me', MARK), comment('me', 'fixed in review.js, not here')])], { login: 'me', engine: 'codex' });
+    assert.deepEqual(t.replies, [{ author: 'me', body: 'fixed in review.js, not here' }]);
+    assert.equal(t.awaiting, true);
+  });
+
+  it('retries a read after a network error, never a write', async () => {
+    let n = 0;
+    const flaky = async () => { n += 1; if (n < 3) throw new TypeError('fetch failed'); return { ok: true, status: 200, json: async () => ({ fine: true }) }; };
+    assert.deepEqual(await github(flaky, 't').call('GET', '/x'), { fine: true });
+    n = 0;
+    await assert.rejects(github(flaky, 't').call('POST', '/x', {}), /fetch failed/);
+    assert.equal(n, 1);
   });
 
   it('asks a model only about threads whose file changed, that someone answered, or whose base is gone', async () => {
