@@ -45,12 +45,13 @@ export function livenessBody({ rounds, headSha, engine, model, verdict }) {
 }
 
 // The round's verdict line, from what it posted and how it finished.
-export function roundVerdict({ conclusion, headSha, findings, failureClass }) {
+export function roundVerdict({ conclusion, headSha, findings, failureClass, unplaced = 0 }) {
   const short = String(headSha).slice(0, 7);
   if (conclusion === "completed") {
-    return findings === 0
-      ? `reviewed \`${short}\`, no findings.`
-      : `reviewed \`${short}\`, ${findings} finding${findings === 1 ? "" : "s"} inline.`;
+    // A finding GitHub would not anchor is still a finding: "no findings" would be false (OBJ-005).
+    const missed = unplaced > 0 ? `, ${unplaced} not placed inline (listed in the summary)` : "";
+    if (findings === 0 && unplaced === 0) return `reviewed \`${short}\`, no findings.`;
+    return `reviewed \`${short}\`, ${findings} finding${findings === 1 ? "" : "s"} inline${missed}.`;
   }
   const why = failureClass ? ` (${failureClass})` : "";
   return `the round on \`${short}\` ended ${conclusion ?? "without a conclusion"}${why}; this head has no machine review on record.`;
@@ -92,20 +93,30 @@ export async function upsertLiveness({ fetch: fetchImpl, token, appLogin, reposi
 }
 
 // Posts one finished round. `events` are this attempt's events, oldest first. Returns counts;
-// a finding GitHub refuses (a line outside the diff, say) is counted, never fatal.
-export async function postRound({ fetch: fetchImpl, token, appLogin, job, events, rounds }) {
-  const out = { inline: 0, refused: 0, summary: 0 };
+// a finding GitHub refuses (a line outside the diff, say) is counted, never fatal, and listed
+// under the summary so the round's text is never lost. A finding with a credential-shaped body
+// is dropped outright. `journal` (optional: has(key), record(key, id)) lets a caller resume a
+// publish that stopped partway without posting twice (OBJ-006).
+export async function postRound({ fetch: fetchImpl, token, appLogin, job, events, rounds, journal = null }) {
+  const out = { inline: 0, refused: 0, summary: 0, unplaced: 0 };
+  const unplaced = [];
   const findings = events.filter((e) => e.type === "finding");
-  for (const f of findings) {
+  const marker = findingMarker(job.engine);
+  for (const [i, f] of findings.entries()) {
+    const key = `finding:${i}`;
+    if (journal?.has(key)) {
+      out.inline += 1;
+      continue;
+    }
     if (typeof f.body !== "string" || !f.body.trim() || looksLikeSecret(f.body) || f.body.length > MAX_BODY) {
       out.refused += 1;
       continue;
     }
     if (typeof f.path !== "string" || !Number.isInteger(f.line) || f._meta?.path_outside_checkout) {
       out.refused += 1;
+      unplaced.push(f);
       continue;
     }
-    const marker = findingMarker(job.engine);
     const comment = {
       body: marker ? `${f.body}\n\n${marker}` : f.body,
       commit_id: job.head_sha,
@@ -119,13 +130,16 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
       comment.start_side = comment.side;
     }
     try {
-      await call(fetchImpl, token, "POST", `/repos/${job.repository}/pulls/${job.pr_number}/comments`, comment);
+      const posted = await call(fetchImpl, token, "POST", `/repos/${job.repository}/pulls/${job.pr_number}/comments`, comment);
+      journal?.record(key, posted?.id ?? null);
       out.inline += 1;
     } catch (e) {
       if (e.status !== 422) throw e;
       out.refused += 1;
+      unplaced.push(f);
     }
   }
+  out.unplaced = unplaced.length;
 
   let summary = null;
   for (let i = events.length - 1; i >= 0; i--) {
@@ -134,10 +148,19 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
       break;
     }
   }
-  if (summary && typeof summary.body === "string" && summary.body.trim() && !looksLikeSecret(summary.body)) {
-    await call(fetchImpl, token, "POST", `/repos/${job.repository}/issues/${job.pr_number}/comments`, {
-      body: summary.body.slice(0, MAX_BODY),
+  let summaryBody = summary && typeof summary.body === "string" && summary.body.trim() && !looksLikeSecret(summary.body) ? summary.body : null;
+  if (unplaced.length) {
+    const where = (f) => (typeof f.path === "string" ? `\`${f.path}${Number.isInteger(f.line) ? `:${f.line}` : ""}\`` : "no location");
+    const listed = unplaced.map((f) => `<details><summary>${where(f)}</summary>\n\n${f.body}\n\n</details>`).join("\n\n");
+    summaryBody = `${summaryBody ?? "## Code review"}\n\n### Not placed inline\n\nGitHub would not anchor these on the diff.\n\n${listed}`;
+  }
+  if (summaryBody && journal?.has("summary")) {
+    out.summary = 1;
+  } else if (summaryBody) {
+    const posted = await call(fetchImpl, token, "POST", `/repos/${job.repository}/issues/${job.pr_number}/comments`, {
+      body: summaryBody.slice(0, MAX_BODY),
     });
+    journal?.record("summary", posted?.id ?? null);
     out.summary = 1;
   }
 
@@ -148,6 +171,7 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
     conclusion: finished?.conclusion,
     headSha: job.head_sha,
     findings: out.inline,
+    unplaced: out.unplaced,
     failureClass: error?.failure_class,
   });
   await upsertLiveness({
@@ -164,6 +188,7 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
       verdict,
     }),
   });
+  journal?.record("liveness", null);
   return out;
 }
 

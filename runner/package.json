@@ -8,6 +8,7 @@
     "test": "node --test"
   },
   "bin": {
+    "assayer": "src/review.js",
     "assayer-run": "src/run.js",
     "assayer-runner": "src/daemon.js"
   },

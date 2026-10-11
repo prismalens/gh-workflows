@@ -43,7 +43,9 @@ export function spawnRound(job, { cwd, out, promptPath, promptHashValue, credent
     ...(credential.env ? ['--credential-env', credential.env] : [])];
   if (!(job.model ?? row.defaultModel)) args.splice(args.indexOf('--model'), 2);
   const env = { GH_TOKEN: installationToken };
-  for (const k of ['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR']) if (process.env[k] !== undefined) env[k] = process.env[k];
+  // The row's own allowlist, so a daemon round sees what a terminal round sees (CODEX_HOME,
+  // provider settings). Keys and tokens come only from the job and its credential (OBJ-013).
+  for (const k of row.envAllow) if (!/TOKEN|API_KEY/.test(k) && process.env[k] !== undefined) env[k] = process.env[k];
   if (credential.env) env[credential.env] = credentialValue;
   return new Promise((resolve) => {
     const child = spawn(process.execPath, args, { env, detached: true, stdio: ['ignore', 'ignore', 'pipe'] });

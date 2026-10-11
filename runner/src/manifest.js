@@ -145,7 +145,10 @@ export async function buildManifest({
     throw new Error(`buildManifest: could not stat ${diffPath}: ${e.message}\n${stderr}`);
   }
 
-  return { manifest, diffBytes, stderr };
+  // The size refusal (principle 10) arrives as manifest.py's `refused=` output line, relayed
+  // to stderr outside Actions. A refused round never reaches the engine (OBJ-002).
+  const refused = /^refused=true$/m.test(stderr);
+  return { manifest, diffBytes, stderr, refused };
 }
 
 function parseCliArgs(argv) {

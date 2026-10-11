@@ -38,7 +38,7 @@ describe("poster (#184)", () => {
   it("posts each finding as a review comment on the head, the summary as an issue comment, then its liveness", async () => {
     const gh = github();
     const r = await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, events: stream([finding(), finding({ line: 20, _meta: { start_line: 18 } })]), rounds: 1 });
-    assert.deepEqual(r, { inline: 2, refused: 0, summary: 1 });
+    assert.deepEqual(r, { inline: 2, refused: 0, summary: 1, unplaced: 0 });
     const writes = gh.calls.filter((c) => c.method !== "GET");
     assert.deepEqual(writes.map((c) => `${c.method} ${c.path}`), [
       "POST /repos/prismalens/sreforge/pulls/183/comments",
@@ -83,7 +83,32 @@ describe("poster (#184)", () => {
         finding(),
       ]),
     });
-    assert.deepEqual(r, { inline: 1, refused: 4, summary: 1 });
+    assert.deepEqual(r, { inline: 1, refused: 4, summary: 1, unplaced: 3 });
+  });
+
+  it("never says no findings when every finding failed to anchor, and lists them under the summary (OBJ-005)", async () => {
+    const gh = github({ refuse: new Set(["src/a.js"]) });
+    const r = await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, events: stream([finding(), finding({ line: 30 })]), rounds: 1 });
+    assert.deepEqual(r, { inline: 0, refused: 2, summary: 1, unplaced: 2 });
+    const issueWrites = gh.calls.filter((c) => c.method === "POST" && c.path.endsWith("/issues/183/comments"));
+    assert.match(issueWrites[0].body.body, /### Not placed inline[\s\S]*`src\/a\.js:12`[\s\S]*`src\/a\.js:30`/);
+    assert.match(issueWrites[1].body.body, /reviewed `bbbbbbb`, 0 findings inline, 2 not placed inline \(listed in the summary\)\./);
+    assert.doesNotMatch(issueWrites[1].body.body, /no findings/);
+  });
+
+  it("resumes from a journal without posting a recorded finding or summary twice (OBJ-006)", async () => {
+    const seen = new Map([["finding:0", 11], ["summary", 12]]);
+    const journal = { has: (k) => seen.has(k), record: (k, id) => seen.set(k, id) };
+    const gh = github();
+    const r = await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, events: stream([finding(), finding({ line: 20 })]), rounds: 1, journal });
+    assert.deepEqual(r, { inline: 2, refused: 0, summary: 1, unplaced: 0 });
+    const writes = gh.calls.filter((c) => c.method !== "GET");
+    assert.deepEqual(writes.map((c) => `${c.method} ${c.path}`), [
+      "POST /repos/prismalens/sreforge/pulls/183/comments",
+      "POST /repos/prismalens/sreforge/issues/183/comments",
+    ]);
+    assert.equal(writes[0].body.line, 20);
+    assert.ok(seen.has("finding:1") && seen.has("liveness"));
   });
 
   it("upserts only a liveness comment this App wrote", async () => {
