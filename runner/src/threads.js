@@ -15,7 +15,7 @@ const TEMPLATES = {
 
 const THREADS_QUERY = `query($o:String!,$r:String!,$n:Int!,$after:String){repository(owner:$o,name:$r){pullRequest(number:$n){
   reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved path line
-    comments(first:50){nodes{databaseId author{login} body originalCommit{oid}}}}}}}}`;
+    comments(first:100){totalCount nodes{databaseId author{login} body originalCommit{oid}}}}}}}}`;
 
 export function github(fetchImpl, token) {
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'assayer-cli' };
@@ -54,6 +54,8 @@ export function ownOpenThreads(nodes, { login, engine }) {
     const comments = t.comments?.nodes ?? [];
     const first = comments[0];
     if (t.isResolved || !first || first.author?.login !== login || typeof first.body !== 'string' || !first.body.trimEnd().endsWith(marker)) continue;
+    // A thread longer than one page cannot be read whole, so a person must close it.
+    if ((t.comments?.totalCount ?? comments.length) > comments.length) continue;
     out.push({
       thread_id: t.id, root_id: first.databaseId, path: t.path, line: t.line ?? null,
       since: first.originalCommit?.oid ?? null, body: first.body,
@@ -66,14 +68,17 @@ export function ownOpenThreads(nodes, { login, engine }) {
 }
 
 // A thread whose file did not change since the finding, and that nobody answered, still stands
-// without asking a model. An unreadable comparison (a force-push dropped `since`) is checked.
+// without asking a model. A comparison that cannot be trusted is checked: unreadable (a
+// force-push dropped `since`), not a straight line from `since` to head, or at GitHub's
+// 300-file cap.
 export async function threadsToCheck(api, repo, headSha, threads) {
   const touched = new Map();
   for (const since of new Set(threads.map((t) => t.since))) {
     if (!since || since === headSha) { touched.set(since, new Set()); continue; }
     try {
       const c = await api.call('GET', `/repos/${repo}/compare/${since}...${headSha}`);
-      touched.set(since, new Set((c.files ?? []).flatMap((f) => [f.filename, f.previous_filename].filter(Boolean))));
+      const files = c.files ?? [];
+      touched.set(since, c.status !== 'ahead' || files.length >= 300 ? null : new Set(files.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean))));
     } catch {
       touched.set(since, null);
     }
@@ -114,14 +119,21 @@ export function checkVerdicts(verdicts, threads, headSha) {
 
 // Replies and resolves under the token's login. `fixed` replies and resolves; the other two
 // reply only when someone is waiting on the reviewer, so a re-run never repeats itself.
-export async function applyVerdicts({ api, repo, pr, engine, headSha, threads, verdicts, journal = null, log = () => {} }) {
+export async function applyVerdicts({ api, repo, pr, engine, login, headSha, threads, verdicts, journal = null, log = () => {} }) {
   const byId = new Map(threads.map((t) => [t.thread_id, t]));
   const marker = findingMarker(engine);
-  const out = { resolved: 0, replied: 0, unresolvable: 0 };
+  const out = { resolved: 0, replied: 0, unresolvable: 0, stale: 0 };
+  // The verdicts judged one head and one conversation. A push since, or a new comment on a
+  // thread, makes the verdict stale, so it is not applied.
+  const pull = await api.call('GET', `/repos/${repo}/pulls/${pr}`);
+  if (pull.head?.sha !== headSha) { log(`assayer: the PR moved to ${String(pull.head?.sha).slice(0, 7)}; no verdict applied`); out.stale = verdicts.length; return out; }
+  const live = new Map(ownOpenThreads(await listThreads(api, repo, pr), { login, engine }).map((t) => [t.thread_id, t]));
   for (const v of verdicts) {
     const t = byId.get(v.thread_id);
     const key = `verdict:${t.thread_id}`;
     if (journal?.has(key)) continue;
+    const now = live.get(t.thread_id);
+    if (!now || now.replies.length !== t.replies.length || now.awaiting !== t.awaiting) { out.stale += 1; continue; }
     if (v.verdict === 'fixed' || t.awaiting) {
       const body = `${TEMPLATES[v.verdict].replace('{sha}', headSha.slice(0, 8)).replace('{evidence}', v.evidence)}\n\n${marker}`;
       await api.call('POST', `/repos/${repo}/pulls/${pr}/comments/${t.root_id}/replies`, { body });

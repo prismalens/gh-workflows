@@ -37,8 +37,19 @@ function run(spawn, args, { cwd, env, timeoutMs }) {
 
 // The token travels in the environment as an extraheader, never in argv or a URL, so `ps`
 // never shows it (actions/checkout's header, set through GIT_CONFIG_* instead of a file).
-export async function checkout({ repository, headSha, baseSha, token, dir, spawn = nodeSpawn, timeoutMs = 120000 }) {
-  const env = {
+// Commits a later step needs beside head and base, such as the commit a finding was posted on.
+// Best effort: a sha a force-push left unreachable is reported, not fatal.
+export async function fetchCommits({ repository, shas, token, dir, spawn = nodeSpawn, timeoutMs = 120000 }) {
+  const env = gitEnv(token);
+  const missing = [];
+  for (const sha of shas) {
+    try { await run(spawn, ['fetch', '-q', '--depth=1', `https://github.com/${repository}.git`, sha], { cwd: dir, env, timeoutMs }); } catch { missing.push(sha); }
+  }
+  return missing;
+}
+
+function gitEnv(token) {
+  return {
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
     GIT_TERMINAL_PROMPT: '0',
@@ -46,6 +57,10 @@ export async function checkout({ repository, headSha, baseSha, token, dir, spawn
     GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
     GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
   };
+}
+
+export async function checkout({ repository, headSha, baseSha, token, dir, spawn = nodeSpawn, timeoutMs = 120000 }) {
+  const env = gitEnv(token);
   const shas = baseSha && baseSha !== headSha ? [headSha, baseSha] : [headSha];
   await run(spawn, ['init', '-q', dir], { env, timeoutMs });
   await run(spawn, ['fetch', '-q', '--depth=1', `https://github.com/${repository}.git`, ...shas], { cwd: dir, env, timeoutMs });

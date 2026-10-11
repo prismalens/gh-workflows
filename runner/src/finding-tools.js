@@ -22,8 +22,9 @@ if (!which || !log) {
 function record(tool, input) {
   // Redact before the write, not after: SessionMapper filters when it reads this log back, by
   // which time an unredacted body is already on disk for anyone who collects it (CWE-532).
-  const secret = typeof input?.body === 'string' && looksLikeSecret(input.body);
-  const entry = secret ? { ...input, body: null } : input;
+  const field = tool === 'thread_verdict' ? 'evidence' : 'body';
+  const secret = typeof input?.[field] === 'string' && looksLikeSecret(input[field]);
+  const entry = secret ? { ...input, [field]: null } : input;
   appendFileSync(log, JSON.stringify({
     at: new Date().toISOString(), server: which, tool, input: entry,
     ...(secret ? { redacted: 'credential-shaped body' } : {}),
