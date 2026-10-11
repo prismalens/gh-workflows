@@ -33,6 +33,13 @@ has this engine's review on its head (`--again` runs another), or whose reposito
 workflow defaults). The round lives in `~/.assayer/reviews/<repo>-<pr>-<sha>-<time>/` unless
 `--out` names a new directory. The engine gets no GitHub credential.
 
+Before reviewing, it re-checks your own open threads from earlier rounds: those you started with
+this engine's marker whose file changed since, or that someone answered. The engine judges each
+one fixed, still applies, or cannot verify (`prompt/verify.md`). With `--post`, a fixed thread
+gets a one-line reply and is resolved, and the others get a reply only when someone is waiting
+on you. Threads that stay open are handed to the review as already raised, so it does not post
+them again. `--verify-only` stops after the check; `--skip-verify` skips it.
+
 ## Run one round
 
 ```bash
