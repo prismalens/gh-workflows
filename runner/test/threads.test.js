@@ -153,7 +153,9 @@ describe('threads (#184)', () => {
     assert.deepEqual(r, { resolved: 1, replied: 2, unresolvable: 0, stale: 0, resolvedIds: ['F'] });
     const writes = calls.filter((c) => c.m !== 'GET' && c.m !== 'LIST');
     assert.deepEqual(writes.map((c) => `${c.m} ${c.p}`), ['POST /repos/o/r/pulls/7/comments/11/replies', 'GQL F', 'POST /repos/o/r/pulls/7/comments/13/replies']);
-    assert.match(writes[0].b.body, /^Verified fixed in `aaaaaaaa`\. gone\n\n<!-- assayer-finding engine=codex -->$/);
+    // The sweep's FIXED_RE (review-findings-sweep.yml) must read the reply.
+    assert.match(writes[0].b.body, /Verified fixed in commit `([0-9a-fA-F]{7,40})`/);
+    assert.match(writes[0].b.body, /^Verified fixed in commit `aaaaaaaa`\. gone\n\n<!-- assayer-finding engine=codex -->$/);
     assert.match(writes[2].b.body, /^Still applies to `aaaaaaaa`: the reply misreads line 4 \$& \$1/);
     await applyVerdicts({ api, repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD, threads, verdicts, journal });
     assert.equal(calls.filter((c) => c.m !== 'GET' && c.m !== 'LIST').length, 3);

@@ -7,8 +7,9 @@ import { VERDICT_TOOL } from './policy.js';
 
 const GITHUB_API = 'https://api.github.com';
 const VERDICTS = new Set(['fixed', 'still_applies', 'cannot_verify']);
+// The Actions lane's reply templates, which review-findings-sweep.yml parses (FIXED_RE and kin).
 const TEMPLATES = {
-  fixed: 'Verified fixed in `{sha}`. {evidence}',
+  fixed: 'Verified fixed in commit `{sha}`. {evidence}',
   still_applies: 'Still applies to `{sha}`: {evidence}',
   cannot_verify: 'Could not verify against `{sha}`: {evidence}',
 };
@@ -153,16 +154,15 @@ export async function applyVerdicts({ api, repo, pr, engine, login, headSha, thr
   const marker = findingMarker(engine);
   const out = { resolved: 0, replied: 0, unresolvable: 0, stale: 0, resolvedIds: [] };
   // The verdicts judged one head and one conversation. A push, or any new or edited comment on
-  // the thread, makes a verdict stale, so it is not applied. The head is asked again before each
-  // thread, since GitHub has no conditional write.
-  const live = new Map(ownOpenThreads(await listThreads(api, repo, pr), { login, engine }).map((t) => [t.thread_id, t]));
+  // the thread, makes a verdict stale, so it is not applied. Head and threads are read again
+  // before each thread, since GitHub has no conditional write.
   for (const v of verdicts) {
     const t = byId.get(v.thread_id);
     const key = `verdict:${t.thread_id}`;
     if (journal?.has(key)) continue;
     const pull = await api.call('GET', `/repos/${repo}/pulls/${pr}`);
     if (pull.head?.sha !== headSha) { log(`assayer: the PR moved to ${String(pull.head?.sha).slice(0, 7)}; the remaining verdicts are not applied`); out.stale += 1; continue; }
-    const now = live.get(t.thread_id);
+    const now = ownOpenThreads(await listThreads(api, repo, pr), { login, engine }).find((x) => x.thread_id === t.thread_id);
     if (!now || now.conversation !== t.conversation) { out.stale += 1; continue; }
     if (v.verdict === 'fixed' || t.awaiting) {
       const text = TEMPLATES[v.verdict].replace('{sha}', () => headSha.slice(0, 8)).replace('{evidence}', () => v.evidence);
