@@ -130,7 +130,7 @@ describe('threads (#184)', () => {
     const verdicts = [
       { thread_id: 'F', verdict: 'fixed', evidence: 'gone' },
       { thread_id: 'S', verdict: 'still_applies', evidence: 'still there' },
-      { thread_id: 'W', verdict: 'still_applies', evidence: 'the reply misreads line 4' },
+      { thread_id: 'W', verdict: 'still_applies', evidence: 'the reply misreads line 4 $& $1' },
     ];
     const seen = new Map();
     const journal = { has: (k) => seen.has(k), record: (k, v) => seen.set(k, v) };
@@ -139,6 +139,7 @@ describe('threads (#184)', () => {
     const writes = calls.filter((c) => c.m !== 'GET' && c.m !== 'LIST');
     assert.deepEqual(writes.map((c) => `${c.m} ${c.p}`), ['POST /repos/o/r/pulls/7/comments/11/replies', 'GQL F', 'POST /repos/o/r/pulls/7/comments/13/replies']);
     assert.match(writes[0].b.body, /^Verified fixed in `aaaaaaaa`\. gone\n\n<!-- assayer-finding engine=codex -->$/);
+    assert.match(writes[2].b.body, /^Still applies to `aaaaaaaa`: the reply misreads line 4 \$& \$1/);
     await applyVerdicts({ api, repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD, threads, verdicts, journal });
     assert.equal(calls.filter((c) => c.m !== 'GET' && c.m !== 'LIST').length, 3);
   });
@@ -153,6 +154,8 @@ describe('threads (#184)', () => {
     const edited = ownOpenThreads([node('F', [comment('me', MARK), comment('dev', 'done')], { path: 'a' })], { login: 'me', engine: 'codex' });
     const e = await applyVerdicts({ api: liveApi([node('F', [comment('me', MARK), comment('dev', 'done, but see line 9')], { path: 'a' })], calls), repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD, threads: edited, verdicts: [verdicts[0]] });
     assert.equal(e.stale, 1, 'an edited reply is a changed conversation');
+    const f = await applyVerdicts({ api: liveApi([node('F', [comment('me', `edited finding\n\n${MARK}`), comment('dev', 'done')], { path: 'a' })], calls), repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD, threads: edited, verdicts: [verdicts[0]] });
+    assert.equal(f.stale, 1, 'an edited finding is a changed conversation');
     const later = [node('F', [comment('me', MARK), comment('dev', 'wait, not yet')], { path: 'a' }), nodes[1]];
     const r = await applyVerdicts({ api: liveApi(later, calls), repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD, threads, verdicts });
     assert.deepEqual(r, { resolved: 1, replied: 1, unresolvable: 0, stale: 1, resolvedIds: ['G'] });

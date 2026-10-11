@@ -72,6 +72,8 @@ export function ownOpenThreads(nodes, { login, engine }) {
       replies: comments.slice(1).filter((c) => c.author?.login !== login).map((c) => ({ author: c.author?.login ?? null, body: c.body })),
       // Someone spoke after the reviewer's last word, so a verdict owes them a reply.
       awaiting: comments.at(-1)?.author?.login !== login,
+      // The whole conversation as judged, edits included, to tell when a verdict went stale.
+      conversation: JSON.stringify(comments.map((c) => [c.author?.login ?? null, c.body])),
     });
   }
   return out;
@@ -137,19 +139,21 @@ export async function applyVerdicts({ api, repo, pr, engine, login, headSha, thr
   const byId = new Map(threads.map((t) => [t.thread_id, t]));
   const marker = findingMarker(engine);
   const out = { resolved: 0, replied: 0, unresolvable: 0, stale: 0, resolvedIds: [] };
-  // The verdicts judged one head and one conversation. A push since, or a new comment on a
-  // thread, makes the verdict stale, so it is not applied.
-  const pull = await api.call('GET', `/repos/${repo}/pulls/${pr}`);
-  if (pull.head?.sha !== headSha) { log(`assayer: the PR moved to ${String(pull.head?.sha).slice(0, 7)}; no verdict applied`); out.stale = verdicts.length; return out; }
+  // The verdicts judged one head and one conversation. A push, or any new or edited comment on
+  // the thread, makes a verdict stale, so it is not applied. The head is asked again before each
+  // thread, since GitHub has no conditional write.
   const live = new Map(ownOpenThreads(await listThreads(api, repo, pr), { login, engine }).map((t) => [t.thread_id, t]));
   for (const v of verdicts) {
     const t = byId.get(v.thread_id);
     const key = `verdict:${t.thread_id}`;
     if (journal?.has(key)) continue;
+    const pull = await api.call('GET', `/repos/${repo}/pulls/${pr}`);
+    if (pull.head?.sha !== headSha) { log(`assayer: the PR moved to ${String(pull.head?.sha).slice(0, 7)}; the remaining verdicts are not applied`); out.stale += 1; continue; }
     const now = live.get(t.thread_id);
-    if (!now || JSON.stringify(now.replies) !== JSON.stringify(t.replies) || now.awaiting !== t.awaiting) { out.stale += 1; continue; }
+    if (!now || now.conversation !== t.conversation) { out.stale += 1; continue; }
     if (v.verdict === 'fixed' || t.awaiting) {
-      const body = `${TEMPLATES[v.verdict].replace('{sha}', headSha.slice(0, 8)).replace('{evidence}', v.evidence)}\n\n${marker}`;
+      const text = TEMPLATES[v.verdict].replace('{sha}', () => headSha.slice(0, 8)).replace('{evidence}', () => v.evidence);
+      const body = `${text}\n\n${marker}`;
       await api.call('POST', `/repos/${repo}/pulls/${pr}/comments/${t.root_id}/replies`, { body });
       out.replied += 1;
     }

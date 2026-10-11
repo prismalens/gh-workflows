@@ -188,7 +188,13 @@ async function verifyThreads(o, { api, login, dir, cwd, headSha, baseSha, token,
   const gone = await fetchCommits({ repository: o.repo, shas: [...new Set(check.map((t) => t.since).filter(Boolean))], token, dir: cwd });
   if (gone.length) log(`assayer: ${gone.length} finding commit(s) are gone from GitHub; those threads are judged on the current code`);
   const staged = path.join(cwd, '.assayer-threads.json');
-  writeFileSync(staged, JSON.stringify(check.map(({ thread_id, path: p, line, since, body, replies }) => ({ thread_id, path: p, line, since, body, replies })), null, 2) + '\n');
+  // The diff since each finding is staged here: not every engine's policy lets it run git.
+  const diffSince = (since, p) => {
+    if (!since || gone.includes(since)) return null;
+    const r = spawnSync('git', ['diff', since, headSha, '--', p], { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    return r.status === 0 ? r.stdout.slice(0, 20000) : null;
+  };
+  writeFileSync(staged, JSON.stringify(check.map(({ thread_id, path: p, line, since, body, replies }) => ({ thread_id, path: p, line, since, body, replies, diff: diffSince(since, p) })), null, 2) + '\n');
   const tpl = readFileSync(path.join(HERE, '..', 'prompt', 'verify.md'), 'utf8');
   writeFileSync(path.join(vdir, 'prompt.md'), renderCodexPrompt(tpl, { repo: o.repo, pr: o.pr, baseSha, headSha }));
   try {
@@ -253,7 +259,7 @@ export async function review(o, { log = (s) => process.stderr.write(s + '\n') } 
   await checkout({ repository: o.repo, headSha, baseSha, token, dir: cwd });
   // These names are the CLI's to write. A PR that commits one would steer the round, so any
   // copy in the checkout is removed before the CLI writes its own.
-  for (const f of ['.assayer-threads.json', '.assayer-open-threads.json']) rmSync(path.join(cwd, f), { force: true });
+  for (const f of ['.assayer-threads.json', '.assayer-open-threads.json']) rmSync(path.join(cwd, f), { force: true, recursive: true });
 
   if (!o.skipVerify) {
     const api = github(globalThis.fetch, token);
