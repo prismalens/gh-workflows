@@ -144,7 +144,7 @@ export async function publish(dir, { log = (s) => process.stderr.write(s + '\n')
   const current = headNow();
   const r = await postRound({
     fetch, token, appLogin: login, job: round, events, rounds, journal: fileJournal(dir), engineLiveness: true,
-    engineDropped: (JSON.parse(readFileSync(path.join(dir, 'summary.json'), 'utf8')).dropped ?? []).filter((d) => /finding/i.test(d.why ?? '')).length,
+    engineDropped: (JSON.parse(readFileSync(path.join(dir, 'summary.json'), 'utf8')).dropped ?? []).filter((d) => d.tool === 'create_inline_comment' || /finding/i.test(d.why ?? '')).length,
     skipLiveness: current !== round.head_sha,
     // Asked again just before the verdict line, since posting the findings takes a while.
     livenessStillCurrent: async () => headNow() === round.head_sha,

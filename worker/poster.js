@@ -29,10 +29,33 @@ export function findingMarker(engine) {
 // so a suggestion or a decorator still applies (OBJ-027).
 export function quiet(text) {
   if (typeof text !== "string") return text;
-  return text
-    .split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/)
-    .map((part, i) => (i % 2 ? part : part.replace(/@(?=[A-Za-z0-9])/g, "@\u200d")))
-    .join("");
+  const prose = (t) => t.replace(/@(?=[A-Za-z0-9])/g, "@\u200d");
+  // Inline spans close on a backtick run of the same length (GFM); anything else is prose.
+  const inline = (t) => {
+    const parts = t.split(/(`+)([\s\S]*?[^`])\1(?!`)/);
+    let r = "";
+    for (let i = 0; i < parts.length; i += 3) r += prose(parts[i]) + (i + 2 < parts.length ? parts[i + 1] + parts[i + 2] + parts[i + 1] : "");
+    return r;
+  };
+  const out = [];
+  let fence = null;
+  let buf = [];
+  const flush = () => { if (buf.length) out.push(inline(buf.join("\n"))); buf = []; };
+  for (const line of text.split("\n")) {
+    const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      out.push(line);
+      if (open && open[1][0] === fence[0] && open[1].length >= fence.length && /^ {0,3}[`~]+[ \t]*$/.test(line)) fence = null;
+    } else if (open) {
+      flush();
+      fence = open[1];
+      out.push(line);
+    } else {
+      buf.push(line);
+    }
+  }
+  flush();
+  return out.join("\n");
 }
 
 export function looksLikeSecret(text) {

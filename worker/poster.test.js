@@ -150,6 +150,12 @@ describe("poster (#184)", () => {
     assert.ok(q.includes("`@Inject`"));
   });
 
+  it("leaves tilde fences and multi-backtick spans byte-exact too (OBJ-027)", () => {
+    assert.equal(quiet("~~~python\n@decorator\n~~~\nhey @bob"), "~~~python\n@decorator\n~~~\nhey @\u200dbob");
+    assert.equal(quiet("``a ` @scope/pkg`` and @x"), "``a ` @scope/pkg`` and @\u200dx");
+    assert.equal(quiet("````\n```\n@a\n````\n@b"), "````\n```\n@a\n````\n@\u200db");
+  });
+
   it("ends every comment a round posts in the engine marker, so a stub can divert it (OBJ-020)", async () => {
     const gh = github({ refuse: new Set(["src/a.js"]) });
     await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, rounds: 1, events: stream([finding()]) });
