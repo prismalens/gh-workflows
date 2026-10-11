@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { event, classifyFailure, resetAtFrom, EVENT_TYPES, FAILURE_CLASSES, fieldsOf } from '../src/events.js';
+import { event, classifyFailure, resetAtFrom, resetAtIso, EVENT_TYPES, FAILURE_CLASSES, fieldsOf } from '../src/events.js';
 
 test('every event carries exactly its contract fields, nulls for the missing ones', () => {
   for (const t of EVENT_TYPES) {
@@ -39,4 +39,16 @@ test('classifyFailure covers the lane vocabulary and falls back to api-error', (
   // classify-failure records account-limit with retryable 0; the requeue rides on reset_at.
   assert.equal(event('error', { failure_class: 'account-limit', message: 'x' }).retryable, false);
   assert.equal(event('error', { failure_class: 'rate-limited', message: 'x' }).retryable, true);
+});
+
+test('resetAtIso turns a clock time or a duration into an ISO instant the Worker can parse', () => {
+  const now = new Date(2026, 9, 10, 15, 0, 0);
+  assert.equal(resetAtIso('7:37 PM', now), new Date(2026, 9, 10, 19, 37).toISOString());
+  assert.equal(resetAtIso('9:00 AM', now), new Date(2026, 9, 11, 9, 0).toISOString(), 'a time already passed rolls to tomorrow');
+  assert.equal(resetAtIso('12:30 am', now), new Date(2026, 9, 11, 0, 30).toISOString());
+  assert.equal(resetAtIso('1h35m27s', now), new Date(now.getTime() + 5727000).toISOString());
+  assert.equal(resetAtIso('3m', now), new Date(now.getTime() + 180000).toISOString());
+  assert.equal(resetAtIso('13:99 PM', now), '13:99 PM');
+  assert.equal(resetAtIso('soon', now), 'soon');
+  assert.equal(resetAtIso(null, now), null);
 });

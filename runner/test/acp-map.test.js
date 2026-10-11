@@ -73,7 +73,7 @@ test('stop reasons map to conclusions; errors win; unknown stop reason fails', (
   const e = mk(); e.onStop({ stopReason: 'end_turn' }); e.onError(new Error('HTTP 429 rate limit. Resets in 3m'), 'prompt');
   const evs = e.finish();
   assert.deepEqual(types(evs).slice(-2), ['error', 'finished']);
-  assert.equal(evs.at(-2).failure_class, 'rate-limited'); assert.equal(evs.at(-2).reset_at, '3m'); assert.equal(evs.at(-2)._meta.stage, 'prompt');
+  assert.equal(evs.at(-2).failure_class, 'rate-limited'); assert.ok(Math.abs(Date.parse(evs.at(-2).reset_at) - (Date.now() + 180000)) < 5000); assert.equal(evs.at(-2)._meta.stage, 'prompt');
   assert.equal(evs.at(-1).conclusion, 'failed');
   const t = mk(); t.onStop({ stopReason: 'cancelled' }); assert.equal(t.finish({ conclusion: 'timed-out' }).at(-1).conclusion, 'timed-out');
   assert.throws(() => mk().finish({ conclusion: 'nope' }));
@@ -206,7 +206,8 @@ test('a Codex usage limit said as agent text, then a bare Internal error, is acc
   m.onError(Object.assign(new Error('Internal error'), { code: -32603 }));
   const err = m.events.find((e) => e.type === 'error');
   assert.equal(err.failure_class, 'account-limit');
-  assert.equal(err.reset_at, '9:00 AM');
+  assert.ok(Date.parse(err.reset_at) > Date.now() && Date.parse(err.reset_at) - Date.now() <= 86400000);
+  assert.equal(new Date(err.reset_at).getHours(), 9);
   const plain = mk();
   plain.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Reviewing the quota code.' } });
   plain.onError(new Error('Internal error'));
