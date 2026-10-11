@@ -1,6 +1,10 @@
 // The two GitHub calls the daemon makes with a job's installation token: a shallow checkout at
 // the job's head, and the revocation that ends every job (#184).
 import { spawn as nodeSpawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
+import path from 'node:path';
+
+export const RESERVED = ['.assayer-threads.json', '.assayer-open-threads.json'];
 
 // The value worker/github-app.js sends.
 const API_VERSION = '2022-11-28';
@@ -65,4 +69,7 @@ export async function checkout({ repository, headSha, baseSha, token, dir, spawn
   await run(spawn, ['init', '-q', dir], { env, timeoutMs });
   await run(spawn, ['fetch', '-q', '--depth=1', `https://github.com/${repository}.git`, ...shas], { cwd: dir, env, timeoutMs });
   await run(spawn, ['checkout', '-q', '--detach', headSha], { cwd: dir, env, timeoutMs });
+  // These names are the runner's to write. A PR that commits one would steer the round, so
+  // every checkout, local or daemon, starts without them.
+  for (const f of RESERVED) rmSync(path.join(dir, f), { force: true, recursive: true });
 }

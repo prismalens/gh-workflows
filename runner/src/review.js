@@ -257,9 +257,6 @@ export async function review(o, { log = (s) => process.stderr.write(s + '\n') } 
   const cwd = path.join(dir, 'checkout');
   log(`assayer: ${o.repo}#${o.pr} at ${headSha.slice(0, 7)} with ${o.engine}; round in ${dir}`);
   await checkout({ repository: o.repo, headSha, baseSha, token, dir: cwd });
-  // These names are the CLI's to write. A PR that commits one would steer the round, so any
-  // copy in the checkout is removed before the CLI writes its own.
-  for (const f of ['.assayer-threads.json', '.assayer-open-threads.json']) rmSync(path.join(cwd, f), { force: true, recursive: true });
 
   if (!o.skipVerify) {
     const api = github(globalThis.fetch, token);
