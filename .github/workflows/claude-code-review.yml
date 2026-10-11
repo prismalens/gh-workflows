@@ -1887,7 +1887,7 @@ jobs:
       # `Detect verification mode` wrote it before checkout wiped the workspace.
       - name: Stage unresolved threads for the verify job
         if: steps.mode.outputs.mode == 'verify'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: unresolved-threads
           path: /tmp/unresolved-claude-threads.json
@@ -3674,7 +3674,7 @@ jobs:
         if: >-
           (steps.mode.outputs.mode == 'review' || steps.mode.outputs.mode == 'review-full' || steps.mode.outputs.mode == 'incremental') &&
           steps.manifest.outputs.refused != 'true'
-        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829  # v1.0.236
+        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b  # v1.0.247
         # Synchronous subagents required in print mode or the reviewer exits before its
         # subagents return; verified on CLI 2.1.228. Story: prismalens/prismalens#403.
         env:
@@ -4740,7 +4740,7 @@ jobs:
       # After checkout: actions/checkout wipes untracked workspace files, and the agent
       # may read only inside the workspace.
       - name: Download staged threads
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: unresolved-threads
           path: .
@@ -4759,7 +4759,7 @@ jobs:
 
       - name: Run Claude Code Verification Round
         id: claude-verify
-        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829  # v1.0.236
+        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b  # v1.0.247
         env:
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
         with:
