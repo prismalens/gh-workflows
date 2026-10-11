@@ -180,9 +180,9 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
       if (Array.isArray(init.authMethods) && init.authMethods.length && init._meta?.authenticated === false) {
         throw Object.assign(new Error('agent requires authentication: ' + init.authMethods.map((m) => m.id).join(', ')), { stage: 'initialize' });
       }
-      return ctx.buildSession(cwd)
-        .withMcpServer(mcpServer('github_inline_comment', toolLog))
-        .withMcpServer(mcpServer('github_comment', toolLog))
+      let builder = ctx.buildSession(cwd);
+      for (const name of opts.servers ?? ['github_inline_comment', 'github_comment']) builder = builder.withMcpServer(mcpServer(name, toolLog));
+      return builder
         .withSession(async (session) => {
           mapper.sessionId = session.sessionId;
           raw('session', { sessionId: session.sessionId, response: session.newSessionResponse ?? null });

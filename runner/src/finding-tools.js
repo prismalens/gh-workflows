@@ -4,7 +4,8 @@
 // engine is told it succeeded. The poster in the control plane renders them later.
 // Server name is argv[2]: `github_inline_comment` serves create_inline_comment,
 // `github_comment` serves update_claude_comment, so the engine sees the same
-// mcp__<server>__<tool> names the Actions lane's prompt uses.
+// mcp__<server>__<tool> names the Actions lane's prompt uses. `assayer_verify` serves
+// thread_verdict for a verify round.
 import { appendFileSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -14,7 +15,7 @@ import { looksLikeSecret } from './acp-map.js';
 const which = process.argv[2];
 const log = process.env.ASSAYER_TOOL_LOG;
 if (!which || !log) {
-  process.stderr.write('usage: finding-tools.js <github_inline_comment|github_comment>, with ASSAYER_TOOL_LOG set\n');
+  process.stderr.write('usage: finding-tools.js <github_inline_comment|github_comment|assayer_verify>, with ASSAYER_TOOL_LOG set\n');
   process.exit(2);
 }
 
@@ -54,6 +55,22 @@ if (which === 'github_inline_comment') {
     inputSchema: { body: z.string() },
   }, async (input) => {
     record('update_claude_comment', input);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, recorded: true }) }] };
+  });
+} else if (which === 'assayer_verify') {
+  // A verify round's one tool: its verdict on one of the reviewer's own open threads. The
+  // CLI checks and applies it; the engine never replies or resolves (#184).
+  server.registerTool('thread_verdict', {
+    description: 'Record your verdict on one thread from .assayer-threads.json.',
+    inputSchema: {
+      thread_id: z.string(),
+      path: z.string(),
+      verdict: z.enum(['fixed', 'still_applies', 'cannot_verify']),
+      sha: z.string(),
+      evidence: z.string().max(300),
+    },
+  }, async (input) => {
+    record('thread_verdict', input);
     return { content: [{ type: 'text', text: JSON.stringify({ ok: true, recorded: true }) }] };
   });
 } else {

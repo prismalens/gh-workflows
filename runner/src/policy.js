@@ -8,6 +8,7 @@ export const LANE_ALLOWED_TOOLS = Object.freeze([
   'Bash(gh issue view:*)', 'Bash(gh issue list:*)', 'Bash(gh search:*)',
   'mcp__github_comment__update_claude_comment',
   'mcp__github_inline_comment__create_inline_comment',
+  'mcp__assayer_verify__thread_verdict',
 ]);
 
 const COMMAND_PREFIXES = LANE_ALLOWED_TOOLS
@@ -16,6 +17,7 @@ const COMMAND_PREFIXES = LANE_ALLOWED_TOOLS
 
 export const FINDING_TOOL = 'create_inline_comment';
 export const SUMMARY_TOOL = 'update_claude_comment';
+export const VERDICT_TOOL = 'thread_verdict';
 
 // The comment tools by their whole identity. An ACP permission request carries a
 // human-readable title, not an authenticated MCP registration, so a suffix match would let
@@ -24,7 +26,8 @@ export const SUMMARY_TOOL = 'update_claude_comment';
 const COMMENT_TOOL_IDS = Object.freeze(new Set([
   'mcp__github_inline_comment__create_inline_comment',
   'mcp__github_comment__update_claude_comment',
-  FINDING_TOOL, SUMMARY_TOOL,
+  'mcp__assayer_verify__thread_verdict',
+  FINDING_TOOL, SUMMARY_TOOL, VERDICT_TOOL,
 ]));
 
 // ACP tool kinds the lane's read-only tools map onto.
