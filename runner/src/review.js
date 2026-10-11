@@ -17,6 +17,7 @@ import { readToolLog } from './acp-map.js';
 import { github, listThreads, ownOpenThreads, threadsToCheck, readVerdicts, checkVerdicts, applyVerdicts } from './threads.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const OPEN_THREADS_NOTE = '`.assayer-open-threads.json` at the checkout root lists findings already posted on this PR and still open (`path`, `line`, `title`). Do not post them again; a finding one of them already covers is not new.';
 const USAGE = `usage:
   assayer review <owner/repo#N | PR URL> [--engine codex] [--model M] [--post] [--again]
                  [--ignore-repo-config] [--skip-verify | --verify-only] [--out DIR]
@@ -184,8 +185,8 @@ async function verifyThreads(o, { api, login, dir, cwd, headSha, baseSha, token,
   const vdir = path.join(dir, 'verify');
   mkdirSync(vdir, { recursive: true });
   // The shallow checkout holds head and base only; `git diff <since>` needs each finding's commit.
-  const missing = await fetchCommits({ repository: o.repo, shas: [...new Set(check.map((t) => t.since).filter(Boolean))], token, dir: cwd });
-  if (missing.length) log(`assayer: ${missing.length} finding commit(s) are gone from GitHub; those threads are judged on the current code`);
+  const gone = await fetchCommits({ repository: o.repo, shas: [...new Set(check.map((t) => t.since).filter(Boolean))], token, dir: cwd });
+  if (gone.length) log(`assayer: ${gone.length} finding commit(s) are gone from GitHub; those threads are judged on the current code`);
   const staged = path.join(cwd, '.assayer-threads.json');
   writeFileSync(staged, JSON.stringify(check.map(({ thread_id, path: p, line, since, body, replies }) => ({ thread_id, path: p, line, since, body, replies })), null, 2) + '\n');
   const tpl = readFileSync(path.join(HERE, '..', 'prompt', 'verify.md'), 'utf8');
@@ -200,16 +201,19 @@ async function verifyThreads(o, { api, login, dir, cwd, headSha, baseSha, token,
   } finally {
     rmSync(staged, { force: true });
   }
-  const { kept, discarded } = checkVerdicts(readVerdicts(readToolLog(path.join(vdir, 'tool-log.jsonl')).entries), check, headSha);
+  const { kept, discarded, missing } = checkVerdicts(readVerdicts(readToolLog(path.join(vdir, 'tool-log.jsonl')).entries), check, headSha);
   for (const d of discarded) log(`assayer: discarded a verdict on ${d.thread_id}: ${d.why}`);
+  if (missing.length) log(`assayer: ${missing.length} thread(s) got no usable verdict and stay open`);
   const byId = new Map(check.map((t) => [t.thread_id, t]));
   for (const v of kept) process.stdout.write(`  ${v.verdict.padEnd(13)} ${v.path}:${byId.get(v.thread_id).line ?? '?'}  ${findingTitle(byId.get(v.thread_id).body)}\n    ${v.evidence}\n`);
+  // Open is what GitHub will still show: only a resolve that landed closes a thread.
+  let resolved = new Set();
   if (o.post) {
     const r = await applyVerdicts({ api, repo: o.repo, pr: o.pr, engine: o.engine, login, headSha, threads: check, verdicts: kept, journal: fileJournal(vdir), log });
     log(`assayer: resolved ${r.resolved} thread(s), replied on ${r.replied}${r.unresolvable ? `, ${r.unresolvable} could not be resolved` : ''}${r.stale ? `, ${r.stale} skipped as changed since the check` : ''}`);
+    resolved = new Set(r.resolvedIds);
   }
-  const fixed = new Set(kept.filter((v) => v.verdict === 'fixed').map((v) => v.thread_id));
-  return { open: threads.filter((t) => !fixed.has(t.thread_id)), ok: true };
+  return { open: threads.filter((t) => !resolved.has(t.thread_id)), ok: missing.length === 0 };
 }
 
 function printRound(dir) {
@@ -256,12 +260,12 @@ export async function review(o, { log = (s) => process.stderr.write(s + '\n') } 
     const login = (await api.call('GET', '/user')).login;
     const { open, ok } = await verifyThreads(o, { api, login, dir, cwd, headSha, baseSha, token, log });
     if (o.verifyOnly) { log(`assayer: ${open.length} thread(s) still open; no review round (--verify-only)`); return { dir, summary: { conclusion: ok ? 'completed' : 'failed' }, posted: null }; }
-    // Only the Codex template reads this file; another engine's review may repeat an open finding.
-    if (open.length && ENGINES[o.engine].promptTemplate) writeFileSync(path.join(cwd, '.assayer-open-threads.json'), JSON.stringify(open.map((t) => ({ path: t.path, line: t.line, title: findingTitle(t.body) })), null, 2) + '\n');
-    else if (open.length) log(`assayer: ${open.length} thread(s) still open; the ${o.engine} template cannot be told, so it may raise them again`);
+    if (open.length) writeFileSync(path.join(cwd, '.assayer-open-threads.json'), JSON.stringify(open.map((t) => ({ path: t.path, line: t.line, title: findingTitle(t.body) })), null, 2) + '\n');
   }
 
   const prompt = renderFor(o.engine, { repo: o.repo, pr: o.pr, baseSha, headSha });
+  // template.md mirrors the Actions lane byte for byte, so the dedup line is added after rendering.
+  if (existsSync(path.join(cwd, '.assayer-open-threads.json')) && !prompt.text.includes('.assayer-open-threads.json')) prompt.text += `\n\n${OPEN_THREADS_NOTE}\n`;
   writeFileSync(path.join(dir, 'prompt.md'), prompt.text);
   const round = { repository: o.repo, pr_number: o.pr, head_sha: headSha, base_sha: baseSha, engine: o.engine, model: o.model, where: 'local' };
   writeFileSync(path.join(dir, 'round.json'), JSON.stringify(round, null, 2) + '\n');

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { ownOpenThreads, threadsToCheck, readVerdicts, checkVerdicts, applyVerdicts } from '../src/threads.js';
+import { listThreads, ownOpenThreads, threadsToCheck, readVerdicts, checkVerdicts, applyVerdicts } from '../src/threads.js';
 import { decide } from '../src/policy.js';
 
 const HEAD = 'a'.repeat(40);
@@ -65,8 +65,19 @@ describe('threads (#184)', () => {
     assert.equal((await threadsToCheck(capped, 'o/r', HEAD, t)).length, 1);
   });
 
-  it('skips a thread longer than one page, which cannot be read whole', () => {
-    assert.equal(ownOpenThreads([node('T1', [comment('me', MARK)], { comments: { totalCount: 101, nodes: [comment('me', MARK)] } })], { login: 'me', engine: 'codex' }).length, 0);
+  it('reads every page of a long thread, so a late reply is seen', async () => {
+    const t = node('T1', [comment('me', MARK)]);
+    t.comments.pageInfo = { hasNextPage: true, endCursor: 'c1' };
+    const api = { graphql: async (q, v) => (q.includes('node(id:')
+      ? { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [comment('dev', `late reply ${v.after}`)] } } }
+      : listing([t])) };
+    const [own] = ownOpenThreads(await listThreads(api, 'o/r', 7), { login: 'me', engine: 'codex' });
+    assert.deepEqual(own.replies, [{ author: 'dev', body: 'late reply c1' }]);
+  });
+
+  it('checks a thread whose finding commit is unknown', async () => {
+    const t = [{ thread_id: 'x', path: 'src/z.js', since: null, replies: [] }];
+    assert.equal((await threadsToCheck({ call: async () => { throw new Error('unused'); } }, 'o/r', HEAD, t)).length, 1);
   });
 
   it('discards a verdict on an unstaged thread, a copied path that differs, a non-head sha, or a conflict', () => {
@@ -83,6 +94,19 @@ describe('threads (#184)', () => {
     ], threads, HEAD);
     assert.deepEqual(kept.map((k) => k.thread_id), ['T1']);
     assert.deepEqual(discarded.map((d) => d.why), ['not a staged thread', "path src/a.js is not the thread's src/b.js", 'sha fffffff is not the head', 'conflicting verdicts']);
+  });
+
+  it('needs evidence for a verdict, ignores redacted records, and names every thread left without one', () => {
+    const threads = [{ thread_id: 'T1', path: 'p' }, { thread_id: 'T2', path: 'q' }, { thread_id: 'T3', path: 'r' }];
+    const verdicts = readVerdicts([
+      { tool: 'thread_verdict', input: { thread_id: 'T1', path: 'p', verdict: 'fixed', sha: HEAD, evidence: 'checked line 4' } },
+      { tool: 'thread_verdict', input: { thread_id: 'T2', path: 'q', verdict: 'fixed', sha: HEAD, evidence: '  ' } },
+      { tool: 'thread_verdict', redacted: 'credential-shaped body', input: { thread_id: 'T3', path: 'r', verdict: 'fixed', sha: HEAD, evidence: null } },
+    ]);
+    const { kept, discarded, missing } = checkVerdicts(verdicts, threads, HEAD);
+    assert.deepEqual(kept.map((k) => k.thread_id), ['T1']);
+    assert.deepEqual(discarded.map((d) => d.why), ['no evidence']);
+    assert.deepEqual(missing, ['T2', 'T3']);
   });
 
   it('withholds credential-shaped evidence and quiets mentions in it', () => {
@@ -111,7 +135,7 @@ describe('threads (#184)', () => {
     const seen = new Map();
     const journal = { has: (k) => seen.has(k), record: (k, v) => seen.set(k, v) };
     const r = await applyVerdicts({ api, repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD, threads, verdicts, journal });
-    assert.deepEqual(r, { resolved: 1, replied: 2, unresolvable: 0, stale: 0 });
+    assert.deepEqual(r, { resolved: 1, replied: 2, unresolvable: 0, stale: 0, resolvedIds: ['F'] });
     const writes = calls.filter((c) => c.m !== 'GET' && c.m !== 'LIST');
     assert.deepEqual(writes.map((c) => `${c.m} ${c.p}`), ['POST /repos/o/r/pulls/7/comments/11/replies', 'GQL F', 'POST /repos/o/r/pulls/7/comments/13/replies']);
     assert.match(writes[0].b.body, /^Verified fixed in `aaaaaaaa`\. gone\n\n<!-- assayer-finding engine=codex -->$/);
@@ -126,9 +150,12 @@ describe('threads (#184)', () => {
     const verdicts = [{ thread_id: 'F', verdict: 'fixed', evidence: 'x' }, { thread_id: 'G', verdict: 'fixed', evidence: 'y' }];
     const moved = await applyVerdicts({ api: liveApi(nodes, calls, 'f'.repeat(40)), repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD, threads, verdicts });
     assert.equal(moved.stale, 2);
+    const edited = ownOpenThreads([node('F', [comment('me', MARK), comment('dev', 'done')], { path: 'a' })], { login: 'me', engine: 'codex' });
+    const e = await applyVerdicts({ api: liveApi([node('F', [comment('me', MARK), comment('dev', 'done, but see line 9')], { path: 'a' })], calls), repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD, threads: edited, verdicts: [verdicts[0]] });
+    assert.equal(e.stale, 1, 'an edited reply is a changed conversation');
     const later = [node('F', [comment('me', MARK), comment('dev', 'wait, not yet')], { path: 'a' }), nodes[1]];
     const r = await applyVerdicts({ api: liveApi(later, calls), repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD, threads, verdicts });
-    assert.deepEqual(r, { resolved: 1, replied: 1, unresolvable: 0, stale: 1 });
+    assert.deepEqual(r, { resolved: 1, replied: 1, unresolvable: 0, stale: 1, resolvedIds: ['G'] });
   });
 
   it('keeps the fixed reply when GitHub refuses the resolve', async () => {
@@ -137,7 +164,7 @@ describe('threads (#184)', () => {
     api.graphql = async (q, vars) => { if (q.startsWith('mutation')) throw new Error('Resource not accessible by integration'); return listing(nodes); };
     const r = await applyVerdicts({ api, repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD,
       threads: ownOpenThreads(nodes, { login: 'me', engine: 'codex' }), verdicts: [{ thread_id: 'F', verdict: 'fixed', evidence: 'x' }] });
-    assert.deepEqual(r, { resolved: 0, replied: 1, unresolvable: 1, stale: 0 });
+    assert.deepEqual(r, { resolved: 0, replied: 1, unresolvable: 1, stale: 0, resolvedIds: [] });
   });
 
   it('reads verdicts from the tool log, and the policy grants only the recorder\'s verdict tool', () => {
