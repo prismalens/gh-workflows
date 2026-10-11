@@ -49,7 +49,7 @@ export function roundVerdict({ conclusion, headSha, findings, failureClass, unpl
   const short = String(headSha).slice(0, 7);
   if (conclusion === "completed") {
     // A finding GitHub would not anchor is still a finding: "no findings" would be false (OBJ-005).
-    const missed = unplaced > 0 ? `, ${unplaced} not placed inline (listed in the summary)` : "";
+    const missed = unplaced > 0 ? `, ${unplaced} not placed inline (posted as comments)` : "";
     if (findings === 0 && unplaced === 0) return `reviewed \`${short}\`, no findings.`;
     return `reviewed \`${short}\`, ${findings} finding${findings === 1 ? "" : "s"} inline${missed}.`;
   }
@@ -93,11 +93,11 @@ export async function upsertLiveness({ fetch: fetchImpl, token, appLogin, reposi
 }
 
 // Posts one finished round. `events` are this attempt's events, oldest first. Returns counts;
-// a finding GitHub refuses (a line outside the diff, say) is counted, never fatal, and listed
-// under the summary so the round's text is never lost. A finding with a credential-shaped body
+// a finding GitHub refuses (a line outside the diff, say) is counted, never fatal, and posted
+// as its own issue comment so the round's text is never lost. A finding with a credential-shaped body
 // is dropped outright. `journal` (optional: has(key), record(key, id)) lets a caller resume a
 // publish that stopped partway without posting twice (OBJ-006).
-export async function postRound({ fetch: fetchImpl, token, appLogin, job, events, rounds, journal = null }) {
+export async function postRound({ fetch: fetchImpl, token, appLogin, job, events, rounds, journal = null, skipLiveness = false }) {
   const out = { inline: 0, refused: 0, summary: 0, unplaced: 0 };
   const unplaced = [];
   const findings = events.filter((e) => e.type === "finding");
@@ -148,12 +148,7 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
       break;
     }
   }
-  let summaryBody = summary && typeof summary.body === "string" && summary.body.trim() && !looksLikeSecret(summary.body) ? summary.body : null;
-  if (unplaced.length) {
-    const where = (f) => (typeof f.path === "string" ? `\`${f.path}${Number.isInteger(f.line) ? `:${f.line}` : ""}\`` : "no location");
-    const listed = unplaced.map((f) => `<details><summary>${where(f)}</summary>\n\n${f.body}\n\n</details>`).join("\n\n");
-    summaryBody = `${summaryBody ?? "## Code review"}\n\n### Not placed inline\n\nGitHub would not anchor these on the diff.\n\n${listed}`;
-  }
+  const summaryBody = summary && typeof summary.body === "string" && summary.body.trim() && !looksLikeSecret(summary.body) ? summary.body : null;
   if (summaryBody && journal?.has("summary")) {
     out.summary = 1;
   } else if (summaryBody) {
@@ -162,6 +157,21 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
     });
     journal?.record("summary", posted?.id ?? null);
     out.summary = 1;
+  }
+  // Each finding GitHub would not anchor gets its own issue comment: one combined body could
+  // pass 65,000 characters and lose some silently. The location is engine text too, so the
+  // whole comment is screened, not just the finding's body.
+  for (const [i, f] of unplaced.entries()) {
+    const key = `unplaced:${i}`;
+    const where = typeof f.path === "string" ? `\`${f.path}${Number.isInteger(f.line) ? `:${f.line}` : ""}\`` : "no location";
+    const body = `**Not placed inline** (${where}): GitHub would not anchor this finding on the diff.\n\n${f.body}`;
+    if (journal?.has(key)) continue;
+    if (looksLikeSecret(body) || body.length > MAX_BODY) {
+      out.unplaced -= 1;
+      continue;
+    }
+    const posted = await call(fetchImpl, token, "POST", `/repos/${job.repository}/issues/${job.pr_number}/comments`, { body });
+    journal?.record(key, posted?.id ?? null);
   }
 
   const started = events.find((e) => e.type === "started");
@@ -174,6 +184,9 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
     unplaced: out.unplaced,
     failureClass: error?.failure_class,
   });
+  // A replayed publish, or one for a head the PR has moved past, must not rewrite the
+  // standing verdict (principle 14).
+  if (journal?.has("liveness") || skipLiveness) return out;
   await upsertLiveness({
     fetch: fetchImpl,
     token,

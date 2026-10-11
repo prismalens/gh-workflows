@@ -20,8 +20,6 @@ const USAGE = `usage:
                  [--ignore-repo-config] [--out DIR]
   assayer publish <round dir>`;
 
-// Who may vouch for a review on record: an App, or someone with write access (#184 R1).
-export const TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 export function parseTarget(s) {
   const m = /^(?:https:\/\/github\.com\/)?([\w.-]+\/[\w.-]+)(?:#|\/pull\/)(\d+)\/?$/.exec(String(s ?? '').trim());
@@ -72,7 +70,7 @@ export function livenessRecords(comments) {
     const head = c.body.split('\n')[0];
     const field = (k) => (new RegExp(`\\b${k}=(\\S+)`).exec(head)?.[1] ?? null);
     out.push({
-      id: c.id, login: c.user?.login ?? null, bot: c.user?.type === 'Bot', association: c.author_association ?? null,
+      id: c.id, login: c.user?.login ?? null, bot: c.user?.type === 'Bot',
       rounds: Number(field('rounds')) || 0, sha: field('sha'), engine: field('engine')?.replace(/-->$/, '') ?? null,
       reviewed: /: reviewed `/.test(c.body),
     });
@@ -80,10 +78,23 @@ export function livenessRecords(comments) {
   return out;
 }
 
-// A head already reviewed by this engine, vouched for by a trusted author, is not run again
-// unless asked (OBJ-001). Returns the record that blocks, or null.
-export function priorReview(records, { headSha, engine }) {
-  return records.find((r) => r.reviewed && r.sha === headSha && r.engine === engine && (r.bot || TRUSTED_ASSOCIATIONS.has(r.association))) ?? null;
+// A head already reviewed by this engine, vouched for by an App or by someone who can write
+// here, is not run again unless asked (OBJ-001). Association is not write access, so a person
+// is checked through `canWrite(login)`, the effective permission. Returns the blocking record.
+export function priorReview(records, { headSha, engine, canWrite }) {
+  return records.find((r) => r.reviewed && r.sha === headSha && r.engine === engine && (r.bot || canWrite(r.login))) ?? null;
+}
+
+function writerCheck(repo) {
+  const cache = new Map();
+  return (login) => {
+    if (!login || !/^[A-Za-z0-9-]+$/.test(login)) return false;
+    if (!cache.has(login)) {
+      const perm = gh(['api', `repos/${repo}/collaborators/${login}/permission`, '--jq', '.permission'], { allow404: true });
+      cache.set(login, perm !== null && ['admin', 'write'].includes(perm.trim()));
+    }
+    return cache.get(login);
+  };
 }
 
 function listComments(repo, pr) {
@@ -100,13 +111,16 @@ function renderFor(engine, { repo, pr, baseSha, headSha }) {
   return { text, hash: promptHash(tpl) };
 }
 
-function fileJournal(dir) {
+export function fileJournal(dir) {
   const file = path.join(dir, 'publish-journal.jsonl');
   const seen = new Map();
   if (existsSync(file)) {
-    for (const l of readFileSync(file, 'utf8').split('\n').filter(Boolean)) {
+    const text = readFileSync(file, 'utf8');
+    for (const l of text.split('\n').filter(Boolean)) {
       try { const e = JSON.parse(l); seen.set(e.key, e.id); } catch { /* a torn last line is a write that never finished */ }
     }
+    // Close a torn tail so the next record starts on its own line instead of joining it.
+    if (text && !text.endsWith('\n')) appendFileSync(file, '\n');
   }
   return { has: (k) => seen.has(k), record: (k, id) => { seen.set(k, id); appendFileSync(file, JSON.stringify({ key: k, id, at: new Date().toISOString() }) + '\n'); } };
 }
@@ -122,8 +136,11 @@ export async function publish(dir, { log = (s) => process.stderr.write(s + '\n')
   login ??= ghJson('user').login;
   const live = livenessRecords(listComments(round.repository, round.pr_number)).filter((r) => r.login === login);
   const rounds = Math.max(0, ...live.map((r) => r.rounds)) + 1;
-  const r = await postRound({ fetch, token, appLogin: login, job: round, events, rounds, journal: fileJournal(dir) });
-  log(`assayer: posted ${r.inline} inline, ${r.unplaced} listed in the summary, ${r.refused - r.unplaced} dropped, summary ${r.summary ? 'posted' : 'absent'}, as ${login}`);
+  // Findings on an older head still land (GitHub shows them outdated); the verdict line does
+  // not, or it would replace a newer head's verdict.
+  const current = ghJson(`repos/${round.repository}/pulls/${round.pr_number}`).head.sha;
+  const r = await postRound({ fetch, token, appLogin: login, job: round, events, rounds, journal: fileJournal(dir), skipLiveness: current !== round.head_sha });
+  log(`assayer: posted ${r.inline} inline, ${r.unplaced} as comments, ${r.refused - r.unplaced} dropped, summary ${r.summary ? 'posted' : 'absent'}, as ${login}${current !== round.head_sha ? `; verdict not updated, the PR moved to ${current.slice(0, 7)}` : ''}`);
   return r;
 }
 
@@ -132,7 +149,8 @@ function printRound(dir) {
   const events = readFileSync(path.join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   const lines = [`${s.conclusion}: ${s.findings ?? 0} finding(s) in ${Math.round((s.wall_clock_ms ?? 0) / 1000)}s`];
   for (const f of events.filter((e) => e.type === 'finding')) {
-    const title = (/\*\*(.+?)\*\*/.exec(f.body)?.[1] ?? f.body.split('\n')[0]).slice(0, 140);
+    const after = f.body.slice(f.body.indexOf('</details>') + 1);
+    const title = (/\*\*(.+?)\*\*/.exec(after)?.[1] ?? f.body.split('\n')[0]).slice(0, 140);
     lines.push(`  ${f.path}:${f.line ?? '?'}  ${title}`);
   }
   const summary = events.findLast((e) => e.type === 'summary');
@@ -145,7 +163,7 @@ export async function review(o, { log = (s) => process.stderr.write(s + '\n') } 
   if (pr.state !== 'open') throw new Error(`${o.repo}#${o.pr} is ${pr.merged_at ? 'merged' : pr.state}`);
   const headSha = pr.head.sha; const baseSha = pr.base.sha;
 
-  const prior = priorReview(livenessRecords(listComments(o.repo, o.pr)), { headSha, engine: o.engine });
+  const prior = priorReview(livenessRecords(listComments(o.repo, o.pr)), { headSha, engine: o.engine, canWrite: writerCheck(o.repo) });
   if (prior && !o.again) throw new Error(`${headSha.slice(0, 7)} already has a ${o.engine} review on record (comment ${prior.id} by ${prior.login}); pass --again to run another`);
 
   // Until the resolver is a package (#182), a local round knows only the workflow defaults. With
@@ -154,6 +172,8 @@ export async function review(o, { log = (s) => process.stderr.write(s + '\n') } 
   if (cfg !== null && !o.ignoreRepoConfig) throw new Error(`${o.repo} has .github/claude-review.yml, which a local round cannot apply yet (#182); pass --ignore-repo-config to review with the workflow defaults`);
 
   const dir = path.resolve(o.out ?? path.join(os.homedir(), '.assayer', 'reviews', `${o.repo.replace('/', '-')}-${o.pr}-${headSha.slice(0, 7)}-${Date.now()}`));
+  // One directory, one round: a reused one would carry the last round's publish journal.
+  if (existsSync(path.join(dir, 'round.json'))) throw new Error(`${dir} already holds a round; pick a new --out`);
   mkdirSync(dir, { recursive: true });
   const token = gh(['auth', 'token']).trim();
   const cwd = path.join(dir, 'checkout');

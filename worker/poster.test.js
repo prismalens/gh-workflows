@@ -86,14 +86,36 @@ describe("poster (#184)", () => {
     assert.deepEqual(r, { inline: 1, refused: 4, summary: 1, unplaced: 3 });
   });
 
-  it("never says no findings when every finding failed to anchor, and lists them under the summary (OBJ-005)", async () => {
+  it("never says no findings when every finding failed to anchor, and posts each one as a comment (OBJ-005)", async () => {
     const gh = github({ refuse: new Set(["src/a.js"]) });
     const r = await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, events: stream([finding(), finding({ line: 30 })]), rounds: 1 });
     assert.deepEqual(r, { inline: 0, refused: 2, summary: 1, unplaced: 2 });
     const issueWrites = gh.calls.filter((c) => c.method === "POST" && c.path.endsWith("/issues/183/comments"));
-    assert.match(issueWrites[0].body.body, /### Not placed inline[\s\S]*`src\/a\.js:12`[\s\S]*`src\/a\.js:30`/);
-    assert.match(issueWrites[1].body.body, /reviewed `bbbbbbb`, 0 findings inline, 2 not placed inline \(listed in the summary\)\./);
-    assert.doesNotMatch(issueWrites[1].body.body, /no findings/);
+    assert.equal(issueWrites.length, 4);
+    assert.match(issueWrites[1].body.body, /^\*\*Not placed inline\*\* \(`src\/a\.js:12`\)/);
+    assert.match(issueWrites[2].body.body, /`src\/a\.js:30`/);
+    assert.match(issueWrites[3].body.body, /reviewed `bbbbbbb`, 0 findings inline, 2 not placed inline \(posted as comments\)\./);
+    assert.doesNotMatch(issueWrites[3].body.body, /no findings/);
+  });
+
+  it("screens the location of an unplaced finding, not only its body", async () => {
+    const gh = github();
+    const r = await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, rounds: 1,
+      events: stream([finding({ path: `ghp_${"a".repeat(36)}`, _meta: { path_outside_checkout: true } })]) });
+    assert.equal(r.unplaced, 0);
+    assert.ok(gh.calls.every((c) => !JSON.stringify(c.body ?? "").includes("ghp_")));
+  });
+
+  it("does not rewrite liveness on a replayed publish or when told to skip it", async () => {
+    const seen = new Map([["finding:0", 1], ["summary", 2], ["liveness", null]]);
+    const journal = { has: (k) => seen.has(k), record: (k, id) => seen.set(k, id) };
+    const gh = github();
+    await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, events: stream([finding()]), rounds: 1, journal });
+    assert.deepEqual(gh.calls, []);
+    const fresh = github();
+    await postRound({ fetch: fresh.fetch, token: "t", appLogin: APP, job: JOB, events: stream([finding()]), rounds: 1, skipLiveness: true });
+    assert.ok(fresh.calls.every((c) => !c.path.endsWith("/issues/comments") && c.method !== "PATCH"));
+    assert.equal(fresh.calls.filter((c) => c.method === "POST").length, 2);
   });
 
   it("resumes from a journal without posting a recorded finding or summary twice (OBJ-006)", async () => {
