@@ -156,8 +156,9 @@ jobs:
           ) || (
             github.event_name == 'pull_request_review_comment' &&
             github.event.pull_request.state == 'open' &&
-            !(endsWith(github.event.comment.body, '-->') &&
-              contains(github.event.comment.body, '<!-- assayer-finding engine='))
+            !(endsWith(github.event.comment.body, '<!-- assayer-finding engine=codex -->') ||
+              endsWith(github.event.comment.body, '<!-- assayer-finding engine=opencode -->') ||
+              endsWith(github.event.comment.body, '<!-- assayer-finding engine=claude-code -->'))
           )
         )
       )

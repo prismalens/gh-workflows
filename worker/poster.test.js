@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { LIVENESS_PREFIX, livenessBody, looksLikeSecret, postRound, roundVerdict, upsertLiveness } from "./poster.js";
+import { LIVENESS_PREFIX, livenessBody, looksLikeSecret, postRound, quiet, roundVerdict, upsertLiveness } from "./poster.js";
 
 const APP = "assayer-review-dev[bot]";
 const HEAD = "b".repeat(40);
@@ -131,6 +131,41 @@ describe("poster (#184)", () => {
     ]);
     assert.equal(writes[0].body.line, 20);
     assert.ok(seen.has("finding:1") && seen.has("liveness"));
+  });
+
+  it("never @-mentions from a posted body, so a quoted summons cannot start a lane (OBJ-023)", async () => {
+    assert.equal(quiet("run @claude review now"), "run @\u200dclaude review now");
+    assert.equal(quiet("a@ b"), "a@ b");
+    const gh = github({ refuse: new Set(["src/a.js"]) });
+    await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, rounds: 1,
+      events: stream([finding({ body: "_x_\n\n@claude review" }), finding({ path: "src/b.js", body: "see @claude" })]) });
+    assert.ok(gh.calls.filter((c) => c.method === "POST").every((c) => !/@claude/.test(c.body.body)));
+  });
+
+  it("a withheld finding is never reported as no findings (OBJ-005)", async () => {
+    assert.equal(roundVerdict({ conclusion: "completed", headSha: HEAD, findings: 0, dropped: 1 }),
+      "reviewed `bbbbbbb`, 0 findings inline, 1 withheld (credential-shaped or oversized).");
+  });
+
+  it("keys an unplaced finding by its place in the round, so a resume posts the right one (OBJ-006)", async () => {
+    const seen = new Map([["unplaced:0", 1]]);
+    const journal = { has: (k) => seen.has(k), record: (k, id) => seen.set(k, id) };
+    const gh = github({ refuse: new Set(["src/a.js"]) });
+    await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, rounds: 1, journal,
+      events: stream([finding({ body: "first" }), finding({ path: "src/ok.js" }), finding({ body: "third" })]) });
+    const fallbacks = gh.calls.filter((c) => c.method === "POST" && c.path.endsWith("/issues/183/comments") && /Not placed inline/.test(c.body.body));
+    assert.deepEqual(fallbacks.map((c) => c.body.body.split("\n\n")[1]), ["third"]);
+    assert.ok(seen.has("unplaced:2"));
+  });
+
+  it("keeps one liveness line per engine when asked, so one engine never erases another's (OBJ-001)", async () => {
+    const codex = { id: 9, user: { login: APP }, body: `${LIVENESS_PREFIX} rounds=1 sha=${HEAD} engine=codex -->\nx` };
+    const gh = github({ comments: [codex] });
+    await upsertLiveness({ fetch: gh.fetch, token: "t", appLogin: APP, repository: JOB.repository, prNumber: 183, body: "y", engine: "opencode" });
+    assert.deepEqual(gh.calls.filter((c) => c.method !== "GET").map((c) => c.method), ["POST"]);
+    const again = github({ comments: [codex] });
+    await upsertLiveness({ fetch: again.fetch, token: "t", appLogin: APP, repository: JOB.repository, prNumber: 183, body: "y", engine: "codex" });
+    assert.deepEqual(again.calls.filter((c) => c.method !== "GET").map((c) => c.method), ["PATCH"]);
   });
 
   it("upserts only a liveness comment this App wrote", async () => {

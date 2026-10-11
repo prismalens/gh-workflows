@@ -10,6 +10,29 @@ is its section 3.2 and 3.3, day one.
 control plane and holds each job's installation token only for that job. The engine's
 credential is an API key in the environment, or none for OpenCode's free models.
 
+## Review a pull request from your terminal
+
+`assayer review owner/repo#N` runs one round on this machine with your own engine sign-in and
+prints the findings. `--post` puts them on the pull request under your own `gh` login, each
+inline finding ending in the `assayer-finding` marker; `assayer publish <dir>` posts, or resumes
+posting, a round that already ran. Nothing is hosted: a local round posts as you (#184).
+
+```bash
+# once, from a checkout of this repository (the CLI imports ../worker/poster.js)
+cd runner && npm ci && npm link
+npm i -g @agentclientprotocol/codex-acp@2.1.1 && codex login    # the default engine
+gh auth login
+
+assayer review prismalens/sreforge#183            # print only
+assayer review prismalens/sreforge#183 --post     # post as you
+```
+
+It refuses, before spending any quota, a PR that is closed, carries `claude_review_skip`, already
+has this engine's review on its head (`--again` runs another), or whose repository has a
+`.github/claude-review.yml` it cannot apply yet (#182; `--ignore-repo-config` reviews with the
+workflow defaults). The round lives in `~/.assayer/reviews/<repo>-<pr>-<sha>-<time>/` unless
+`--out` names a new directory. The engine gets no GitHub credential.
+
 ## Run one round
 
 ```bash

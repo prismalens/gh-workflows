@@ -16,7 +16,9 @@ jobs:
       !endsWith(github.event.sender.login, '[bot]') && (
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') &&
-        !(endsWith(github.event.comment.body, '-->') && contains(github.event.comment.body, '<!-- assayer-finding engine='))) ||
+        !(endsWith(github.event.comment.body, '<!-- assayer-finding engine=codex -->') ||
+          endsWith(github.event.comment.body, '<!-- assayer-finding engine=opencode -->') ||
+          endsWith(github.event.comment.body, '<!-- assayer-finding engine=claude-code -->'))) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
       )

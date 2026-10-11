@@ -91,6 +91,10 @@ jobs:
       - name: Review findings sweep behaviour
         run: python3 tests/test-review-findings-sweep.py
 
+      # The lanes skip a local round's finding by its exact trailing marker, per engine (#184).
+      - name: Assayer marker names every engine
+        run: python3 tests/test-assayer-marker-engines.py
+
       # Extracts and runs the real 'Build review manifest' script out of
       # claude-code-review.yml, plus the reviewable_lines size cap. Story: #105.
       - name: Review manifest behaviour

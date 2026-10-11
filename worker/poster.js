@@ -24,6 +24,12 @@ export function findingMarker(engine) {
   return typeof engine === "string" && /^[a-z0-9-]{1,32}$/.test(engine) ? `<!-- assayer-finding engine=${engine} -->` : "";
 }
 
+// A posted body never @-mentions: a finding that quotes `@claude review` would otherwise summon
+// a lane from the operator's own login (OBJ-023). A zero-width joiner keeps the text readable.
+export function quiet(text) {
+  return typeof text === "string" ? text.replace(/@(?=[A-Za-z0-9])/g, "@\u200d") : text;
+}
+
 export function looksLikeSecret(text) {
   return typeof text === "string" && SECRET_PATTERNS.some((p) => p.test(text));
 }
@@ -45,13 +51,14 @@ export function livenessBody({ rounds, headSha, engine, model, verdict }) {
 }
 
 // The round's verdict line, from what it posted and how it finished.
-export function roundVerdict({ conclusion, headSha, findings, failureClass, unplaced = 0 }) {
+export function roundVerdict({ conclusion, headSha, findings, failureClass, unplaced = 0, dropped = 0 }) {
   const short = String(headSha).slice(0, 7);
   if (conclusion === "completed") {
     // A finding GitHub would not anchor is still a finding: "no findings" would be false (OBJ-005).
     const missed = unplaced > 0 ? `, ${unplaced} not placed inline (posted as comments)` : "";
-    if (findings === 0 && unplaced === 0) return `reviewed \`${short}\`, no findings.`;
-    return `reviewed \`${short}\`, ${findings} finding${findings === 1 ? "" : "s"} inline${missed}.`;
+    const lost = dropped > 0 ? `, ${dropped} withheld (credential-shaped or oversized)` : "";
+    if (findings === 0 && unplaced === 0 && dropped === 0) return `reviewed \`${short}\`, no findings.`;
+    return `reviewed \`${short}\`, ${findings} finding${findings === 1 ? "" : "s"} inline${missed}${lost}.`;
   }
   const why = failureClass ? ` (${failureClass})` : "";
   return `the round on \`${short}\` ended ${conclusion ?? "without a conclusion"}${why}; this head has no machine review on record.`;
@@ -72,13 +79,15 @@ async function call(fetchImpl, token, method, path, body) {
 }
 
 // Upserts only a comment this App wrote, as the lane upserts only github-actions[bot]'s: without
-// the author filter anyone could pre-create a marker comment and have it republished.
-export async function upsertLiveness({ fetch: fetchImpl, token, appLogin, repository, prNumber, body }) {
+// the author filter anyone could pre-create a marker comment and have it republished. With
+// `engine`, each engine keeps its own line, so one engine's round never erases another's record.
+export async function upsertLiveness({ fetch: fetchImpl, token, appLogin, repository, prNumber, body, engine = null }) {
   let existing = null;
   for (let page = 1; page <= 10 && existing === null; page++) {
     const rows = await call(fetchImpl, token, "GET", `/repos/${repository}/issues/${prNumber}/comments?per_page=100&page=${page}`);
     for (const c of rows) {
-      if (c?.user?.login === appLogin && typeof c.body === "string" && c.body.startsWith(LIVENESS_PREFIX)) {
+      const head = typeof c?.body === "string" ? c.body.split("\n")[0] : "";
+      if (c?.user?.login === appLogin && head.startsWith(LIVENESS_PREFIX) && (engine === null || head.includes(` engine=${engine} `))) {
         existing = c.id;
         break;
       }
@@ -97,7 +106,7 @@ export async function upsertLiveness({ fetch: fetchImpl, token, appLogin, reposi
 // as its own issue comment so the round's text is never lost. A finding with a credential-shaped body
 // is dropped outright. `journal` (optional: has(key), record(key, id)) lets a caller resume a
 // publish that stopped partway without posting twice (OBJ-006).
-export async function postRound({ fetch: fetchImpl, token, appLogin, job, events, rounds, journal = null, skipLiveness = false }) {
+export async function postRound({ fetch: fetchImpl, token, appLogin, job, events, rounds, journal = null, skipLiveness = false, livenessStillCurrent = null, engineLiveness = false }) {
   const out = { inline: 0, refused: 0, summary: 0, unplaced: 0 };
   const unplaced = [];
   const findings = events.filter((e) => e.type === "finding");
@@ -114,11 +123,11 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
     }
     if (typeof f.path !== "string" || !Number.isInteger(f.line) || f._meta?.path_outside_checkout) {
       out.refused += 1;
-      unplaced.push(f);
+      unplaced.push({ f, i });
       continue;
     }
     const comment = {
-      body: marker ? `${f.body}\n\n${marker}` : f.body,
+      body: marker ? `${quiet(f.body)}\n\n${marker}` : quiet(f.body),
       commit_id: job.head_sha,
       path: f.path,
       line: f.line,
@@ -136,7 +145,7 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
     } catch (e) {
       if (e.status !== 422) throw e;
       out.refused += 1;
-      unplaced.push(f);
+      unplaced.push({ f, i });
     }
   }
   out.unplaced = unplaced.length;
@@ -153,7 +162,7 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
     out.summary = 1;
   } else if (summaryBody) {
     const posted = await call(fetchImpl, token, "POST", `/repos/${job.repository}/issues/${job.pr_number}/comments`, {
-      body: summaryBody.slice(0, MAX_BODY),
+      body: quiet(summaryBody).slice(0, MAX_BODY),
     });
     journal?.record("summary", posted?.id ?? null);
     out.summary = 1;
@@ -161,10 +170,10 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
   // Each finding GitHub would not anchor gets its own issue comment: one combined body could
   // pass 65,000 characters and lose some silently. The location is engine text too, so the
   // whole comment is screened, not just the finding's body.
-  for (const [i, f] of unplaced.entries()) {
+  for (const { f, i } of unplaced) {
     const key = `unplaced:${i}`;
     const where = typeof f.path === "string" ? `\`${f.path}${Number.isInteger(f.line) ? `:${f.line}` : ""}\`` : "no location";
-    const body = `**Not placed inline** (${where}): GitHub would not anchor this finding on the diff.\n\n${f.body}`;
+    const body = quiet(`**Not placed inline** (${where}): GitHub would not anchor this finding on the diff.\n\n${f.body}`);
     if (journal?.has(key)) continue;
     if (looksLikeSecret(body) || body.length > MAX_BODY) {
       out.unplaced -= 1;
@@ -182,17 +191,20 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
     headSha: job.head_sha,
     findings: out.inline,
     unplaced: out.unplaced,
+    dropped: out.refused - out.unplaced,
     failureClass: error?.failure_class,
   });
   // A replayed publish, or one for a head the PR has moved past, must not rewrite the
   // standing verdict (principle 14).
   if (journal?.has("liveness") || skipLiveness) return out;
+  if (livenessStillCurrent && !(await livenessStillCurrent())) return out;
   await upsertLiveness({
     fetch: fetchImpl,
     token,
     appLogin,
     repository: job.repository,
     prNumber: job.pr_number,
+    engine: engineLiveness ? job.engine : null,
     body: livenessBody({
       rounds,
       headSha: job.head_sha,

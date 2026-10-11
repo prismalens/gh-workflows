@@ -105,8 +105,9 @@ jobs:
    ```yaml
    group: >-
      ${{ (github.event.comment.user.type == 'Bot'
-          || (endsWith(github.event.comment.body, '-->')
-              && contains(github.event.comment.body, '<!-- assayer-finding engine='))
+          || endsWith(github.event.comment.body, '<!-- assayer-finding engine=codex -->')
+          || endsWith(github.event.comment.body, '<!-- assayer-finding engine=opencode -->')
+          || endsWith(github.event.comment.body, '<!-- assayer-finding engine=claude-code -->')
           || (github.event_name == 'issue_comment' && !github.event.issue.pull_request))
          && format('claude-code-review-junk-{0}', github.run_id)
          || format('claude-code-review-{0}', github.event.pull_request.number || github.event.issue.number) }}

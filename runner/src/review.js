@@ -133,13 +133,21 @@ export async function publish(dir, { log = (s) => process.stderr.write(s + '\n')
   // overwrite a standing verdict with a failure (principle 14, OBJ-004).
   if (finished?.conclusion !== 'completed') throw new Error(`the round ended ${finished?.conclusion ?? 'without finishing'}; nothing to publish`);
   token ??= gh(['auth', 'token']).trim();
-  login ??= ghJson('user').login;
+  // The login the comments will carry is the token's own, not whichever account gh has active.
+  login ??= (await (await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } })).json()).login;
+  if (typeof login !== 'string') throw new Error('could not read the login of the publishing token');
   const live = livenessRecords(listComments(round.repository, round.pr_number)).filter((r) => r.login === login);
   const rounds = Math.max(0, ...live.map((r) => r.rounds)) + 1;
   // Findings on an older head still land (GitHub shows them outdated); the verdict line does
   // not, or it would replace a newer head's verdict.
-  const current = ghJson(`repos/${round.repository}/pulls/${round.pr_number}`).head.sha;
-  const r = await postRound({ fetch, token, appLogin: login, job: round, events, rounds, journal: fileJournal(dir), skipLiveness: current !== round.head_sha });
+  const headNow = () => ghJson(`repos/${round.repository}/pulls/${round.pr_number}`).head.sha;
+  const current = headNow();
+  const r = await postRound({
+    fetch, token, appLogin: login, job: round, events, rounds, journal: fileJournal(dir), engineLiveness: true,
+    skipLiveness: current !== round.head_sha,
+    // Asked again just before the verdict line, since posting the findings takes a while.
+    livenessStillCurrent: async () => headNow() === round.head_sha,
+  });
   log(`assayer: posted ${r.inline} inline, ${r.unplaced} as comments, ${r.refused - r.unplaced} dropped, summary ${r.summary ? 'posted' : 'absent'}, as ${login}${current !== round.head_sha ? `; verdict not updated, the PR moved to ${current.slice(0, 7)}` : ''}`);
   return r;
 }
@@ -161,14 +169,18 @@ function printRound(dir) {
 export async function review(o, { log = (s) => process.stderr.write(s + '\n') } = {}) {
   const pr = ghJson(`repos/${o.repo}/pulls/${o.pr}`);
   if (pr.state !== 'open') throw new Error(`${o.repo}#${o.pr} is ${pr.merged_at ? 'merged' : pr.state}`);
-  const headSha = pr.head.sha; const baseSha = pr.base.sha;
+  // The skip label is a stop no summons lifts (README principle 11); a local run is a summons.
+  if ((pr.labels ?? []).some((l) => l.name === 'claude_review_skip')) throw new Error(`${o.repo}#${o.pr} carries claude_review_skip; remove the label to review it`);
+  const headSha = pr.head.sha;
+  // The PR's diff is three-dot: against the merge base, not the base branch's tip.
+  const baseSha = ghJson(`repos/${o.repo}/compare/${pr.base.sha}...${headSha}`).merge_base_commit.sha;
 
   const prior = priorReview(livenessRecords(listComments(o.repo, o.pr)), { headSha, engine: o.engine, canWrite: writerCheck(o.repo) });
   if (prior && !o.again) throw new Error(`${headSha.slice(0, 7)} already has a ${o.engine} review on record (comment ${prior.id} by ${prior.login}); pass --again to run another`);
 
   // Until the resolver is a package (#182), a local round knows only the workflow defaults. With
   // no repo config those are exact; with one, the round would review against the wrong rules.
-  const cfg = gh(['api', `repos/${o.repo}/contents/.github/claude-review.yml?ref=${baseSha}`], { allow404: true });
+  const cfg = gh(['api', `repos/${o.repo}/contents/.github/claude-review.yml?ref=${pr.base.sha}`], { allow404: true });
   if (cfg !== null && !o.ignoreRepoConfig) throw new Error(`${o.repo} has .github/claude-review.yml, which a local round cannot apply yet (#182); pass --ignore-repo-config to review with the workflow defaults`);
 
   const dir = path.resolve(o.out ?? path.join(os.homedir(), '.assayer', 'reviews', `${o.repo.replace('/', '-')}-${o.pr}-${headSha.slice(0, 7)}-${Date.now()}`));
