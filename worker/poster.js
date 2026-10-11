@@ -24,10 +24,15 @@ export function findingMarker(engine) {
   return typeof engine === "string" && /^[a-z0-9-]{1,32}$/.test(engine) ? `<!-- assayer-finding engine=${engine} -->` : "";
 }
 
-// A posted body never @-mentions: a finding that quotes `@claude review` would otherwise summon
-// a lane from the operator's own login (OBJ-023). A zero-width joiner keeps the text readable.
+// Prose in a posted body never @-mentions: a finding that quotes `@claude review` would otherwise
+// summon a lane from the operator's own login (OBJ-023). Code spans and fences stay byte-exact,
+// so a suggestion or a decorator still applies (OBJ-027).
 export function quiet(text) {
-  return typeof text === "string" ? text.replace(/@(?=[A-Za-z0-9])/g, "@\u200d") : text;
+  if (typeof text !== "string") return text;
+  return text
+    .split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/)
+    .map((part, i) => (i % 2 ? part : part.replace(/@(?=[A-Za-z0-9])/g, "@\u200d")))
+    .join("");
 }
 
 export function looksLikeSecret(text) {
@@ -81,7 +86,7 @@ async function call(fetchImpl, token, method, path, body) {
 // Upserts only a comment this App wrote, as the lane upserts only github-actions[bot]'s: without
 // the author filter anyone could pre-create a marker comment and have it republished. With
 // `engine`, each engine keeps its own line, so one engine's round never erases another's record.
-export async function upsertLiveness({ fetch: fetchImpl, token, appLogin, repository, prNumber, body, engine = null }) {
+export async function upsertLiveness({ fetch: fetchImpl, token, appLogin, repository, prNumber, body, engine = null, beforeWrite = null }) {
   let existing = null;
   for (let page = 1; page <= 10 && existing === null; page++) {
     const rows = await call(fetchImpl, token, "GET", `/repos/${repository}/issues/${prNumber}/comments?per_page=100&page=${page}`);
@@ -94,11 +99,15 @@ export async function upsertLiveness({ fetch: fetchImpl, token, appLogin, reposi
     }
     if (rows.length < 100) break;
   }
+  // Asked after the lookup, as close to the write as the API allows: GitHub has no conditional
+  // comment update, so a head that moves in between is the remaining window (OBJ-004).
+  if (beforeWrite && !(await beforeWrite())) return false;
   if (existing !== null) {
     await call(fetchImpl, token, "PATCH", `/repos/${repository}/issues/comments/${existing}`, { body });
   } else {
     await call(fetchImpl, token, "POST", `/repos/${repository}/issues/${prNumber}/comments`, { body });
   }
+  return true;
 }
 
 // Posts one finished round. `events` are this attempt's events, oldest first. Returns counts;
@@ -106,15 +115,25 @@ export async function upsertLiveness({ fetch: fetchImpl, token, appLogin, reposi
 // as its own issue comment so the round's text is never lost. A finding with a credential-shaped body
 // is dropped outright. `journal` (optional: has(key), record(key, id)) lets a caller resume a
 // publish that stopped partway without posting twice (OBJ-006).
-export async function postRound({ fetch: fetchImpl, token, appLogin, job, events, rounds, journal = null, skipLiveness = false, livenessStillCurrent = null, engineLiveness = false }) {
+// Every comment a round posts ends in the engine marker, so a caller stub can divert it from the
+// pull request's concurrency group whoever posted it (OBJ-020). `engineDropped` counts findings
+// the runner itself discarded before they became events (OBJ-005).
+export async function postRound({ fetch: fetchImpl, token, appLogin, job, events, rounds, journal = null, skipLiveness = false, livenessStillCurrent = null, engineLiveness = false, engineDropped = 0 }) {
   const out = { inline: 0, refused: 0, summary: 0, unplaced: 0 };
   const unplaced = [];
   const findings = events.filter((e) => e.type === "finding");
   const marker = findingMarker(job.engine);
+  const tail = (body) => (marker ? `${body}\n\n${marker}` : body);
   for (const [i, f] of findings.entries()) {
     const key = `finding:${i}`;
     if (journal?.has(key)) {
       out.inline += 1;
+      continue;
+    }
+    // Already delivered as a fallback comment on an earlier attempt (OBJ-006).
+    if (journal?.has(`unplaced:${i}`)) {
+      out.refused += 1;
+      unplaced.push({ f, i });
       continue;
     }
     if (typeof f.body !== "string" || !f.body.trim() || looksLikeSecret(f.body) || f.body.length > MAX_BODY) {
@@ -162,7 +181,7 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
     out.summary = 1;
   } else if (summaryBody) {
     const posted = await call(fetchImpl, token, "POST", `/repos/${job.repository}/issues/${job.pr_number}/comments`, {
-      body: quiet(summaryBody).slice(0, MAX_BODY),
+      body: tail(quiet(summaryBody).slice(0, MAX_BODY - 64)),
     });
     journal?.record("summary", posted?.id ?? null);
     out.summary = 1;
@@ -173,7 +192,7 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
   for (const { f, i } of unplaced) {
     const key = `unplaced:${i}`;
     const where = typeof f.path === "string" ? `\`${f.path}${Number.isInteger(f.line) ? `:${f.line}` : ""}\`` : "no location";
-    const body = quiet(`**Not placed inline** (${where}): GitHub would not anchor this finding on the diff.\n\n${f.body}`);
+    const body = tail(quiet(`**Not placed inline** (${where}): GitHub would not anchor this finding on the diff.\n\n${f.body}`));
     if (journal?.has(key)) continue;
     if (looksLikeSecret(body) || body.length > MAX_BODY) {
       out.unplaced -= 1;
@@ -191,29 +210,29 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
     headSha: job.head_sha,
     findings: out.inline,
     unplaced: out.unplaced,
-    dropped: out.refused - out.unplaced,
+    dropped: out.refused - out.unplaced + engineDropped,
     failureClass: error?.failure_class,
   });
   // A replayed publish, or one for a head the PR has moved past, must not rewrite the
   // standing verdict (principle 14).
   if (journal?.has("liveness") || skipLiveness) return out;
-  if (livenessStillCurrent && !(await livenessStillCurrent())) return out;
-  await upsertLiveness({
+  const wrote = await upsertLiveness({
     fetch: fetchImpl,
     token,
     appLogin,
     repository: job.repository,
     prNumber: job.pr_number,
     engine: engineLiveness ? job.engine : null,
-    body: livenessBody({
+    beforeWrite: livenessStillCurrent,
+    body: tail(livenessBody({
       rounds,
       headSha: job.head_sha,
       engine: job.engine,
-      model: started?._meta?.served_model ?? started?.model ?? job.model,
+      model: quiet(started?._meta?.served_model ?? started?.model ?? job.model),
       verdict,
-    }),
+    })),
   });
-  journal?.record("liveness", null);
+  if (wrote) journal?.record("liveness", null);
   return out;
 }
 

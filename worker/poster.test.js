@@ -142,6 +142,45 @@ describe("poster (#184)", () => {
     assert.ok(gh.calls.filter((c) => c.method === "POST").every((c) => !/@claude/.test(c.body.body)));
   });
 
+  it("leaves code spans and fences byte-exact when it quiets mentions (OBJ-027)", () => {
+    const body = "ping @claude\n\n```suggestion\nimport x from \"@scope/pkg\";\n@decorator\n```\nand `@Inject` here";
+    const q = quiet(body);
+    assert.match(q, /ping @\u200dclaude/);
+    assert.ok(q.includes('import x from "@scope/pkg";\n@decorator\n```'));
+    assert.ok(q.includes("`@Inject`"));
+  });
+
+  it("ends every comment a round posts in the engine marker, so a stub can divert it (OBJ-020)", async () => {
+    const gh = github({ refuse: new Set(["src/a.js"]) });
+    await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, rounds: 1, events: stream([finding()]) });
+    const posts = gh.calls.filter((c) => c.method === "POST");
+    assert.equal(posts.length, 4); // refused inline attempt, summary, fallback, liveness
+    assert.ok(posts.every((c) => c.body.body.endsWith("<!-- assayer-finding engine=opencode -->")));
+  });
+
+  it("does not retry inline a finding already delivered as a fallback (OBJ-006)", async () => {
+    const seen = new Map([["unplaced:0", 5]]);
+    const journal = { has: (k) => seen.has(k), record: (k, id) => seen.set(k, id) };
+    const gh = github();
+    await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, rounds: 1, journal, events: stream([finding()]) });
+    assert.ok(gh.calls.every((c) => !c.path.endsWith("/pulls/183/comments")));
+  });
+
+  it("checks the head after the liveness lookup and writes nothing when it moved (OBJ-004)", async () => {
+    const gh = github();
+    const order = [];
+    await postRound({ fetch: async (u, i) => { order.push(i?.method ?? "GET"); return gh.fetch(u, i); }, token: "t", appLogin: APP, job: JOB, rounds: 1,
+      events: stream([]), livenessStillCurrent: async () => { order.push("check"); return false; } });
+    assert.deepEqual(order, ["POST", "GET", "check"]);
+  });
+
+  it("counts findings the runner dropped before they became events (OBJ-005)", async () => {
+    const gh = github();
+    await postRound({ fetch: gh.fetch, token: "t", appLogin: APP, job: JOB, rounds: 1, events: stream([]), engineDropped: 1 });
+    const live = gh.calls.filter((c) => c.method === "POST").at(-1);
+    assert.match(live.body.body, /0 findings inline, 1 withheld/);
+  });
+
   it("a withheld finding is never reported as no findings (OBJ-005)", async () => {
     assert.equal(roundVerdict({ conclusion: "completed", headSha: HEAD, findings: 0, dropped: 1 }),
       "reviewed `bbbbbbb`, 0 findings inline, 1 withheld (credential-shaped or oversized).");
