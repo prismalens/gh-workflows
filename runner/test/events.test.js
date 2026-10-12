@@ -50,5 +50,6 @@ test('resetAtIso turns a clock time or a duration into an ISO instant the Worker
   assert.equal(resetAtIso('3m', now), new Date(now.getTime() + 180000).toISOString());
   assert.equal(resetAtIso('13:99 PM', now), '13:99 PM');
   assert.equal(resetAtIso('soon', now), 'soon');
+  assert.equal(resetAtIso('999999999d', now), '999999999d', 'a duration past the Date range stays raw instead of throwing');
   assert.equal(resetAtIso(null, now), null);
 });

@@ -81,7 +81,8 @@ export function resetAtIso(raw, now = new Date()) {
   const dur = /^(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?$/i.exec(s);
   if (dur && dur.slice(1).some(Boolean)) {
     const [d, h, m, sec] = dur.slice(1).map((v) => Number(v ?? 0));
-    return new Date(now.getTime() + (((d * 24 + h) * 60 + m) * 60 + sec) * 1000).toISOString();
+    const at = new Date(now.getTime() + (((d * 24 + h) * 60 + m) * 60 + sec) * 1000);
+    return Number.isNaN(at.getTime()) ? s : at.toISOString();
   }
   return s;
 }
