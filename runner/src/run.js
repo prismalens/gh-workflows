@@ -93,8 +93,8 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
   if (opts.stage) {
     const t0 = Date.now();
     try {
-      const m = await buildManifest({ cwd, repo: opts.repo, pr: opts.pr, mode: opts.mode, headSha: opts.headSha, ghToken: process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN });
-      staged = { files: m.manifest?.files?.length ?? null, reviewable: (m.manifest?.files ?? []).filter((f) => !f.filtered_by).length, diff_bytes: m.diffBytes, ms: Date.now() - t0 };
+      const m = await buildManifest({ cwd, repo: opts.repo, pr: opts.pr, mode: opts.mode, headSha: opts.headSha, ghToken: opts.ghToken ?? process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN });
+      staged = { files: m.manifest?.files?.length ?? null, reviewable: (m.manifest?.files ?? []).filter((f) => !f.filtered_by).length, diff_bytes: m.diffBytes, ms: Date.now() - t0, refused: m.refused };
       writeFileSync(path.join(out, 'manifest-stderr.log'), m.stderr ?? '');
     } catch (e) {
       const mapper = new SessionMapper({ cwd, engine: opts.engine, model: opts.model, promptHash: opts.promptHash, laneVersion: opts.laneVersion, credentialFingerprint: opts.credentialFingerprint });
@@ -107,7 +107,17 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
       return summary;
     }
   }
-  const baseEnv = engineEnv(row, process.env, opts.credentialEnv ? [opts.credentialEnv] : []);
+  if (staged?.refused) {
+    const mapper = new SessionMapper({ cwd, engine: opts.engine, model: opts.model, promptHash: opts.promptHash, laneVersion: opts.laneVersion, credentialFingerprint: opts.credentialFingerprint });
+    const events = mapper.finish({ conclusion: 'refused', wallClockMs: staged.ms });
+    writeFileSync(path.join(out, 'events.jsonl'), events.map((x) => JSON.stringify(x)).join('\n') + '\n');
+    const summary = { engine: opts.engine, model: opts.model, cwd, conclusion: 'refused', stage: 'manifest', refused_size: true, staged, errors: [], wall_clock_ms: staged.ms };
+    writeFileSync(path.join(out, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
+    log('assayer-run: the manifest refused this pull request by size; no engine started');
+    return summary;
+  }
+  const source = opts.engineGh === 'offline' ? Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'GH_TOKEN' && k !== 'GITHUB_TOKEN')) : process.env;
+  const baseEnv = engineEnv(row, source, opts.credentialEnv ? [opts.credentialEnv] : []);
   // The engine's `gh` is the shim: `pr comment` is recorded, never posted. Story: #184 day one.
   const realGh = whichGh(baseEnv.PATH ?? process.env.PATH ?? '');
   if (!realGh) throw new Error('gh is not on PATH; the lane\'s prompt needs it for read commands');
@@ -120,7 +130,11 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
     ASSAYER_TOOL_LOG: toolLog, ASSAYER_REAL_GH: realGh,
     // The shim is a copy in <out>/bin; secret-check.js stays here beside its imports.
     ASSAYER_SECRET_CHECK: path.join(HERE, 'secret-check.js'),
+    // A local round runs on the operator's own login, which is a broad write token. The
+    // engine gets an empty gh config instead, so its gh reads fail closed (OBJ-018).
+    ...(opts.engineGh === 'offline' ? { GH_CONFIG_DIR: path.join(out, 'gh-offline') } : {}),
   } });
+  if (opts.engineGh === 'offline') mkdirSync(path.join(out, 'gh-offline'), { recursive: true });
   const child = spawn(row.command, row.args({ cwd, model: opts.model }), { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stderr.on('data', (d) => appendFileSync(stderrPath, d));
   let childExit = null;

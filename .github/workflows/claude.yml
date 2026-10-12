@@ -13,7 +13,10 @@ jobs:
     # `author_association` is banned from admission. Stories: prismalens/prismalens#415 and #422.
     if: |
       github.event.sender.type != 'Bot' &&
-      !endsWith(github.event.sender.login, '[bot]') && (
+      !endsWith(github.event.sender.login, '[bot]') &&
+      !endsWith(github.event.comment.body, '<!-- assayer-finding engine=codex -->') &&
+      !endsWith(github.event.comment.body, '<!-- assayer-finding engine=opencode -->') &&
+      !endsWith(github.event.comment.body, '<!-- assayer-finding engine=claude-code -->') && (
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||

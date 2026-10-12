@@ -166,6 +166,8 @@ test('an entry the recorder already redacted is dropped with its own reason', ()
   assert.ok(!evs.some((e) => e.type === 'summary'), 'no summary from a redacted record');
   const why = evs.at(-1)._meta.dropped.map((d) => d.why);
   assert.equal(why.filter((w) => /recorder redacted this record: credential-shaped body/.test(w)).length, 2, why.join(' | '));
+  // The publisher counts a redacted finding as withheld, so it needs the tool (OBJ-005).
+  assert.deepEqual(evs.at(-1)._meta.dropped.map((d) => d.tool), ['create_inline_comment', 'gh_pr_comment']);
 });
 
 const modelOption = (currentValue, over = {}) => ({ id: 'model', name: 'Model', type: 'select', category: 'model', currentValue, options: [], ...over });

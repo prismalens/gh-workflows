@@ -91,6 +91,10 @@ jobs:
       - name: Review findings sweep behaviour
         run: python3 tests/test-review-findings-sweep.py
 
+      # The lanes skip a local round's finding by its exact trailing marker, per engine (#184).
+      - name: Assayer marker names every engine
+        run: python3 tests/test-assayer-marker-engines.py
+
       # Extracts and runs the real 'Build review manifest' script out of
       # claude-code-review.yml, plus the reviewable_lines size cap. Story: #105.
       - name: Review manifest behaviour
@@ -305,10 +309,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: runner/package-lock.json
+          cache-dependency-path: |
+            runner/package-lock.json
+            worker/package-lock.json
 
+      # The CLI imports ../worker/poster.js, which needs the worker's runtime dependencies.
       - name: Install
-        run: npm ci
+        run: npm ci && npm ci --omit=dev --prefix ../worker
 
       # Unit tests only: the contract, the policy and the mapper. The engine itself is
       # covered by runner/scripts/permission-probe.sh, which needs a model. Story: #184.

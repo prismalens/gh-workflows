@@ -2,6 +2,10 @@
 // It writes inline review comments, one summary issue comment and its own liveness comment.
 // It never calls POST /pulls/:n/reviews, so a runner round can neither approve nor block.
 
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { gfmFromMarkdown } from "mdast-util-gfm";
+import { gfm } from "micromark-extension-gfm";
+
 const GITHUB_API = "https://api.github.com";
 export const LIVENESS_PREFIX = "<!-- claude-review-liveness";
 // GitHub refuses a comment body over 65536 characters.
@@ -22,6 +26,28 @@ const SECRET_PATTERNS = [
 // (review-findings-sweep.yml, #184).
 export function findingMarker(engine) {
   return typeof engine === "string" && /^[a-z0-9-]{1,32}$/.test(engine) ? `<!-- assayer-finding engine=${engine} -->` : "";
+}
+
+// Prose in a posted body never @-mentions: a finding that quotes `@claude review` would otherwise
+// summon a lane from the operator's own login (OBJ-023). Code spans and fences stay byte-exact,
+// so a suggestion or a decorator still applies (OBJ-027).
+export function quiet(text) {
+  if (typeof text !== "string") return text;
+  // Only GFM text nodes are prose; code, HTML and everything else keep their bytes.
+  const ranges = [];
+  const walk = (node) => {
+    if (node.type === "text") ranges.push([node.position.start.offset, node.position.end.offset]);
+    for (const child of node.children ?? []) walk(child);
+  };
+  walk(fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }));
+  let out = "";
+  let at = 0;
+  for (const [start, end] of ranges.sort((a, b) => a[0] - b[0])) {
+    if (start < at) continue;
+    out += text.slice(at, start) + text.slice(start, end).replace(/@(?=[A-Za-z0-9])/g, "@\u200d");
+    at = end;
+  }
+  return out + text.slice(at);
 }
 
 export function looksLikeSecret(text) {
@@ -45,12 +71,14 @@ export function livenessBody({ rounds, headSha, engine, model, verdict }) {
 }
 
 // The round's verdict line, from what it posted and how it finished.
-export function roundVerdict({ conclusion, headSha, findings, failureClass }) {
+export function roundVerdict({ conclusion, headSha, findings, failureClass, unplaced = 0, dropped = 0 }) {
   const short = String(headSha).slice(0, 7);
   if (conclusion === "completed") {
-    return findings === 0
-      ? `reviewed \`${short}\`, no findings.`
-      : `reviewed \`${short}\`, ${findings} finding${findings === 1 ? "" : "s"} inline.`;
+    // A finding GitHub would not anchor is still a finding: "no findings" would be false (OBJ-005).
+    const missed = unplaced > 0 ? `, ${unplaced} not placed inline (posted as comments)` : "";
+    const lost = dropped > 0 ? `, ${dropped} withheld (credential-shaped, oversized or unreadable)` : "";
+    if (findings === 0 && unplaced === 0 && dropped === 0) return `reviewed \`${short}\`, no findings.`;
+    return `reviewed \`${short}\`, ${findings} finding${findings === 1 ? "" : "s"} inline${missed}${lost}.`;
   }
   const why = failureClass ? ` (${failureClass})` : "";
   return `the round on \`${short}\` ended ${conclusion ?? "without a conclusion"}${why}; this head has no machine review on record.`;
@@ -71,43 +99,69 @@ async function call(fetchImpl, token, method, path, body) {
 }
 
 // Upserts only a comment this App wrote, as the lane upserts only github-actions[bot]'s: without
-// the author filter anyone could pre-create a marker comment and have it republished.
-export async function upsertLiveness({ fetch: fetchImpl, token, appLogin, repository, prNumber, body }) {
+// the author filter anyone could pre-create a marker comment and have it republished. With
+// `engine`, each engine keeps its own line, so one engine's round never erases another's record.
+export async function upsertLiveness({ fetch: fetchImpl, token, appLogin, repository, prNumber, body, engine = null, beforeWrite = null }) {
   let existing = null;
   for (let page = 1; page <= 10 && existing === null; page++) {
     const rows = await call(fetchImpl, token, "GET", `/repos/${repository}/issues/${prNumber}/comments?per_page=100&page=${page}`);
     for (const c of rows) {
-      if (c?.user?.login === appLogin && typeof c.body === "string" && c.body.startsWith(LIVENESS_PREFIX)) {
+      const head = typeof c?.body === "string" ? c.body.split("\n")[0] : "";
+      if (c?.user?.login === appLogin && head.startsWith(LIVENESS_PREFIX) && (engine === null || head.includes(` engine=${engine} `))) {
         existing = c.id;
         break;
       }
     }
     if (rows.length < 100) break;
   }
+  // Asked after the lookup, as close to the write as the API allows: GitHub has no conditional
+  // comment update, so a head that moves in between is the remaining window (OBJ-004).
+  if (beforeWrite && !(await beforeWrite())) return false;
   if (existing !== null) {
     await call(fetchImpl, token, "PATCH", `/repos/${repository}/issues/comments/${existing}`, { body });
   } else {
     await call(fetchImpl, token, "POST", `/repos/${repository}/issues/${prNumber}/comments`, { body });
   }
+  return true;
 }
 
 // Posts one finished round. `events` are this attempt's events, oldest first. Returns counts;
-// a finding GitHub refuses (a line outside the diff, say) is counted, never fatal.
-export async function postRound({ fetch: fetchImpl, token, appLogin, job, events, rounds }) {
-  const out = { inline: 0, refused: 0, summary: 0 };
+// a finding GitHub refuses (a line outside the diff, say) is counted, never fatal, and posted
+// as its own issue comment so the round's text is never lost. A finding with a credential-shaped body
+// is dropped outright. `journal` (optional: has(key), record(key, id)) lets a caller resume a
+// publish that stopped partway without posting twice (OBJ-006).
+// Every comment a round posts ends in the engine marker, so a caller stub can divert it from the
+// pull request's concurrency group whoever posted it (OBJ-020). `engineDropped` counts findings
+// the runner itself discarded before they became events (OBJ-005).
+export async function postRound({ fetch: fetchImpl, token, appLogin, job, events, rounds, journal = null, skipLiveness = false, livenessStillCurrent = null, engineLiveness = false, engineDropped = 0 }) {
+  const out = { inline: 0, refused: 0, summary: 0, unplaced: 0 };
+  const unplaced = [];
   const findings = events.filter((e) => e.type === "finding");
-  for (const f of findings) {
+  const marker = findingMarker(job.engine);
+  const tail = (body) => (marker ? `${body}\n\n${marker}` : body);
+  for (const [i, f] of findings.entries()) {
+    const key = `finding:${i}`;
+    if (journal?.has(key)) {
+      out.inline += 1;
+      continue;
+    }
+    // Already delivered as a fallback comment on an earlier attempt (OBJ-006).
+    if (journal?.has(`unplaced:${i}`)) {
+      out.refused += 1;
+      unplaced.push({ f, i });
+      continue;
+    }
     if (typeof f.body !== "string" || !f.body.trim() || looksLikeSecret(f.body) || f.body.length > MAX_BODY) {
       out.refused += 1;
       continue;
     }
     if (typeof f.path !== "string" || !Number.isInteger(f.line) || f._meta?.path_outside_checkout) {
       out.refused += 1;
+      unplaced.push({ f, i });
       continue;
     }
-    const marker = findingMarker(job.engine);
     const comment = {
-      body: marker ? `${f.body}\n\n${marker}` : f.body,
+      body: marker ? `${quiet(f.body)}\n\n${marker}` : quiet(f.body),
       commit_id: job.head_sha,
       path: f.path,
       line: f.line,
@@ -119,13 +173,16 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
       comment.start_side = comment.side;
     }
     try {
-      await call(fetchImpl, token, "POST", `/repos/${job.repository}/pulls/${job.pr_number}/comments`, comment);
+      const posted = await call(fetchImpl, token, "POST", `/repos/${job.repository}/pulls/${job.pr_number}/comments`, comment);
+      journal?.record(key, posted?.id ?? null);
       out.inline += 1;
     } catch (e) {
       if (e.status !== 422) throw e;
       out.refused += 1;
+      unplaced.push({ f, i });
     }
   }
+  out.unplaced = unplaced.length;
 
   let summary = null;
   for (let i = events.length - 1; i >= 0; i--) {
@@ -134,11 +191,30 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
       break;
     }
   }
-  if (summary && typeof summary.body === "string" && summary.body.trim() && !looksLikeSecret(summary.body)) {
-    await call(fetchImpl, token, "POST", `/repos/${job.repository}/issues/${job.pr_number}/comments`, {
-      body: summary.body.slice(0, MAX_BODY),
-    });
+  const summaryBody = summary && typeof summary.body === "string" && summary.body.trim() && !looksLikeSecret(summary.body) ? summary.body : null;
+  if (summaryBody && journal?.has("summary")) {
     out.summary = 1;
+  } else if (summaryBody) {
+    const posted = await call(fetchImpl, token, "POST", `/repos/${job.repository}/issues/${job.pr_number}/comments`, {
+      body: tail(quiet(summaryBody).slice(0, MAX_BODY - 64)),
+    });
+    journal?.record("summary", posted?.id ?? null);
+    out.summary = 1;
+  }
+  // Each finding GitHub would not anchor gets its own issue comment: one combined body could
+  // pass 65,000 characters and lose some silently. The location is engine text too, so the
+  // whole comment is screened, not just the finding's body.
+  for (const { f, i } of unplaced) {
+    const key = `unplaced:${i}`;
+    const where = typeof f.path === "string" ? `\`${f.path}${Number.isInteger(f.line) ? `:${f.line}` : ""}\`` : "no location";
+    const body = tail(quiet(`**Not placed inline** (${where}): GitHub would not anchor this finding on the diff.\n\n${f.body}`));
+    if (journal?.has(key)) continue;
+    if (looksLikeSecret(body) || body.length > MAX_BODY) {
+      out.unplaced -= 1;
+      continue;
+    }
+    const posted = await call(fetchImpl, token, "POST", `/repos/${job.repository}/issues/${job.pr_number}/comments`, { body });
+    journal?.record(key, posted?.id ?? null);
   }
 
   const started = events.find((e) => e.type === "started");
@@ -148,22 +224,30 @@ export async function postRound({ fetch: fetchImpl, token, appLogin, job, events
     conclusion: finished?.conclusion,
     headSha: job.head_sha,
     findings: out.inline,
+    unplaced: out.unplaced,
+    dropped: out.refused - out.unplaced + engineDropped,
     failureClass: error?.failure_class,
   });
-  await upsertLiveness({
+  // A replayed publish, or one for a head the PR has moved past, must not rewrite the
+  // standing verdict (principle 14).
+  if (journal?.has("liveness") || skipLiveness) return out;
+  const wrote = await upsertLiveness({
     fetch: fetchImpl,
     token,
     appLogin,
     repository: job.repository,
     prNumber: job.pr_number,
-    body: livenessBody({
+    engine: engineLiveness ? job.engine : null,
+    beforeWrite: livenessStillCurrent,
+    body: tail(livenessBody({
       rounds,
       headSha: job.head_sha,
       engine: job.engine,
-      model: started?._meta?.served_model ?? started?.model ?? job.model,
+      model: quiet(started?._meta?.served_model ?? started?.model ?? job.model),
       verdict,
-    }),
+    })),
   });
+  if (wrote) journal?.record("liveness", null);
   return out;
 }
 
