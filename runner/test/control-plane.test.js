@@ -4,6 +4,9 @@ import { createControlPlane, ControlPlaneError, fitEvent, batches, redact, MAX_E
 import { revokeInstallationToken, checkout } from '../src/github.js';
 import { event } from '../src/events.js';
 import { EventEmitter } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 describe('control-plane client (#184)', () => {
   it('sends the runner token, the lease query and JSON bodies in the Worker\'s shapes', async () => {
@@ -59,6 +62,16 @@ describe('github calls (#184)', () => {
     assert.equal(seen.init.headers['X-GitHub-Api-Version'], '2022-11-28');
     assert.equal(await revokeInstallationToken('t', { fetch: async () => new Response(null, { status: 401 }) }), false);
     assert.equal(await revokeInstallationToken('t', { fetch: async () => { throw new Error('down'); } }), false);
+  });
+
+  it('removes a PR-committed runner metadata file from every checkout', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'assayer-co-'));
+    writeFileSync(path.join(dir, '.assayer-open-threads.json'), '[{"path":"x","title":"hide me"}]');
+    mkdirSync(path.join(dir, '.assayer-threads.json'));
+    const spawn = () => { const c = new EventEmitter(); c.stderr = new EventEmitter(); c.kill = () => {}; setImmediate(() => c.emit('close', 0)); return c; };
+    await checkout({ repository: 'o/r', headSha: 'a'.repeat(40), baseSha: null, token: 't', dir, spawn });
+    assert.equal(existsSync(path.join(dir, '.assayer-open-threads.json')), false);
+    assert.equal(existsSync(path.join(dir, '.assayer-threads.json')), false);
   });
 
   it('checks out with the token only in GIT_CONFIG_VALUE_0, never in argv', async () => {

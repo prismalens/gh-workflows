@@ -3,7 +3,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { event, classifyFailure, resetAtFrom, resetAtIso } from './events.js';
-import { FINDING_TOOL, SUMMARY_TOOL } from './policy.js';
+import { FINDING_TOOL, SUMMARY_TOOL, VERDICT_TOOL } from './policy.js';
 
 export const CONCLUSIONS = Object.freeze(['completed', 'truncated', 'refused', 'cancelled', 'timed-out', 'failed']);
 
@@ -155,6 +155,8 @@ export class SessionMapper {
         if (typeof input.body === 'string' && looksLikeSecret(input.body)) { this.dropped.push({ why: 'summary body carries a credential-shaped token', at: e.at }); continue; }
         if (typeof input.body === 'string' && input.body.trim()) { summary = input.body; summarySource = e.tool; } // last write wins, as the lane's comment does
         else this.dropped.push({ why: 'summary with empty body', at: e.at });
+      } else if (e.tool === VERDICT_TOOL) {
+        // A verify round's verdicts are read from the tool log by the CLI (threads.js).
       } else {
         this.dropped.push({ why: `unknown tool ${e.tool}`, at: e.at });
       }

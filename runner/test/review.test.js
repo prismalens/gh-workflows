@@ -28,6 +28,8 @@ describe('assayer review (#184)', () => {
     assert.equal(parseArgs(['review', 'a/b#1', '--post', '--engine', 'opencode']).post, true);
     assert.throws(() => parseArgs(['review', 'a/b#1', '--engine', 'nope']), /unknown engine/);
     assert.throws(() => parseArgs(['review', 'a/b#1', '--bogus']), /unknown argument/);
+    assert.equal(parseArgs(['review', 'a/b#1', '--verify-only']).verifyOnly, true);
+    assert.throws(() => parseArgs(['review', 'a/b#1', '--verify-only', '--skip-verify']), /contradict/);
   });
 
   it('parses liveness markers and blocks a head this engine already reviewed (OBJ-001)', () => {
