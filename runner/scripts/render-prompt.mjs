@@ -3,16 +3,27 @@
 // the workflow's build-prompt env block does. Prints the prompt on stdout, the prompt hash on
 // stderr. Usage: render-prompt.mjs --repo owner/name --pr N [--level medium|high]
 //   [--mode review|review-full|incremental --range-base SHA --range-head SHA] [--path-instructions]
+//   An engine with its own template (codex) takes --engine codex --base-sha SHA --head-sha SHA.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderPrompt, promptHash, laneTokens } from '../src/prompt.js';
+import { renderPrompt, renderCodexPrompt, promptHash, laneTokens } from '../src/prompt.js';
+import { ENGINES } from '../src/engines.js';
 
 const args = process.argv.slice(2);
 const get = (k, d = null) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : d; };
 const has = (k) => args.includes(k);
 const repo = get('--repo'); const pr = get('--pr');
 if (!repo || !pr || !/^[^/]+\/[^/]+$/.test(repo) || !/^\d+$/.test(pr)) { console.error('usage: --repo owner/name --pr N'); process.exit(2); }
+const own = ENGINES[get('--engine', '')]?.promptTemplate;
+if (own) {
+  const baseSha = get('--base-sha'); const headSha = get('--head-sha');
+  if (!/^[0-9a-f]{40}$/.test(baseSha ?? '') || !/^[0-9a-f]{40}$/.test(headSha ?? '')) { console.error('--engine with its own template needs --base-sha and --head-sha (40 hex)'); process.exit(2); }
+  const t = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'prompt', own), 'utf8');
+  process.stderr.write(`prompt_hash=${promptHash(t)}\n`);
+  process.stdout.write(renderCodexPrompt(t, { repo, pr, baseSha, headSha }));
+  process.exit(0);
+}
 const level = get('--level', 'medium'); const mode = get('--mode', 'review');
 if (!['review', 'review-full', 'incremental'].includes(mode)) { console.error('bad --mode'); process.exit(2); }
 const rb = get('--range-base'); const rh = get('--range-head');

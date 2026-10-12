@@ -59,6 +59,30 @@ export function classifyFailure(text) {
 }
 
 export function resetAtFrom(text) {
-  const m = /resets? (?:in|at) ([^.\n]+)/i.exec(String(text || ''));
+  const m = /(?:resets?|try again) (?:in|at) ([^\n]+?)(?:\.(?:\s|$)|\n|$)/i.exec(String(text || ''));
   return m ? m[1].trim() : null;
+}
+
+// The Worker's cooldown runs Date.parse on reset_at, so the runner hands it an ISO instant. A
+// clock time ("7:37 PM") is read in the runner's timezone and rolls to tomorrow once passed; a
+// duration ("1h35m27s", "3m") counts from now. Anything else stays raw and the job fails, not waits.
+export function resetAtIso(raw, now = new Date()) {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  const clock = /^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?$/i.exec(s);
+  if (clock) {
+    const h = Number(clock[1]);
+    if (h < 1 || h > 12 || Number(clock[2] ?? 0) > 59) return s;
+    const at = new Date(now);
+    at.setHours((h % 12) + (clock[3].toLowerCase() === 'p' ? 12 : 0), Number(clock[2] ?? 0), 0, 0);
+    if (at <= now) at.setDate(at.getDate() + 1);
+    return at.toISOString();
+  }
+  const dur = /^(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?$/i.exec(s);
+  if (dur && dur.slice(1).some(Boolean)) {
+    const [d, h, m, sec] = dur.slice(1).map((v) => Number(v ?? 0));
+    const at = new Date(now.getTime() + (((d * 24 + h) * 60 + m) * 60 + sec) * 1000);
+    return Number.isNaN(at.getTime()) ? s : at.toISOString();
+  }
+  return s;
 }

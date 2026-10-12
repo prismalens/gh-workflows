@@ -199,3 +199,14 @@ export function laneTokens({ repo, pr, level = 'medium', mode = 'review', rangeB
     AGENT4_PATH_INSTRUCTIONS: pi ? ' Also read `.claude-path-instructions.md` in the repository root; treat entries as context for what breaks under those paths.' : '',
   };
 }
+
+// The Codex template (prompt/codex.md) takes the round's two commits so the engine reads the
+// diff per file with `git diff`; it has no workflow twin and no level or mode tokens.
+export function renderCodexPrompt(template, { repo, pr, baseSha, headSha }) {
+  const tokens = { REPO: repo, PR_NUMBER: String(pr), BASE_SHA: baseSha, HEAD_SHA: headSha };
+  let text = template;
+  for (const [k, v] of Object.entries(tokens)) text = replaceAll(text, k, v);
+  const left = text.match(/@@[A-Z0-9_]+@@/g);
+  if (left) throw new Error(`codex prompt left a placeholder: ${left.join(' ')}`);
+  return text;
+}

@@ -13,7 +13,7 @@ import { createControlPlane, ControlPlaneError, fitEvent, batches, redact } from
 import { revokeInstallationToken, checkout as gitCheckout } from './github.js';
 import { event, classifyFailure } from './events.js';
 import { ENGINES } from './engines.js';
-import { renderPrompt, promptHash, laneTokens } from './prompt.js';
+import { renderPrompt, renderCodexPrompt, promptHash, laneTokens } from './prompt.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATE = path.join(HERE, '..', 'prompt', 'template.md');
@@ -137,9 +137,12 @@ export async function runJob(ctx, lease) {
         conclusion = 'cancelled'; exit = 'sigterm';
       } else if (checkedOut) {
         mkdirSync(out, { recursive: true });
-        const template = readFileSync(TEMPLATE, 'utf8');
+        const codexTemplate = ENGINES[job.engine]?.promptTemplate;
+        const template = readFileSync(codexTemplate ? path.join(HERE, '..', 'prompt', codexTemplate) : TEMPLATE, 'utf8');
         const promptPath = path.join(out, 'prompt.md');
-        writeFileSync(promptPath, renderPrompt(template, laneTokens({ repo: job.repository, pr: job.pr_number, level: job.level ?? 'medium', mode: job.mode })));
+        writeFileSync(promptPath, codexTemplate
+          ? renderCodexPrompt(template, { repo: job.repository, pr: job.pr_number, baseSha: job.base_sha, headSha: job.head_sha })
+          : renderPrompt(template, laneTokens({ repo: job.repository, pr: job.pr_number, level: job.level ?? 'medium', mode: job.mode })));
         const result = await ctx.runRound(job, {
           cwd, out, promptPath, promptHashValue: promptHash(template), credential,
           credentialValue: ctx.config.secrets?.get(credential.name) ?? null,

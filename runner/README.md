@@ -19,6 +19,8 @@ node src/run.js --cwd /path/to/checkout --prompt rendered-prompt.md --out ./roun
 ```
 
 `--cwd` must be a git checkout at the PR head. `--prompt` is the lane template already rendered.
+`scripts/render-prompt.mjs --engine codex --repo owner/name --pr N --base-sha A --head-sha B`
+renders the Codex template instead.
 `scripts/render-prompt.mjs --repo owner/name --pr N [--level high] [--mode review-full |
 incremental --range-base A --range-head B] [--path-instructions]` renders it the way the
 workflow's `build-prompt` step does and prints the prompt hash on stderr; `prompt/README.md`
@@ -170,6 +172,19 @@ ends its Codex run early. Nothing lands. The row also turns off the user's Codex
 search and the checkout's `AGENTS.md`; the sign-in stays in `CODEX_HOME`. Zed's
 `@zed-industries/codex-acp` is deprecated: its 0.16.0 core cannot use `gpt-6.1-sol` on a
 ChatGPT sign-in, and its refusal aborts the turn.
+
+Codex reviews from its own template, `prompt/codex.md`, not the lane's. `gpt-6.1-sol` defaults
+to `low` effort and cuts every tool output at 10,000 tokens, a per-model cap that
+`tool_output_token_limit` does not raise. The lane template's six scripted agents and single
+diff file left a 7,000-line pull request two-thirds read with no findings. The Codex template
+asks for every reviewable file, read per file with `git diff <base> <head> -- <path>`, and a
+summary that counts them. The row sets `xhigh` effort and a 90-minute, 15-idle-minute round;
+the daemon renders the template with the job's two commits. The template forbids `;`, `|`,
+`--jq` and fetches because one refusal ends the round. Codex asks for an MCP call with only a
+tool-call id, so the runner merges the request with the streamed `tool_call` that named the
+server and tool, and the policy allows the two comment tools by that name. A ChatGPT usage
+limit arrives as agent text before a bare `Internal error`; it is recorded as `account-limit`
+with the reset time Codex gave.
 
 `scripts/permission-probe.sh <checkout>` repeats the check against the real binary: an allowed
 command, a disallowed one, an edit and a delete, then proves nothing landed. Run it before

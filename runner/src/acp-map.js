@@ -2,7 +2,7 @@
 // comment MCP servers wrote) onto assayer/v1 events. Pure: no I/O except readToolLog.
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { event, classifyFailure, resetAtFrom } from './events.js';
+import { event, classifyFailure, resetAtFrom, resetAtIso } from './events.js';
 import { FINDING_TOOL, SUMMARY_TOOL } from './policy.js';
 
 export const CONCLUSIONS = Object.freeze(['completed', 'truncated', 'refused', 'cancelled', 'timed-out', 'failed']);
@@ -121,9 +121,12 @@ export class SessionMapper {
 
   onError(err, stage = 'prompt') {
     this.errored = true;
-    const message = err?.message || String(err);
+    let message = err?.message || String(err);
+    // Codex reports a ChatGPT usage limit as agent text, then fails the prompt with "Internal error".
+    const said = this.agentText.join('').slice(-500).trim();
+    if (stage === 'prompt' && classifyFailure(message) === 'api-error' && /usage limit|weekly limit|five.hour limit/i.test(said)) message = `${message}: ${said}`;
     const failure_class = classifyFailure(message) || 'api-error';
-    this.events.push(event('error', { failure_class, message, reset_at: resetAtFrom(message) }, { stage, code: err?.code ?? null }));
+    this.events.push(event('error', { failure_class, message, reset_at: resetAtIso(resetAtFrom(message)) }, { stage, code: err?.code ?? null }));
   }
 
   // Findings and the summary come from what the MCP servers recorded, never from tool_call

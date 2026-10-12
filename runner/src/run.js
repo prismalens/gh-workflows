@@ -18,7 +18,7 @@ import { buildManifest } from './manifest.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export function parseArgs(argv) {
-  const o = { engine: 'opencode', model: null, timeoutMs: 20 * 60 * 1000, idleMs: 8 * 60 * 1000, laneVersion: null, promptHash: null, stage: false, repo: null, pr: null, headSha: '', mode: 'review', credentialEnv: null, credentialFingerprint: null };
+  const o = { engine: 'opencode', model: null, timeoutMs: null, idleMs: null, laneVersion: null, promptHash: null, stage: false, repo: null, pr: null, headSha: '', mode: 'review', credentialEnv: null, credentialFingerprint: null };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]; const v = argv[i + 1];
     const need = () => { if (v === undefined) throw new Error(`${a} needs a value`); i += 1; return v; };
@@ -42,6 +42,8 @@ export function parseArgs(argv) {
   }
   for (const k of ['cwd', 'prompt', 'out']) if (!o[k]) throw new Error(`--${k} is required`);
   if (!(o.engine in ENGINES)) throw new Error(`unknown engine ${o.engine}; known: ${Object.keys(ENGINES).join(', ')}`);
+  o.timeoutMs ??= (ENGINES[o.engine].timeoutMin ?? 20) * 60 * 1000;
+  o.idleMs ??= (ENGINES[o.engine].idleMin ?? 8) * 60 * 1000;
   if (!Number.isFinite(o.timeoutMs) || o.timeoutMs <= 0) throw new Error('--timeout-min must be a positive number');
   if (!Number.isFinite(o.idleMs) || o.idleMs <= 0) throw new Error('--idle-min must be a positive number');
   if (o.credentialEnv !== null && !/^[A-Z_][A-Z0-9_]*$/.test(o.credentialEnv)) throw new Error('--credential-env must be an environment variable name');
@@ -135,7 +137,8 @@ export async function runRound(opts, { log = (s) => process.stderr.write(s + '\n
   const app = acp.client({ name: 'assayer-runner' })
     .onRequest(acp.methods.client.session.requestPermission, (ctx) => {
       const { toolCall, options } = ctx.params;
-      const d = decide(toolCall);
+      // Codex's MCP approval carries only the id; its server and tool came on the tool_call.
+      const d = decide({ ...mapper.toolCalls.get(toolCall?.toolCallId), ...toolCall });
       const optionId = chooseOption(options || [], d.allow);
       raw('permission', { toolCall, options, decision: d, optionId });
       if (optionId === null) return { outcome: { outcome: 'cancelled' } }; // agent offered no once-only option
