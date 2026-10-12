@@ -164,14 +164,18 @@ export async function applyVerdicts({ api, repo, pr, engine, login, headSha, thr
     if (pull.head?.sha !== headSha) { log(`assayer: the PR moved to ${String(pull.head?.sha).slice(0, 7)}; the remaining verdicts are not applied`); out.stale += 1; continue; }
     const now = ownOpenThreads(await listThreads(api, repo, pr), { login, engine }).find((x) => x.thread_id === t.thread_id);
     if (!now || now.conversation !== t.conversation) { out.stale += 1; continue; }
+    const text = TEMPLATES[v.verdict].replace('{sha}', () => headSha.slice(0, 8)).replace('{evidence}', () => v.evidence);
+    const body = `${text}\n\n${marker}`;
     if (v.verdict === 'fixed' || t.awaiting) {
-      const text = TEMPLATES[v.verdict].replace('{sha}', () => headSha.slice(0, 8)).replace('{evidence}', () => v.evidence);
-      const body = `${text}\n\n${marker}`;
       await api.call('POST', `/repos/${repo}/pulls/${pr}/comments/${t.root_id}/replies`, { body });
       out.replied += 1;
     }
     if (v.verdict === 'fixed') {
       if ((await api.call('GET', `/repos/${repo}/pulls/${pr}`)).head?.sha !== headSha) { log('assayer: the PR moved while replying; the thread stays open'); out.stale += 1; journal?.record(key, 'stale'); continue; }
+      // Anything but this invocation's reply arriving since the check keeps the thread open.
+      const want = JSON.stringify([...JSON.parse(t.conversation), [login, body]]);
+      const after = ownOpenThreads(await listThreads(api, repo, pr), { login, engine }).find((x) => x.thread_id === t.thread_id);
+      if (after?.conversation !== want) { log(`assayer: ${t.path} changed while replying; the thread stays open`); out.stale += 1; journal?.record(key, 'stale'); continue; }
       try {
         await api.graphql('mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}', { t: t.thread_id });
         out.resolved += 1;

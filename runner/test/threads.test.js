@@ -5,13 +5,20 @@ import { decide } from '../src/policy.js';
 
 const HEAD = 'a'.repeat(40);
 const MARK = '<!-- assayer-finding engine=codex -->';
-const comment = (login, body, extra = {}) => ({ databaseId: 1, author: { login }, body, originalCommit: { oid: 'b'.repeat(40) }, ...extra });
+let seq = 0;
+const comment = (login, body, extra = {}) => ({ databaseId: ++seq, author: { login }, body, originalCommit: { oid: 'b'.repeat(40) }, ...extra });
 const node = (id, comments, extra = {}) => ({ id, isResolved: false, path: 'src/a.js', line: 3, comments: { nodes: comments }, ...extra });
 const listing = (nodes) => ({ repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } } });
-// A GitHub double: the PR's head, the thread listing, and a record of every write.
+// A GitHub double: the PR's head, the thread listing, and a record of every write. A reply
+// joins its thread, so the listing after it reads as GitHub's would.
 function liveApi(nodes, calls, head = HEAD) {
   return {
-    call: async (m, p, b) => { calls.push({ m, p, b }); return m === 'GET' ? { head: { sha: head } } : {}; },
+    call: async (m, p, b) => {
+      calls.push({ m, p, b });
+      const root = /comments\/(\d+)\/replies$/.exec(p)?.[1];
+      if (root) nodes.find((n) => n.comments.nodes[0].databaseId === Number(root))?.comments.nodes.push(comment('me', b.body));
+      return m === 'GET' ? { head: { sha: head } } : {};
+    },
     graphql: async (q, vars) => {
       if (q.startsWith('mutation')) { calls.push({ m: 'GQL', p: vars.t }); return {}; }
       calls.push({ m: 'LIST' });
@@ -136,12 +143,12 @@ describe('threads (#184)', () => {
   it('resolves fixed threads, replies only where someone waits, and never repeats on a resume', async () => {
     const calls = [];
     const liveNodes = [
-      node('F', [comment('me', MARK)], { path: 'a' }),
-      node('S', [comment('me', MARK)], { path: 'b' }),
-      node('W', [comment('me', MARK), comment('dev', 'disagree')], { path: 'c' }),
+      node('F', [comment('me', MARK, { databaseId: 11 })], { path: 'a' }),
+      node('S', [comment('me', MARK, { databaseId: 12 })], { path: 'b' }),
+      node('W', [comment('me', MARK, { databaseId: 13 }), comment('dev', 'disagree')], { path: 'c' }),
     ];
     const api = liveApi(liveNodes, calls);
-    const threads = ownOpenThreads(liveNodes, { login: 'me', engine: 'codex' }).map((t, i) => ({ ...t, root_id: 11 + i }));
+    const threads = ownOpenThreads(liveNodes, { login: 'me', engine: 'codex' });
     const verdicts = [
       { thread_id: 'F', verdict: 'fixed', evidence: 'gone' },
       { thread_id: 'S', verdict: 'still_applies', evidence: 'still there' },
@@ -176,6 +183,18 @@ describe('threads (#184)', () => {
     const later = [node('F', [comment('me', MARK), comment('dev', 'wait, not yet')], { path: 'a' }), nodes[1]];
     const r = await applyVerdicts({ api: liveApi(later, calls), repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD, threads, verdicts });
     assert.deepEqual(r, { resolved: 1, replied: 1, unresolvable: 0, stale: 1, resolvedIds: ['G'] });
+  });
+
+  it('leaves a fixed thread open when someone else replies between its reply and the resolve', async () => {
+    const calls = [];
+    const nodes = [node('F', [comment('me', MARK)], { path: 'a' })];
+    const threads = ownOpenThreads(nodes, { login: 'me', engine: 'codex' });
+    const api = liveApi(nodes, calls);
+    const post = api.call;
+    api.call = async (m, p, b) => { const r = await post(m, p, b); if (m === 'POST') nodes[0].comments.nodes.push(comment('dev', 'not yet')); return r; };
+    const r = await applyVerdicts({ api, repo: 'o/r', pr: 7, engine: 'codex', login: 'me', headSha: HEAD, threads, verdicts: [{ thread_id: 'F', verdict: 'fixed', evidence: 'x' }] });
+    assert.deepEqual(r, { resolved: 0, replied: 1, unresolvable: 0, stale: 1, resolvedIds: [] });
+    assert.equal(calls.filter((c) => c.m === 'GQL').length, 0);
   });
 
   it('keeps the fixed reply when GitHub refuses the resolve', async () => {
