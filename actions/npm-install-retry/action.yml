@@ -1,0 +1,45 @@
+name: 'npm install with registry retry'
+description: 'Runs an npm install command and retries E404/ETARGET while a just-published version propagates (#250)'
+
+inputs:
+  command:
+    description: 'The install command, run by bash'
+    required: false
+    default: 'npm ci'
+  delays:
+    description: 'Seconds to wait before each retry, space-separated; the count is the retry budget'
+    required: false
+    default: '15 30 60 120'
+  working-directory:
+    description: 'Directory to run the command in'
+    required: false
+    default: '.'
+
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        COMMAND: ${{ inputs.command }}
+        DELAYS: ${{ inputs.delays }}
+      run: |
+        # The packument lists a version before its tarball serves (prismalens/prismalens#906).
+        read -r -a delays <<< "$DELAYS"
+        log=$(mktemp)
+        attempt=0
+        while :; do
+          set +e
+          bash -c "$COMMAND" 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          set -e
+          [ "$status" -eq 0 ] && exit 0
+          hit=$(grep -o -E '\b(E404|ETARGET)\b' "$log" | head -1 || true)
+          if [ -z "$hit" ] || [ "$attempt" -ge "${#delays[@]}" ]; then
+            echo "::error::$COMMAND exited $status"
+            exit "$status"
+          fi
+          echo "::warning::npm hit $hit, likely a version still propagating; retry $((attempt + 1))/${#delays[@]} in ${delays[$attempt]}s"
+          sleep "${delays[$attempt]}"
+          attempt=$((attempt + 1))
+        done

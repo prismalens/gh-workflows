@@ -1,0 +1,82 @@
+name: 'Pack on Linux'
+description: 'Installs, tests and packs on a Linux runner, then uploads the tarballs with SHA256SUMS (#250)'
+
+inputs:
+  checkout:
+    description: 'Check out the repository first'
+    required: false
+    default: 'true'
+  install:
+    description: 'Install command'
+    required: false
+    default: 'npm ci'
+  test:
+    description: 'Test command; empty skips it'
+    required: false
+    default: 'npm test'
+  pack:
+    description: 'Pack command; it must write its tarballs into $PACK_DIR'
+    required: false
+    default: 'npm pack --pack-destination "$PACK_DIR"'
+  working-directory:
+    description: 'Directory to install, test and pack in'
+    required: false
+    default: '.'
+  artifact-name:
+    description: 'Name of the uploaded artifact'
+    required: false
+    default: 'packed'
+
+outputs:
+  dir:
+    description: 'Directory holding the tarballs and SHA256SUMS'
+    value: ${{ steps.pack.outputs.dir }}
+  sha256sums:
+    description: 'Contents of SHA256SUMS'
+    value: ${{ steps.pack.outputs.sha256sums }}
+
+runs:
+  using: 'composite'
+  steps:
+    - if: inputs.checkout == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+    - id: pack
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        RUNNER_OS_NAME: ${{ runner.os }}
+        INSTALL: ${{ inputs.install }}
+        TEST: ${{ inputs.test }}
+        PACK: ${{ inputs.pack }}
+        PACK_DIR: ${{ runner.temp }}/pack
+      run: |
+        # A Windows checkout adds CRLF to shipped shell scripts (assayer 0.0.1 walk).
+        if [ "$RUNNER_OS_NAME" != "Linux" ]; then
+          echo "::error::pack-linux runs only on Linux, not $RUNNER_OS_NAME"
+          exit 1
+        fi
+        rm -rf "$PACK_DIR" && mkdir -p "$PACK_DIR"
+        export PACK_DIR
+        bash -c "$INSTALL"
+        [ -z "$TEST" ] || bash -c "$TEST"
+        bash -c "$PACK"
+        cd "$PACK_DIR" || exit 1
+        shopt -s nullglob
+        # C collation, so SHA256SUMS lists the same order on every runner.
+        export LC_ALL=C
+        tarballs=(*.tgz)
+        if [ "${#tarballs[@]}" -eq 0 ]; then
+          echo "::error::the pack command wrote no .tgz into \$PACK_DIR"
+          exit 1
+        fi
+        sha256sum "${tarballs[@]}" > SHA256SUMS
+        cat SHA256SUMS
+        echo "dir=$PACK_DIR" >> "$GITHUB_OUTPUT"
+        { echo "sha256sums<<SHA256SUMS_EOF"; cat SHA256SUMS; echo "SHA256SUMS_EOF"; } >> "$GITHUB_OUTPUT"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.pack.outputs.dir }}
+        if-no-files-found: error
