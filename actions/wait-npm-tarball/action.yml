@@ -1,0 +1,51 @@
+name: 'Wait for an npm tarball'
+description: 'Polls until a published version and its dist.tarball both serve, or fails at a deadline (#250)'
+
+inputs:
+  package:
+    description: 'npm package name'
+    required: true
+  version:
+    description: 'Exact version'
+    required: true
+  timeout-minutes:
+    description: 'Deadline in minutes'
+    required: false
+    default: '15'
+  interval:
+    description: 'Seconds between polls'
+    required: false
+    default: '15'
+
+outputs:
+  tarball:
+    description: 'The dist.tarball URL'
+    value: ${{ steps.wait.outputs.tarball }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: wait
+      shell: bash
+      env:
+        PACKAGE: ${{ inputs.package }}
+        VERSION: ${{ inputs.version }}
+        TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        INTERVAL: ${{ inputs.interval }}
+      run: |
+        # The packument lists a version before its tarball serves (prismalens/prismalens#906).
+        deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+        url=""
+        while :; do
+          [ -n "$url" ] || url=$(npm view "${PACKAGE}@${VERSION}" dist.tarball 2>/dev/null || true)
+          if [ -n "$url" ] && curl -fsSIL "$url" >/dev/null 2>&1; then
+            echo "tarball=$url" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE}@${VERSION} serves $url"
+            exit 0
+          fi
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "::error::${PACKAGE}@${VERSION} and its tarball did not serve within ${TIMEOUT_MINUTES} minutes"
+            exit 1
+          fi
+          sleep "$INTERVAL"
+        done

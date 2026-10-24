@@ -1,0 +1,9 @@
+{
+  "fixtures": [
+    { "match": { "userMessage": "ACP-ROUND-250", "hasToolResult": false },
+      "response": { "toolCalls": [ { "name": "bash", "arguments": { "command": "echo spike-ran > proof.txt", "description": "write proof" } } ] } },
+    { "match": { "userMessage": "ACP-ROUND-250", "hasToolResult": true },
+      "response": { "content": "ACP-ROUND-DONE" } },
+    { "match": {}, "response": { "content": "ok" } }
+  ]
+}

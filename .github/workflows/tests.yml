@@ -191,6 +191,22 @@ jobs:
       - name: Text-tier audit prints no contents (#183)
         run: python3 tests/test-audit-telemetry-text.py
 
+      # The shared release-proof actions and pin-bump workflow (#250).
+      - name: npm-install-retry action behaviour
+        run: python3 tests/test-npm-install-retry.py
+
+      - name: wait-npm-tarball action behaviour
+        run: python3 tests/test-wait-npm-tarball.py
+
+      - name: pack-linux action behaviour
+        run: python3 tests/test-pack-linux.py
+
+      - name: setup-acp-engine action behaviour
+        run: python3 tests/test-setup-acp-engine.py
+
+      - name: pin-bump workflow behaviour
+        run: python3 tests/test-pin-bump.py
+
       # A test file this job does not name is a test that never runs (#130).
       - name: Every test file is wired into this job
         run: |
@@ -406,3 +422,55 @@ jobs:
             exit 1
           fi
           echo "Migration guard passed: only additions detected."
+
+  # Each engine's ACP adapter runs one tool round against aimock fixtures: no key, no tokens
+  # (#250). Not a required check, so an upstream engine release cannot block every PR.
+  acp-engines:
+    name: ACP round (${{ matrix.engine }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: claude-code
+            version: 2.1.310
+            adapter-version: 0.95.0
+            command: claude-agent-acp
+          - engine: codex
+            version: 0.164.0
+            adapter-version: 2.2.2
+            command: codex-acp
+          - engine: opencode
+            version: 1.19.4
+            adapter-version: ''
+            command: opencode acp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 24
+
+      # Codex's bwrap sandbox needs unprivileged user namespaces, which Ubuntu 24.04's AppArmor withholds.
+      - if: matrix.engine == 'codex'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - uses: ./actions/setup-acp-engine
+        with:
+          engine: ${{ matrix.engine }}
+          version: ${{ matrix.version }}
+          adapter-version: ${{ matrix.adapter-version }}
+          mock-fixtures: tests/acp-round/${{ matrix.engine }}.json
+
+      - name: One tool round through the adapter
+        env:
+          ADAPTER: ${{ matrix.command }}
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d) && cd "$work"
+          # ADAPTER is word-split on purpose: `opencode acp` is a command and an argument.
+          # shellcheck disable=SC2086
+          node "$GITHUB_WORKSPACE/tests/acp-round/client.mjs" "ACP-ROUND-250 write the proof file" -- $ADAPTER
+          test "$(cat proof.txt)" = spike-ran

@@ -1,0 +1,138 @@
+name: 'Set up an ACP engine'
+description: 'Installs one coding agent and its ACP adapter at pinned versions, optionally pointed at a scripted aimock model server (#250)'
+
+inputs:
+  engine:
+    description: 'claude-code, codex or opencode'
+    required: true
+  version:
+    description: 'Engine version (@anthropic-ai/claude-code, @openai/codex or opencode-ai)'
+    required: true
+  adapter-version:
+    description: 'ACP adapter version (@agentclientprotocol/claude-agent-acp or @agentclientprotocol/codex-acp); opencode has its own `opencode acp`'
+    required: false
+    default: ''
+  mock-fixtures:
+    description: 'aimock fixture file or directory; empty leaves the engine on its real provider'
+    required: false
+    default: ''
+  mock-port:
+    description: 'Port for aimock'
+    required: false
+    default: '4010'
+  mock-strict:
+    description: 'Answer an unmatched request with 503 instead of 404'
+    required: false
+    default: 'true'
+  aimock-version:
+    description: '@copilotkit/aimock version'
+    required: false
+    default: '1.46.0'
+
+outputs:
+  mock-url:
+    description: 'Base URL of the running aimock, empty without mock-fixtures'
+    value: ${{ steps.mock.outputs.url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      env:
+        ENGINE: ${{ inputs.engine }}
+        VERSION: ${{ inputs.version }}
+        ADAPTER_VERSION: ${{ inputs.adapter-version }}
+        MOCK_FIXTURES: ${{ inputs.mock-fixtures }}
+        AIMOCK_VERSION: ${{ inputs.aimock-version }}
+      run: |
+        case "$ENGINE" in
+          claude-code) pkgs=("@anthropic-ai/claude-code@$VERSION"); adapter=@agentclientprotocol/claude-agent-acp ;;
+          codex) pkgs=("@openai/codex@$VERSION"); adapter=@agentclientprotocol/codex-acp ;;
+          opencode) pkgs=("opencode-ai@$VERSION"); adapter="" ;;
+          *) echo "::error::unknown engine '$ENGINE' (claude-code, codex or opencode)"; exit 1 ;;
+        esac
+        if [ -n "$adapter" ]; then
+          if [ -z "$ADAPTER_VERSION" ]; then
+            echo "::error::$ENGINE needs adapter-version for $adapter"
+            exit 1
+          fi
+          pkgs+=("$adapter@$ADAPTER_VERSION")
+        fi
+        [ -z "$MOCK_FIXTURES" ] || pkgs+=("@copilotkit/aimock@$AIMOCK_VERSION")
+        npm install -g --no-audit --no-fund --loglevel=error "${pkgs[@]}"
+    - if: inputs.mock-fixtures != ''
+      shell: bash
+      env:
+        ENGINE: ${{ inputs.engine }}
+        MOCK_URL: http://127.0.0.1:${{ inputs.mock-port }}
+        CONFIG_DIR: ${{ runner.temp }}/acp-engine-mock
+      run: |
+        # Each engine's own provider setting, verified against aimock in #250 comment 6379727894.
+        mkdir -p "$CONFIG_DIR"
+        case "$ENGINE" in
+          claude-code)
+            {
+              echo "ANTHROPIC_BASE_URL=$MOCK_URL"
+              echo "ANTHROPIC_API_KEY=aimock"
+              echo "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
+            } >> "$GITHUB_ENV" ;;
+          codex)
+            mkdir -p "$CONFIG_DIR/codex-home"
+            cat > "$CONFIG_DIR/codex-home/config.toml" <<TOML
+        model = "gpt-mock"
+        model_provider = "aimock"
+
+        [model_providers.aimock]
+        name = "aimock"
+        base_url = "$MOCK_URL/v1"
+        wire_api = "responses"
+        env_key = "AIMOCK_KEY"
+        TOML
+            {
+              echo "CODEX_HOME=$CONFIG_DIR/codex-home"
+              echo "AIMOCK_KEY=aimock"
+            } >> "$GITHUB_ENV" ;;
+          opencode)
+            cat > "$CONFIG_DIR/opencode.json" <<JSON
+        {
+          "\$schema": "https://opencode.ai/config.json",
+          "provider": {
+            "aimock": {
+              "npm": "@ai-sdk/openai-compatible",
+              "name": "aimock",
+              "options": { "baseURL": "$MOCK_URL/v1", "apiKey": "aimock" },
+              "models": { "gpt-mock": { "name": "gpt-mock", "tool_call": true } }
+            }
+          },
+          "model": "aimock/gpt-mock",
+          "small_model": "aimock/gpt-mock"
+        }
+        JSON
+            echo "OPENCODE_CONFIG=$CONFIG_DIR/opencode.json" >> "$GITHUB_ENV" ;;
+        esac
+    - id: mock
+      if: inputs.mock-fixtures != ''
+      shell: bash
+      env:
+        ENGINE: ${{ inputs.engine }}
+        MOCK_FIXTURES: ${{ inputs.mock-fixtures }}
+        MOCK_PORT: ${{ inputs.mock-port }}
+        MOCK_STRICT: ${{ inputs.mock-strict }}
+        LOG: ${{ runner.temp }}/acp-engine-mock/aimock.log
+      run: |
+        args=(-f "$MOCK_FIXTURES" -p "$MOCK_PORT" --host 127.0.0.1 --validate-on-load)
+        [ "$MOCK_STRICT" != "true" ] || args+=(--strict)
+        # Codex scripts namespaced MCP and apply_patch calls only under the extended mode.
+        [ "$ENGINE" != "codex" ] || args+=(--responses-tools extended)
+        nohup llmock "${args[@]}" > "$LOG" 2>&1 &
+        for _ in $(seq 1 60); do
+          if curl -fs "http://127.0.0.1:$MOCK_PORT/health" >/dev/null 2>&1; then
+            echo "url=http://127.0.0.1:$MOCK_PORT" >> "$GITHUB_OUTPUT"
+            echo "aimock is up on port $MOCK_PORT; log: $LOG"
+            exit 0
+          fi
+          sleep 0.5
+        done
+        cat "$LOG"
+        echo "::error::aimock did not answer /health within 30s"
+        exit 1
