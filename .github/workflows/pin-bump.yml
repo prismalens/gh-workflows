@@ -48,6 +48,8 @@ jobs:
         with:
           token: ${{ secrets.token || github.token }}
           fetch-depth: 0
+          # Probes run fresh third-party releases; only the PR step gets git credentials.
+          persist-credentials: false
 
       - name: Pick the newest soaked release of every pin
         id: pick
@@ -73,11 +75,15 @@ jobs:
             const m = /^([~^=]?)(\d+\.\d+\.\d+\S*)$/.exec(pin);
             if (!m) throw new Error(`pin ${pin} is not a version`);
             const [, prefix, current] = m;
+            // By version, not publish time: a backport published later must not win.
+            const num = (v) => v.split('-')[0].split('.').map(Number);
+            const cmp = (a, b) => { const x = num(a), y = num(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; };
             const cutoff = Date.now() - Number(SOAK_DAYS) * 86400e3;
             const candidate = Object.entries(times)
               .filter(([v, t]) => /^\d+\.\d+\.\d+$/.test(v) && Date.parse(t) <= cutoff)
-              .sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]))[0];
-            if (!candidate || !times[current] || Date.parse(candidate[1]) <= Date.parse(times[current])) {
+              .sort((a, b) => cmp(b[0], a[0]))[0];
+            const newer = candidate && (cmp(candidate[0], current) > 0 || (cmp(candidate[0], current) === 0 && current.includes('-')));
+            if (!newer) {
               console.log(`${pkg} stays at ${current}: no newer release soaked ${SOAK_DAYS} days`);
               continue;
             }
@@ -152,6 +158,7 @@ jobs:
           TITLE: ${{ steps.probe.outputs.title }}
         run: |
           set -euo pipefail
+          gh auth setup-git
           bot='41898+github-actions[bot]@users.noreply.github.com'
           pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
           remote=$(git ls-remote --heads origin "$BRANCH" | cut -f1)

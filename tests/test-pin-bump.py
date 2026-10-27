@@ -9,6 +9,8 @@ and a local git remote, verifying:
 4. An explicit JSON-array pin-key reaches a nested pin whose package name holds a dot.
 5. A missing pin fails.
 6. Several pins are planned in one run, each against its own release times.
+6b. A backport published after a newer release neither moves the pin down nor hides the newer one.
+6c. A prerelease pin moves to its own stable release.
 7. Every pin moves with its file's tab indent kept, and the probe sees PIN_PACKAGE and PIN_VERSION.
 8. A failed probe puts only its pin back, before the next probe reads the file.
 9. The title names only the pins that moved; the body lists the held-back one.
@@ -112,6 +114,18 @@ check("6 several pins, each on its own times", out.get("count") == "2"
       and [(p["package"], p["version"]) for p in plan or []] == [("a", "1.1.0"), ("b", "2.1.0")], (plan, r.stderr))
 
 
+r, out, plan = pick({"p.json": {"dependencies": {"a": "1.0.0", "b": "2.0.0"}}},
+                    [{"package": "a", "pin-path": "p.json"}, {"package": "b", "pin-path": "p.json"}],
+                    times={"a": {"1.0.0": ago(60), "2.0.0": ago(30), "1.0.5": ago(10)},
+                           "b": {"1.0.0": ago(60), "2.0.0": ago(30), "1.0.5": ago(10)}})
+check("6b backport loses to the newer release", [(p["package"], p["version"]) for p in plan or []] == [("a", "2.0.0")],
+      (plan, r.stderr))
+
+r, out, plan = pick({"p.json": {"dependencies": {"pkg": "1.2.0-beta.1"}}}, [{"package": "pkg", "pin-path": "p.json"}],
+                    times={"pkg": {"1.2.0-beta.1": ago(20), "1.2.0": ago(10)}})
+check("6c prerelease moves to its stable", plan and plan[0]["version"] == "1.2.0", (plan, r.stderr))
+
+
 def probe(probe_cmd):
     with tempfile.TemporaryDirectory() as td:
         t = pathlib.Path(td)
@@ -186,7 +200,8 @@ def pr_step(moved="1", held="0", branch=None, open_pr=""):
 
 
 r, gh, tip, head = pr_step()
-check("10 no branch: pushed and opened", r.returncode == 0 and tip == head and "pr create" in gh, (gh, r.stderr))
+check("10 no branch: pushed and opened", r.returncode == 0 and tip == head and "pr create" in gh
+      and gh.startswith("auth setup-git"), (gh, r.stderr))
 
 r, gh, tip, head = pr_step(branch="same", open_pr="7")
 check("11 same pins: not pushed, PR refreshed", r.returncode == 0 and tip != head and "pr edit 7" in gh
