@@ -4,20 +4,23 @@
 // No control plane: identity follows where the round runs (#184, 2026-10-11 decision).
 // `assayer publish <dir>` posts, or resumes posting, a round that already ran.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ENGINES } from './engines.js';
 import { renderPrompt, renderCodexPrompt, promptHash, laneTokens } from './prompt.js';
-import { checkout } from './github.js';
+import { checkout, fetchCommits } from './github.js';
 import { runRound } from './run.js';
 import { LIVENESS_PREFIX, postRound } from '../../worker/poster.js';
+import { readToolLog } from './acp-map.js';
+import { github, listThreads, ownOpenThreads, threadsToCheck, readVerdicts, checkVerdicts, applyVerdicts } from './threads.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const OPEN_THREADS_NOTE = '`.assayer-open-threads.json` at the checkout root lists findings already posted on this PR and still open (`path`, `line`, `title`). Do not post them again; a finding one of them already covers is not new.';
 const USAGE = `usage:
   assayer review <owner/repo#N | PR URL> [--engine codex] [--model M] [--post] [--again]
-                 [--ignore-repo-config] [--out DIR]
+                 [--ignore-repo-config] [--skip-verify | --verify-only] [--out DIR]
   assayer publish <round dir>`;
 
 
@@ -34,7 +37,7 @@ export function parseArgs(argv) {
     return { cmd, dir: target };
   }
   if (cmd !== 'review' || !target) throw new Error(USAGE);
-  const o = { cmd, ...parseTarget(target), engine: 'codex', model: null, post: false, again: false, ignoreRepoConfig: false, out: null };
+  const o = { cmd, ...parseTarget(target), engine: 'codex', model: null, post: false, again: false, ignoreRepoConfig: false, skipVerify: false, verifyOnly: false, out: null };
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
     const need = () => { const v = rest[i + 1]; if (v === undefined) throw new Error(`${a} needs a value`); i += 1; return v; };
@@ -43,10 +46,13 @@ export function parseArgs(argv) {
     else if (a === '--post') o.post = true;
     else if (a === '--again') o.again = true;
     else if (a === '--ignore-repo-config') o.ignoreRepoConfig = true;
+    else if (a === '--skip-verify') o.skipVerify = true;
+    else if (a === '--verify-only') o.verifyOnly = true;
     else if (a === '--out') o.out = need();
     else throw new Error(`unknown argument ${a}\n${USAGE}`);
   }
   if (!(o.engine in ENGINES)) throw new Error(`unknown engine ${o.engine}; known: ${Object.keys(ENGINES).join(', ')}`);
+  if (o.skipVerify && o.verifyOnly) throw new Error('--skip-verify and --verify-only contradict each other');
   return o;
 }
 
@@ -161,15 +167,66 @@ export async function publish(dir, { log = (s) => process.stderr.write(s + '\n')
   return r;
 }
 
+function findingTitle(body) {
+  const after = body.slice(body.indexOf('</details>') + 1);
+  return (/\*\*(.+?)\*\*/.exec(after)?.[1] ?? body.split('\n')[0]).slice(0, 140);
+}
+
+// Before reviewing a new head, the reviewer re-checks its own open threads: a model judges each
+// one whose file changed or that someone answered, and with --post the fixed ones are resolved.
+// Returns the threads still open, which the review must not post again, and whether the check
+// itself ran to the end (#184).
+async function verifyThreads(o, { api, login, dir, cwd, headSha, baseSha, token, log }) {
+  const threads = ownOpenThreads(await listThreads(api, o.repo, o.pr), { login, engine: o.engine });
+  if (!threads.length) return { open: [], ok: true };
+  const check = await threadsToCheck(api, o.repo, headSha, threads);
+  log(`assayer: ${threads.length} open thread(s) of yours, ${check.length} to re-check`);
+  if (!check.length) return { open: threads, ok: true };
+  const vdir = path.join(dir, 'verify');
+  mkdirSync(vdir, { recursive: true });
+  // The shallow checkout holds head and base only; `git diff <since>` needs each finding's commit.
+  const gone = await fetchCommits({ repository: o.repo, shas: [...new Set(check.map((t) => t.since).filter(Boolean))], token, dir: cwd });
+  if (gone.length) log(`assayer: ${gone.length} finding commit(s) are gone from GitHub; those threads are judged on the current code`);
+  const staged = path.join(cwd, '.assayer-threads.json');
+  // The diff since each finding is staged here: not every engine's policy lets it run git.
+  const diffSince = (since, p) => {
+    if (!since || gone.includes(since)) return null;
+    const r = spawnSync('git', ['diff', since, headSha, '--', p], { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    return r.status === 0 ? r.stdout.slice(0, 20000) : null;
+  };
+  writeFileSync(staged, JSON.stringify(check.map(({ thread_id, path: p, line, since, body, replies }) => ({ thread_id, path: p, line, since, body, replies, diff: diffSince(since, p) })), null, 2) + '\n');
+  const tpl = readFileSync(path.join(HERE, '..', 'prompt', 'verify.md'), 'utf8');
+  writeFileSync(path.join(vdir, 'prompt.md'), renderCodexPrompt(tpl, { repo: o.repo, pr: o.pr, baseSha, headSha }));
+  try {
+    const s = await runRound({
+      cwd, prompt: path.join(vdir, 'prompt.md'), out: vdir, engine: o.engine, model: o.model, promptHash: promptHash(tpl),
+      servers: ['assayer_verify'], ghToken: token, engineGh: 'offline',
+      timeoutMs: (ENGINES[o.engine].timeoutMin ?? 20) * 60 * 1000, idleMs: (ENGINES[o.engine].idleMin ?? 8) * 60 * 1000,
+    }, { log });
+    if (s.conclusion !== 'completed') { log(`assayer: the verify round ended ${s.conclusion}; every thread stays open`); return { open: threads, ok: false }; }
+  } finally {
+    rmSync(staged, { force: true });
+  }
+  const { kept, discarded, missing } = checkVerdicts(readVerdicts(readToolLog(path.join(vdir, 'tool-log.jsonl')).entries), check, headSha);
+  for (const d of discarded) log(`assayer: discarded a verdict on ${d.thread_id}: ${d.why}`);
+  if (missing.length) log(`assayer: ${missing.length} thread(s) got no usable verdict and stay open`);
+  const byId = new Map(check.map((t) => [t.thread_id, t]));
+  for (const v of kept) process.stdout.write(`  ${v.verdict.padEnd(13)} ${v.path}:${byId.get(v.thread_id).line ?? '?'}  ${findingTitle(byId.get(v.thread_id).body)}\n    ${v.evidence}\n`);
+  // Open is what GitHub will still show: only a resolve that landed closes a thread.
+  let resolved = new Set();
+  if (o.post) {
+    const r = await applyVerdicts({ api, repo: o.repo, pr: o.pr, engine: o.engine, login, headSha, threads: check, verdicts: kept, journal: fileJournal(vdir), log });
+    log(`assayer: resolved ${r.resolved} thread(s), replied on ${r.replied}${r.unresolvable ? `, ${r.unresolvable} could not be resolved` : ''}${r.stale ? `, ${r.stale} skipped as changed since the check` : ''}`);
+    resolved = new Set(r.resolvedIds);
+  }
+  return { open: threads.filter((t) => !resolved.has(t.thread_id)), ok: missing.length === 0 };
+}
+
 function printRound(dir) {
   const s = JSON.parse(readFileSync(path.join(dir, 'summary.json'), 'utf8'));
   const events = readFileSync(path.join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   const lines = [`${s.conclusion}: ${s.findings ?? 0} finding(s) in ${Math.round((s.wall_clock_ms ?? 0) / 1000)}s`];
-  for (const f of events.filter((e) => e.type === 'finding')) {
-    const after = f.body.slice(f.body.indexOf('</details>') + 1);
-    const title = (/\*\*(.+?)\*\*/.exec(after)?.[1] ?? f.body.split('\n')[0]).slice(0, 140);
-    lines.push(`  ${f.path}:${f.line ?? '?'}  ${title}`);
-  }
+  for (const f of events.filter((e) => e.type === 'finding')) lines.push(`  ${f.path}:${f.line ?? '?'}  ${findingTitle(f.body)}`);
   const summary = events.findLast((e) => e.type === 'summary');
   if (summary) lines.push('', summary.body);
   process.stdout.write(lines.join('\n') + '\n');
@@ -185,23 +242,33 @@ export async function review(o, { log = (s) => process.stderr.write(s + '\n') } 
   const baseSha = ghJson(`repos/${o.repo}/compare/${pr.base.sha}...${headSha}`).merge_base_commit.sha;
 
   const prior = priorReview(livenessRecords(listComments(o.repo, o.pr)), { headSha, engine: o.engine, canWrite: writerCheck(o.repo) });
-  if (prior && !o.again) throw new Error(`${headSha.slice(0, 7)} already has a ${o.engine} review on record (comment ${prior.id} by ${prior.login}); pass --again to run another`);
+  if (prior && !o.again && !o.verifyOnly) throw new Error(`${headSha.slice(0, 7)} already has a ${o.engine} review on record (comment ${prior.id} by ${prior.login}); pass --again to run another`);
 
   // Until the resolver is a package (#182), a local round knows only the workflow defaults. With
   // no repo config those are exact; with one, the round would review against the wrong rules.
   const cfg = gh(['api', `repos/${o.repo}/contents/.github/claude-review.yml?ref=${pr.base.sha}`], { allow404: true });
-  if (cfg !== null && !o.ignoreRepoConfig) throw new Error(`${o.repo} has .github/claude-review.yml, which a local round cannot apply yet (#182); pass --ignore-repo-config to review with the workflow defaults`);
+  if (cfg !== null && !o.ignoreRepoConfig && !o.verifyOnly) throw new Error(`${o.repo} has .github/claude-review.yml, which a local round cannot apply yet (#182); pass --ignore-repo-config to review with the workflow defaults`);
 
   const dir = path.resolve(o.out ?? path.join(os.homedir(), '.assayer', 'reviews', `${o.repo.replace('/', '-')}-${o.pr}-${headSha.slice(0, 7)}-${Date.now()}`));
   // One directory, one round: a reused one would carry the last round's publish journal.
-  if (existsSync(path.join(dir, 'round.json'))) throw new Error(`${dir} already holds a round; pick a new --out`);
+  if (existsSync(path.join(dir, 'round.json')) || existsSync(path.join(dir, 'verify'))) throw new Error(`${dir} already holds a round; pick a new --out`);
   mkdirSync(dir, { recursive: true });
   const token = gh(['auth', 'token']).trim();
   const cwd = path.join(dir, 'checkout');
   log(`assayer: ${o.repo}#${o.pr} at ${headSha.slice(0, 7)} with ${o.engine}; round in ${dir}`);
   await checkout({ repository: o.repo, headSha, baseSha, token, dir: cwd });
 
+  if (!o.skipVerify) {
+    const api = github(globalThis.fetch, token);
+    const login = (await api.call('GET', '/user')).login;
+    const { open, ok } = await verifyThreads(o, { api, login, dir, cwd, headSha, baseSha, token, log });
+    if (o.verifyOnly) { log(`assayer: ${open.length} thread(s) still open; no review round (--verify-only)`); return { dir, summary: { conclusion: ok ? 'completed' : 'failed' }, posted: null }; }
+    if (open.length) writeFileSync(path.join(cwd, '.assayer-open-threads.json'), JSON.stringify(open.map((t) => ({ path: t.path, line: t.line, title: findingTitle(t.body) })), null, 2) + '\n');
+  }
+
   const prompt = renderFor(o.engine, { repo: o.repo, pr: o.pr, baseSha, headSha });
+  // template.md mirrors the Actions lane byte for byte, so the dedup line is added after rendering.
+  if (existsSync(path.join(cwd, '.assayer-open-threads.json')) && !prompt.text.includes('.assayer-open-threads.json')) prompt.text += `\n\n${OPEN_THREADS_NOTE}\n`;
   writeFileSync(path.join(dir, 'prompt.md'), prompt.text);
   const round = { repository: o.repo, pr_number: o.pr, head_sha: headSha, base_sha: baseSha, engine: o.engine, model: o.model, where: 'local' };
   writeFileSync(path.join(dir, 'round.json'), JSON.stringify(round, null, 2) + '\n');
