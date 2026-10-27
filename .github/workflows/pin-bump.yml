@@ -1,32 +1,33 @@
-# Moves a caller's pin on a coding agent or adapter once a release has soaked, as a PR whose
-# body carries the caller's zero-token probe result. Story: #250.
+# Moves a caller's pins on coding agents and adapters once their releases have soaked, as one
+# rolling PR whose body carries each pin's zero-token probe result. Story: #250.
 name: Pin bump
 
 on:
   workflow_call:
     inputs:
-      package:
-        description: 'npm package whose version is pinned'
+      pins:
+        description: 'JSON array of {"package", "pin-path", "pin-key"?}; probed in order, so list a pin before any probe that reads it. An empty pin-key searches the dependency maps for the package'
         type: string
         required: true
-      pin-path:
-        description: 'JSON file holding the pin, such as package.json'
-        type: string
-        required: true
-      pin-key:
-        description: 'JSON array path to the pin, such as ["engines","codex"]; empty searches the dependency maps for the package'
-        type: string
-        required: false
-        default: ''
       soak-days:
-        description: 'Days a release must have been public before the pin moves to it'
+        description: 'Days a release must have been public before its pin moves to it'
         type: number
         required: false
         default: 7
       probe:
-        description: 'Command run after the pin moves (PIN_VERSION is set), such as an ACP initialize + session/new with no model'
+        description: 'Command run after each pin moves (PIN_PACKAGE and PIN_VERSION are set), such as an ACP initialize + session/new with no model; a failure puts that pin back'
         type: string
         required: true
+      sync:
+        description: 'Command run once after the pins settle and before the commit, such as a lockfile refresh; MOVED names a JSON file of the pins that moved'
+        type: string
+        required: false
+        default: ''
+      branch:
+        description: 'The one branch the rolling PR lives on'
+        type: string
+        required: false
+        default: 'pin-bump/agents'
     secrets:
       token:
         description: 'A token whose PRs start CI; github.token opens a PR that runs no checks'
@@ -46,109 +47,140 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.token || github.token }}
+          fetch-depth: 0
 
-      - name: Pick the newest soaked release
+      - name: Pick the newest soaked release of every pin
         id: pick
         env:
-          PACKAGE: ${{ inputs.package }}
-          PIN_PATH: ${{ inputs.pin-path }}
-          PIN_KEY: ${{ inputs.pin-key }}
+          PINS: ${{ inputs.pins }}
           SOAK_DAYS: ${{ inputs.soak-days }}
         run: |
           set -euo pipefail
-          npm view "$PACKAGE" time --json > "$RUNNER_TEMP/times.json"
           node - <<'JS'
           const fs = require('fs');
-          const { PACKAGE, PIN_PATH, PIN_KEY, SOAK_DAYS, RUNNER_TEMP, GITHUB_OUTPUT } = process.env;
-          const out = (k, v) => fs.appendFileSync(GITHUB_OUTPUT, `${k}=${v}\n`);
-          const times = JSON.parse(fs.readFileSync(`${RUNNER_TEMP}/times.json`, 'utf8'));
-          const pins = JSON.parse(fs.readFileSync(PIN_PATH, 'utf8'));
-          // A key is a JSON array path, since package names may hold dots.
-          const maps = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
-          const at = (path) => path.reduce((o, p) => (o == null ? undefined : o[p]), pins);
-          const key = PIN_KEY ? JSON.parse(PIN_KEY) : maps.map((m) => [m, PACKAGE]).find((k) => at(k) !== undefined);
-          const pin = key && at(key);
-          if (typeof pin !== 'string') throw new Error(`no pin for ${PACKAGE} in ${PIN_PATH}${PIN_KEY ? ` at ${PIN_KEY}` : ''}`);
-          const m = /^([~^=]?)(\d+\.\d+\.\d+\S*)$/.exec(pin);
-          if (!m) throw new Error(`pin ${pin} is not a version`);
-          const [, prefix, current] = m;
-          const cutoff = Date.now() - Number(SOAK_DAYS) * 86400e3;
-          const candidate = Object.entries(times)
-            .filter(([v, t]) => /^\d+\.\d+\.\d+$/.test(v) && Date.parse(t) <= cutoff)
-            .sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]))[0];
-          out('key', JSON.stringify(key)); out('current', current); out('prefix', prefix);
-          if (!candidate || !times[current] || Date.parse(candidate[1]) <= Date.parse(times[current])) {
-            console.log(`${PACKAGE} stays at ${current}: no newer release soaked ${SOAK_DAYS} days`);
-            out('version', '');
-          } else {
-            console.log(`${PACKAGE}: ${current} -> ${candidate[0]} (published ${candidate[1]})`);
-            out('version', candidate[0]); out('published', candidate[1]);
+          const { execFileSync } = require('child_process');
+          const { PINS, SOAK_DAYS, RUNNER_TEMP, GITHUB_OUTPUT } = process.env;
+          const plan = [];
+          for (const { package: pkg, 'pin-path': pinPath, 'pin-key': pinKey = '' } of JSON.parse(PINS)) {
+            const times = JSON.parse(execFileSync('npm', ['view', pkg, 'time', '--json'], { encoding: 'utf8' }));
+            const pins = JSON.parse(fs.readFileSync(pinPath, 'utf8'));
+            // A key is a JSON array path, since package names may hold dots.
+            const maps = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
+            const at = (path) => path.reduce((o, p) => (o == null ? undefined : o[p]), pins);
+            const key = pinKey ? JSON.parse(pinKey) : maps.map((m) => [m, pkg]).find((k) => at(k) !== undefined);
+            const pin = key && at(key);
+            if (typeof pin !== 'string') throw new Error(`no pin for ${pkg} in ${pinPath}${pinKey ? ` at ${pinKey}` : ''}`);
+            const m = /^([~^=]?)(\d+\.\d+\.\d+\S*)$/.exec(pin);
+            if (!m) throw new Error(`pin ${pin} is not a version`);
+            const [, prefix, current] = m;
+            const cutoff = Date.now() - Number(SOAK_DAYS) * 86400e3;
+            const candidate = Object.entries(times)
+              .filter(([v, t]) => /^\d+\.\d+\.\d+$/.test(v) && Date.parse(t) <= cutoff)
+              .sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]))[0];
+            if (!candidate || !times[current] || Date.parse(candidate[1]) <= Date.parse(times[current])) {
+              console.log(`${pkg} stays at ${current}: no newer release soaked ${SOAK_DAYS} days`);
+              continue;
+            }
+            console.log(`${pkg}: ${current} -> ${candidate[0]} (published ${candidate[1]})`);
+            plan.push({ package: pkg, pinPath, key, prefix, current, version: candidate[0], published: candidate[1] });
           }
+          fs.writeFileSync(`${RUNNER_TEMP}/plan.json`, JSON.stringify(plan));
+          fs.appendFileSync(GITHUB_OUTPUT, `count=${plan.length}\n`);
           JS
 
-      - name: Move the pin and probe it
+      - name: Move each pin and probe it
         id: probe
-        if: steps.pick.outputs.version != ''
+        if: steps.pick.outputs.count != '0'
         env:
-          PACKAGE: ${{ inputs.package }}
-          PIN_PATH: ${{ inputs.pin-path }}
-          PIN_KEY: ${{ steps.pick.outputs.key }}
-          PIN_VERSION: ${{ steps.pick.outputs.version }}
-          PREFIX: ${{ steps.pick.outputs.prefix }}
           PROBE: ${{ inputs.probe }}
+          SOAK_DAYS: ${{ inputs.soak-days }}
+          BRANCH: ${{ inputs.branch }}
         run: |
           set -euo pipefail
-          pkg="${PACKAGE#@}"
-          branch="pin-bump/${pkg//\//-}-${PIN_VERSION}"
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-            echo "$branch already exists; its PR carries this bump"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          node -e '
-            const fs = require("fs"); const { PIN_PATH, PIN_KEY, PIN_VERSION, PREFIX } = process.env;
-            const raw = fs.readFileSync(PIN_PATH, "utf8"); const j = JSON.parse(raw);
+          node - <<'JS'
+          const fs = require('fs');
+          const { spawnSync } = require('child_process');
+          const { PROBE, SOAK_DAYS, BRANCH, RUNNER_TEMP, GITHUB_OUTPUT } = process.env;
+          const set = ({ pinPath, key }, value) => {
+            const raw = fs.readFileSync(pinPath, 'utf8'); const j = JSON.parse(raw);
             const indent = /^\{\r?\n([ \t]+)/.exec(raw)?.[1] ?? 2;
-            const path = JSON.parse(PIN_KEY); const leaf = path.pop();
-            path.reduce((o, p) => o[p], j)[leaf] = PREFIX + PIN_VERSION;
-            fs.writeFileSync(PIN_PATH, JSON.stringify(j, null, indent) + "\n");'
-          set +e
-          bash -c "$PROBE" 2>&1 | tee "$RUNNER_TEMP/probe.log"
-          status=${PIPESTATUS[0]}
-          set -e
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
-          echo "status=$status" >> "$GITHUB_OUTPUT"
+            const path = [...key]; const leaf = path.pop();
+            path.reduce((o, p) => o[p], j)[leaf] = value;
+            fs.writeFileSync(pinPath, JSON.stringify(j, null, indent) + '\n');
+          };
+          const results = JSON.parse(fs.readFileSync(`${RUNNER_TEMP}/plan.json`, 'utf8')).map((p, i) => {
+            set(p, p.prefix + p.version);
+            const log = `${RUNNER_TEMP}/probe-${i}.log`;
+            const env = { ...process.env, PIN_PACKAGE: p.package, PIN_VERSION: p.version, PROBE_LOG: log };
+            const { status } = spawnSync('bash', ['-c', 'set -o pipefail; bash -c "$PROBE" 2>&1 | tee "$PROBE_LOG"'], { env, stdio: 'inherit' });
+            // A failed probe puts the pin back before the next probe, which may read it.
+            if (status !== 0) set(p, p.prefix + p.current);
+            const tail = fs.readFileSync(log, 'utf8').trimEnd().split('\n').slice(-40).join('\n');
+            return { ...p, status: status ?? 1, tail };
+          });
+          const moved = results.filter((r) => r.status === 0);
+          const held = results.filter((r) => r.status !== 0);
+          fs.writeFileSync(`${RUNNER_TEMP}/moved.json`, JSON.stringify(moved));
+          const row = (r) => `| \`${r.package}\` | ${r.current} | ${r.version} | ${r.published} | ${r.status === 0 ? 'passed' : `failed (exit ${r.status}), held back`} |`;
+          const logs = results.map((r) => `<details><summary><code>${r.package}</code> ${r.version} probe</summary>\n\n\`\`\`\n${r.tail}\n\`\`\`\n</details>`);
+          const body = [
+            `Moves every agent pin whose release has soaked ${SOAK_DAYS} days. Each was probed with no model behind it; a pin whose probe failed stays where it was.`,
+            '', '| Package | From | To | Published | Zero-token probe |', '| --- | --- | --- | --- | --- |', ...results.map(row),
+            '', ...logs,
+            '', `The nightly run rebuilds \`${BRANCH}\` from the default branch while it holds only its own commits; push a commit here and it leaves the branch alone.`,
+            '', "- [ ] Recorded on the operator's machine against a real model and the fixtures updated (prismalens/gh-workflows docs/acp-recording.md)",
+          ].join('\n');
+          fs.writeFileSync(`${RUNNER_TEMP}/body.md`, body + '\n');
+          const title = `build(deps): pin ${moved.map((r) => `${r.package} ${r.version}`).join(', ')}`;
+          fs.appendFileSync(GITHUB_OUTPUT, `moved=${moved.length}\nheld=${held.length}\ntitle=${title}\n`);
+          for (const r of held) console.log(`::warning::the probe failed on ${r.package}@${r.version}; its pin stays at ${r.current}`);
+          JS
 
-      - name: Open the pull request
-        if: steps.pick.outputs.version != '' && steps.probe.outputs.skip != 'true'
+      - name: Sync what the pins feed
+        if: steps.probe.outputs.moved != '' && steps.probe.outputs.moved != '0' && inputs.sync != ''
+        env:
+          SYNC: ${{ inputs.sync }}
+        run: MOVED="$RUNNER_TEMP/moved.json" bash -c "$SYNC"
+
+      - name: Open or refresh the pull request
         env:
           GH_TOKEN: ${{ secrets.token || github.token }}
-          PACKAGE: ${{ inputs.package }}
-          PIN_PATH: ${{ inputs.pin-path }}
-          CURRENT: ${{ steps.pick.outputs.current }}
-          PIN_VERSION: ${{ steps.pick.outputs.version }}
-          PUBLISHED: ${{ steps.pick.outputs.published }}
-          SOAK_DAYS: ${{ inputs.soak-days }}
-          BRANCH: ${{ steps.probe.outputs.branch }}
-          STATUS: ${{ steps.probe.outputs.status }}
+          BRANCH: ${{ inputs.branch }}
+          PINS: ${{ inputs.pins }}
+          MOVED: ${{ steps.probe.outputs.moved || '0' }}
+          HELD: ${{ steps.probe.outputs.held || '0' }}
+          TITLE: ${{ steps.probe.outputs.title }}
         run: |
           set -euo pipefail
+          bot='41898+github-actions[bot]@users.noreply.github.com'
+          pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          remote=$(git ls-remote --heads origin "$BRANCH" | cut -f1)
+          if [ -n "$remote" ]; then
+            git fetch -q origin "$BRANCH"
+            if git log --format=%ae "HEAD..FETCH_HEAD" | grep -qvxF "$bot"; then
+              echo "::notice::$BRANCH holds someone else's commits; leaving it alone until it merges"
+              exit 0
+            fi
+          fi
+          if [ "$MOVED" = "0" ]; then
+            # Nothing soaked is ahead of the default branch: the PR's pins landed.
+            if [ -n "$pr" ] && [ "$HELD" = "0" ]; then
+              gh pr close "$pr" --delete-branch --comment "Every pin this moved is on the default branch now."
+            fi
+            exit 0
+          fi
           git config user.name 'github-actions[bot]'
-          git config user.email '41898+github-actions[bot]@users.noreply.github.com'
-          git switch -c "$BRANCH"
-          git commit -am "build(deps): pin ${PACKAGE} ${PIN_VERSION}"
-          git push origin "$BRANCH"
-          result=$([ "$STATUS" = "0" ] && echo "passed" || echo "failed (exit $STATUS)")
-          {
-            echo "Moves \`${PACKAGE}\` in \`${PIN_PATH}\` from ${CURRENT} to ${PIN_VERSION}, published ${PUBLISHED} (soaked ${SOAK_DAYS} days)."
-            echo
-            echo "Zero-token probe: **${result}**."
-            echo
-            echo '```'
-            tail -n 40 "$RUNNER_TEMP/probe.log"
-            echo '```'
-            echo
-            echo "- [ ] Recorded on the operator's machine against a real model and the fixtures updated (prismalens/gh-workflows docs/acp-recording.md)"
-          } > "$RUNNER_TEMP/body.md"
-          gh pr create --head "$BRANCH" --title "build(deps): pin ${PACKAGE} ${PIN_VERSION}" --body-file "$RUNNER_TEMP/body.md"
-          [ "$STATUS" = "0" ] || { echo "::error::the probe failed on ${PACKAGE}@${PIN_VERSION}"; exit 1; }
+          git config user.email "$bot"
+          git add -A
+          git commit -qm "$TITLE"
+          mapfile -t paths < <(node -p "[...new Set(JSON.parse(process.env.PINS).map((p) => p['pin-path']))].join('\n')")
+          if [ -n "$remote" ] && git diff --quiet FETCH_HEAD HEAD -- "${paths[@]}"; then
+            echo "$BRANCH already carries these pins"
+          else
+            git push -q --force origin "HEAD:refs/heads/$BRANCH"
+          fi
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
+          fi
